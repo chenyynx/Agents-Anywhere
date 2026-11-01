@@ -333,10 +333,12 @@ private struct SidebarDrawerInteractive<
             }
         }
         .ignoresSafeArea()
-        // Window rounding belongs to the container, not to the moving card:
-        // clip the whole drawer once in screen space so the corners stay
-        // round at rest, during the drag and after settling.
-        .clipShape(ConcentricRectangle(corners: .concentric))
+        // Window rounding belongs to the container, not to the moving card.
+        // The radius is the display's own corner radius; clipping the
+        // container once keeps the corners identical at rest, mid-drag and
+        // after settling.
+        .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                    style: .continuous))
         .environment(\.sidebarDrawerPresentation, .drawer)
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
@@ -784,6 +786,25 @@ private struct SidebarDrawerMainCard<Content: View>: View {
             .background(drawerCardBackground, in: screenShape)
             .clipShape(screenShape)
             .contentShape(screenShape)
+    }
+}
+
+/// The display's own corner radius. UIKit exposes it on the screen; the
+/// fallback is the common Pro/Plus radius so a missing key still rounds.
+private enum SidebarDrawerScreenCorner {
+    static var radius: CGFloat {
+#if canImport(UIKit)
+        let screen = UIScreen.main
+        let selector = NSSelectorFromString("displayCornerRadius")
+        if screen.responds(to: selector),
+           let value = screen.perform(selector)?.takeUnretainedValue() as? NSNumber,
+           value.doubleValue > 0 {
+            return CGFloat(value.doubleValue)
+        }
+        return 55
+#else
+        return 0
+#endif
     }
 }
 

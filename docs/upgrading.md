@@ -2,7 +2,7 @@
 
 ## 先区分三个版本
 
-本次产品版本为 **2.1.0**；当前源码中的数据库 revision 为 **`v2_47`**，schema version 为 **`2.47`**。各端的 PATCH 版本可以不同，数据库 revision 独立编号，不能用来推断兼容性，见[版本号规则](versioning.md)。
+本次产品版本为 **2.1.0**；当前源码中的数据库 revision 为 **`v2_48`**，schema version 为 **`2.48`**。各端的 PATCH 版本可以不同，数据库 revision 独立编号，不能用来推断兼容性，见[版本号规则](versioning.md)。
 
 `main` 现在承载 v2。本文所说的 **v1 / 旧主线** 指主线切换前的实现，源代码提交为 `6c47e419`，不再指当前 `main`。早期 [main-to-v2 文档](migrations/main-to-v2/README.md)保留作历史参考。
 
@@ -20,7 +20,7 @@
    uv run python -m agent_server.infra.db.migrations current --verbose
    ```
 
-   以上命令使用该环境的 `AGENT_SERVER_DB_URL`。当前目标应为 `v2_47`；以后升级时，以待部署源码的 `CURRENT_SCHEMA_REVISION` 为准。v2_47 新增 `timeline_items.parent_item_id` 并从既有 payload 回填；滚动升级期间由旧进程写入的行可能暂时保持 NULL，直到该行下次被新进程更新时自动补齐，因此新客户端启用主时间线窗口参数前，应先确保所有 Server 实例已升级。
+   以上命令使用该环境的 `AGENT_SERVER_DB_URL`。当前目标应为 `v2_48`；以后升级时，以待部署源码的 `CURRENT_SCHEMA_REVISION` 为准。v2_47 新增 `timeline_items.parent_item_id` 并从既有 payload 回填；滚动升级期间由旧进程写入的行可能暂时保持 NULL，直到该行下次被新进程更新时自动补齐，因此新客户端启用主时间线窗口参数前，应先确保所有 Server 实例已升级。v2_48 新增 `timeline_items.kind`、`payload_bytes`、`stub_json`、`stub_version` 四列并从既有 payload 回填；滚动升级期间由旧进程写入的行这些列可能暂时为 NULL（读侧会回退到完整 payload），而旧进程更新既有行时不会刷新这四列，读侧可能短时读到上一版本的摘要，直到该行被新进程重写。因此新客户端启用 `deferActivity` 前应先确保所有 Server 实例已升级（单实例部署重启即完成）。
 4. 启动同一版本的 Server/Web，检查 `/api/v2/health/ready`，再恢复入口流量和 Connector。验证账号登录、设备连接、会话恢复、消息、审批、文件和终端。
 5. 使用 [2.0.3 下载入口](../README.md#下载与入口)升级客户端。当前安装包没有可用的应用内下载地址，需手动分发。
 

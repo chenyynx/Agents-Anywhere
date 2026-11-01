@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     MetaData,
     PrimaryKeyConstraint,
+    SmallInteger,
     Table,
     Text,
     UniqueConstraint,
@@ -510,6 +511,17 @@ timeline_items = Table(
     # every row that is not a subagent child, and for pre-v2_47 rows whose
     # payload has no such id.
     Column("parent_item_id", Text),
+    # Deferred-activity columns (v2_48). A session's newest window can be all
+    # tool/reasoning rows, each megabytes large; the writer keeps a small
+    # render-ready ``stub_json`` of every main-timeline tool row's payload
+    # beside the full one, so a window reader never parses megabytes just to
+    # collapse the row to one line. ``kind`` (``content.kind``) and
+    # ``payload_bytes`` are mirrored for every row; ``stub_json`` /
+    # ``stub_version`` are set only for main tool rows, NULL everywhere else.
+    Column("kind", Text),
+    Column("payload_bytes", Integer),
+    Column("stub_json", Text),
+    Column("stub_version", SmallInteger),
     Column("item_time", Text),
     Column("payload_json", Text, nullable=False),
     PrimaryKeyConstraint("session_id", "id"),

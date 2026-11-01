@@ -49,7 +49,9 @@ class ProtocolSchema:
 # exact case an additive response flag exists for. Keyed by artifact slug;
 # only top-level response fields are supported.
 OPTIONAL_SERIALIZATION_FIELDS: dict[str, frozenset[str]] = {
-    "session-snapshot-response": frozenset({"excludesAgentChildren"}),
+    "session-snapshot-response": frozenset(
+        {"deferredActivity", "excludesAgentChildren"}
+    ),
 }
 
 

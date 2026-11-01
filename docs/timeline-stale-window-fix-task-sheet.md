@@ -90,8 +90,9 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 
 - 单测：
   - projection：`hasNewerItems` + 窗口外实时创建 → `deferredNewer`；latest 页落地后行出现、flag 清除。
-  - 仓库：echo 被窗口丢弃 → pending 不得 confirmed；权威 latest 落地 → confirmed 且 echo 行在 items。
-  - 入口：`open` / 发送 / `watchEcho` 走权威 latest。
+  - 仓库：echo 被窗口丢弃 → pending 不得 confirmed；补页落地 → confirmed 且 echo 行在 items。
+  - 入口：`loadLatest(authoritative:)` 不走旧本地页；发送 / `watchEcho` 使用它；
+    `open` 的本地页落后分支排保证性补页。
   - 回归：历史锚定期间实时行仍 defer，不跳位、不重复。
 - 真机：杀 App 制造本地窗口落后 → 重开 → 发送；判据为 pending→echo 1s 内完成、
   回复出现、`newer=0`、`WINDOW.endSeq` 前进到最新；连发 3 条不堆幽灵气泡。

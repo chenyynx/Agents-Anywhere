@@ -2752,12 +2752,73 @@ def _tool_call_content(
     )
 
 
+def _read_file_metadata(details: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The official ReadFileMetadata the CLI attaches to a Read result.
+
+    The transcript row carries ``toolUseResult.file`` with ``numLines`` /
+    ``startLine`` / ``totalLines`` / ``truncatedByTokenCap`` (verified on a
+    3000-line Read: 1769 / 1 / 3000 / true). The official app uses these to
+    show the "truncated at the tool output limit" footnote; AA previously
+    dropped them when it built the tool row.
+    """
+
+    file = details.get("file")
+    if not isinstance(file, Mapping):
+        return None
+    metadata: dict[str, Any] = {}
+    path = file.get("filePath")
+    if isinstance(path, str) and path:
+        metadata["filePath"] = path
+    for key in ("numLines", "startLine", "totalLines"):
+        value = file.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            metadata[key] = value
+    if isinstance(file.get("truncatedByTokenCap"), bool):
+        metadata["truncatedByTokenCap"] = file["truncatedByTokenCap"]
+    return metadata or None
+
+
+def _tool_result_is_truncated(
+    details: Mapping[str, Any],
+    read_metadata: Mapping[str, Any] | None,
+) -> bool:
+    """Whether the tool itself reports this result as cut.
+
+    Read is decided by its own metadata (the token cap, or a partial line
+    range); the generic flags are kept for runtimes that stamp one directly.
+    A deferred *client* window is not this: it says the row was not loaded,
+    not that the tool output was truncated.
+    """
+
+    for key in ("truncated", "isTruncated", "truncatedByTokenCap"):
+        if details.get(key) is True:
+            return True
+    if read_metadata is not None:
+        if read_metadata.get("truncatedByTokenCap") is True:
+            return True
+        num_lines = read_metadata.get("numLines")
+        total_lines = read_metadata.get("totalLines")
+        if (
+            isinstance(num_lines, int)
+            and isinstance(total_lines, int)
+            and num_lines < total_lines
+        ):
+            return True
+    return False
+
+
 def _tool_result_content(
     block: ClaudeToolBlock,
     call: ClaudeToolBlock | None,
     parent_item_id: str | None = None,
 ) -> ToolTimelineContent:
     output = _result_text(block.tool_result)
+    details = (
+        block.tool_result_metadata
+        if isinstance(block.tool_result_metadata, Mapping)
+        else {}
+    )
+    read_metadata = _read_file_metadata(details)
     result_metadata: dict[str, Any] = {
         "toolUseId": block.tool_use_id,
         "toolName": call.tool_name if call else None,
@@ -2767,6 +2828,8 @@ def _tool_result_content(
         "outputPreview": _preview_text(output),
         "outputLength": len(output),
         "isError": block.is_error,
+        **({"readMetadata": read_metadata} if read_metadata is not None else {}),
+        **({"truncated": True} if _tool_result_is_truncated(details, read_metadata) else {}),
         **({"synthetic": True, "missingResult": True} if block.is_synthetic else {}),
         **({"error": output} if block.is_error else {}),
     }

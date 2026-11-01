@@ -78,7 +78,11 @@ final class SessionChatModel {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
         self.subagentStopReleaseDelay = subagentStopReleaseDelay
-        opensFromCachedSnapshot = repository.cached(sessionId: session.id) != nil
+        // An empty restored window is not a cached snapshot: the row store
+        // keeps session metadata after evicting rows, and treating that shell
+        // as cached suppressed the cold mask while the newest page was still
+        // downloading — the session looked broken (device 2026-11-01).
+        opensFromCachedSnapshot = repository.cached(sessionId: session.id)?.items.isEmpty == false
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
     }
@@ -265,7 +269,8 @@ final class SessionChatModel {
         // A memory-cached visit presents before any network read so the page is
         // usable immediately (D3). Present the same opening window the store
         // reads, so the later refresh cannot remove rows the reader sees.
-        if session.isValid, let cached = repository.cached(sessionId: session.id) {
+        if session.isValid, let cached = repository.cached(sessionId: session.id),
+           !cached.items.isEmpty {
             timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
                                     pendingMessages: session.pendingMessages)
             isOpeningPrepared = true

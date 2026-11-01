@@ -231,6 +231,18 @@ struct V2SessionProjection {
         return true
     }
 
+    /// A restored window with no rows cannot be behind the server: there is no
+    /// newest edge to defer live rows against. The row store keeps session
+    /// metadata after evicting its rows, so the saved "newer rows exist" flag
+    /// would otherwise turn every live row into a deferred one and leave the
+    /// transcript empty until a latest page landed (device 2026-11-01: opening
+    /// a session whose rows were evicted showed only the older prompt).
+    mutating func settleEmptyWindow() {
+        guard data.items.isEmpty else { return }
+        data.hasNewerItems = false
+        uncoveredDeferredItem = nil
+    }
+
     /// The local store, not the server, reports whether it still holds rows
     /// older than the restored window.
     mutating func setLocalOlderAvailable(_ value: Bool) {

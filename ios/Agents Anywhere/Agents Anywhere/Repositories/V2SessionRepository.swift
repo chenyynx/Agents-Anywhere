@@ -231,6 +231,17 @@ final class V2SessionRepository {
         // read re-anchors the window on visible rows. Offline keeps the cached
         // window — the C0 fallback renders its rows.
         let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
+        // An evicted row store restores metadata without rows. The latest
+        // page for such a session can be many megabytes (the device report's
+        // session measured 11 MB for 200 rows), so the bounded snapshot is
+        // the opening read: the server caps its timeline at 2 MB, it carries
+        // the runtime state, and it is one request instead of a fill loop.
+        // `refresh` replaces the window and re-establishes live recovery, so
+        // a frame in flight cannot land on the old shell.
+        if window?.items.isEmpty == true, window?.hasOlderItems == true,
+           !entry.model.isLocalCreation, network.availability != .offline {
+            return try await refresh(sessionId: sessionId)
+        }
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
             // Keep the instant local return, but the stale branch of the local
@@ -280,6 +291,10 @@ final class V2SessionRepository {
         guard let projection = try? archive.projection(items: saved.items,
                                                        maximumItems: policy.maximumTimelineItems, now: now) else { return }
         entry.projection = projection
+        // The row store keeps the session metadata when its rows are evicted;
+        // an empty restored window must not inherit the saved newer flag (see
+        // `settleEmptyWindow`).
+        entry.projection?.settleEmptyWindow()
         entry.projection?.setLocalOlderAvailable(saved.localHasOlderRows)
         // A failure that outlived the process is still on record: the ring is
         // restored beside the projection it belongs to.
@@ -479,6 +494,18 @@ final class V2SessionRepository {
            let local = try await applyUsableLocalLatest(entry, limit: pageLimit, version: version) {
             return local
         }
+        // An opening latest read and the observed-lifecycle fill would
+        // otherwise issue the same multi-megabyte page concurrently. The fill
+        // is dropped while this read owns the newest side; if this read leaves
+        // the window behind (a failed or still-stale page), it schedules the
+        // debounced follow-up itself.
+        entry.latestReadInFlight += 1
+        defer {
+            entry.latestReadInFlight -= 1
+            if entry.latestReadInFlight == 0, entry.projection?.data.hasNewerItems == true {
+                scheduleLatestFill(entry)
+            }
+        }
         do {
             try requireNetwork()
             let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
@@ -595,6 +622,9 @@ final class V2SessionRepository {
         // A history reader's window is completed by the bottom-return path;
         // filling it here would move content under the reader.
         guard entry.projection?.isFollowingLatest == true else { return }
+        // A latest read already owns the newest side (the opening path); its
+        // own completion schedules the follow-up if it left the window behind.
+        guard entry.latestReadInFlight == 0 else { return }
         guard entry.latestFillTask == nil else { return }
 #if AA_TIMELINE_PROBE
         entry.deferredNewer += 1
@@ -1734,6 +1764,9 @@ private final class Entry {
     /// Debounced, single-flight fill for a window that is behind the server
     /// while the reader is at the newest edge (see `scheduleLatestFill`).
     var latestFillTask: Task<Void, Never>?
+    /// Non-zero while a direct latest read (the opening path) is on the wire;
+    /// the fill stays out of its way instead of downloading the same page too.
+    var latestReadInFlight = 0
     /// Rotation key so a finishing fill only clears its own registration
     /// (a stop + observe can replace the task before its defer runs).
     var latestFillID = UUID()

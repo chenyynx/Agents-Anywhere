@@ -19,6 +19,12 @@ nonisolated struct V2SessionTimelinePage: Decodable, Hashable {
     /// page. A pre-field server cannot say, so an absent key reads `false`:
     /// the client must keep its own fallback for child-only windows.
     var excludesAgentChildren = false
+    /// Whether the server applied the `deferActivity` opt-in to this page
+    /// (large tool payloads replaced by summary rows). Same lenient rule as
+    /// the exclusion flag: an absent key (老服务端) reads `false`, which tells
+    /// the client it must not expect summary rows to be replaceable by the
+    /// single-item read.
+    var deferredActivity = false
 }
 
 extension V2SessionTimelinePage {
@@ -36,6 +42,7 @@ extension V2SessionTimelinePage {
         hasMore = try container.decode(Bool.self, forKey: .hasMore)
         serverTime = try container.decodeIfPresent(String.self, forKey: .serverTime)
         excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
+        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -45,6 +52,7 @@ extension V2SessionTimelinePage {
         case hasMore
         case serverTime
         case excludesAgentChildren
+        case deferredActivity
     }
 }
 
@@ -70,6 +78,11 @@ nonisolated struct V2SessionSnapshot: Decodable, Hashable {
     /// snapshot. Same rule as the timeline page: an absent key (老服务端) reads
     /// `false`, which keeps the C0 fallback in charge of child-only windows.
     var excludesAgentChildren = false
+    /// Whether the server applied the `deferActivity` opt-in to this snapshot
+    /// (large tool payloads replaced by summary rows). An absent key reads
+    /// `false`, so the repository knows not to wait for replaceable summary
+    /// rows from a pre-field server.
+    var deferredActivity = false
 
     /// A custom `init(from:)` suppresses the synthesized keys, so they are
     /// spelled out (the `V2TimelineItem` convention).
@@ -86,6 +99,7 @@ nonisolated struct V2SessionSnapshot: Decodable, Hashable {
         case serverTime
         case activeAgents
         case excludesAgentChildren
+        case deferredActivity
     }
 }
 
@@ -109,6 +123,7 @@ extension V2SessionSnapshot {
         serverTime = try container.decode(String.self, forKey: .serverTime)
         activeAgents = ((try? container.decode(LossyElements<V2TimelineItem>.self, forKey: .activeAgents))?.elements) ?? []
         excludesAgentChildren = try container.decodeIfPresent(Bool.self, forKey: .excludesAgentChildren) ?? false
+        deferredActivity = try container.decodeIfPresent(Bool.self, forKey: .deferredActivity) ?? false
     }
 }
 

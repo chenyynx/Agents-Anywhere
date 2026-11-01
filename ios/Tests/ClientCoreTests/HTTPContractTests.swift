@@ -107,7 +107,7 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         _ = try await api.sessions.setTakeover(sessionId: "session", enabled: false)
         _ = try await api.sessions.sync(sessionId: "session")
         _ = try await api.sessions.timelineHistory(sessionId: "session", beforeOrderSeq: 80, limit: 25,
-            excludeAgentChildren: true)
+            excludeAgentChildren: true, deferActivity: true)
         _ = try await api.sessions.markRead(sessionIds: ["session"])
         _ = try await api.connectors.readWorkspaceText(connectorId: "device", root: "/workspace with spaces", request: V2WorkspaceTextRequest(path: "test.txt"))
         _ = try await api.realtime.ticket(clientId: "client", scope: .session("session"))
@@ -142,7 +142,7 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         }
         #expect(try JSONDecoder().decode([String].self, from: #require(requests[12].httpBody)) == ["session"])
         #expect(query(requests[11]) == ["mode": "history", "limit": "25", "beforeOrderSeq": "80",
-            "excludeAgentChildren": "true"])
+            "excludeAgentChildren": "true", "deferActivity": "true"])
         #expect(query(requests[13]) == ["root": "/workspace with spaces"])
         #expect(query(requests[15]) == ["after": "seq:40"])
     }
@@ -172,7 +172,8 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         let api = V2SessionAPI(transport: transport)
         _ = try await api.timelineChanges(sessionId: "session", afterSeq: 40, limit: 500)
         _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card", beforeOrderSeq: 80, limit: 100)
-        _ = try await api.latestTimeline(sessionId: "session", limit: 100, excludeAgentChildren: true)
+        _ = try await api.latestTimeline(sessionId: "session", limit: 100, excludeAgentChildren: true,
+            deferActivity: true)
         let requests = InterceptingURLProtocol.state.requests
         #expect(requests.count == 3)
         // The export/recovery feed keeps child rows: the flag must not leak in.
@@ -180,7 +181,54 @@ nonisolated private final class InterceptingURLProtocol: URLProtocol, @unchecked
         // The panel's on-demand read is keyed by card, not by the window flag.
         #expect(query(requests[1]) == ["mode": "children", "limit": "100", "beforeOrderSeq": "80",
             "parentItemId": "card"])
-        #expect(query(requests[2]) == ["mode": "latest", "limit": "100", "excludeAgentChildren": "true"])
+        #expect(query(requests[2]) == ["mode": "latest", "limit": "100", "excludeAgentChildren": "true",
+            "deferActivity": "true"])
+    }
+
+    @Test func onlyWindowReadsAskForDeferredActivity() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "token"))
+        InterceptingURLProtocol.state.reset(try [.response(200, try fixtureData("timeline")),
+            .response(200, try fixtureData("timeline")), .response(200, try fixtureData("timeline")),
+            .response(200, try fixtureData("timeline")), .response(200, try fixtureData("snapshot"))])
+        let api = V2SessionAPI(transport: transport)
+        _ = try await api.timelineChanges(sessionId: "session", afterSeq: 40, limit: 500)
+        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card", beforeOrderSeq: 80, limit: 100)
+        _ = try await api.latestTimeline(sessionId: "session", limit: 100, excludeAgentChildren: true,
+            deferActivity: true)
+        _ = try await api.timelineHistory(sessionId: "session", beforeOrderSeq: 80, limit: 25,
+            excludeAgentChildren: true, deferActivity: true)
+        _ = try await api.snapshot(sessionId: "session", limit: 50, excludeAgentChildren: true,
+            deferActivity: true)
+        let requests = InterceptingURLProtocol.state.requests
+        #expect(requests.count == 5)
+        #expect(query(requests[0]) == ["mode": "changes", "limit": "500", "afterSeq": "40"])
+        #expect(query(requests[1]) == ["mode": "children", "limit": "100", "beforeOrderSeq": "80",
+            "parentItemId": "card"])
+        #expect(query(requests[2]) == ["mode": "latest", "limit": "100", "excludeAgentChildren": "true",
+            "deferActivity": "true"])
+        #expect(query(requests[3]) == ["mode": "history", "limit": "25", "beforeOrderSeq": "80",
+            "excludeAgentChildren": "true", "deferActivity": "true"])
+        #expect(query(requests[4]) == ["limit": "50", "excludeAgentChildren": "true",
+            "deferActivity": "true"])
+    }
+
+    @Test func theSingleItemReadAddressesOneRowByPath() async throws {
+        let session = session(); defer { session.invalidateAndCancel() }
+        let transport = URLSessionHTTPTransport(serverURL: URL(string: "https://example.test")!, urlSession: session,
+                                               tokenProvider: StaticAuthTokenProvider(token: "token"))
+        let item = try JSONSerialization.data(withJSONObject: [
+            "id": "item-1", "sessionId": "session", "orderSeq": 7, "type": "tool",
+            "status": "done", "content": ["name": "bash"],
+        ])
+        InterceptingURLProtocol.state.reset([.response(200, item)])
+        let decoded = try await V2SessionAPI(transport: transport).timelineItem(sessionId: "session", itemId: "item-1")
+        #expect(decoded.id == "item-1" && decoded.sessionId == "session")
+        let request = try #require(InterceptingURLProtocol.state.requests.first)
+        #expect(request.httpMethod == "GET")
+        #expect(request.url?.path == "/api/v2/sessions/session/timeline/items/item-1")
+        #expect(request.url?.query == nil)
     }
 
     @Test func a422ChildrenReadIsNeverRetried() async throws {

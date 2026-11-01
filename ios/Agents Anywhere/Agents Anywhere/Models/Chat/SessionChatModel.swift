@@ -9,6 +9,10 @@ final class SessionChatModel {
     private static let openingWindow = V2SessionCachePolicy.defaultOpeningWindow
     let settings = ConversationSettings()
     let disclosures = TimelineDisclosureState()
+    /// On-demand reads of deferred summary rows. The repository owns the
+    /// projection change; this store owns only the per-row phase the UI
+    /// renders (idle / failed / offline) and its in-flight dedupe.
+    let deferredItems: DeferredItemStore
     var takeoverError: String?
     private(set) var takeoverUncertain = false
     private(set) var isWorking: Bool {
@@ -78,6 +82,11 @@ final class SessionChatModel {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
         self.subagentStopReleaseDelay = subagentStopReleaseDelay
+        let sessionID = session.id
+        deferredItems = DeferredItemStore { [weak repository] itemID in
+            guard let repository else { throw CancellationError() }
+            try await repository.loadDeferredItem(sessionId: sessionID, itemId: itemID)
+        }
         // An empty restored window is not a cached snapshot: the row store
         // keeps session metadata after evicting rows, and treating that shell
         // as cached suppressed the cold mask while the newest page was still

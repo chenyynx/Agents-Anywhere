@@ -4,7 +4,10 @@ extension V2SessionDetailService {
     /// Explicit export reads independently of the visible history window. A
     /// stopped cursor or interrupted read cannot masquerade as a complete export.
     func exportTimeline(sessionId: String) async throws -> SessionTimelineExport {
-        let snapshot = try await load(sessionId: sessionId, itemLimit: 1)
+        // The export walks `timelineChanges` for complete rows. Deferring would
+        // put summary rows in that feed, so the export's own window read stays
+        // undeferred even though the visible window opts in.
+        let snapshot = try await load(sessionId: sessionId, itemLimit: 1, deferActivity: false)
         try Task.checkCancellation()
         guard snapshot.session.id == sessionId else { throw V2ClientFailure(kind: .unavailable, message: String(localized: "会话数据不匹配，导出已停止。")) }
         var items: [String: V2TimelineItem] = [:]

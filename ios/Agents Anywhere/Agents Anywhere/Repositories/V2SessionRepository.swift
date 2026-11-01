@@ -208,8 +208,8 @@ final class V2SessionRepository {
         return try await hydrate(entry)
     }
 
-    /// A page visit starts with the latest 100 records, including cached visits.
-    /// Explicit history loads may then accumulate additional 100-record pages.
+    /// A page visit starts with the opening window, including cached visits.
+    /// Explicit history loads may then accumulate additional pages.
     func open(sessionId: V2SessionID) async throws -> V2SessionData {
         let signpost = PerfSignpost.begin("session.open")
         defer { PerfSignpost.end("session.open", signpost) }
@@ -261,8 +261,19 @@ final class V2SessionRepository {
             }
         }
         entry.restoredEmptyWindow = false
+        // A window cached before this client knew about `deferActivity` is
+        // narrower than the deferred window and holds no summary rows. One
+        // latest page re-reads it deferred; the response's echo decides
+        // whether that read can ever help, so a server without the feature is
+        // asked at most once per process (`deferredWindowUnsupported`).
+        let needsDeferredWindow = window?.windowExcludesAgentChildren == true
+            && window?.windowDeferredActivity == false
+            && network.availability != .offline
+            && window?.hasOlderItems == true
+            && !entry.deferredWindowUnsupported
         if window?.hasNewerItems == true
-            || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
+            || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow)
+            || needsDeferredWindow {
             // Keep the instant local return, but the stale branch of the local
             // latest read now also schedules the guaranteed newest-page fill;
             // the page catches up without waiting for a network round trip.
@@ -462,7 +473,7 @@ final class V2SessionRepository {
             }
             try requireNetwork()
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before,
-                limit: pageLimit, excludeAgentChildren: true)
+                limit: pageLimit, excludeAgentChildren: true, deferActivity: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
             if let localStore,
@@ -531,9 +542,15 @@ final class V2SessionRepository {
         }
         do {
             try requireNetwork()
-            let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
+            let page = try await detail.latestItems(
+                sessionId: sessionId, limit: pageLimit,
+                excludeAgentChildren: true, deferActivity: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyLatest(page)
+            // The echo is the only proof this server honours the deferred
+            // read. A `false` retires the open-time repair for the rest of
+            // the process instead of re-asking on every visit.
+            if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
             emit(entry)
             return entry.projection!.data
         } catch {
@@ -572,7 +589,8 @@ final class V2SessionRepository {
             nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
             hasMore: entry.projection?.data.hasOlderItems ?? false,
             serverTime: nil,
-            excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
+            excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false,
+            deferredActivity: entry.projection?.data.windowDeferredActivity ?? false)
         entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
         entry.projection?.setLocalOlderAvailable(local.hasMore)
         emit(entry)
@@ -723,6 +741,11 @@ final class V2SessionRepository {
         try requireCurrent(entry, version: version)
         guard let projection = entry.projection, projection.isFollowingLatest else { return }
         entry.projection?.applyLatest(page)
+        // The echo is the only proof this server honours the deferred read. A
+        // `false` (or absent, from an old server) retires the open-time
+        // repair for the rest of the process instead of re-asking on every
+        // visit.
+        if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
         emit(entry)
     }
 
@@ -738,6 +761,20 @@ final class V2SessionRepository {
         entry.lastLatest = "canceled"
         emit(entry, persist: false)
 #endif
+    }
+
+    /// Reads one row's complete payload and replaces its summary in place.
+    /// Isolated from paging and live recovery: only the addressed row changes,
+    /// and only when the window still holds it. A failure propagates unchanged
+    /// so the caller owns the visible retry state.
+    func loadDeferredItem(sessionId: V2SessionID, itemId: V2TimelineItemID) async throws {
+        try requireNetwork()
+        let entry = entry(for: sessionId)
+        let item = try await detail.timelineItem(sessionId: sessionId, itemId: itemId)
+        try requireCurrent(entry)
+        guard item.sessionId == sessionId else { throw CacheError.invalidated }
+        guard entry.projection?.replaceDeferredItem(item) == true else { return }
+        emit(entry)
     }
 
     /// One SubAgent card's child rows (C3) for a main-only window. Kept out of
@@ -1093,6 +1130,9 @@ final class V2SessionRepository {
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
+            // The snapshot is already a window read with `deferActivity`; its
+            // echo settles whether a later open-time repair could ever help.
+            entry.deferredWindowUnsupported = !snapshot.deferredActivity
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
@@ -1773,6 +1813,11 @@ private final class Entry {
     let id: V2SessionID
     let model: V2SessionModel
     var needsSnapshot = false
+    /// Set once a window read echoed `deferredActivity: false`, proving the
+    /// server does not implement the deferred read. Process-local on purpose:
+    /// a server upgrade is picked up by the next launch's single probe instead
+    /// of needing a client update.
+    var deferredWindowUnsupported = false
     var hasReadLocal = false
     var isDirty = false
     var emitScheduled = false

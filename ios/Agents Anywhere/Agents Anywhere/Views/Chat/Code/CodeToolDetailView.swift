@@ -236,9 +236,28 @@ struct CodeToolCallDetailView: View {
         return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output))
     }
 
-    /// Only the code/read/diff cards own a card footer; the remaining output
-    /// shapes keep the control in the section below.
+    /// Read's truncation footnote belongs inside the card; its load status
+    /// and capsule button are a separate HStack below the card (official
+    /// `FileReadDetailView.Body`: card, metadata, then `HStack<Text,
+    /// AsyncButton?>`).
+    private var readCardNote: AnyView? {
+        guard call.kind == .read, let chat,
+              liveItem.isDeferred || ToolTruncation.isPreviewOnly(liveItem)
+        else { return nil }
+        return AnyView(ReadTruncationFootnote(chat: chat, id: liveItem.id))
+    }
+
+    /// The card-owned footer: Read's in-card footnote, or the AA load control
+    /// for the non-Read code/diff cards.
+    private var inCardFooter: AnyView? {
+        call.kind == .read ? readCardNote : deferredFooter
+    }
+
+    /// Only the non-Read code/diff cards own a card footer; Read keeps its
+    /// control below the card, and the remaining output shapes keep it in the
+    /// section below.
     private var outputCardTakesFooter: Bool {
+        if call.kind == .read { return false }
         switch output {
         case .text, .diff: return true
         default: return false
@@ -315,7 +334,7 @@ struct CodeToolCallDetailView: View {
                                kind: call.kind,
                                detectsJSON: detectsJSON,
                                truncated: showsTruncationNote,
-                               footer: deferredFooter)
+                               footer: inCardFooter)
         }
     }
 
@@ -325,7 +344,8 @@ struct CodeToolCallDetailView: View {
     @ViewBuilder private var deferredSection: some View {
         if let chat,
            liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded {
-            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output)
+            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
+                               showsTruncationNote: call.kind != .read)
         }
     }
 

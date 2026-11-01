@@ -1,14 +1,19 @@
 import SwiftUI
 
-/// The official transcript's truncation footnote (`ToolCallDetailFootnote`)
-/// and its explicit load control (`AsyncButton`), not a container of our own:
-/// one footnote line in the secondary footnote style and, below it, a plain
-/// tinted text button. The preview is already on screen; the full payload is
-/// fetched only when the reader asks for it.
+/// The official transcript's truncation footnote and its load control.
+///
+/// Two official shapes, decoded separately:
+/// - **Read** (`FileReadDetailView`): the truncation footnote
+///   (`2c67.tool_detail_read_truncated`) stays inside the card; the load
+///   status and the `AsyncButton` are a separate `HStack<Text, AsyncButton?>`
+///   below it (swiftdump 580104: card, metadata, then the HStack). The button
+///   is the inline capsule (`ClaudeInlineButtonStyle` + `Capsule`).
+/// - **AA's non-Read / thinking rows**: the truncation note is the in-card
+///   "已截断" (`ToolTruncatedNote`); this footer only carries the AA load
+///   control.
 ///
 /// Shared by the chat profile's tool/reasoning folds and the Code profile's
-/// tool/thinking details: both profiles read the same deferred window, so both
-/// must make the truncation visible and offer the same one-row completion.
+/// tool/thinking details: both profiles read the same deferred window.
 struct DeferredLoadFooter: View {
     /// `fileOutput` is the official Read shape ("Load full file"); `output` is
     /// the AA extension for any other tool row the deferred window summarised
@@ -22,17 +27,24 @@ struct DeferredLoadFooter: View {
     /// multiple summaries into one body, and one control must finish them.
     let ids: [V2TimelineItemID]
     let kind: Kind
+    /// Read keeps the official long footnote inside the card, so the Code
+    /// detail passes false here and the note is not repeated below it.
+    var showsTruncationNote: Bool
 
-    init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind) {
+    init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind,
+         showsTruncationNote: Bool = true) {
         self.chat = chat
         self.ids = [id]
         self.kind = kind
+        self.showsTruncationNote = showsTruncationNote
     }
 
-    init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind) {
+    init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind,
+         showsTruncationNote: Bool = true) {
         self.chat = chat
         self.ids = ids
         self.kind = kind
+        self.showsTruncationNote = showsTruncationNote
     }
 
     /// One aggregate state: a failure wins over loading wins over idle, and
@@ -58,28 +70,34 @@ struct DeferredLoadFooter: View {
         return .fileOutput
     }
 
-    /// Lines the preview actually shows. The official unknown-total footnote
-    /// ("Showing %lld lines…") counts what is on screen; the stub carries a
-    /// bounded tail preview, so its line count is the honest number.
-    private var shownLines: Int {
-        guard let preview = item?.raw["content"]?["outputPreview"]?.stringValue,
-              !preview.isEmpty else { return 0 }
-        return preview.split(separator: "\n", omittingEmptySubsequences: false).count
-    }
-
     var body: some View {
         let phase = phase
         let note = note(phase)
-        VStack(alignment: .leading, spacing: 6) {
-            if !note.isEmpty {
-                Text(note)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+        if effectiveKind == .fileOutput {
+            // Official Read: one horizontal line, status text + capsule
+            // button (swiftdump 580104). Loaded leaves the text alone; the
+            // button disappears.
+            HStack(spacing: 12) {
+                if !note.isEmpty {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                control(phase)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if !note.isEmpty {
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                control(phase)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            control(phase)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -89,7 +107,6 @@ struct DeferredLoadFooter: View {
             ProgressView()
                 .controlSize(.small)
                 .frame(minHeight: 44)
-                .frame(maxWidth: .infinity, alignment: .leading)
         case .idle, .failed, .offline:
             Button(buttonTitle(phase)) {
                 for id in ids where chat.deferredItems.phase(id) != .loaded {
@@ -103,8 +120,13 @@ struct DeferredLoadFooter: View {
             .buttonStyle(.plain)
             .font(.footnote.weight(.medium))
             .foregroundStyle(.tint)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            // [U] official `ClaudeInlineButtonStyle` + `Capsule`; the fill
+            // and stroke constants are not decoded, so the outline uses tint.
+            .background(Capsule().strokeBorder(.tint, lineWidth: 1))
+            .contentShape(Capsule())
             .frame(minHeight: 44)
-            .frame(maxWidth: .infinity, alignment: .leading)
         case .loaded:
             EmptyView()
         }
@@ -121,11 +143,15 @@ struct DeferredLoadFooter: View {
         case .offline:
             return "\(String(localized: "离线")) · \(failedTitle)"
         case .idle, .loading:
-            // A non-Read row carries the official in-card "已截断" note; only
-            // Read keeps the official full-file footnote here.
             switch effectiveKind {
-            case .fileOutput, .thinking: return truncationNote
-            case .output: return ""
+            case .fileOutput:
+                return showsTruncationNote
+                    ? Self.truncationText(for: item)
+                    : ""
+            case .thinking:
+                return String(localized: "已按上下文预算截断")
+            case .output:
+                return ""
             }
         case .loaded:
             switch effectiveKind {
@@ -135,18 +161,19 @@ struct DeferredLoadFooter: View {
         }
     }
 
-    private var truncationNote: String {
-        switch effectiveKind {
-        case .fileOutput:
-            guard shownLines > 0 else { return String(localized: "已在工具输出上限处截断") }
-            // Official zh swaps the positional arguments: preserve %n$ when
-            // the catalog gains the total-known variant.
-            return String(format: String(localized: "显示 %lld 行（已在工具输出上限处截断）"), shownLines)
-        case .thinking:
-            return String(localized: "已按上下文预算截断")
-        case .output:
-            return ""
+    /// The official unknown-total footnote ("Showing %lld lines…") counts what
+    /// is on screen; the stub carries a bounded tail preview, so its line count
+    /// is the honest number. Shared with `ReadTruncationFootnote`, which draws
+    /// the same line inside the Read card.
+    static func truncationText(for item: V2TimelineItem?) -> String {
+        guard let preview = item?.raw["content"]?["outputPreview"]?.stringValue,
+              !preview.isEmpty else {
+            return String(localized: "已在工具输出上限处截断")
         }
+        let lines = preview.split(separator: "\n", omittingEmptySubsequences: false).count
+        // Official zh swaps the positional arguments: preserve %n$ when the
+        // catalog gains the total-known variant.
+        return String(format: String(localized: "显示 %lld 行（已在工具输出上限处截断）"), lines)
     }
 
     private var failedTitle: String {
@@ -178,5 +205,22 @@ struct DeferredLoadFooter: View {
         case .loading, .loaded:
             return ""
         }
+    }
+}
+
+/// The official Read truncation footnote, drawn **inside** the Read card.
+/// The load status and the capsule button are a sibling `HStack` below the
+/// card (`FileReadDetailView.Body`, swiftdump 580104).
+struct ReadTruncationFootnote: View {
+    let chat: SessionChatModel
+    let id: V2TimelineItemID
+
+    var body: some View {
+        let item = chat.session.timeline.first { $0.id == id }?.value
+        Text(DeferredLoadFooter.truncationText(for: item))
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
     }
 }

@@ -260,18 +260,22 @@ struct CodeToolCallDetailView: View {
         guard let chat,
               liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
         else { return nil }
+        // Once a Read row is complete, the card's own official truncation
+        // footer takes over; a second "full output loaded" line would double
+        // the status.
+        if ToolTruncation.isReadTool(liveItem), !liveItem.isDeferred { return nil }
         return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
                                           showsControl: true))
     }
 
 
-    /// The code/read/diff cards own the footer inside their chrome; the
-    /// remaining output shapes keep it in the section below.
+    /// Only the official `FileReadDetailView` owns a footer inside its card;
+    /// every other deferred row uses the detail page's footnote slot, where
+    /// the page's 16 pt block spacing is the official gap.
     private var outputCardTakesFooter: Bool {
-        switch output {
-        case .text, .diff: return true
-        default: return false
-        }
+        guard ToolTruncation.isReadTool(liveItem) else { return false }
+        if case .text = output { return true }
+        return false
     }
 
     @Environment(\.colorScheme) private var colorScheme
@@ -343,8 +347,9 @@ struct CodeToolCallDetailView: View {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
-                               footer: inCardFooter,
+                               footer: outputCardTakesFooter ? inCardFooter : nil,
                                truncated: dataTruncated,
+                               readMetadata: readMetadata,
                                readFullFile: readFullFileAction)
         }
     }
@@ -355,7 +360,8 @@ struct CodeToolCallDetailView: View {
     @ViewBuilder private var deferredSection: some View {
         if let chat,
            liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded {
-            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output)
+            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
+                               contentPadding: .zero)
         }
     }
 

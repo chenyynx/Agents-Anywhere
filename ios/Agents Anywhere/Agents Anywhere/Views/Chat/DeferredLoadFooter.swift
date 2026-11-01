@@ -24,21 +24,30 @@ struct DeferredLoadFooter: View {
     /// The Code cards put the load/retry action in their header (the existing
     /// Prettify face); their in-card footer is status-only.
     var showsControl: Bool
+    /// The page-level slot already carries the page inset and the 16 pt block
+    /// spacing, so it passes `.zero`; a card owns its own inset.
+    var contentPadding = EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
 
     init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind,
-         showsControl: Bool = true) {
+         showsControl: Bool = true,
+         contentPadding: EdgeInsets = EdgeInsets(top: 12, leading: 16,
+                                                 bottom: 12, trailing: 16)) {
         self.chat = chat
         self.ids = [id]
         self.kind = kind
         self.showsControl = showsControl
+        self.contentPadding = contentPadding
     }
 
     init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind,
-         showsControl: Bool = true) {
+         showsControl: Bool = true,
+         contentPadding: EdgeInsets = EdgeInsets(top: 12, leading: 16,
+                                                 bottom: 12, trailing: 16)) {
         self.chat = chat
         self.ids = ids
         self.kind = kind
         self.showsControl = showsControl
+        self.contentPadding = contentPadding
     }
 
     /// One aggregate state: a failure wins over loading wins over idle, and
@@ -65,25 +74,34 @@ struct DeferredLoadFooter: View {
     var body: some View {
         let phase = phase
         let note = note(phase)
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             if !note.isEmpty {
-                ToolStatusText(text: note)
+                CodeFootnoteText(text: note, tone: noteTone)
             }
             if showsControl {
                 control(phase)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(contentPadding)
+    }
+
+    /// Read's in-card footer uses the same `text300` note as the official
+    /// `FileReadDetailView`; every other deferred row uses the detail-page
+    /// footnote token, `text500`.
+    private var noteTone: CodeFootnoteText.Tone {
+        effectiveKind == .fileOutput ? .readNote : .footnote
     }
 
     @ViewBuilder
     private func control(_ phase: DeferredItemStore.Phase) -> some View {
         switch phase {
         case .loading:
-            ProgressView()
-                .controlSize(.small)
+            // The official `AsyncButton` keeps the capsule in place, hides
+            // its label and overlays a spinner; layout does not move.
+            Button(buttonTitle(.idle)) {}
+                .buttonStyle(CodeInlineButtonStyle(isLoading: true))
+                .disabled(true)
         case .idle, .failed, .offline:
             Button(buttonTitle(phase)) {
                 for id in ids where chat.deferredItems.phase(id) != .loaded {
@@ -94,11 +112,7 @@ struct DeferredLoadFooter: View {
                     }
                 }
             }
-            .buttonStyle(.plain)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(.tint)
-            .contentShape(Rectangle())
-            .frame(minHeight: 44)
+            .buttonStyle(CodeInlineButtonStyle())
         case .loaded:
             EmptyView()
         }

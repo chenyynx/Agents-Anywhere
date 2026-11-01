@@ -111,6 +111,14 @@ nonisolated enum CodePageTheme {
         light: Color(.sRGB, red: 0.22, green: 0.22, blue: 0.208),
         dark: Color(.sRGB, red: 0.765, green: 0.761, blue: 0.718))
 
+    /// [E] R-T4 — the official `border300` token used by the inline capsule
+    /// button (`ClaudeInlineButtonStyle`): light `#1E1E1D` at 15%, dark
+    /// `#E1E0D9` at 15%. A separate token from the 30% card hairline; the
+    /// button stroke is two device pixels of this colour.
+    static let border300Color: SchemeColor = SchemeColor(
+        light: Color(.sRGB, red: 0.118, green: 0.118, blue: 0.114, opacity: 0.15),
+        dark: Color(.sRGB, red: 0.882, green: 0.878, blue: 0.851, opacity: 0.15))
+
     /// [E] R28 §2.3 — the summary's failure run `danger00` token:
     /// light `(0.557, 0.149, 0.149)`, dark `(0.957, 0.671, 0.671)`.
     /// (`FailureGlyph`'s own foreground is UNKNOWN after §U 收口二 二-B.3;

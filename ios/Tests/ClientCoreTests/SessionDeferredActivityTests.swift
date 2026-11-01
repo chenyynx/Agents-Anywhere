@@ -115,7 +115,7 @@ import Testing
         #expect(snapshot.deferredActivity == nil)
         var object = try fixtureObject("snapshot")
         object["deferredActivity"] = true
-        #expect(try decode(object, as: V2SessionSnapshot.self).deferredActivity)
+        #expect(try decode(object, as: V2SessionSnapshot.self).deferredActivity == true)
     }
 
     // MARK: Open-time repair

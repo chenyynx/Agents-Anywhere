@@ -256,12 +256,16 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
    「不确定」；看门狗只做一次权威窗口读来补 echo，气泡保持「发送中」直到回显合并。
    只有明确写失败才 `rejected/未送达`。队列的 60s 兜底保留（它是释放队列头的
    安全阀，不是直发路径）。
-4. 归档保存 `windowDeferredActivity`；导出保持 undeferred。
+4. Code profile 的同一条链路：`CodeToolGroupDetailView` / `CodeStepGroupDetailView` 把
+   `SessionChatModel` 传进 `CodeToolCallDetailView`；详情从页面的实时行读取 item，
+   摘要行显示同一个 `DeferredLoadFooter`，加载后原地换成全文。默认的 Code 展示
+   形态也能看到截断说明与加载入口。
+5. 归档保存 `windowDeferredActivity`；导出保持 undeferred。
 
 ### 后续（不在 P0）
 
-- P1：Code profile 接同一 `DeferredItemStore`；归档/本地缓存的 deferred 模式；
-  探针记录 deferred 命中与补读结果；读代际（并发 latest 互废）先有红测再动。
+- P1：归档/本地缓存的 deferred 模式；探针记录 deferred 命中与补读结果；
+  读代际（并发 latest 互废）先有红测再动。
 - P2（治本，跨端）：connector 写入侧定义工具输出上限，完整内容落独立存储
   （文件/blob），item 只留截断体+引用；单条读同时服务「摘要补全文」和
   「Read 全文」；迁移/回滚锚；Web/Android/Desktop/iOS 逐端跟进。
@@ -287,5 +291,7 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 - 摘要阈值 8 KB、span 300 行、2 MB 预算由服务端控制；客户端只负责渲染与补读。
 - 极老服务端（无 `deferActivity`/`timeline/items`）：窗口读取仍带参，响应无 echo →
   客户端按普通完整页处理，不显示截断说明；补读入口只对 `content.deferred` 行出现。
-- Code profile 的详情暂未接 `DeferredItemStore`，列为 P1；P0 的窗口读取对两个
-  profile 都生效，但 Code 详情目前不会显示加载入口。
+- Code 详情只有在从页面活跃的 `SessionChatModel` 打开时才提供加载入口；
+  `CodeProfileAutoRun` 的门禁/预览没有活的窗口，按设计传 nil。
+- 离线时摘要行没有完整 payload（本地归档存的是摘要），点开会显示静态离线态；
+  需要全文请联网后再点「加载完整输出」。

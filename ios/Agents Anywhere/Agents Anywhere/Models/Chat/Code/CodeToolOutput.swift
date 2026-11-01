@@ -67,6 +67,49 @@ nonisolated struct CodeToolDiff: Hashable {
     }
 }
 
+/// The official `ReadFileMetadata` subset the connector carries on a Read
+/// tool result (`content.readMetadata`). The official Read detail uses it for
+/// the "truncated at the tool output limit" footnote and the full-file
+/// control; AA previously dropped it when building the row.
+nonisolated struct CodeReadMetadata: Hashable {
+    let filePath: String?
+    let numLines: Int?
+    let startLine: Int?
+    let totalLines: Int?
+    let truncatedByTokenCap: Bool
+
+    var isTruncated: Bool {
+        if truncatedByTokenCap { return true }
+        guard let numLines, let totalLines else { return false }
+        return numLines < totalLines
+    }
+}
+
+/// The tool result itself was cut at the tool output limit (`ToolResult.
+/// isTruncated` in the official model). This is deliberately **not** the
+/// deferred client window: `content.deferred` only says the row was not
+/// loaded, not that the tool output was truncated.
+nonisolated enum CodeToolTruncation {
+    static func isTruncated(_ item: V2TimelineItem) -> Bool {
+        isTruncated(content: item.raw["content"] ?? .object([:]))
+    }
+
+    static func isTruncated(content: JSONValue) -> Bool {
+        if content["truncated"] == .bool(true) { return true }
+        return readMetadata(content)?.isTruncated == true
+    }
+
+    static func readMetadata(_ content: JSONValue) -> CodeReadMetadata? {
+        guard let raw = content["readMetadata"]?.objectValue else { return nil }
+        return CodeReadMetadata(
+            filePath: raw["filePath"]?.stringValue,
+            numLines: raw["numLines"]?.intValue,
+            startLine: raw["startLine"]?.intValue,
+            totalLines: raw["totalLines"]?.intValue,
+            truncatedByTokenCap: raw["truncatedByTokenCap"]?.boolValue == true)
+    }
+}
+
 nonisolated enum CodeToolOutput: Hashable {
     case text(String)
     case todos([CodeToolTodo])

@@ -60,6 +60,9 @@ struct CodeToolOutputView: View {
     /// The deferred load/retry action in the card header, using the existing
     /// Prettify face (no capsule).
     var headerAction: CodeToolCardAction? = nil
+    /// The tool result itself was cut at the tool output limit
+    /// (`ToolResult.isTruncated`), not the deferred client window.
+    var truncated: Bool = false
 
     var body: some View {
         switch output {
@@ -75,19 +78,22 @@ struct CodeToolOutputView: View {
             } else if kind == .read {
                 CodeFileReadOutputView(text: text, detectsJSON: detectsJSON,
                                        footer: footer,
-                                       headerAction: headerAction)
+                                       headerAction: headerAction,
+                                       truncated: truncated)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
                                   code: text,
                                   detectsJSON: detectsJSON,
                                   footer: footer,
-                                  headerAction: headerAction)
+                                  headerAction: headerAction,
+                                  truncated: truncated)
             }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
         case let .diff(diff):
             CodeToolDiffOutputView(diff: diff, footer: footer,
-                                   headerAction: headerAction)
+                                   headerAction: headerAction,
+                                   truncated: truncated)
         case let .submittedAnswers(answers):
             CodeToolSubmittedAnswersOutputView(answers: answers)
         case .approvedPlan:
@@ -120,6 +126,8 @@ private struct CodeFileReadOutputView: View {
     var footer: AnyView? = nil
     /// The deferred load/retry text action in the header.
     var headerAction: CodeToolCardAction? = nil
+    /// The tool result itself was cut at the tool output limit.
+    var truncated: Bool = false
     /// Sniffed once at init: the body can be a whole file, and a body
     /// re-evaluation must not re-trim it.
     private let sniffsAsJSON: Bool
@@ -127,11 +135,12 @@ private struct CodeFileReadOutputView: View {
     @State private var prettify: CodeToolPrettify = .initial
 
     init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil,
-         headerAction: CodeToolCardAction? = nil) {
+         headerAction: CodeToolCardAction? = nil, truncated: Bool = false) {
         self.text = text
         self.detectsJSON = detectsJSON
         self.footer = footer
         self.headerAction = headerAction
+        self.truncated = truncated
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
         _chunks = State(initialValue: CodeFileReadChunks.split(text))
     }
@@ -180,6 +189,7 @@ private struct CodeFileReadOutputView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CodeToolCardMetrics.contentInset)
+            if truncated { ToolTruncatedNote() }
             if let footer { footer }
         }
         .codeToolCardChrome()
@@ -360,6 +370,8 @@ struct CodeToolCodeCard: View {
     var footer: AnyView? = nil
     /// The deferred load/retry text action in the header.
     var headerAction: CodeToolCardAction? = nil
+    /// The tool result itself was cut at the tool output limit.
+    var truncated: Bool = false
     /// Sniffed once at init so a body re-evaluation never re-trims the payload.
     private let sniffsAsJSON: Bool
 
@@ -369,12 +381,14 @@ struct CodeToolCodeCard: View {
     @State private var prettify: CodeToolPrettify = .initial
 
     init(title: String?, code: String, detectsJSON: Bool = false,
-         footer: AnyView? = nil, headerAction: CodeToolCardAction? = nil) {
+         footer: AnyView? = nil, headerAction: CodeToolCardAction? = nil,
+         truncated: Bool = false) {
         self.title = title
         self.code = code
         self.detectsJSON = detectsJSON
         self.footer = footer
         self.headerAction = headerAction
+        self.truncated = truncated
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(code)
         _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
@@ -402,9 +416,10 @@ struct CodeToolCodeCard: View {
                 CodeToolCardDivider()
             }
             CodeToolCodeBody(code: displayCode)
-            // The footer already carries the truncation/loaded status; the
-            // render-cap note would repeat it.
-            if footer == nil, visibleText.count > CodeToolCardMetrics.previewLimit {
+            // The footer already carries the deferred status; the render-cap
+            // or tool-result note would repeat it.
+            if footer == nil,
+               truncated || visibleText.count > CodeToolCardMetrics.previewLimit {
                 ToolTruncatedNote()
             }
             if let footer { footer }
@@ -654,6 +669,8 @@ private struct CodeToolDiffOutputView: View {
     var footer: AnyView? = nil
     /// The deferred load/retry text action in the header.
     var headerAction: CodeToolCardAction? = nil
+    /// The tool result itself was cut at the tool output limit.
+    var truncated: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -706,6 +723,7 @@ private struct CodeToolDiffOutputView: View {
                     .frame(height: 1 / displayScale)
                 loadMore
             }
+            if truncated { ToolTruncatedNote() }
             if let footer { footer }
         }
         .background(surface)

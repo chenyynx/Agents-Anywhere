@@ -220,6 +220,9 @@ struct CodeToolCallDetailView: View {
     /// input is a structured JSON object. The output card still needs the
     /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
     private var detectsJSON: Bool { CodeToolInputFields.detectsJSON(for: liveCall) }
+    /// The tool result itself was cut at the tool output limit (the official
+    /// `ToolResult.isTruncated`), not the deferred client window.
+    private var dataTruncated: Bool { CodeToolTruncation.isTruncated(liveItem) }
     /// The deferred status line inside the card. The action itself is the
     /// existing header text control (Prettify face), not a separate capsule.
     private var inCardFooter: AnyView? {
@@ -340,7 +343,8 @@ struct CodeToolCallDetailView: View {
                                kind: call.kind,
                                detectsJSON: detectsJSON,
                                footer: inCardFooter,
-                               headerAction: cardHeaderAction)
+                               headerAction: cardHeaderAction,
+                               truncated: dataTruncated)
         }
     }
 

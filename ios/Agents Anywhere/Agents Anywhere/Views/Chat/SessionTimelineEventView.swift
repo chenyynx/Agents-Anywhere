@@ -213,6 +213,9 @@ private struct TimelineToolDetails: View {
             if let output = value.output {
                 TimelineCodePanel(label: String(localized: "Output"), code: output)
             }
+            if CodeToolTruncation.isTruncated(row.value) {
+                ToolTruncatedNote()
+            }
             if deferred || chat.deferredItems.phase(row.id) == .loaded {
                 DeferredLoadFooter(chat: chat, id: row.id, kind: .output)
             }

@@ -116,7 +116,10 @@ struct DeferredLoadFooter: View {
             return "\(String(localized: "离线")) · \(failedTitle)"
         case .idle, .loading:
             switch effectiveKind {
-            case .fileOutput, .output: return String(localized: "已截断")
+            // The data-level "已截断" belongs to the card itself
+            // (`ToolResult.isTruncated`); a deferred row is not truncated, it
+            // is simply not loaded. The header action says what to do.
+            case .fileOutput, .output: return ""
             case .thinking: return String(localized: "已按上下文预算截断")
             }
         case .loaded:

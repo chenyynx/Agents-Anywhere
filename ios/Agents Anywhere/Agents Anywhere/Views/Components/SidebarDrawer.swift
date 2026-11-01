@@ -828,12 +828,13 @@ private enum SidebarDrawerCardShape {
     /// The card is the full-window rounded rectangle: reference drawerA
     /// measures the top-left corner arc at radius 160px = 53.3pt with the
     /// edge at 190.7pt (fit circle centre y = 53.6pt), i.e. the display's
-    /// own corner radius. A container-concentric shape resolved against the
-    /// window instead and drew its arc at the screen corner (pp 2026-11-01).
+    /// own corner radius. The measured boundary fits a circle, so the corner
+    /// is a circular arc — not the continuous (squircle) style, which leaves
+    /// a gap between the card edge and the seam line's arc (pp 2026-11-01).
     static func shape(isFullyClosed: Bool) -> RoundedRectangle {
         _ = isFullyClosed
         return RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
-                                style: .continuous)
+                                style: .circular)
     }
 }
 

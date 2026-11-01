@@ -322,9 +322,9 @@ private struct ChatSidebarDeviceRow: View {
                 Text(device.name)
                     // Brand mono (official JetBrains Mono) instead of the
                     // system SF Mono; the device name reads as a host name.
-                    // Same point size as the session row title (.body = 17pt).
-                    .font(.custom("JetBrainsMono-Regular", size: 17,
-                                  relativeTo: .body))
+                    // 15pt = the original SF-mono subheadline size (pp).
+                    .font(.custom("JetBrainsMono-Regular", size: 15,
+                                  relativeTo: .subheadline))
                     .foregroundStyle(device.presence == .offline ? .secondary : .primary)
                     .lineLimit(1)
             }

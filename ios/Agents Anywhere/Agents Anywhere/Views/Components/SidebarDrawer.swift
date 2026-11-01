@@ -851,9 +851,12 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // content surface at its undimmed value (249) at full and half
             // open, so the official scrim token is not applied here.
             .overlay {
+                // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
+                // (0x10105186c). The hairline is fully visible from the first
+                // point of opening, not ramped with the offset.
                 screenShape
                     .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
-                    .opacity(progress)
+                    .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
             }
             // Ordinary offset still participates in descendant coordinates:

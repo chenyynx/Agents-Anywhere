@@ -971,6 +971,18 @@ class RawTranscriptScan:
     dispatch_records: Mapping[
         str, tuple[Mapping[str, Any], Mapping[str, Any] | None]
     ] = field(default_factory=dict)
+    #: tool_use id -> the Read ``file`` metadata the raw transcript carries
+    #: (``toolUseResult.file``, with the full body stripped). The SDK history
+    #: surface reconstructs ``SessionMessage`` without ``toolUseResult``, and
+    #: a history sync republishes the same item ids — so without this the
+    #: rebuild strips the truncation flag the live row had (2026-11-02: a
+    #: live Read row lost ``readMetadata`` on the next sync; the same fix
+    #: keeps the deferred stub path whole). Only ``file`` is retained: it is
+    #: the one key the timeline consumes, and the raw mapping also holds the
+    #: whole file body (``file.content``).
+    tool_result_metadata: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
 
 
 def _transcript_row_prompt_text(row: Mapping[str, Any]) -> str | None:
@@ -996,6 +1008,41 @@ def _transcript_row_prompt_text(row: Mapping[str, Any]) -> str | None:
         stripped = "\n".join(parts).strip()
         return stripped or None
     return None
+
+
+def _capture_tool_result_metadata(
+    row: Mapping[str, Any],
+    tool_use_result: Mapping[str, Any],
+    metadata_by_tool_use_id: dict[str, Mapping[str, Any]],
+) -> None:
+    """Keep the Read ``file`` metadata the SDK message view drops.
+
+    A ``user`` transcript row carries the CLI's structured
+    ``toolUseResult``; the SDK's history reconstruction keeps only
+    ``message``, so a sync rebuild would publish the same tool row without
+    the Read truncation footnote. Store ``{"file": ...}`` per answering
+    ``tool_result`` block — never the raw mapping, whose ``file.content``
+    repeats the whole file body.
+    """
+
+    file = tool_use_result.get("file")
+    if not isinstance(file, Mapping):
+        return
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list | tuple):
+        return
+    trimmed = {key: value for key, value in file.items() if key != "content"}
+    if not trimmed:
+        return
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        if block.get("type") != "tool_result":
+            continue
+        tool_use_id = _string(block.get("tool_use_id"))
+        if tool_use_id is not None:
+            metadata_by_tool_use_id.setdefault(tool_use_id, {"file": trimmed})
 
 
 def scan_raw_transcript(
@@ -1063,6 +1110,7 @@ def scan_raw_transcript(
     dispatch_rows: dict[str, Mapping[str, Any]] = {}
     result_rows: dict[str, Mapping[str, Any]] = {}
     injected_prompt_rows: dict[str, int] = {}
+    tool_result_metadata: dict[str, Mapping[str, Any]] = {}
     # Prompts the CLI queued since the last persisted conversation row. A
     # fired scheduled prompt is enqueued first and persisted right after as
     # the hidden user row; a real user prompt is enqueued and then persisted
@@ -1078,6 +1126,7 @@ def scan_raw_transcript(
         wants_agent_key = '"agentId"' in line
         wants_tool_use = '"tool_use"' in line
         wants_queue = '"queue-operation"' in line
+        wants_tool_result = '"toolUseResult"' in line
         # A receipt answers a dispatch by its tool_use id. Once a dispatch has
         # been seen, a later row naming it is worth parsing even when it
         # carries none of the other markers; the substring test keeps this
@@ -1095,6 +1144,7 @@ def scan_raw_transcript(
             or wants_agent_key
             or wants_tool_use
             or wants_queue
+            or wants_tool_result
             or wants_dispatch_result
         ):
             continue
@@ -1112,6 +1162,11 @@ def scan_raw_transcript(
             # for the window gate (D-B). `setdefault` is the whole rule.
             uuid_line_index.setdefault(row_uuid, line_index)
         row_type = row.get("type")
+        raw_tool_use_result = row.get("toolUseResult")
+        if isinstance(raw_tool_use_result, Mapping):
+            _capture_tool_result_metadata(
+                row, raw_tool_use_result, tool_result_metadata
+            )
         if row_type == "queue-operation" and row.get("operation") == "enqueue":
             queued = row.get("content")
             if isinstance(queued, str) and queued.strip():
@@ -1225,6 +1280,7 @@ def scan_raw_transcript(
         verified_dispatch_ids=verified_dispatch_ids,
         uuid_line_index=uuid_line_index,
         injected_prompt_rows=injected_prompt_rows,
+        tool_result_metadata=tool_result_metadata,
         dispatch_records={
             tool_use_id: (dispatch_rows[tool_use_id], result_rows.get(tool_use_id))
             for tool_use_id in verified_dispatch_ids

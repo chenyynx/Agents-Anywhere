@@ -190,6 +190,7 @@ class ClaudeMessageProjector:
         raw_scan_provider: (
             Callable[[ClaudeSession], RawTranscriptScan | None] | None
         ) = None,
+        tool_result_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self._order_by_id: dict[str, int] = {}
         self._next_order_seq = 1
@@ -220,6 +221,11 @@ class ClaudeMessageProjector:
         # synthetic scan and never touch the real disk; the default is the
         # reader's memoized scanner (see `_read_session_raw_scan` below).
         self._raw_scan_provider = raw_scan_provider
+        # The raw transcript's tool ``toolUseResult`` map, keyed by the
+        # answering tool_use id (history rebuilds only). The SDK message
+        # view drops it; without this a sync would republish a live Read row
+        # without its truncation footnote (2026-11-02).
+        self._tool_result_metadata = dict(tool_result_metadata or {})
         # L2 subagent progress: live state of every Agent call card this
         # projector has minted, keyed by the card's stable item id. The card
         # carries the wire-projected content and the task-event overlay
@@ -347,6 +353,17 @@ class ClaudeMessageProjector:
             probe=session.context_probe,
         )
         for block in message_tool_blocks(message):
+            if (
+                block.block_type == "tool_result"
+                and block.tool_result_metadata is None
+            ):
+                # The SDK history surface reconstructs SessionMessage without
+                # the transcript's toolUseResult; the raw scan keeps the Read
+                # `file` metadata so a sync rebuild cannot strip the flag the
+                # live row published (2026-11-02).
+                raw_metadata = self._tool_result_metadata.get(block.tool_use_id)
+                if raw_metadata is not None:
+                    block = replace(block, tool_result_metadata=raw_metadata)
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
                 continue
@@ -2784,10 +2801,13 @@ def _tool_result_is_truncated(
 ) -> bool:
     """Whether the tool itself reports this result as cut.
 
-    Read is decided by its own metadata (the token cap, or a partial line
-    range); the generic flags are kept for runtimes that stamp one directly.
-    A deferred *client* window is not this: it says the row was not loaded,
-    not that the tool output was truncated.
+    Only the tool's own truncation signal counts. A Read that returned a
+    requested ``offset``/``limit`` slice is not truncated — ``numLines <
+    totalLines`` merely says the caller asked for a range, and marking it
+    would put the official "truncated at the tool output limit" footnote on
+    an intentional partial read (2026-11-02). The token cap and the generic
+    flags are the only authorities. A deferred *client* window is not this
+    either: it says the row was not loaded, not that the output was cut.
     """
 
     for key in ("truncated", "isTruncated", "truncatedByTokenCap"):
@@ -2795,14 +2815,6 @@ def _tool_result_is_truncated(
             return True
     if read_metadata is not None:
         if read_metadata.get("truncatedByTokenCap") is True:
-            return True
-        num_lines = read_metadata.get("numLines")
-        total_lines = read_metadata.get("totalLines")
-        if (
-            isinstance(num_lines, int)
-            and isinstance(total_lines, int)
-            and num_lines < total_lines
-        ):
             return True
     return False
 

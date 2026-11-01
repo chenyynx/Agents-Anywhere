@@ -574,12 +574,15 @@ def _history_items_from_messages(
     both are given.
     """
 
+    if raw_scan is None and raw_lines:
+        raw_scan = scan_raw_transcript(raw_lines)
     projector = ClaudeMessageProjector(
         tool_call_lookup=tool_call_lookup,
         hidden_tool_use_ids=hidden_tool_use_ids,
+        tool_result_metadata=(
+            raw_scan.tool_result_metadata if raw_scan is not None else None
+        ),
     )
-    if raw_scan is None and raw_lines:
-        raw_scan = scan_raw_transcript(raw_lines)
     raw_notices = _raw_history_notices(
         messages, raw_scan, window_origin_uuid=window_origin_uuid
     )

@@ -91,8 +91,9 @@ import Testing
         #expect(!projection.data.hasOlderItems)
         #expect(!projection.data.hasNewerItems)
         // A live create outside the anchored window is deferred as newer; it
-        // must not push the reading row out.
-        try projection.apply(event("timeline.item_created", seq: 11, payload: ["item": itemObject(id: "5", order: 5, seq: 11)]))
+        // must not push the reading row out, and the caller must be told.
+        let deferred = try projection.apply(event("timeline.item_created", seq: 11, payload: ["item": itemObject(id: "5", order: 5, seq: 11)]))
+        #expect(deferred?.deferredNewer == true)
         #expect(projection.data.items.map(\.id) == ["1", "2", "3", "4"])
         #expect(projection.data.hasNewerItems)
         projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: try recent.map { try decode($0) }, nextSeq: 11, hasMore: true, serverTime: nil))

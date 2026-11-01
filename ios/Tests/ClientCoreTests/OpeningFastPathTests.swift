@@ -283,6 +283,43 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.openingError == nil)
     }
 
+    /// The row store keeps metadata after evicting rows. That empty shell used
+    /// to count as a cached snapshot, so the cold mask was suppressed and the
+    /// reader stared at an empty transcript while the newest page downloaded
+    /// (device 2026-11-01). It must behave like a cold open.
+    @Test func anEvictedWindowKeepsTheColdMaskUntilTheSnapshotArrives() async throws {
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        var snapshotStarted = false
+        http.respond = { call in
+            if call.path.hasSuffix("snapshot") {
+                snapshotStarted = true
+                await gate.wait()
+            }
+            return try http.defaultResponse(call)
+        }
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = try await seededStore(url, rows: [1, 2], hasNewerItems: true)
+        await store.trimCache(to: 0)
+        let repo = repository(transport: http, localStore: store)
+        defer { repo.reset() }
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.items.isEmpty == true)
+
+        let model = chat(repo, http)
+        #expect(!model.opensFromCachedSnapshot && model.showsOpeningMask)
+        let opening = Task { await model.prepareOpening() }
+        defer { gate.release(); opening.cancel() }
+        try await eventually { snapshotStarted }
+        // No empty presentation may dismiss the mask before the snapshot.
+        #expect(!model.isOpeningReady && model.timeline.rows.isEmpty)
+        #expect(model.showsOpeningMask)
+        gate.release()
+        await opening.value
+        #expect(model.isOpeningReady && !model.timeline.rows.isEmpty)
+        #expect(model.openingError == nil)
+    }
+
     @Test func coldMaskWaitsForTheFirstPositioningOrItsBoundedFallback() async throws {
         let http = TestHTTPTransport()
         let repo = repository(transport: http)

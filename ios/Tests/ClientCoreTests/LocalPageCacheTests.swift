@@ -289,6 +289,39 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// The row store keeps session metadata when it evicts rows. Opening such
+    /// a session must not treat the empty shell as a window behind the server
+    /// (every live row would be deferred), and it must not download the full
+    /// newest page: the 2026-11-01 device session measured 11 MB for 200 rows,
+    /// which took tens of seconds on the phone's link. The byte-bounded
+    /// snapshot is the opening read instead.
+    @Test func anEvictedWindowOpensFromTheBoundedSnapshot() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, hasNewerItems: true)
+
+        // Evict every row the way the cache limit does; the saved metadata
+        // (cursor, newer flag, state) stays.
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        await store.trimCache(to: 0)
+
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http, localStore: store)
+        defer { repo.reset() }
+
+        let restored = try await repo.load(sessionId: "session")
+        #expect(restored.items.isEmpty)
+        #expect(!restored.hasNewerItems)
+
+        let opened = try await repo.open(sessionId: "session")
+        #expect(http.count("snapshot") == 1)
+        #expect(http.count("timeline") == 0)
+        #expect(!opened.items.isEmpty)
+        #expect(!opened.hasNewerItems)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
     /// A stale window is healed on resume for an observed session even when no
     /// opening or bottom trigger runs (the app was only backgrounded).
     @Test func resumeFillsAStaleWindowForAnObservedSession() async throws {

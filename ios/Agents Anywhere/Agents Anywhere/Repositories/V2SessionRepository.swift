@@ -234,20 +234,31 @@ final class V2SessionRepository {
         // An evicted row store restores metadata without rows. The latest
         // page for such a session can be many megabytes (the device report's
         // session measured 11 MB for 200 rows), so the bounded snapshot is
-        // the opening read: the server caps its timeline at 2 MB, it carries
-        // the runtime state, and it is one request instead of a fill loop.
-        // `refresh` replaces the window and re-establishes live recovery, so
-        // a frame in flight cannot land on the old shell. The flag is only
-        // set by a restore, so a session that is genuinely empty is not
-        // snapshotted twice; it stays set when the read fails (offline or
-        // transient) so the retry path runs the same read again.
+        // the opening read: the server caps its timeline at about 2 MB plus
+        // the newest row, it carries the runtime state, and it is one request
+        // instead of a fill loop. `refresh` replaces the window and
+        // re-establishes live recovery, so a frame in flight cannot land on
+        // the old shell. The flag is only set by a restore, so a session that
+        // is genuinely empty is not snapshotted twice; it stays set when the
+        // read fails (offline or transient) so the retry path runs the same
+        // read again.
         let restoredEmptyWindow = entry.restoredEmptyWindow
         if window?.items.isEmpty == true, restoredEmptyWindow,
            !entry.model.isLocalCreation {
-            try requireNetwork()
-            let data = try await refresh(sessionId: sessionId)
-            entry.restoredEmptyWindow = false
-            return data
+            do {
+                try requireNetwork()
+                let data = try await refresh(sessionId: sessionId)
+                entry.restoredEmptyWindow = false
+                entry.needsSnapshot = false
+                return data
+            } catch {
+                // The empty window has no self-heal trigger left: the saved
+                // newer flag is cleared and there is no row to page from. Hand
+                // the read to the connection loop, which hydrates whenever the
+                // session reconnects (offline → online included).
+                entry.needsSnapshot = true
+                throw error
+            }
         }
         entry.restoredEmptyWindow = false
         if window?.hasNewerItems == true
@@ -631,6 +642,10 @@ final class V2SessionRepository {
     private func scheduleLatestFill(_ entry: Entry) {
         guard TimelineStaleWindowHeal.enabled else { return }
         guard isCurrent(entry), !suspended else { return }
+        // The fill belongs to the observed lifecycle: a session nobody is
+        // looking at must not poll large pages (the entry may outlive the
+        // page visit that triggered the read).
+        guard !entry.observers.isEmpty else { return }
         // A history reader's window is completed by the bottom-return path;
         // filling it here would move content under the reader.
         guard entry.projection?.isFollowingLatest == true else { return }
@@ -661,6 +676,13 @@ final class V2SessionRepository {
                       projection.data.hasNewerItems,
                       projection.isFollowingLatest else { return }
                 if self.network.availability == .offline {
+                    attempt += 1
+                    continue
+                }
+                // A direct read may have started while this fill slept; it
+                // owns the newest side now, and its own completion schedules
+                // the follow-up if the window is still behind.
+                if entry.latestReadInFlight > 0 {
                     attempt += 1
                     continue
                 }

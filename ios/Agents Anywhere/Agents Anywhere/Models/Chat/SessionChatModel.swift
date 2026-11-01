@@ -82,7 +82,10 @@ final class SessionChatModel {
         // keeps session metadata after evicting rows, and treating that shell
         // as cached suppressed the cold mask while the newest page was still
         // downloading — the session looked broken (device 2026-11-01).
-        opensFromCachedSnapshot = repository.cached(sessionId: session.id)?.items.isEmpty == false
+        // A local creation is the exception: its placeholder is deliberately
+        // empty and the pending bubble must show without a mask.
+        opensFromCachedSnapshot = session.isLocalCreation
+            || repository.cached(sessionId: session.id)?.items.isEmpty == false
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
     }
@@ -270,7 +273,7 @@ final class SessionChatModel {
         // usable immediately (D3). Present the same opening window the store
         // reads, so the later refresh cannot remove rows the reader sees.
         if session.isValid, let cached = repository.cached(sessionId: session.id),
-           !cached.items.isEmpty {
+           !cached.items.isEmpty || session.isLocalCreation {
             timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
                                     pendingMessages: session.pendingMessages)
             isOpeningPrepared = true

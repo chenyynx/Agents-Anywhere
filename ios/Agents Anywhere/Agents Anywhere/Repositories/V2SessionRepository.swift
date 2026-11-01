@@ -577,8 +577,12 @@ final class V2SessionRepository {
         entry.lastLatest = "fill-started"
         emit(entry, persist: false)
 #endif
+        entry.latestFillID = UUID()
+        let fillID = entry.latestFillID
         entry.latestFillTask = Task { @MainActor [weak self, weak entry] in
-            defer { entry?.latestFillTask = nil }
+            defer {
+                if entry?.latestFillID == fillID { entry?.latestFillTask = nil }
+            }
             var attempt = 0
             while let self, let entry, self.isCurrent(entry), !Task.isCancelled {
                 // Give an in-flight local-first reconcile the first window; a
@@ -1637,6 +1641,7 @@ final class V2SessionRepository {
         entry.latestRefreshTask = nil
         // The newest-page fill belongs to the observed lifecycle too; it must
         // not keep polling a session nobody is looking at.
+        entry.latestFillID = UUID()
         entry.latestFillTask?.cancel()
         entry.latestFillTask = nil
         entry.connection = .inactive
@@ -1704,6 +1709,9 @@ private final class Entry {
     /// Debounced, single-flight fill for a window that is behind the server
     /// while the reader is at the newest edge (see `scheduleLatestFill`).
     var latestFillTask: Task<Void, Never>?
+    /// Rotation key so a finishing fill only clears its own registration
+    /// (a stop + observe can replace the task before its defer runs).
+    var latestFillID = UUID()
 #if AA_TIMELINE_PROBE
     /// Probe-only latest-page counters (see `V2TimelineWindowSnapshot`).
     var latestStarted = 0

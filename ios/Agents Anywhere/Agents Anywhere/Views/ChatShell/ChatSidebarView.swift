@@ -376,7 +376,7 @@ struct ChatSidebarSessionRow: View {
                         .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     Text(session.title ?? String(localized: "Untitled session"))
                         .font(.body)
-                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                        .foregroundStyle(.primary)
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     ChatSidebarSessionIndicator(indicator: session.presentation.indicator)
                 }

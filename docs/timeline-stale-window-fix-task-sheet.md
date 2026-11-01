@@ -219,36 +219,73 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
    互相判废；页越大窗口越长，形成活锁。窗口始终不前进 → 实时 echo 被
    defer → pending 永不确认 → 60s 看门狗把它降级为 uncertain。
 
-### 修复
+### 官方基线（2026-11-01 逆向确认）
 
-服务端在 v2_48 已部署 `deferActivity` 摘要窗口（`list_deferred_window`：
-按展示行锚定、>8 KB 工具行用 `stub_json` 摘要、2 MB 序列化上限、span 300
-行；`deferActivity` 只在 `excludeAgentChildren` 同开时生效，deferred 被
-decline 时回退页同样套 2 MB 预算）。本次把客户端接到该能力上：
+- 页单位 = 200 个 `SdkMessage` 事件（`ClientEventsPage.rows=[{sequenceNum,message}]`，
+  `.../CANONICAL/12-wire-data-layer.md:158-184`）；工具调用是消息内的 content block
+  （`Block` tag 2 `toolCalls`，`.../CANONICAL/02-transcript-model.md:179-184`），同一消息
+  内的连续普通工具调用折叠成一行（`.../CANONICAL/04-tool-calls.md` §4.1）。
+- 打开不按行数裁窗（`.../CANONICAL/13-local-persistence.md:212`）；页间空档由
+  `lastSequenceNum` 升序补页（`12-wire-data-layer.md:184-186`）。
+- 大工具输出在工具输出上限处截断：详情显示「显示 X/Y 行（已按工具输出上限截断）」，
+  Read 详情底部是显式「加载完整文件」按钮，点了才 `onLoadFullFile` 读全文；
+  >256 KiB 走分块渲染（`.../EVIDENCE/code-page-strings.csv:542-555`、
+  `.../EVIDENCE/tool-calls.md:184`、`.../CANONICAL/04-tool-calls.md:176`）。
+- 发送状态只有 `Sending/发送中` 与 `Not delivered/未送达`：
+  `pending→sending→posting(onServer)→回显合并后移除`，没有「不确定」
+  （`.../EVIDENCE/interactions.md:105,180-181`、
+  `.../EVIDENCE/code-page-strings.csv:723-729`）。
 
-- 所有窗口读取（snapshot / latest / history）带 `deferActivity=true`；
-  `changes` 与 `children` 不带（增量/子行必须完整）。
-- 摘要行（`content.deferred=true`）展开时用 `GET /timeline/items/{id}`
-  按 id 拉全文，原地替换（`V2SessionProjection.replaceDeferredItem`）；
-  折叠态显示「输出预览」+ 失败/离线时的静态重试行，不显示 loading。
-- 首屏与归档保存 `windowDeferredActivity`；旧归档打开时只补读一次
-  （服务端回 echo 为 false 后本进程不再问）。
-- 导出保持 undeferred（`exportTimeline` 显式 `deferActivity: false`）。
+### 修复（P0：读侧 + 交互 + 发送状态，按官方对齐）
+
+服务端在 v2_48 已部署 `deferActivity` 摘要窗口（按展示行锚定、>8 KB 主工具行写
+`stub_json`、2 MB 序列化上限、span 300 行；deferred 被 decline 时回退页同样套
+2 MB 预算）。写入侧的 `stub_json` 已由 `timeline_store` 在每次 upsert 生成，旧数据已
+回填；本次 P0 只改客户端，不动 schema。
+
+1. 窗口读取契约：`snapshot/latest/history` 带 `deferActivity=true` 且
+   `excludeAgentChildren=true`；`changes/children` 不带（增量/子行必须完整）。
+   旧缓存第一次打开补读一次 deferred 窗口，服务端回 echo=false 后本进程不再问；
+   `fill`/`reconcile`/发送 authoritative 读共用同一契约。
+2. 交互按官方：折叠行不动；详情里保留预览并显示显式截断说明
+   （工具行「已在工具输出上限处截断」，思考行「已按上下文预算截断」），
+   由用户点「加载完整输出/加载完整思考」才按 id 拉全文；加载中只有按钮态，
+   失败「无法加载完整输出」+重试，离线「离线 · 无法加载完整输出」。
+   **不做自动展开拉全文，也不做预取**。
+3. 发送状态按官方：HTTP 已接受（accepted）的直发不再因 echo 超时降级
+   「不确定」；看门狗只做一次权威窗口读来补 echo，气泡保持「发送中」直到回显合并。
+   只有明确写失败才 `rejected/未送达`。队列的 60s 兜底保留（它是释放队列头的
+   安全阀，不是直发路径）。
+4. 归档保存 `windowDeferredActivity`；导出保持 undeferred。
+
+### 后续（不在 P0）
+
+- P1：Code profile 接同一 `DeferredItemStore`；归档/本地缓存的 deferred 模式；
+  探针记录 deferred 命中与补读结果；读代际（并发 latest 互废）先有红测再动。
+- P2（治本，跨端）：connector 写入侧定义工具输出上限，完整内容落独立存储
+  （文件/blob），item 只留截断体+引用；单条读同时服务「摘要补全文」和
+  「Read 全文」；迁移/回滚锚；Web/Android/Desktop/iOS 逐端跟进。
+- P3（长期）：用 `native_message_id` 把工具/思考行归到消息行，UI 以消息为行、
+  工具折叠——官方行模型的 1:1；先出设计，不排期。
 
 ### 验证
 
-- 单测（`SessionDeferredActivityTests`）：窗口读取带参、`changes`/`children`
-  不带参、缺 echo 读 false、旧归档只补读一次、离线保缓存、摘要原地替换
-  （旧 revision 不覆盖新行、窗口外不插入）、归档往返、摘要页治愈
-  `hasNewerItems` 的冻结窗口。
-- CI：iOS test + app build（build job 才是 Views 编译判据）。
-- 真机：打开本会话（40 MB）应在 1–2s 内出首屏；发消息后气泡应在数秒内
-  变实；工具行折叠显示「输出预览」，点开后补全文；断网时显示静态重试。
+- 单测（`SessionDeferredActivityTests`）：窗口读取带参、`changes/children` 不带参、
+  缺 echo 读 false、旧归档只补读一次、离线保缓存、摘要原地替换（旧 revision 不覆盖
+  新行、窗口外不插入）、归档往返、摘要页治愈 `hasNewerItems` 的冻结窗口；
+  `aReadReportsLoadingUntilItSettles`。
+- 单测（`ChatSessionPolishTests`）：`anAcceptedSendIsNotDemotedByTheEchoWatchdog`
+  ——accepted 后看门狗只发一次 latest，pending 仍为 accepted。
+- 红绿：撤 `deferActivity` → 窗口治愈用例红；撤发送状态改动 → accepted 用例红
+  （撤销实验在临时分支，不在工作区留痕）。
+- CI：iOS test + app build（build job 才是 Views 编译判据）+ timeline-autorun。
+- 真机：打开本会话（40 MB）秒出；发消息后气泡数秒内变实；工具行显示截断说明，
+  点「加载完整输出」才拉全文；断网显示静态离线态。
 
 ### 已知边界
 
-- 摘要阈值 8 KB、span 300 行、2 MB 预算都由服务端控制；客户端只负责
-  渲染与补读。
-- 极老服务端（无 `deferActivity`/`timeline/items`）：窗口读取仍带参，
-  响应无 echo → 客户端按普通完整页处理，不显示「输出预览」；补读入口
-  只对 `content.deferred` 行出现，老服务端不会产生这种行。
+- 摘要阈值 8 KB、span 300 行、2 MB 预算由服务端控制；客户端只负责渲染与补读。
+- 极老服务端（无 `deferActivity`/`timeline/items`）：窗口读取仍带参，响应无 echo →
+  客户端按普通完整页处理，不显示截断说明；补读入口只对 `content.deferred` 行出现。
+- Code profile 的详情暂未接 `DeferredItemStore`，列为 P1；P0 的窗口读取对两个
+  profile 都生效，但 Code 详情目前不会显示加载入口。

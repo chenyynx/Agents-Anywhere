@@ -29,13 +29,23 @@ struct ToolStatusText: View {
     }
 }
 
-/// One-line official truncation note: bottom-left inside the card.
-struct ToolTruncatedNote: View {
+/// One status line at the card's bottom-left: the same face and inset for
+/// "已截断", "已加载完整文件", and the failure/partial notes.
+struct ToolStatusLine: View {
+    let text: String
+
     var body: some View {
-        ToolStatusText(text: String(localized: "已截断"))
+        ToolStatusText(text: text)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+    }
+}
+
+/// One-line official truncation note: bottom-left inside the card.
+struct ToolTruncatedNote: View {
+    var body: some View {
+        ToolStatusLine(text: String(localized: "已截断"))
     }
 }
 

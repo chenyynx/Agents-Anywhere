@@ -223,6 +223,37 @@ struct CodeToolCallDetailView: View {
     /// The tool result itself was cut at the tool output limit (the official
     /// `ToolResult.isTruncated`), not the deferred client window.
     private var dataTruncated: Bool { CodeToolTruncation.isTruncated(liveItem) }
+
+    private var readMetadata: CodeReadMetadata? {
+        CodeToolTruncation.readMetadata(liveItem.raw["content"] ?? .object([:]))
+    }
+
+    /// Read's "Load full file": the official control fetches the whole file
+    /// from the runtime; AA reads it through the connector's workspace RPC.
+    private var readFullFileAction: (() async throws -> CodeLoadedFile)? {
+        // A deferred summary's load control must complete the row first; the
+        // file read acts on the full row's own metadata.
+        guard !liveItem.isDeferred, let chat, let path = readMetadata?.filePath else {
+            return nil
+        }
+        return {
+            let response = try await chat.readFullFile(path: path)
+            guard !response.binary else {
+                throw V2ClientFailure(kind: .unavailable,
+                                      message: String(localized: "无法加载完整文件。"))
+            }
+            if response.truncated {
+                let loaded = ByteCountFormatter.string(
+                    fromByteCount: Int64(response.content.utf8.count),
+                    countStyle: .file)
+                return CodeLoadedFile(
+                    text: response.content,
+                    note: String(format: String(localized: "已加载前 %@；文件超出此大小"), loaded))
+            }
+            return CodeLoadedFile(text: response.content,
+                                  note: String(localized: "已加载完整文件"))
+        }
+    }
     /// The deferred status line inside the card. The action itself is the
     /// existing header text control (Prettify face), not a separate capsule.
     private var inCardFooter: AnyView? {
@@ -344,7 +375,8 @@ struct CodeToolCallDetailView: View {
                                detectsJSON: detectsJSON,
                                footer: inCardFooter,
                                headerAction: cardHeaderAction,
-                               truncated: dataTruncated)
+                               truncated: dataTruncated,
+                               readFullFile: readFullFileAction)
         }
     }
 

@@ -807,6 +807,24 @@ final class SessionChatModel {
         try await attachments.download(sessionId: session.id, fileId: fileID)
     }
 
+    /// The official Read detail's "Load full file": read the workspace file
+    /// through the connector RPC. The Read row's `readMetadata.filePath` is an
+    /// absolute path; the server resolves an absolute POSIX path as-is.
+    func readFullFile(path: String, maxBytes: Int = 4_194_304) async throws -> V2WorkspaceTextResponse {
+        guard let files, let meta = session.metadata else {
+            throw V2ClientFailure(kind: .unavailable,
+                                  message: String(localized: "无法加载完整文件。"))
+        }
+        guard meta.connectorStatus == .online,
+              session.network.availability != .offline else {
+            throw V2ClientFailure(kind: .offline,
+                                  message: String(localized: "设备或网络已离线"))
+        }
+        return try await files.readText(connectorId: meta.connectorId,
+                                        root: meta.cwd ?? ".",
+                                        path: path, maxBytes: maxBytes)
+    }
+
     func thumbnail(for file: V2AttachmentContent) async throws -> Data? {
         if let cached = session.attachmentPreviews.preview(for: file) { return cached }
         guard session.isValid, file.isImage, (file.size ?? 0) <= 25 * 1024 * 1024 else { return nil }

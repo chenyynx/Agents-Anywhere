@@ -37,6 +37,13 @@ struct CodeToolCardAction {
     let action: () -> Void
 }
 
+/// The result of the Read card's "Load full file" action: the file body plus
+/// the status line the official detail shows under it.
+struct CodeLoadedFile {
+    let text: String
+    let note: String
+}
+
 @ViewBuilder
 private func codeToolHeaderAction(_ action: CodeToolCardAction) -> some View {
     if action.isBusy {
@@ -63,6 +70,9 @@ struct CodeToolOutputView: View {
     /// The tool result itself was cut at the tool output limit
     /// (`ToolResult.isTruncated`), not the deferred client window.
     var truncated: Bool = false
+    /// Read's "Load full file": fetches the full workspace file when the
+    /// tool result was cut. Nil outside the session presentation.
+    var readFullFile: (() async throws -> CodeLoadedFile)? = nil
 
     var body: some View {
         switch output {
@@ -79,7 +89,8 @@ struct CodeToolOutputView: View {
                 CodeFileReadOutputView(text: text, detectsJSON: detectsJSON,
                                        footer: footer,
                                        headerAction: headerAction,
-                                       truncated: truncated)
+                                       truncated: truncated,
+                                       readFullFile: readFullFile)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
                                   code: text,
@@ -128,25 +139,39 @@ private struct CodeFileReadOutputView: View {
     var headerAction: CodeToolCardAction? = nil
     /// The tool result itself was cut at the tool output limit.
     var truncated: Bool = false
+    /// Read's "Load full file"; nil outside the session presentation.
+    var readFullFile: (() async throws -> CodeLoadedFile)? = nil
     /// Sniffed once at init: the body can be a whole file, and a body
     /// re-evaluation must not re-trim it.
     private let sniffsAsJSON: Bool
     @State private var chunks: [String]
     @State private var prettify: CodeToolPrettify = .initial
+    @State private var loadedFile: CodeLoadedFile? = nil
+    @State private var loadedChunks: [String] = []
+    @State private var isLoadingFile = false
+    @State private var loadFileError: String? = nil
 
     init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil,
-         headerAction: CodeToolCardAction? = nil, truncated: Bool = false) {
+         headerAction: CodeToolCardAction? = nil, truncated: Bool = false,
+         readFullFile: (() async throws -> CodeLoadedFile)? = nil) {
         self.text = text
         self.detectsJSON = detectsJSON
         self.footer = footer
         self.headerAction = headerAction
         self.truncated = truncated
+        self.readFullFile = readFullFile
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
         _chunks = State(initialValue: CodeFileReadChunks.split(text))
     }
 
+    private var sourceText: String { loadedFile?.text ?? text }
+
     private var displayText: String {
-        prettify.displayText ?? text
+        prettify.displayText ?? sourceText
+    }
+
+    private var bodyChunks: [String] {
+        loadedFile == nil ? chunks : loadedChunks
     }
 
     private var showsPrettify: Bool {
@@ -164,13 +189,25 @@ private struct CodeFileReadOutputView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             CodeToolCardHeader(title: String(localized: "Output")) {
+                if truncated, let readFullFile, loadedFile == nil {
+                    if isLoadingFile {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        CodeToolTextActionButton(
+                            title: loadFileError == nil
+                                ? String(localized: "加载完整文件")
+                                : String(localized: "重试")) {
+                            Task { await loadFullFile(readFullFile) }
+                        }
+                    }
+                }
                 if let headerAction { codeToolHeaderAction(headerAction) }
                 if showsPrettify {
                     CodeToolPrettifyButton(title: prettifyTitle,
                                            isBusy: prettify.isFormatting,
                                            action: tapPrettify)
                 }
-                CodeToolCopyButton(text: { text },
+                CodeToolCopyButton(text: { sourceText },
                                    label: String(localized: "复制代码"),
                                    size: 44)
             }
@@ -183,20 +220,49 @@ private struct CodeFileReadOutputView: View {
             // `UITextView` stops drawing long bodies — the blank card on
             // device, 2026-10-29 — so the body is chunked the same way.
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(chunks.indices, id: \.self) { index in
-                    CodeFileReadText(text: chunks[index])
+                ForEach(bodyChunks.indices, id: \.self) { index in
+                    CodeFileReadText(text: bodyChunks[index])
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CodeToolCardMetrics.contentInset)
-            if truncated { ToolTruncatedNote() }
+            if let loadedFile {
+                ToolStatusLine(text: loadedFile.note)
+            } else if let loadFileError {
+                ToolStatusLine(text: loadFileError)
+            } else if truncated {
+                ToolTruncatedNote()
+            }
             if let footer { footer }
         }
         .codeToolCardChrome()
         .onChange(of: text) { _, newText in
             prettify = .initial
             chunks = CodeFileReadChunks.split(newText)
+            loadedFile = nil
+            loadedChunks = []
+            loadFileError = nil
         }
+    }
+
+    @MainActor
+    private func loadFullFile(_ read: @escaping () async throws -> CodeLoadedFile) async {
+        isLoadingFile = true
+        loadFileError = nil
+        do {
+            let file = try await read()
+            loadedFile = file
+            loadedChunks = CodeFileReadChunks.split(file.text)
+            prettify = .initial
+        } catch {
+            loadFileError = (error as? V2ClientFailure)?.message ?? error.localizedDescription
+        }
+        isLoadingFile = false
+    }
+
+    private func refreshChunks() {
+        let split = CodeFileReadChunks.split(displayText)
+        if loadedFile == nil { chunks = split } else { loadedChunks = split }
     }
 
     /// R-U §3: raw -> formatting while the async conversion runs; later taps
@@ -206,17 +272,17 @@ private struct CodeFileReadOutputView: View {
         if case .raw = prettify { wasRaw = true } else { wasRaw = false }
         prettify.tap()
         guard wasRaw else {
-            chunks = CodeFileReadChunks.split(displayText)
+            refreshChunks()
             return
         }
-        let source = text
+        let source = sourceText
         Task { @MainActor in
             let formatted = await Task.detached(priority: .userInitiated) {
                 CodeToolJSON.prettyPrinted(source)
             }.value
             guard case .formatting = prettify else { return }
             prettify.finish(formatted)
-            chunks = CodeFileReadChunks.split(displayText)
+            refreshChunks()
         }
     }
 }

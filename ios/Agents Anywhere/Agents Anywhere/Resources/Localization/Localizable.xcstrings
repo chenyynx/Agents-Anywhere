@@ -19408,6 +19408,23 @@
         }
       }
     },
+    "已加载前 %@；文件超出此大小": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loaded first %@; file is larger"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已加载前 %@；文件超出此大小"
+          }
+        }
+      }
+    },
     "已加载完整文件": {
       "extractionState": "manual",
       "localizations": {

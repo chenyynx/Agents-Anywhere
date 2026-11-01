@@ -64,7 +64,8 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 
 ### P1 pending 不再假确认（止永久转圈）
 
-- `confirmEchoes` 确认前检查 `projection.data.items` 是否包含该 id；不包含就不确认。
+- 删除「从事件 payload 直接确认」的 `confirmEchoes`：live 与 recovery 都只从
+  projection 实际并入（merge outcome）的行确认；未并入的行保持原状态。
 - 保持 `.accepted`：`watchEcho` 的 30s/60s 兜底仍然有效；不会绕过重复发送保护。
 
 ### P2 正确性入口走权威 latest
@@ -80,8 +81,11 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 
 - `V2TimelineMergeOutcome` 增加 `deferredNewer`：区分「因 newer 保护被丢弃」与普通忽略。
 - `receive` 收到 defer 信号、且 projection 处于「跟最新」状态时，调度补页：
-  debounce 0.3s，同会话单飞，失败退避 1/2/4/8/15s，成功后清零。
-- `runRecovery` 结束若 `hasNewerItems && isFollowingLatest`，同样调度补页
+  debounce 0.3s（已有本地 reconcile 时 1.5s），同会话单飞，
+  之后 2/4/8s 封顶退避，成功后清零。
+- 补页期间又有新行被 defer 时，projection 记下未覆盖行；旧页落地若不含它
+  （`page.nextSeq` 早于该行）就保持 `hasNewerItems`，补页循环继续重试。
+- 恢复联网/前台 resume 时，对被观察且窗口仍落后的会话重新排补页
   （覆盖断线期间 cursor 已越过缺失行的情况）。
 - 读者在历史锚定中不补，回到底部后再补，保持「不抢阅读位置」。
 - 开关 `TimelineStaleWindowHeal.enabled`（默认 true），可 `defaults write` 关闭。
@@ -103,9 +107,11 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 1. `docs(ios): plan the stale timeline window fix`（本文件）
 2. `probe(ios): record projection window and latest-fill outcomes`（P0）
 3. `fix(ios): confirm a pending send only when its echo is in the window`（P1）
-4. `fix(ios): read the latest page authoritatively on open and send`（P2）
+4. `fix(ios): read the latest page authoritatively on send`（P2；开页保持本地优先）
 5. `fix(ios): fill the newest window when a live row is deferred`（P3）
 6. `test(ios): cover deferred newer rows and authoritative latest`（P4）
+7. 审查后续：resume/联网自愈、生命周期取消、未覆盖 deferred 行的竞态修复、测试补强
+   （逐条见 `git log` 与下节）
 
 ## 风险与对策
 
@@ -117,3 +123,21 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 | 丢掉已加载历史 | 用 latest 页 merge，不用整快照 hydrate |
 | 行为异常需回退 | `TimelineStaleWindowHeal.enabled` 开关 |
 | 本地页更旧但网络失败 | 保留本地页与 `hasNewerItems`，继续退避重试 |
+
+## 独立审查补充（2026-11-01）
+
+两个独立 reviewer（链路/时序、窗口/测试）均指到同一条 P1：
+
+- **P1（已修）**：补页请求在飞行中时又有实时行被 defer，旧页落地会把
+  `hasNewerItems` 清掉，而该行不在页内、cursor 又已越过它 → 永久缺行。
+  修法：projection 记录「尚未被页面覆盖的 deferred 行」；latest 页落地后若仍
+  不含它，保持 `hasNewerItems`，补页循环继续重试；`timeline.snapshot` 视为
+  权威，清除该记录。单测 `anOlderPageDoesNotHideTheDeferredRow`。
+- **生命周期（已修）**：`stop`/`dispose`/`suspend`/离线切换取消补页；
+  resume/恢复联网只对被观察会话重排；`observe` 时窗口落后也会补。
+- **代际（已修）**：补页读带 `readVersion` 校验，snapshot/refresh 替换窗口后
+  旧页不会把已删行并回去。
+- **已知限制（未修，待真机观察）**：`isFollowingLatest` 只看 projection 的
+  history anchor；读者在窗口中间上滑但未触发历史翻页时 anchor 仍为 nil，
+  补页的窗口裁剪理论上可能触发 `windowRevision` 重钉底部。触发需
+  `hasNewerItems == true`，审查未复现；先以探针 `window_stale` 观察。

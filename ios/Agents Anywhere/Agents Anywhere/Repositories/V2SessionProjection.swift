@@ -49,6 +49,11 @@ struct V2SessionProjection {
     private var eventOrderNext = 0
     private static let dedupeWindow = 2048
     private let decoder = JSONDecoder()
+    /// The newest row the newer-window guard refused and no applied page has
+    /// covered yet. A latest page selected before this row existed must not
+    /// clear `hasNewerItems` just because it arrived: the row would be lost
+    /// with the cursor already past it (2026-11-01 review P1).
+    private var uncoveredDeferredItem: V2TimelineItem?
 
     init(snapshot: V2SessionSnapshot, maximumItems: Int, now: @escaping () -> Date = Date.init) {
         data = V2SessionData(snapshot: snapshot)
@@ -288,6 +293,7 @@ struct V2SessionProjection {
         // them as "newer than the page", so admit them as page rows too.
         _ = merge(newer, history: heldAnchor != nil)
         if hasNewerAfterApply { data.hasNewerItems = true }
+        settleDeferredNewer(pageNextSeq: hasNewerAfterApply ? nil : page.nextSeq)
     }
 
     /// A `timeline.snapshot` is the server's **complete** timeline: rows absent
@@ -307,6 +313,9 @@ struct V2SessionProjection {
         let trim = merge(items, history: true)
         data.hasOlderItems = trim.droppedOlder
         data.hasNewerItems = trim.droppedNewer
+        // A snapshot is the server's complete timeline: a deferred row it does
+        // not carry was deleted/reset, not missed. Do not keep retrying it.
+        uncoveredDeferredItem = nil
     }
 
     private mutating func replaceTimeline(_ items: [V2TimelineItem], hasMore: Bool) {
@@ -340,6 +349,7 @@ struct V2SessionProjection {
                 data.items.remove(at: index)
                 insertSorted(item)
             }
+            if item.id == uncoveredDeferredItem?.id { uncoveredDeferredItem = nil }
             return V2TimelineMergeOutcome(item: item, wasInserted: false)
         }
         let start = data.items.first?.orderSeq ?? 0
@@ -351,6 +361,7 @@ struct V2SessionProjection {
             if item.orderSeq < start || item.orderSeq > end {
                 if item.orderSeq > end {
                     data.hasNewerItems = true
+                    noteDeferred(item)
                     return V2TimelineMergeOutcome(item: item, wasInserted: false,
                                                   deferredNewer: true)
                 }
@@ -359,12 +370,54 @@ struct V2SessionProjection {
         } else {
             if data.hasOlderItems, item.orderSeq < start { return nil }
             if data.hasNewerItems, item.orderSeq > end {
+                noteDeferred(item)
                 return V2TimelineMergeOutcome(item: item, wasInserted: false,
                                               deferredNewer: true)
             }
         }
         insertSorted(item)
+        if item.id == uncoveredDeferredItem?.id { uncoveredDeferredItem = nil }
         return V2TimelineMergeOutcome(item: item, wasInserted: true)
+    }
+
+    /// Remembers the newest row a newest-edge guard refused. A latest page
+    /// selected before this row existed must not clear the flag (see
+    /// `settleDeferredNewer`).
+    private mutating func noteDeferred(_ item: V2TimelineItem) {
+        // A SubAgent child row is never part of the main latest page
+        // (`excludeAgentChildren`), so it could never settle the watermark
+        // and would keep the fill retrying forever. The panel reads children
+        // through its own endpoint.
+        guard SubAgentProgress.parentItemID(item) == nil else { return }
+        guard let current = uncoveredDeferredItem else {
+            uncoveredDeferredItem = item
+            return
+        }
+        if (item.updatedSeq, item.orderSeq) > (current.updatedSeq, current.orderSeq) {
+            uncoveredDeferredItem = item
+        }
+    }
+
+    /// A latest page only covers the deferred rows it actually carries. When
+    /// the page was selected before the row existed (`nextSeq` older than the
+    /// row's update) the window is still behind: keep `hasNewerItems` so the
+    /// fill retries instead of losing the row behind a cursor that already
+    /// moved past it. Once the page's watermark has passed the row and the
+    /// row is absent, it was deleted or is outside the newest page's span;
+    /// another latest read cannot produce it, so stop retrying.
+    private mutating func settleDeferredNewer(pageNextSeq: Int?) {
+        guard let deferred = uncoveredDeferredItem else { return }
+        if data.items.contains(where: { $0.id == deferred.id }) {
+            uncoveredDeferredItem = nil
+            return
+        }
+        // A local page's watermark is a row proxy, not the server's fence; it
+        // can never prove the row is gone. Only an authoritative page may.
+        guard let pageNextSeq, pageNextSeq >= deferred.updatedSeq else {
+            data.hasNewerItems = true
+            return
+        }
+        uncoveredDeferredItem = nil
     }
 
     /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the viewport

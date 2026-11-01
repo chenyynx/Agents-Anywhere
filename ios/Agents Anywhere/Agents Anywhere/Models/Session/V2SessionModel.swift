@@ -617,9 +617,8 @@ final class V2SessionModel: Identifiable {
             // the server's newest page authoritatively instead of the store's
             // possibly-stale page.
             _ = try? await self.repository?.loadLatest(sessionId: self.id, authoritative: true)
-            // The local-first page can be stale; the network reconcile runs
-            // in the background. Give it one more window before demoting
-            // (the queue's own echo timeout is 60 s).
+            // A failed read falls back to the store; give the retry one more
+            // window before demoting (the queue's own echo timeout is 60 s).
             try? await Task.sleep(for: .seconds(30))
             guard !Task.isCancelled, self.isValid,
                   self.pendingMessages.contains(where: { $0.id == pending.id }),

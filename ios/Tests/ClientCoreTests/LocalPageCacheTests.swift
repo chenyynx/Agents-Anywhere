@@ -242,6 +242,54 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// A stale window is healed on resume for an observed session even when no
+    /// opening or bottom trigger runs (the app was only backgrounded).
+    @Test func resumeFillsAStaleWindowForAnObservedSession() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, hasNewerItems: true)
+
+        let http = TestHTTPTransport()
+        let latestPage = try timelinePage(501...700, hasMore: true)
+        var serveLatest = false
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
+            guard serveLatest else { throw URLError(.notConnectedToInternet) }
+            return latestPage
+        }
+        let realtime = TestRealtimeAPI()
+        realtime.onRecover = {
+            V2EventRecoveryResponse(events: [], nextCursor: "seq:1000",
+                                    snapshotRequired: false, serverTime: "")
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.maximumTimelineItems = 150
+        let repo = repository(transport: http, realtime: realtime, policy: policy, localStore: store)
+        defer { repo.reset() }
+
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+
+        // Suspend cancels the observed fill; resume must schedule it again and
+        // the now-working read must clear the window.
+        repo.suspend()
+        let before = http.count("timeline")
+        serveLatest = true
+        repo.resume()
+        try await eventually {
+            http.count("timeline") > before
+                && repo.cached(sessionId: "session")?.hasNewerItems == false
+        }
+        #expect(repo.cached(sessionId: "session")?.items.last?.orderSeq == 700)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
     @Test func historyAnchorKeepsTheReaderInsideTheWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 600)

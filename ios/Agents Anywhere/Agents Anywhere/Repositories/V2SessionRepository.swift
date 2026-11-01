@@ -28,6 +28,22 @@ nonisolated struct V2SessionHealBackoff: Equatable {
     }
 }
 
+/// Cadence of the newest-page fill that heals a window left behind by the
+/// newer-window guard. The first attempt is a debounce; when a local-first
+/// reconcile is already running it gets a longer grace before a second read.
+/// Injectable so tests can pin the schedule instead of inheriting the 1 ms
+/// test sleep.
+nonisolated struct V2SessionLatestFillBackoff: Equatable {
+    var initial: Duration = .milliseconds(300)
+    var reconcileGrace: Duration = .milliseconds(1500)
+    var maximum: Duration = .seconds(8)
+
+    func delay(attempt: Int, reconcileRunning: Bool) -> Duration {
+        if attempt == 0 { return reconcileRunning ? reconcileGrace : initial }
+        return min(.seconds(1 << min(attempt, 4)), maximum)
+    }
+}
+
 /// One recovery round that failed for a reason other than supersession.
 ///
 /// The apply loop is all-or-nothing: a batch this build cannot apply leaves
@@ -74,6 +90,7 @@ final class V2SessionRepository {
     /// before opening a socket anyway (see `waitUntilConnectionReady`).
     private let connectionReadinessWindow: Duration
     private let healBackoff: V2SessionHealBackoff
+    private let latestFillBackoff: V2SessionLatestFillBackoff
     private var entries: [V2SessionID: Entry] = [:]
     /// Last dashboard pin value per session, so a remote pin change is mirrored
     /// into the row store even when the session is not open.
@@ -91,7 +108,8 @@ final class V2SessionRepository {
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         connectionReadinessWindow: Duration = .milliseconds(1500),
-        healBackoff: V2SessionHealBackoff = V2SessionHealBackoff()
+        healBackoff: V2SessionHealBackoff = V2SessionHealBackoff(),
+        latestFillBackoff: V2SessionLatestFillBackoff = V2SessionLatestFillBackoff()
     ) {
         self.scope = scope
         self.detail = detail
@@ -102,6 +120,7 @@ final class V2SessionRepository {
         self.sleep = sleep
         self.connectionReadinessWindow = connectionReadinessWindow
         self.healBackoff = healBackoff
+        self.latestFillBackoff = latestFillBackoff
     }
 
     /// Bound on how long a not-ready path delays one connection attempt.
@@ -315,6 +334,11 @@ final class V2SessionRepository {
                 }
             }
             start(entry)
+            // An observed session whose window is behind heals even when no
+            // live row arrives to trigger the fill.
+            if entry.projection?.data.hasNewerItems == true {
+                scheduleLatestFill(entry)
+            }
         }
     }
 
@@ -404,11 +428,12 @@ final class V2SessionRepository {
         }
     }
 
-    /// `authoritative` is for callers that must not show a stale window: an
-    /// opening whose cache says it is behind, a composer send, and the echo
-    /// watchdog. They skip the local-first shortcut and read the newest page
-    /// from the server; a failed read still falls back to the store so the
-    /// page stays usable, with the newer flag kept for the retry.
+    /// `authoritative` is for callers whose result decides a visible row: a
+    /// composer send and the echo watchdog. They skip the local-first shortcut
+    /// and read the newest page from the server; a failed read still falls
+    /// back to the store so the page stays usable, with the newer flag kept
+    /// for the retry. The opening and the scroll-return path stay local-first
+    /// and heal through `scheduleLatestFill`.
     func loadLatest(sessionId: V2SessionID, limit: Int? = nil,
                     authoritative: Bool = false) async throws -> V2SessionData {
         let pageLimit = limit ?? policy.networkPageSize
@@ -558,10 +583,8 @@ final class V2SessionRepository {
             while let self, let entry, self.isCurrent(entry), !Task.isCancelled {
                 // Give an in-flight local-first reconcile the first window; a
                 // second read is only issued when it is not running.
-                let first: Duration = entry.latestRefreshTask == nil
-                    ? .milliseconds(300) : .milliseconds(1500)
-                let delay: Duration = attempt == 0 ? first
-                    : .seconds(min(1 << min(attempt, 3), 8))
+                let delay = self.latestFillBackoff.delay(
+                    attempt: attempt, reconcileRunning: entry.latestRefreshTask != nil)
                 do { try await self.sleep(delay) } catch { return }
                 guard let projection = entry.projection,
                       projection.data.hasNewerItems,
@@ -598,9 +621,13 @@ final class V2SessionRepository {
     /// the caller has already checked that the reader is at the newest edge.
     private func fillNewestWindow(_ entry: Entry) async throws {
         try requireNetwork()
+        // A snapshot or refresh that replaced the projection while this read
+        // was in flight owns the window now; an older page must not be merged
+        // into it (it could reintroduce rows the snapshot deleted).
+        let version = entry.readVersion
         let page = try await detail.latestItems(
             sessionId: entry.id, limit: policy.networkPageSize, excludeAgentChildren: true)
-        try requireCurrent(entry)
+        try requireCurrent(entry, version: version)
         guard let projection = entry.projection, projection.isFollowingLatest else { return }
         entry.projection?.applyLatest(page)
         emit(entry)
@@ -901,8 +928,10 @@ final class V2SessionRepository {
         suspended = false
         for entry in entries.values { start(entry, catchUp: true) }
         // A window left behind while the app was away heals on resume even
-        // when neither an opening nor a bottom trigger runs.
-        for entry in entries.values where entry.projection?.data.hasNewerItems == true {
+        // when neither an opening nor a bottom trigger runs. Only observed
+        // sessions: the fill belongs to the same lifecycle as the socket.
+        for entry in entries.values
+        where !entry.observers.isEmpty && entry.projection?.data.hasNewerItems == true {
             scheduleLatestFill(entry)
         }
     }
@@ -923,7 +952,8 @@ final class V2SessionRepository {
                 start(entry, catchUp: true)
                 // Recovery replays events after the cursor; a window whose
                 // missing rows are older than the cursor needs a latest read.
-                if entry.projection?.data.hasNewerItems == true {
+                // Only observed sessions, like the socket recovery itself.
+                if !entry.observers.isEmpty, entry.projection?.data.hasNewerItems == true {
                     scheduleLatestFill(entry)
                 }
             }
@@ -1605,6 +1635,10 @@ final class V2SessionRepository {
         entry.recoveryTask = nil
         entry.latestRefreshTask?.cancel()
         entry.latestRefreshTask = nil
+        // The newest-page fill belongs to the observed lifecycle too; it must
+        // not keep polling a session nobody is looking at.
+        entry.latestFillTask?.cancel()
+        entry.latestFillTask = nil
         entry.connection = .inactive
         // A stopped or disconnected entry cannot carry a live prediction: the
         // optimistic turn end belongs to the connection lifecycle that proved

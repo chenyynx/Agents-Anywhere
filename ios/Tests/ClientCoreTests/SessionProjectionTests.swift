@@ -235,6 +235,36 @@ import Testing
         #expect(!projection.data.hasNewerItems)
     }
 
+    /// A latest page selected before a deferred row existed must not clear the
+    /// flag: the row would be lost with the event cursor already past it.
+    @Test func anOlderPageDoesNotHideTheDeferredRow() throws {
+        let recent = try [3].map { try itemObject(id: "item-\($0)", order: $0, seq: 30) }
+        var projection = V2SessionProjection(archive: try snapshot(items: recent, hasMore: true),
+                                             hasNewerItems: true, maximumItems: 100)
+        _ = try projection.apply(event("timeline.item_created", seq: 40, payload: [
+            "item": itemObject(id: "item-9", order: 9, seq: 40, text: "Late")]))
+        #expect(projection.data.hasNewerItems)
+
+        // The in-flight page was selected before item-9 existed: it stops at 8.
+        let stalePage = try [3, 8].map {
+            try decode(itemObject(id: "item-\($0)", order: $0, seq: 20), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: stalePage,
+            nextSeq: 39, hasMore: true, serverTime: nil))
+        #expect(!projection.data.items.contains { $0.id == "item-9" })
+        #expect(projection.data.hasNewerItems,
+                "an older page must not hide the deferred row")
+
+        // The read that does carry item-9 settles the window.
+        let freshPage = try [3, 8, 9].map {
+            try decode(itemObject(id: "item-\($0)", order: $0, seq: 40), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: freshPage,
+            nextSeq: 40, hasMore: true, serverTime: nil))
+        #expect(projection.data.items.contains { $0.id == "item-9" })
+        #expect(!projection.data.hasNewerItems)
+    }
+
     @Test func historyPagingNeverDropsTheNewestRowsUntilTheWindowIsFull() throws {
         let recent = try (101...300).map { try itemObject(id: "item-\($0)", order: $0) }
         var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 1000)

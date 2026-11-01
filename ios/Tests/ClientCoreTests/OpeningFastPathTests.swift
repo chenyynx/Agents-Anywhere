@@ -246,9 +246,11 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let model = chat(repo, http)
         await model.prepareOpening()
         // The local-first page opens without touching the network; the failed
-        // background reconcile keeps the local window and the newer prompt
-        // instead of surfacing an error or a blocked mask.
-        try await eventually { http.count("timeline") == 1 }
+        // background read (and the guaranteed fill retrying it) keeps the
+        // local window and the newer prompt instead of surfacing an error or
+        // a blocked mask. The count is at least one, not exactly one: the
+        // fill legitimately retries the same read.
+        try await eventually { http.count("timeline") >= 1 }
         try await Task.sleep(for: .milliseconds(20))
         #expect(model.isOpeningReady && model.openingError == nil)
         #expect(model.timeline.rows.map(\.id) == ["reply-1", "reply-2"])

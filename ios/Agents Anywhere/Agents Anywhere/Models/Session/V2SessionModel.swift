@@ -1,6 +1,27 @@
 import Foundation
 import Observation
 
+#if AA_TIMELINE_PROBE
+/// Probe-only view of the timeline window's coherence. Production UI never
+/// reads it; a frozen window shows up here as `hasNewerItems` staying true
+/// while the reader is already at the newest edge.
+struct V2TimelineWindowSnapshot: Equatable, Sendable {
+    var endOrderSeq = 0
+    var cursorSequence = 0
+    var hasNewerItems = false
+    var anchoredToHistory = false
+    /// Latest-page reads that were started, applied, skipped or lost. The
+    /// counters exist to tell "never started" apart from "started but the
+    /// result never landed" on the next device report.
+    var latestStarted = 0
+    var latestApplied = 0
+    var latestSkipped = 0
+    var latestCanceled = 0
+    var latestFailed = 0
+    var lastLatest = "-"
+}
+#endif
+
 /// Stable row identity: streamed changes only invalidate the affected row's observable value.
 @MainActor @Observable
 final class V2TimelineItemModel: Identifiable {
@@ -193,6 +214,14 @@ final class V2SessionModel: Identifiable {
     private(set) var localOlderAvailable = false
     var canLoadOlder: Bool { hasOlderItems || localOlderAvailable }
     private(set) var hasNewerItems = false
+#if AA_TIMELINE_PROBE
+    /// Written by the repository on every emit; read only by the timeline
+    /// probe. Kept off the observation graph so it cannot invalidate a view.
+    @ObservationIgnored private(set) var windowSnapshot = V2TimelineWindowSnapshot()
+    func updateWindowSnapshot(_ value: V2TimelineWindowSnapshot) {
+        if windowSnapshot != value { windowSnapshot = value }
+    }
+#endif
     /// Whether the window was read from a server that excluded SubAgent child
     /// rows (`excludeAgentChildren`). The SubAgent panel reads it: a card's own
     /// row being present says nothing about activity rows in such a window.

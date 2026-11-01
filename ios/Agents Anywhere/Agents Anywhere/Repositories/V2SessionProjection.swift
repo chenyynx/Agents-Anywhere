@@ -197,6 +197,12 @@ struct V2SessionProjection {
         // nextSeq is the server high watermark, not proof that intervening events were read.
     }
 
+    /// True while the reader is at the newest edge of the held window (no
+    /// history anchor). A window that is behind the server in this state is a
+    /// defect: live creates are meant to append here, not wait for the reader
+    /// to page.
+    var isFollowingLatest: Bool { windowAnchor == nil }
+
     /// Returns the viewport to the live tail. The anchor is only a reading
     /// position; once the reader is back at the newest edge, live creates must
     /// append instead of being deferred behind `hasNewerItems`.

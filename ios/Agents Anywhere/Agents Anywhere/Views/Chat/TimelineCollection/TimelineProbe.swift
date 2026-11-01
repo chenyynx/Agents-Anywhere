@@ -270,6 +270,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The last explicit clear, shown in the report so old counters are not
     /// mistaken for current ones.
     private(set) var lastClearedAt: Date?
+    /// First sample of a "window behind the server while the reader is at the
+    /// newest edge" stretch. Live rows are deferred in this state; a stretch
+    /// longer than a few seconds is the frozen-timeline family.
+    private var windowStaleSince: TimeInterval?
+    private var windowStaleSnapshot: V2TimelineWindowSnapshot?
     /// Drawer motion window. The drawer tells the store when a drag or
     /// open/close animation starts and ends; frame sampling counts gaps while
     /// it is on.
@@ -770,11 +775,39 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     // MARK: - Sampling
 
+    /// A window that still says "newer rows exist" while the reader is already
+    /// at the newest edge is not a normal history state: live creates are
+    /// being deferred and the page cannot move until a latest read lands.
+    private func trackWindowCoherence(now: TimeInterval) {
+        guard let window = adapter?.model.session.windowSnapshot else {
+            windowStaleSince = nil
+            windowStaleSnapshot = nil
+            return
+        }
+        let stale = window.hasNewerItems && !window.anchoredToHistory
+        guard stale else {
+            windowStaleSince = nil
+            windowStaleSnapshot = nil
+            return
+        }
+        if windowStaleSince == nil {
+            windowStaleSince = now
+            windowStaleSnapshot = window
+        } else {
+            windowStaleSnapshot = window
+        }
+        if now - (windowStaleSince ?? now) >= 5 {
+            counters["windowStaleSeconds", default: 0] =
+                max(counters["windowStaleSeconds"] ?? 0, Int((now - (windowStaleSince ?? now)).rounded()))
+        }
+    }
+
     private func sample(now: TimeInterval) {
         guard let controller, let view = controller.collectionView else { return }
         counters["samples", default: 0] += 1
         if view.isTracking { counters["samplesTracking", default: 0] += 1 }
         if view.isDecelerating { counters["samplesDecelerating", default: 0] += 1 }
+        trackWindowCoherence(now: now)
 
         // A programmatic offset change with no gesture is the other way rows
         // appear to move on their own (bottom pin, history return).
@@ -1263,6 +1296,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                   detail: "contentH=\(f(blank.contentHeight)) 但 visible=0 @t=\(elapsed(blank.at))"))
         }
 
+        // 7. The window is behind the server while the reader is already at the
+        //    newest edge: live creates are being deferred, so the transcript
+        //    stops moving until a latest read lands.
+        if let since = windowStaleSince, let window = windowStaleSnapshot {
+            result.append(Finding(
+                at: since, severity: 2, kind: "window_stale",
+                detail: "窗口停在 endSeq=\(window.endOrderSeq)，"
+                    + "newer 持续 \(Int((CACurrentMediaTime() - since).rounded()))s，"
+                    + "latest: \(window.lastLatest)"))
+        }
+
         result.sort { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
             return lhs.at > rhs.at
@@ -1516,6 +1560,18 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
         if let lastClearedAt {
             lines.append("cleared \(Self.absolute(lastClearedAt)) CST")
+        }
+
+        lines.append("--- WINDOW ---")
+        if let window = adapter?.model.session.windowSnapshot {
+            lines.append("W endSeq=\(window.endOrderSeq) cursor=\(window.cursorSequence) "
+                + "hasNewer=\(window.hasNewerItems ? 1 : 0) "
+                + "anchored=\(window.anchoredToHistory ? 1 : 0) "
+                + "latest[start \(window.latestStarted) applied \(window.latestApplied) "
+                + "skipped \(window.latestSkipped) canceled \(window.latestCanceled) "
+                + "failed \(window.latestFailed)] last=\(window.lastLatest)")
+        } else {
+            lines.append("W not attached")
         }
 
         lines.append("--- FINDINGS (severity first) ---")

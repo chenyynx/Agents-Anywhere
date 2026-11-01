@@ -449,8 +449,20 @@ final class V2SessionRepository {
     /// A local latest page is on screen; the network read updates it in the
     /// background. A failure keeps the local content and the newer prompt.
     private func startLatestReconcile(_ entry: Entry, limit: Int, version: Int) {
-        guard network.availability != .offline else { return }
+        guard network.availability != .offline else {
+#if AA_TIMELINE_PROBE
+            entry.latestSkipped += 1
+            entry.lastLatest = "skipped-offline"
+            emit(entry, persist: false)
+#endif
+            return
+        }
         entry.latestRefreshTask?.cancel()
+#if AA_TIMELINE_PROBE
+        entry.latestStarted += 1
+        entry.lastLatest = "started"
+        emit(entry, persist: false)
+#endif
         entry.latestRefreshTask = Task { @MainActor [weak self, weak entry] in
             guard let self, let entry else { return }
             defer {
@@ -464,11 +476,20 @@ final class V2SessionRepository {
                 // paged into history, keep their anchor and only add the
                 // newest rows the stale local page was missing.
                 entry.projection?.applyLatest(page, keepingAnchor: true)
+#if AA_TIMELINE_PROBE
+                entry.latestApplied += 1
+                entry.lastLatest = "applied rows=\(page.items.count) end=\(page.items.last?.orderSeq ?? 0)"
+#endif
                 self.emit(entry)
             } catch {
                 // The local page is already displayed. Keep `hasNewerItems`
                 // set so the prompt remains available; the next connection
                 // recovery will reconcile the same rows.
+#if AA_TIMELINE_PROBE
+                entry.latestFailed += 1
+                entry.lastLatest = "failed: \(V2ClientFailure(error).message.prefix(48))"
+                self.emit(entry, persist: false)
+#endif
             }
         }
     }
@@ -477,8 +498,14 @@ final class V2SessionRepository {
     /// reconciling; its replacement must not land under a history reader.
     func cancelLatestReconcile(sessionId: V2SessionID) {
         guard let entry = entries[sessionId] else { return }
+        guard entry.latestRefreshTask != nil else { return }
         entry.latestRefreshTask?.cancel()
         entry.latestRefreshTask = nil
+#if AA_TIMELINE_PROBE
+        entry.latestCanceled += 1
+        entry.lastLatest = "canceled"
+        emit(entry, persist: false)
+#endif
     }
 
     /// One SubAgent card's child rows (C3) for a main-only window. Kept out of
@@ -1373,6 +1400,9 @@ final class V2SessionRepository {
         // observation (and the page that reads it) never carries a stale
         // acknowledgement for a notice that is no longer open.
         reconcileNotificationAcknowledgements(entry)
+#if AA_TIMELINE_PROBE
+        entry.model.updateWindowSnapshot(windowSnapshot(entry))
+#endif
         entry.model.update(observation(entry), network: network)
         for observer in entry.observers.values { observer.yield(observation(entry)) }
         if persist, entry.projection != nil {
@@ -1380,6 +1410,25 @@ final class V2SessionRepository {
             schedulePersistence()
         }
     }
+
+#if AA_TIMELINE_PROBE
+    private func windowSnapshot(_ entry: Entry) -> V2TimelineWindowSnapshot {
+        var snapshot = V2TimelineWindowSnapshot()
+        if let projection = entry.projection {
+            snapshot.endOrderSeq = projection.data.items.last?.orderSeq ?? 0
+            snapshot.cursorSequence = projection.sequence
+            snapshot.hasNewerItems = projection.data.hasNewerItems
+            snapshot.anchoredToHistory = !projection.isFollowingLatest
+        }
+        snapshot.latestStarted = entry.latestStarted
+        snapshot.latestApplied = entry.latestApplied
+        snapshot.latestSkipped = entry.latestSkipped
+        snapshot.latestCanceled = entry.latestCanceled
+        snapshot.latestFailed = entry.latestFailed
+        snapshot.lastLatest = entry.lastLatest
+        return snapshot
+    }
+#endif
 
     private func confirmEchoes(_ event: V2SessionEvent, entry: Entry) {
         if let raw = event.payload["item"],
@@ -1483,6 +1532,15 @@ private final class Entry {
     /// it in the background. Kept separate from `historyTask` so the instant
     /// local return does not make the caller wait on the network.
     var latestRefreshTask: Task<Void, Never>?
+#if AA_TIMELINE_PROBE
+    /// Probe-only latest-page counters (see `V2TimelineWindowSnapshot`).
+    var latestStarted = 0
+    var latestApplied = 0
+    var latestSkipped = 0
+    var latestCanceled = 0
+    var latestFailed = 0
+    var lastLatest = "-"
+#endif
     var catalogTask: Task<V2SessionCatalogs, Error>?
     /// Single-flight recovery round. It returns its outcome instead of
     /// throwing, so joining callers can choose to surface or ignore failure.

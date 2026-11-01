@@ -141,3 +141,52 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
   history anchor；读者在窗口中间上滑但未触发历史翻页时 anchor 仍为 nil，
   补页的窗口裁剪理论上可能触发 `windowRevision` 重钉底部。触发需
   `hasNewerItems == true`，审查未复现；先以探针 `window_stale` 观察。
+
+## 追加：R23（步骤行残留 running）与 R24（空行仓打不开会话）
+
+### R23 — 步骤行一直转圈（b828 真机 2026-11-01 下午）
+
+- 症状：工具步骤行在回合结束后仍显示 running；服务端该行已 done。
+- 根因：行仓/历史页保留旧 active 副本；`mergeSingle`/`merge` 的 `supersedes`
+  拒绝旧序号终态；`loadOlder` 磁盘页优先，不向服务端纠正。
+- 修复：`784510ec`（终态无条件覆盖 active，`completesActiveRow`）、`f01366f7`
+  （探针 STATUS / `stale_active_row`）、`b1a915af`（历史磁盘页含 active 行时
+  先读服务端该区间，失败回退磁盘）。
+- 验证：CI run 830 test / build / timeline-autorun 全绿；真机待验。
+
+### R24 — 打开会话空白（b829 真机 2026-11-01 14:40）
+
+- 证据：探针 `cursor=382522` 等于生产会话 `sess_62McfiUNa6G0AQ` 的
+  `sessions.seq`；`endSeq=0 hasNewer=1 deferred=1
+  latest[start 1 applied 0 skipped 0 canceled 0 failed 0] last=fill-started`。
+  生产库该会话 1358 条主行，最新 200 条主行 payload 合计 11,066,525 B
+  （单行最大约 2.5 MB）。服务端日志该会话 latest 请求 14:39:23 / 14:39:55 /
+  14:40:54 / 14:41:59，每次 30–60 s 完成。账号 223 个会话合计 2.78 GB，
+  默认缓存上限 1 GB → 行仓 LRU 淘汰删行、只留 `session_meta`
+  （`TimelineDatabase.trim`：删 `timeline_items`、`has_older=1`）。
+- 根因（三处叠加）：
+  1. 恢复出的空窗口继承保存的 `hasNewerItems=1`。空窗口没有"最新边"，
+     该标志会让所有实时行被 `mergeSingle` defer，且 `open` 仍走 latest 页。
+  2. latest 页按行数（200）而不是字节设界；本会话约 11 MB。打开时
+     `observe` 又排一次补页，同一大页被并发读两遍。
+  3. `SessionChatModel.opensFromCachedSnapshot` 只判断投影是否存在；
+     空投影被当成"已缓存"，抑制了 opening mask —— 用户看到的是伪装成
+     已加载的空会话。
+- 修复：`bc66f91e`、`cde97832`、`c0c643aa`、`af2d425c`
+  - `settleEmptyWindow()`：恢复空窗口清 newer / deferred 水位；
+  - `open` 对"恢复出空窗口"走 `refresh` → snapshot（服务端时间线预算
+    2 MB + 最新一行；本会话保留 80 行 ≈ 2 MB），`refresh` 同时重建连接；
+  - `latestReadInFlight` 阻止补页并发大页；fill 循环发请求前再查一次；
+  - 空缓存不再算"已缓存"（本地创建除外），显示 opening mask；
+  - 失败/离线保留标记并置 `needsSnapshot`，重连时由连接循环 hydrate 自动恢复；
+  - `scheduleLatestFill` 只对观察中的会话生效。
+- 验证：
+  - 红：run 833（临时分支撤掉 `bc66f91e`/`cde97832`）→ 两条新增用例按预期
+    失败（`hasNewer` 仍为 true、snapshot 0 次 / timeline 1 次、mask 未显示）；
+    run 836（mutation 撤掉 `af2d425c` 的守卫）→ 新增三条用例按预期失败。
+  - 绿：run 831 / 832 / 834 的 test（1256 tests）、build、timeline-autorun
+    全绿；run 835 为最终验证（head `c0b908fa`）。
+  - 真机：待验。装 b835 后打开被淘汰会话，应显示遮罩并在数秒内出行。
+- 已知风险 / 后续：服务端 `timeline?mode=latest|history` 没有字节预算
+  （2 MB 预算只在 snapshot / deferred / children）；用户手动"加载更早"或
+  残留 latest 路径仍可能拉大页。列为下一次的服务器侧任务。

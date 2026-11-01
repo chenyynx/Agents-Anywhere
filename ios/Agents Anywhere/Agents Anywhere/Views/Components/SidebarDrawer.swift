@@ -778,15 +778,11 @@ private struct SidebarDrawerMainCard<Content: View>: View {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card is a plain full-window rectangle translated by the offset;
-    /// the system screen mask is the only source of corner rounding. A
-    /// container-concentric shape resolved its corner against the window and
-    /// painted the hairline arc inside the screen corner even while the card
-    /// was translated out (pp 2026-11-01: visible arc + drawer surface in the
-    /// top-right/bottom-right corners).
+    /// The card's corners follow the screen's corner radius while it is a
+    /// card; the concentric shape is what paints the rounding (pp
+    /// 2026-11-01: a plain rectangle looked square on device).
     static func shape(isFullyClosed: Bool) -> ConcentricRectangle {
-        _ = isFullyClosed
-        return ConcentricRectangle(corners: .fixed(0))
+        ConcentricRectangle(corners: isFullyClosed ? .fixed(0) : .concentric)
     }
 }
 
@@ -857,12 +853,14 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // No scrim on the card: both reference screenshots keep the
             // content surface at its undimmed value (249) at full and half
             // open, so the official scrim token is not applied here.
-            .overlay {
+            .overlay(alignment: .leading) {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). The hairline is fully visible from the first
-                // point of opening, not ramped with the offset.
-                screenShape
-                    .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
+                // (0x10105186c). Only the seam carries the hairline — stroking
+                // the whole card shape also traced the rounded screen corners,
+                // which showed as an arc inside them on light (pp 2026-11-01).
+                Rectangle()
+                    .fill(edgeLineColor)
+                    .frame(width: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
             }

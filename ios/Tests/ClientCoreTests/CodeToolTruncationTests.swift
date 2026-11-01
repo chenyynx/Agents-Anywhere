@@ -60,7 +60,9 @@ struct CodeToolTruncationTests {
         #expect(!CodeToolTruncation.isTruncated(item))
     }
 
-    @Test func partialLineRangeIsTruncatedWithoutTheTokenCap() throws {
+    /// An intentional `offset`/`limit` slice is not a cut output: the
+    /// official footnote marks the tool output limit, not a requested range.
+    @Test func partialLineRangeIsNotTruncatedWithoutTheTokenCap() throws {
         let item = try makeItem([
             "readMetadata": [
                 "numLines": 200,
@@ -70,7 +72,7 @@ struct CodeToolTruncationTests {
             ],
         ])
 
-        #expect(CodeToolTruncation.isTruncated(item))
+        #expect(!CodeToolTruncation.isTruncated(item))
     }
 
     @Test func genericTruncatedFlagIsHonoured() throws {

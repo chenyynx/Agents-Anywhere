@@ -79,9 +79,10 @@ nonisolated struct CodeReadMetadata: Hashable {
     let truncatedByTokenCap: Bool
 
     var isTruncated: Bool {
-        if truncatedByTokenCap { return true }
-        guard let numLines, let totalLines else { return false }
-        return numLines < totalLines
+        // Only the tool's own output-limit signal. `numLines < totalLines`
+        // also describes a caller-requested `offset`/`limit` slice, which the
+        // official card does not mark as truncated (2026-11-02).
+        truncatedByTokenCap
     }
 }
 

@@ -9,17 +9,40 @@ import SwiftUI
 /// `思考过程` key as the row; the leading close is the system close role.
 struct CodeThinkingDetailView: View {
     let text: String
+    /// The row's item id, so the sheet can follow an in-place deferred
+    /// completion. Nil in previews and the gate.
+    var itemID: V2TimelineItemID? = nil
+    /// The page's deferred-item reader. Present in the product presentation;
+    /// nil in previews and the gate.
+    var chat: SessionChatModel? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
+    /// The row's current item: the window replaces a deferred summary in
+    /// place, so an opened sheet reads the live thinking text when it can.
+    private var liveItem: V2TimelineItem? {
+        guard let chat, let itemID else { return nil }
+        return chat.session.timeline.first { $0.id == itemID }?.value
+    }
+
+    private var bodyText: String {
+        guard let liveItem, !liveItem.displayText.isEmpty else { return text }
+        return liveItem.displayText
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                CodeThinkingMarkdownView(text: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
+                VStack(alignment: .leading, spacing: 12) {
+                    CodeThinkingMarkdownView(text: bodyText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let chat, let liveItem, liveItem.isDeferred {
+                        DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .thinking)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
             .background {

@@ -305,7 +305,8 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
     /// latest page was still in flight).
     @Test func anAcceptedSendIsNotDemotedByTheEchoWatchdog() async throws {
         let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
-        let policy = V2SessionCachePolicy(echoWatchdogDelay: .milliseconds(1))
+        let policy = V2SessionCachePolicy(
+            echoWatchdogDelay: .milliseconds(1), echoHealAttempts: 3)
         let repo = repository(transport: http, realtime: realtime, policy: policy)
         defer { repo.reset() }
         let session = repo.session(id: "session")
@@ -318,14 +319,19 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         let pending = try #require(await send.value)
         #expect(pending.delivery == .accepted)
 
-        // The watchdog's only output is one authoritative latest read.
+        // Every heal attempt is one authoritative latest read; a failed or
+        // invalidated read must not end the watchdog early.
         try await eventually {
-            http.calls.contains { call in
+            http.calls.filter { call in
                 call.path.hasSuffix("/timeline")
                     && call.query.contains { $0.name == "mode" && $0.value == "latest" }
-            }
+            }.count >= 3
         }
         try await Task.sleep(for: .milliseconds(30))
+        #expect(http.calls.filter { call in
+            call.path.hasSuffix("/timeline")
+                && call.query.contains { $0.name == "mode" && $0.value == "latest" }
+        }.count == 3)
         #expect(pending.delivery == .accepted)
         #expect(session.pendingMessages.contains { $0.id == pending.id })
     }

@@ -17,6 +17,10 @@ nonisolated struct V2SessionCachePolicy {
     /// already acknowledged by the server; this is a display heal, never a
     /// delivery verdict.
     var echoWatchdogDelay: Duration = .seconds(30)
+    /// Bounded heal reads for an accepted send whose echo stayed out of the
+    /// window. Each read is independent; the bubble never becomes "uncertain"
+    /// because the write itself was acknowledged.
+    var echoHealAttempts = 3
     var catalogLifetime: TimeInterval = 30
 }
 
@@ -266,8 +270,8 @@ final class V2SessionRepository {
             }
         }
         entry.restoredEmptyWindow = false
-        // A window cached before this client knew about `deferActivity` is
-        // narrower than the deferred window and holds no summary rows. One
+        // A window cached before this client knew about `deferActivity` holds
+        // complete rows (more bytes, no summaries). One
         // latest page re-reads it deferred; a negative echo (an old server, or
         // a window with no display row to anchor) retires the repair for this
         // entry instead of re-asking on every visit.
@@ -566,7 +570,7 @@ final class V2SessionRepository {
             // `false` (an old server, or a window with no display anchor)
             // retires the open-time repair for this entry instead of
             // re-asking on every visit.
-            if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
+            if page.sessionId == sessionId { entry.deferredWindowUnsupported = (page.deferredActivity == nil) }
             emit(entry)
             return entry.projection!.data
         } catch {
@@ -606,7 +610,7 @@ final class V2SessionRepository {
             hasMore: entry.projection?.data.hasOlderItems ?? false,
             serverTime: nil,
             excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false,
-            deferredActivity: entry.projection?.data.windowDeferredActivity ?? false)
+            deferredActivity: entry.projection?.data.windowDeferredActivity)
         entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
         entry.projection?.setLocalOlderAvailable(local.hasMore)
         emit(entry)
@@ -761,7 +765,7 @@ final class V2SessionRepository {
         // `false` (an old server, or a window with no display anchor) retires
         // the open-time repair for this entry instead of re-asking on every
         // visit.
-        if page.sessionId == entry.id { entry.deferredWindowUnsupported = !page.deferredActivity }
+        if page.sessionId == entry.id { entry.deferredWindowUnsupported = (page.deferredActivity == nil) }
         emit(entry)
     }
 
@@ -789,7 +793,12 @@ final class V2SessionRepository {
         let item = try await detail.timelineItem(sessionId: sessionId, itemId: itemId)
         try requireCurrent(entry)
         guard item.sessionId == sessionId else { throw CacheError.invalidated }
-        guard entry.projection?.replaceDeferredItem(item) == true else { return }
+        // A stale read (the window moved to a newer copy while the request
+        // was in flight) must surface as a retryable failure, not silently
+        // leave the summary on screen with no way to ask again.
+        guard entry.projection?.replaceDeferredItem(item) == true else {
+            throw V2ClientFailure(kind: .unavailable, message: String(localized: "无法加载完整输出"))
+        }
         emit(entry)
     }
 
@@ -1148,7 +1157,7 @@ final class V2SessionRepository {
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             // The snapshot is already a window read with `deferActivity`; its
             // echo settles whether a later open-time repair could ever help.
-            entry.deferredWindowUnsupported = !snapshot.deferredActivity
+            entry.deferredWindowUnsupported = (snapshot.deferredActivity == nil)
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
@@ -1679,7 +1688,8 @@ final class V2SessionRepository {
         if let entry = entries[id] { touch(entry); return entry }
         let entry = Entry(id: id, model: V2SessionModel(
             id: id, scope: scope, repository: self,
-            echoWatchdogDelay: policy.echoWatchdogDelay))
+            echoWatchdogDelay: policy.echoWatchdogDelay,
+            echoHealAttempts: policy.echoHealAttempts))
         entries[id] = entry
         touch(entry)
         if network.availability == .offline { entry.connection = .offline }
@@ -1831,9 +1841,10 @@ private final class Entry {
     let id: V2SessionID
     let model: V2SessionModel
     var needsSnapshot = false
-    /// Set once a window read echoed `deferredActivity: false`: the server
-    /// does not implement the deferred read, or this session's window has no
-    /// display row to anchor it. Process-local on purpose — a server upgrade
+    /// Set once a window read **omitted** the `deferredActivity` echo: the
+    /// server predates the deferred read. An explicit `false` does not set it
+    /// — a current server can answer false for one read (no display anchor)
+    /// without lacking the feature. Process-local on purpose; a server upgrade
     /// is picked up by the next launch's single probe instead of needing a
     /// client update.
     var deferredWindowUnsupported = false

@@ -11,7 +11,7 @@ final class SessionChatModel {
     let disclosures = TimelineDisclosureState()
     /// On-demand reads of deferred summary rows. The repository owns the
     /// projection change; this store owns only the per-row phase the UI
-    /// renders (idle / failed / offline) and its in-flight dedupe.
+    /// renders (idle / loading / failed / offline) and its in-flight dedupe.
     let deferredItems: DeferredItemStore
     var takeoverError: String?
     private(set) var takeoverUncertain = false

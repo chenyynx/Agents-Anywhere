@@ -94,12 +94,18 @@ struct CodeStepGroupDetailView: View {
                     switch route {
                     case let .thinking(id, fallback):
                         ScrollView {
-                            // The thinking body streams: the pushed page reads
-                            // the live step text on every group update instead
-                            // of the snapshot taken at tap time (pp 2026-10-30).
-                            CodeThinkingMarkdownView(text: liveThinkingText(id: id) ?? fallback)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(16)
+                            VStack(alignment: .leading, spacing: 12) {
+                                // The thinking body streams: the pushed page
+                                // reads the live step text on every group update
+                                // instead of the snapshot taken at tap time
+                                // (pp 2026-10-30).
+                                CodeThinkingMarkdownView(text: thinkingText(id: id, fallback: fallback))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if let chat, let item = thinkingItem(id), item.isDeferred {
+                                    DeferredLoadFooter(chat: chat, id: item.id, kind: .thinking)
+                                }
+                            }
+                            .padding(16)
                         }
                         .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
                             .ignoresSafeArea())
@@ -123,6 +129,18 @@ struct CodeStepGroupDetailView: View {
     /// the group, where the tapped snapshot takes over.
     private func liveThinkingText(id: String) -> String? {
         liveGroup.steps.first { $0.id == id }?.thinkingText
+    }
+
+    /// The row behind one thinking step. After a deferred completion the row
+    /// is where the full text landed; the step group may rebuild a moment
+    /// later.
+    private func thinkingItem(_ id: String) -> V2TimelineItem? {
+        chat?.session.timeline.first { $0.id == id }?.value
+    }
+
+    private func thinkingText(id: String, fallback: String) -> String {
+        if let item = thinkingItem(id), !item.displayText.isEmpty { return item.displayText }
+        return liveThinkingText(id: id) ?? fallback
     }
 
     @ViewBuilder

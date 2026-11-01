@@ -262,9 +262,12 @@ final class V2SessionModel: Identifiable {
     /// forever even though the server persisted the row (device 2026-10-31
     /// 14:50: the `行` pending survived minutes and every later read).
     @ObservationIgnored private var echoWatchdogs: [String: Task<Void, Never>] = [:]
-    /// Delay before one display heal read for an accepted send. Injected so a
+    /// Delay between display heal reads for an accepted send. Injected so a
     /// test can drive the watchdog without waiting the production 30 s.
     @ObservationIgnored private let echoWatchdogDelay: Duration
+    /// How many heal reads the watchdog may issue. Each is independent; the
+    /// bubble never becomes "uncertain" because the write was acknowledged.
+    @ObservationIgnored private let echoHealAttempts: Int
     /// When the current head entered `.awaitingEcho`. A drained message waits
     /// this long for its authoritative echo before the queue stops trusting the
     /// HTTP accept alone; see `awaitingEchoTimeout`.
@@ -284,9 +287,11 @@ final class V2SessionModel: Identifiable {
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository,
-         echoWatchdogDelay: Duration = .seconds(30)) {
+         echoWatchdogDelay: Duration = .seconds(30),
+         echoHealAttempts: Int = 3) {
         self.id = id; self.scope = scope; self.repository = repository
         self.echoWatchdogDelay = echoWatchdogDelay
+        self.echoHealAttempts = max(1, echoHealAttempts)
         // The repository holds this model through its entries; the closures
         // capture it weakly so the store cannot close that cycle. A completed
         // read marks the session dirty so the local archive picks the rows up.
@@ -614,18 +619,23 @@ final class V2SessionModel: Identifiable {
     private func watchEcho(for pending: V2PendingMessage) {
         let pendingID = pending.id
         let delay = echoWatchdogDelay
+        let attempts = echoHealAttempts
         guard echoWatchdogs[pendingID] == nil else { return }
         echoWatchdogs[pendingID] = Task { @MainActor [weak self, weak pending] in
             defer { self?.echoWatchdogs[pendingID] = nil }
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, let self, let pending, self.isValid,
-                  self.pendingMessages.contains(where: { $0.id == pending.id }),
-                  pending.delivery == .accepted else { return }
-            // The echo never reached the window through the live path; read
-            // the server's newest window authoritatively instead of the
-            // store's possibly-stale page. The deferred window keeps this
-            // read bounded, and a failed read leaves the bubble as it is.
-            _ = try? await self.repository?.loadLatest(sessionId: self.id, authoritative: true)
+            for _ in 0..<attempts {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self, let pending, self.isValid,
+                      self.pendingMessages.contains(where: { $0.id == pending.id }),
+                      pending.delivery == .accepted else { return }
+                // The echo never reached the window through the live path;
+                // read the server's newest window authoritatively instead of
+                // the store's possibly-stale page. The deferred window keeps
+                // this read bounded. A failed or invalidated read is retried
+                // while the attempts remain; a successful one may also need a
+                // second window if the echo was not in that page yet.
+                _ = try? await self.repository?.loadLatest(sessionId: self.id, authoritative: true)
+            }
         }
     }
 

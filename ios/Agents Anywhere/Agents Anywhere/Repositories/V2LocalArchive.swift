@@ -140,7 +140,7 @@ nonisolated struct V2SessionArchive: Codable {
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty,
             catalogs: [:], eventCursor: cursor, serverTime: "",
             excludesAgentChildren: excludesAgentChildren ?? false,
-            deferredActivity: deferredActivity ?? false)
+            deferredActivity: deferredActivity)
         return V2SessionProjection(archive: snapshot, hasNewerItems: hasNewerItems, maximumItems: maximumItems, now: now)
     }
 }

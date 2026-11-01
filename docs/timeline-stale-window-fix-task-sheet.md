@@ -245,7 +245,8 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 
 1. 窗口读取契约：`snapshot/latest/history` 带 `deferActivity=true` 且
    `excludeAgentChildren=true`；`changes/children` 不带（增量/子行必须完整）。
-   旧缓存第一次打开补读一次 deferred 窗口，服务端回 echo=false 后本进程不再问；
+   旧缓存第一次打开补读一次 deferred 窗口；缺 echo（老服务端）才退休该 entry 的
+   开页补读，显式 false（当前服务端本次未 deferred）下次访问重问；
    `fill`/`reconcile`/发送 authoritative 读共用同一契约。
 2. 交互按官方：折叠行不动；详情里保留预览并显示显式截断说明
    （工具行「已在工具输出上限处截断」，思考行「已按上下文预算截断」），
@@ -253,14 +254,20 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
    失败「无法加载完整输出」+重试，离线「离线 · 无法加载完整输出」。
    **不做自动展开拉全文，也不做预取**。
 3. 发送状态按官方：HTTP 已接受（accepted）的直发不再因 echo 超时降级
-   「不确定」；看门狗只做一次权威窗口读来补 echo，气泡保持「发送中」直到回显合并。
-   只有明确写失败才 `rejected/未送达`。队列的 60s 兜底保留（它是释放队列头的
-   安全阀，不是直发路径）。
+   「不确定」；看门狗做最多 3 次独立权威窗口读（注入的间隔，失败/判废也继续
+   下一次），气泡保持「发送中」直到回显合并。只有明确写失败才 `rejected/未送达`。
+   队列的 60s 兜底保留（它是释放队列头的安全阀，不是直发路径）。
 4. Code profile 的同一条链路：`CodeToolGroupDetailView` / `CodeStepGroupDetailView` 把
-   `SessionChatModel` 传进 `CodeToolCallDetailView`；详情从页面的实时行读取 item，
-   摘要行显示同一个 `DeferredLoadFooter`，加载后原地换成全文。默认的 Code 展示
-   形态也能看到截断说明与加载入口。
-5. 归档保存 `windowDeferredActivity`；导出保持 undeferred。
+   `SessionChatModel` 传进 `CodeToolCallDetailView`，`CodeThinkingDetailView` 同时
+   接 `itemID` 与同一 store；工具与思考详情都从页面的实时行读取 item，摘要行显示
+   同一个 `DeferredLoadFooter`，加载后原地换成全文。默认的 Code 展示形态（消息组
+   与步骤组）都能看到截断说明与加载入口。
+5. 投影与缓存：同一 revision 的摘要页不得把窗口里已加载的全文降级
+   （`merge`/`mergeSingle` 的 `downgradesCompleteRow`）；`replaceDeferredItem` 只接受
+   仍 supersede 当前行的全文，加载竞态以可重试失败呈现。
+6. `deferredActivity` 三态：缺字段=老服务端（退休该 entry 的开页补读），显式
+   `false`=当前服务端本次未 deferred（下次访问重问）。归档保存 `windowDeferredActivity`；
+   导出保持 undeferred。
 
 ### 后续（不在 P0）
 
@@ -279,7 +286,9 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
   新行、窗口外不插入）、归档往返、摘要页治愈 `hasNewerItems` 的冻结窗口；
   `aReadReportsLoadingUntilItSettles`。
 - 单测（`ChatSessionPolishTests`）：`anAcceptedSendIsNotDemotedByTheEchoWatchdog`
-  ——accepted 后看门狗只发一次 latest，pending 仍为 accepted。
+  ——accepted 后看门狗发满 3 次 latest，pending 仍为 accepted（计数断言）。
+- 单测（`SessionDeferredActivityTests`）：`aSummaryPageNeverDowngradesALoadedFullRow`、
+  `aStaleCompleteRowNeverReplacesANewerSummary`、`aCurrentServerThatSkippedDeferralIsAskedAgain`。
 - 红绿：撤 `deferActivity` → 窗口治愈用例红；撤发送状态改动 → accepted 用例红
   （撤销实验在临时分支，不在工作区留痕）。
 - CI：iOS test + app build（build job 才是 Views 编译判据）+ timeline-autorun。
@@ -289,8 +298,16 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 ### 已知边界
 
 - 摘要阈值 8 KB、span 300 行、2 MB 预算由服务端控制；客户端只负责渲染与补读。
+  部署镜像实测常量为 300 行；源码分支 `feat/timeline-deferred-activity` 的常量是
+  800，合并/重新部署时以服务端任务单为准。
 - 极老服务端（无 `deferActivity`/`timeline/items`）：窗口读取仍带参，响应无 echo →
   客户端按普通完整页处理，不显示截断说明；补读入口只对 `content.deferred` 行出现。
+- 契约真源在服务端线：`feat/timeline-deferred-activity` 的 server 提交 `6e18dbe9`
+  带 `deferActivity` 参数、`deferredActivity` 字段与单条读端点；本 iOS 分支按
+  AGENTS.md 的契约优先规则记录了依赖，但不修改 `contracts/`（本分支 server 源码
+  仍是 v2_47，单独改 schema 会与 source 不一致）。两线合并时一起带上。
+- accepted 直发在 3 次补读后仍无 echo 时保持「发送中」（官方 posting 语义），不降级；
+  真正写结果不明的 POST（超时等）仍是既有 `uncertain`，因为那次写入本身没有被确认。
 - Code 详情只有在从页面活跃的 `SessionChatModel` 打开时才提供加载入口；
   `CodeProfileAutoRun` 的门禁/预览没有活的窗口，按设计传 nil。
 - 离线时摘要行没有完整 payload（本地归档存的是摘要），点开会显示静态离线态；

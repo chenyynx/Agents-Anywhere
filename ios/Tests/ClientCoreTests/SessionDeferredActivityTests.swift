@@ -104,15 +104,15 @@ import Testing
         let page: V2SessionTimelinePage = try decode([
             "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
         ])
-        #expect(page.deferredActivity == false)
+        #expect(page.deferredActivity == nil)
         let honored: V2SessionTimelinePage = try decode([
             "sessionId": "session", "items": [], "nextSeq": 10, "hasMore": false,
             "deferredActivity": true,
         ])
-        #expect(honored.deferredActivity)
+        #expect(honored.deferredActivity == true)
 
         let snapshot: V2SessionSnapshot = try fixture("snapshot")
-        #expect(snapshot.deferredActivity == false)
+        #expect(snapshot.deferredActivity == nil)
         var object = try fixtureObject("snapshot")
         object["deferredActivity"] = true
         #expect(try decode(object, as: V2SessionSnapshot.self).deferredActivity)
@@ -160,6 +160,31 @@ import Testing
         // The process-local mark retires the repair instead of re-asking.
         _ = try await repo.open(sessionId: "session")
         #expect(latestRequests(http) == 1)
+        await store.close(removing: true)
+    }
+
+    /// An explicit `false` is a current server that answered without deferring
+    /// this read (for example, no display row to anchor on), not a pre-field
+    /// server. It must not retire the open-time repair for the entry.
+    @Test func aCurrentServerThatSkippedDeferralIsAskedAgain() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        await store.saveSession(try makeArchive([try itemObject(id: "main", order: 3)]))
+        let http = TestHTTPTransport()
+        http.respond = { _ in
+            try self.pageResponse(items: [try itemObject(id: "main", order: 3)], hasMore: true,
+                                  deferredActivity: false)
+        }
+        let repo = makeRepository(http, localStore: store)
+        defer { repo.reset() }
+
+        let first = try await repo.open(sessionId: "session")
+        #expect(latestRequests(http) == 1)
+        #expect(!first.windowDeferredActivity)
+        // A declined window is not a missing feature: the next visit asks
+        // again instead of writing the entry off for the process.
+        _ = try await repo.open(sessionId: "session")
+        #expect(latestRequests(http) == 2)
         await store.close(removing: true)
     }
 
@@ -223,6 +248,39 @@ import Testing
         let replaced = projection.replaceDeferredItem(stale)
         #expect(replaced == false)
         #expect(projection.data.items.first?.revision == 3)
+    }
+
+    /// A window page can carry the summary of a row the client already holds
+    /// in full at the same revision. `supersedes` cannot tell the two apart;
+    /// the full row must survive the page instead of silently collapsing back
+    /// to a preview.
+    @Test func aSummaryPageNeverDowngradesALoadedFullRow() throws {
+        let summary = try deferredObject(id: "tool", order: 2)
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: [summary], hasMore: true), maximumItems: 100)
+        let full: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 1))
+        let replaced = projection.replaceDeferredItem(full)
+        #expect(replaced)
+
+        let page = V2SessionTimelinePage(
+            sessionId: "session", items: try [decode(summary)],
+            nextSeq: 1000, hasMore: true, serverTime: nil,
+            excludesAgentChildren: true, deferredActivity: true)
+        projection.applyLatest(page)
+        #expect(projection.data.items.first?.isDeferred == false)
+    }
+
+    /// The same-revision shortcut must not let an older full fetch overwrite a
+    /// newer summary: only a row that still supersedes the held one replaces
+    /// it.
+    @Test func aStaleCompleteRowNeverReplacesANewerSummary() throws {
+        let summary = try deferredObject(id: "tool", order: 2)
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: [summary]), maximumItems: 100)
+        let stale: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 0))
+        let replaced = projection.replaceDeferredItem(stale)
+        #expect(replaced == false)
+        #expect(projection.data.items.first?.isDeferred == true)
     }
 
     @Test func aRowOutsideTheWindowIsNeverInserted() throws {

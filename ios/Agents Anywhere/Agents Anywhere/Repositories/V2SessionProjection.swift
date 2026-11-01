@@ -300,7 +300,7 @@ struct V2SessionProjection {
         // This page now defines the window's read mode (the panel's loaded
         // gate reads it).
         data.windowExcludesAgentChildren = page.excludesAgentChildren
-        data.windowDeferredActivity = page.deferredActivity
+        data.windowDeferredActivity = page.deferredActivity == true
         // The window's own rows beyond the page are known to belong (they are
         // already in `items`); an anchored window's merge guard would reject
         // them as "newer than the page", so admit them as page rows too.
@@ -342,7 +342,11 @@ struct V2SessionProjection {
         guard item.sessionId == data.session.id,
               let index = data.items.firstIndex(where: { $0.id == item.id }) else { return false }
         let existing = data.items[index]
-        guard existing.isDeferred || item.supersedes(existing) else { return false }
+        // The fetched row must still be the current version. The summary it
+        // replaces carries the same revision, and `supersedes` accepts an
+        // equal pair, so this rejects only a fetch that really raced a newer
+        // window — never the normal summary-to-complete replacement.
+        guard item.supersedes(existing) else { return false }
         data.items[index] = item
         return true
     }
@@ -370,6 +374,7 @@ struct V2SessionProjection {
         if let index = data.items.firstIndex(where: { $0.id == item.id }) {
             let old = data.items[index]
             guard item.supersedes(old) || completesActiveRow(item, old) else { return nil }
+            if Self.downgradesCompleteRow(item, old) { return nil }
             if item.orderSeq == old.orderSeq {
                 data.items[index] = item
             } else {
@@ -407,6 +412,17 @@ struct V2SessionProjection {
         insertSorted(item)
         if item.id == uncoveredDeferredItem?.id { uncoveredDeferredItem = nil }
         return V2TimelineMergeOutcome(item: item, wasInserted: true)
+    }
+
+    /// A window page can carry a server summary of a row this window already
+    /// holds in full. The two share the same revision and `updatedSeq`, so
+    /// `supersedes` cannot tell them apart; the full row is strictly more
+    /// useful and must win, or the next background page would silently
+    /// downgrade a row the reader had already loaded.
+    private static func downgradesCompleteRow(_ item: V2TimelineItem, _ old: V2TimelineItem) -> Bool {
+        item.isDeferred && !old.isDeferred
+            && item.revision == old.revision
+            && item.updatedSeq == old.updatedSeq
     }
 
     /// Remembers the newest row a newest-edge guard refused. A latest page
@@ -499,6 +515,7 @@ struct V2SessionProjection {
                 item, into: data.activeAgentCards, now: confirmedAt)
             if let old = byID[item.id] {
                 guard item.supersedes(old) || completesActiveRow(item, old) else { continue }
+                if Self.downgradesCompleteRow(item, old) { continue }
             } else if !history, anchored {
                 if item.orderSeq < start || item.orderSeq > end {
                     if item.orderSeq > end { data.hasNewerItems = true }

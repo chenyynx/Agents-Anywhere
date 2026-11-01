@@ -328,3 +328,22 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
   `CodeProfileAutoRun` 的门禁/预览没有活的窗口，按设计传 nil。
 - 离线时摘要行没有完整 payload（本地归档存的是摘要），点开会显示静态离线态；
   需要全文请联网后再点「加载完整输出」。
+
+### 验证记录（2026-11-01 19:45 CST）
+
+- 绿：run 846（`bd37f568`）、run 847（`6fb3dd67`）、run 853（`ab831714`）、
+  run 854（`9cb747e8`）均 test + build + timeline-autorun 全绿（1279+ tests，含本单
+  新增用例）。854 是当前代码头。
+- 红（临时分支，不在工作区留痕）：
+  - run 848（`red/no-defer`，撤掉 `deferActivity` 查询）→ `HTTPContractTests` 与
+    `SessionDeferredActivityTests` 的窗口读取契约用例按预期红。
+  - run 849（`red/echo-uncertain`，恢复看门狗的 uncertain 降级）→
+    `anAcceptedSendIsNotDemotedByTheEchoWatchdog` 按预期红（`.uncertain` vs `.accepted`）。
+- 过程红（已修）：run 850 数据层 `Bool?` 迁移编译错（`3f0441f4` 修正）；run 851
+  timeline-autorun 为已知 harness prepend 抖动（screenY -660 vs 68），同 head 的
+  test/build 绿。
+- 包：b854（`9cb747e8`），release tag `ipa-fix-timeline-deferred-read`。
+- 独立审查：两位 reviewer 两轮全量 + 收口窄核验；P0（Code 详情可达、合并思考块）、
+  P1（测试编译、摘要覆盖全文）、P2（三态、竞态、看门狗重试、Input、graft 排序）均已修；
+  剩余为“已知边界”列出的项。
+- 真机：待验（打开 40 MB 会话、发消息、工具/思考详情加载、离线四态）。

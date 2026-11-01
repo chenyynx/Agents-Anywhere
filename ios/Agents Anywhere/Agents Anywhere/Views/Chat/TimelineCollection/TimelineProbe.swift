@@ -275,6 +275,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// longer than a few seconds is the frozen-timeline family.
     private var windowStaleSince: TimeInterval?
     private var windowStaleSnapshot: V2TimelineWindowSnapshot?
+    /// First sample of a stretch where loaded rows are still in an active
+    /// status while the turn is not running. The 2026-11-01 device row stayed
+    /// "running" in the cached history after its terminal update was missed.
+    private var activeRowsSince: TimeInterval?
+    private var activeRowSample: [(String, V2TimelineItemStatus)] = []
+    private var lastActiveRowScanAt: TimeInterval = 0
     /// Drawer motion window. The drawer tells the store when a drag or
     /// open/close animation starts and ends; frame sampling counts gaps while
     /// it is on.
@@ -802,12 +808,47 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
     }
 
+    /// Loaded rows that still say pending/running while the turn is idle are
+    /// the stale-status family: the terminal update was missed and the cached
+    /// history keeps serving the active copy.
+    private func trackActiveRows(now: TimeInterval) {
+        // A window can hold a thousand rows; a 1 Hz scan keeps the probe's
+        // sample budget small.
+        guard now - lastActiveRowScanAt >= 1 else { return }
+        lastActiveRowScanAt = now
+        guard let session = adapter?.model.session else {
+            activeRowsSince = nil
+            activeRowSample = []
+            return
+        }
+        let active = session.timeline.filter { $0.value.status.isActive }
+        guard !active.isEmpty else {
+            activeRowsSince = nil
+            activeRowSample = []
+            return
+        }
+        let status = session.runtime.state?.status
+        let turnRunning = [V2RuntimeStatus.running, .pending, .waiting, .waitingApproval, .stopping]
+            .contains(status ?? .idle)
+        guard !turnRunning else {
+            activeRowsSince = nil
+            activeRowSample = []
+            return
+        }
+        if activeRowsSince == nil { activeRowsSince = now }
+        activeRowSample = active.map { ($0.id, $0.value.status) }
+        if let since = activeRowsSince, now - since >= 5 {
+            counters["staleActiveRows", default: 0] = active.count
+        }
+    }
+
     private func sample(now: TimeInterval) {
         guard let controller, let view = controller.collectionView else { return }
         counters["samples", default: 0] += 1
         if view.isTracking { counters["samplesTracking", default: 0] += 1 }
         if view.isDecelerating { counters["samplesDecelerating", default: 0] += 1 }
         trackWindowCoherence(now: now)
+        trackActiveRows(now: now)
 
         // A programmatic offset change with no gesture is the other way rows
         // appear to move on their own (bottom pin, history return).
@@ -1307,6 +1348,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     + "latest: \(window.lastLatest)"))
         }
 
+        // 8. Loaded rows stuck in an active status while the turn is idle: the
+        //    terminal update was missed and the cached history keeps serving
+        //    the active copy (device 2026-11-01).
+        if let since = activeRowsSince, !activeRowSample.isEmpty,
+           CACurrentMediaTime() - since >= 5 {
+            let list = activeRowSample.prefix(4)
+                .map { "\($0.0):\($0.1.rawValue)" }
+                .joined(separator: ",")
+            result.append(Finding(
+                at: since, severity: 2, kind: "stale_active_row",
+                detail: "\(activeRowSample.count) 行仍为进行中且回合空闲：\(list)"))
+        }
+
         result.sort { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
             return lhs.at > rhs.at
@@ -1573,6 +1627,16 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "failed \(window.latestFailed)] last=\(window.lastLatest)")
         } else {
             lines.append("W not attached")
+        }
+
+        lines.append("--- STATUS ---")
+        if activeRowsSince != nil, !activeRowSample.isEmpty {
+            let list = activeRowSample.prefix(6)
+                .map { "\($0.0):\($0.1.rawValue)" }
+                .joined(separator: ",")
+            lines.append("S active=\(activeRowSample.count) [\(list)]")
+        } else {
+            lines.append("S active=0")
         }
 
         lines.append("--- FINDINGS (severity first) ---")

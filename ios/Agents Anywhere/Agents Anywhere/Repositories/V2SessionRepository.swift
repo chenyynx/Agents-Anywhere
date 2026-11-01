@@ -380,6 +380,31 @@ final class V2SessionRepository {
                let local = await localStore.olderRows(sessionID: sessionId,
                                                       beforeOrderSeq: before, limit: pageLimit),
                !local.items.isEmpty {
+                // A page from the archive can carry a step the server has
+                // already finished: its terminal update was missed, and the
+                // disk copy would otherwise serve the stale status on every
+                // visit. Read the server's page for this range instead; the
+                // disk page stays the fallback when the read fails.
+                if local.items.contains(where: { $0.status.isActive }) {
+                    do {
+                        try requireNetwork()
+                        let page = try await detail.loadOlderItems(
+                            sessionId: sessionId, beforeOrderSeq: before, limit: pageLimit,
+                            excludeAgentChildren: data.windowExcludesAgentChildren)
+                        try requireCurrent(entry, version: version)
+                        entry.projection?.applyHistory(page, anchorOrderSeq: anchorOrderSeq)
+                        if let first = entry.projection?.data.items.first?.orderSeq {
+                            let hasMoreLocal = await localStore.hasOlderRows(
+                                sessionID: sessionId, beforeOrderSeq: first)
+                            entry.projection?.setLocalOlderAvailable(hasMoreLocal)
+                        }
+                        emit(entry)
+                        return entry.projection!.data
+                    } catch {
+                        // Offline/transient: the disk page is still usable.
+                        // Cancellation/invalidation re-surface below.
+                    }
+                }
                 try requireCurrent(entry, version: version)
                 let page = V2SessionTimelinePage(
                     sessionId: sessionId, items: local.items,

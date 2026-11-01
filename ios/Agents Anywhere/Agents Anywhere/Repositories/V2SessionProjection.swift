@@ -340,7 +340,7 @@ struct V2SessionProjection {
             item, into: data.activeAgentCards, now: now())
         if let index = data.items.firstIndex(where: { $0.id == item.id }) {
             let old = data.items[index]
-            guard item.supersedes(old) else { return nil }
+            guard item.supersedes(old) || completesActiveRow(item, old) else { return nil }
             if item.orderSeq == old.orderSeq {
                 data.items[index] = item
             } else {
@@ -420,6 +420,16 @@ struct V2SessionProjection {
         uncoveredDeferredItem = nil
     }
 
+    /// A settled row always supersedes an active one. A row's status only
+    /// moves forward (pending/running → done/failed/…), so an older sequence
+    /// must not keep a finished step spinning — on 2026-11-01 a thinking row
+    /// stayed "running" in the cached history after its terminal update was
+    /// missed, and the archive served it back on every visit.
+    private func completesActiveRow(_ incoming: V2TimelineItem,
+                                    _ held: V2TimelineItem) -> Bool {
+        held.status.isActive && !incoming.status.isActive && incoming.status != .unknown
+    }
+
     /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the viewport
     /// window rule: anchored windows keep both sides of the reader, while a
     /// latest window keeps the newest `maximumItems`.
@@ -459,7 +469,7 @@ struct V2SessionProjection {
             data.activeAgentCards = SubAgentProgress.absorbingActiveCards(
                 item, into: data.activeAgentCards, now: confirmedAt)
             if let old = byID[item.id] {
-                guard item.supersedes(old) else { continue }
+                guard item.supersedes(old) || completesActiveRow(item, old) else { continue }
             } else if !history, anchored {
                 if item.orderSeq < start || item.orderSeq > end {
                     if item.orderSeq > end { data.hasNewerItems = true }

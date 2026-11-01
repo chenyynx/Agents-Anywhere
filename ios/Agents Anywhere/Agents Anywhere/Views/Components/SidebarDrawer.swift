@@ -770,9 +770,9 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     let content: Content
 
     var body: some View {
-        // Once settled, cover the entire window and let the system clip its
-        // outer corners. A second rounded edge can expose the sidebar beneath.
-        // Keep the concentric card throughout every drag and spring frame.
+        // The card is a plain rectangle at every offset; the drawer container
+        // clips the display's own corners. A rounded moving edge exposed the
+        // sidebar beneath the card at the seam (pp 2026-11-01).
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
 
         content

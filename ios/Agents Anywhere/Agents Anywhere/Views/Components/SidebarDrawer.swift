@@ -783,6 +783,27 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     }
 }
 
+/// The card's visible left outline: the top-left corner arc, the straight
+/// left edge, then the bottom-left arc. Only this half is drawn so the line
+/// ends where the card leaves the screen and never paints the window corners.
+private struct CardSeamLine: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = max(0, min(radius, min(rect.width, rect.height) / 2))
+        var path = Path()
+        path.move(to: CGPoint(x: r, y: rect.minY))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                    tangent2End: CGPoint(x: rect.minX, y: rect.minY + r),
+                    radius: r)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
+                    tangent2End: CGPoint(x: rect.minX + r, y: rect.maxY),
+                    radius: r)
+        return path
+    }
+}
+
 /// The display's own corner radius. UIKit exposes it on the screen; the
 /// fallback is the common Pro/Plus radius so a missing key still rounds.
 private enum SidebarDrawerScreenCorner {
@@ -884,14 +905,13 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // No scrim on the card: both reference screenshots keep the
             // content surface at its undimmed value (249) at full and half
             // open, so the official scrim token is not applied here.
-            .overlay(alignment: .leading) {
+            .overlay {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). Only the seam carries the hairline: stroking
-                // the whole shape also painted an arc inside the screen
-                // corner on light (pp 2026-11-01).
-                Rectangle()
-                    .fill(edgeLineColor)
-                    .frame(width: 1 / max(displayScale, 1))
+                // (0x10105186c). The hairline follows the card's left half —
+                // top arc, straight edge, bottom arc — and stops there:
+                // stroking the whole shape also painted the screen corners.
+                CardSeamLine(radius: SidebarDrawerScreenCorner.radius)
+                    .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
             }

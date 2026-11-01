@@ -184,8 +184,12 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
   - 红：run 833（临时分支撤掉 `bc66f91e`/`cde97832`）→ 两条新增用例按预期
     失败（`hasNewer` 仍为 true、snapshot 0 次 / timeline 1 次、mask 未显示）；
     run 836（mutation 撤掉 `af2d425c` 的守卫）→ 新增三条用例按预期失败。
-  - 绿：run 831 / 832 / 834 的 test（1256 tests）、build、timeline-autorun
-    全绿；run 835 为最终验证（head `c0b908fa`）。
+  - 绿：run 831 / 832 / 834 的 test（1256 条）以及 build、timeline-autorun
+    全绿；run 835（head `c0b908fa`）test（1259 条）与 build 全绿并出包，
+    timeline-autorun 在 harness 的 prepend 锚点停放检查失败
+    （`screenY -673.0, expected 68.0`；该 harness 不经过本次改动的
+    repository/model，run 831/832/834 的同一 gate 均绿），已重跑 run 839
+    复核。
   - 真机：待验。装 b835 后打开被淘汰会话，应显示遮罩并在数秒内出行。
 - 已知风险 / 后续：服务端 `timeline?mode=latest|history` 没有字节预算
   （2 MB 预算只在 snapshot / deferred / children）；用户手动"加载更早"或

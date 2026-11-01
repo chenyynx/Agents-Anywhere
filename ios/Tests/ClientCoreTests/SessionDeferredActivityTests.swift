@@ -93,7 +93,8 @@ import Testing
         // summaries: both carry rows that a second read would have to complete.
         let api = V2SessionAPI(transport: http)
         _ = try await api.timelineChanges(sessionId: "session", afterSeq: 40, limit: 500)
-        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card", limit: 100)
+        _ = try await api.timelineChildren(sessionId: "session", parentItemId: "card",
+            beforeOrderSeq: nil, limit: 100)
         for call in http.calls.suffix(2) {
             #expect(!call.query.contains { $0.name == "deferActivity" })
         }
@@ -207,7 +208,8 @@ import Testing
         let hasOlder = projection.data.hasOlderItems
 
         let full: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 1))
-        #expect(projection.replaceDeferredItem(full))
+        let replaced = projection.replaceDeferredItem(full)
+        #expect(replaced)
         #expect(projection.data.items.map(\.id) == ["first", "tool", "last"])
         #expect(projection.data.items[1].isDeferred == false)
         #expect(projection.data.hasOlderItems == hasOlder)
@@ -218,7 +220,8 @@ import Testing
         let items = [try itemObject(id: "tool", order: 2, revision: 3)]
         var projection = V2SessionProjection(snapshot: try snapshot(items: items), maximumItems: 100)
         let stale: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 2))
-        #expect(projection.replaceDeferredItem(stale) == false)
+        let replaced = projection.replaceDeferredItem(stale)
+        #expect(replaced == false)
         #expect(projection.data.items.first?.revision == 3)
     }
 
@@ -226,7 +229,8 @@ import Testing
         let items = [try itemObject(id: "tool", order: 2)]
         var projection = V2SessionProjection(snapshot: try snapshot(items: items), maximumItems: 100)
         let outside: V2TimelineItem = try decode(itemObject(id: "outside", order: 9))
-        #expect(projection.replaceDeferredItem(outside) == false)
+        let replaced = projection.replaceDeferredItem(outside)
+        #expect(replaced == false)
         #expect(projection.data.items.map(\.id) == ["tool"])
     }
 

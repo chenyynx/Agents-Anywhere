@@ -268,9 +268,9 @@ final class V2SessionRepository {
         entry.restoredEmptyWindow = false
         // A window cached before this client knew about `deferActivity` is
         // narrower than the deferred window and holds no summary rows. One
-        // latest page re-reads it deferred; the response's echo decides
-        // whether that read can ever help, so a server without the feature is
-        // asked at most once per process (`deferredWindowUnsupported`).
+        // latest page re-reads it deferred; a negative echo (an old server, or
+        // a window with no display row to anchor) retires the repair for this
+        // entry instead of re-asking on every visit.
         let needsDeferredWindow = window?.windowExcludesAgentChildren == true
             && window?.windowDeferredActivity == false
             && network.availability != .offline
@@ -562,9 +562,10 @@ final class V2SessionRepository {
                 excludeAgentChildren: true, deferActivity: true)
             try requireCurrent(entry, version: version)
             entry.projection?.applyLatest(page)
-            // The echo is the only proof this server honours the deferred
-            // read. A `false` retires the open-time repair for the rest of
-            // the process instead of re-asking on every visit.
+            // The echo is the only proof this read was actually deferred. A
+            // `false` (an old server, or a window with no display anchor)
+            // retires the open-time repair for this entry instead of
+            // re-asking on every visit.
             if page.sessionId == sessionId { entry.deferredWindowUnsupported = !page.deferredActivity }
             emit(entry)
             return entry.projection!.data
@@ -756,9 +757,9 @@ final class V2SessionRepository {
         try requireCurrent(entry, version: version)
         guard let projection = entry.projection, projection.isFollowingLatest else { return }
         entry.projection?.applyLatest(page)
-        // The echo is the only proof this server honours the deferred read. A
-        // `false` (or absent, from an old server) retires the open-time
-        // repair for the rest of the process instead of re-asking on every
+        // The echo is the only proof this read was actually deferred. A
+        // `false` (an old server, or a window with no display anchor) retires
+        // the open-time repair for this entry instead of re-asking on every
         // visit.
         if page.sessionId == entry.id { entry.deferredWindowUnsupported = !page.deferredActivity }
         emit(entry)
@@ -1830,10 +1831,11 @@ private final class Entry {
     let id: V2SessionID
     let model: V2SessionModel
     var needsSnapshot = false
-    /// Set once a window read echoed `deferredActivity: false`, proving the
-    /// server does not implement the deferred read. Process-local on purpose:
-    /// a server upgrade is picked up by the next launch's single probe instead
-    /// of needing a client update.
+    /// Set once a window read echoed `deferredActivity: false`: the server
+    /// does not implement the deferred read, or this session's window has no
+    /// display row to anchor it. Process-local on purpose — a server upgrade
+    /// is picked up by the next launch's single probe instead of needing a
+    /// client update.
     var deferredWindowUnsupported = false
     var hasReadLocal = false
     var isDirty = false

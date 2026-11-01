@@ -900,6 +900,11 @@ final class V2SessionRepository {
     func resume() {
         suspended = false
         for entry in entries.values { start(entry, catchUp: true) }
+        // A window left behind while the app was away heals on resume even
+        // when neither an opening nor a bottom trigger runs.
+        for entry in entries.values where entry.projection?.data.hasNewerItems == true {
+            scheduleLatestFill(entry)
+        }
     }
 
     func updateConnectivity(_ status: V2NetworkStatus) {
@@ -916,6 +921,11 @@ final class V2SessionRepository {
                 entry.connection = .offline
             } else if wasOffline {
                 start(entry, catchUp: true)
+                // Recovery replays events after the cursor; a window whose
+                // missing rows are older than the cursor needs a latest read.
+                if entry.projection?.data.hasNewerItems == true {
+                    scheduleLatestFill(entry)
+                }
             }
             emit(entry, persist: false)
         }

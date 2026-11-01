@@ -178,11 +178,9 @@ import Testing
         defer { gate.release(); repo.reset() }
 
         // Restore the cached window with its newer flag but do not open: the
-        // fill is the only latest read this test is about.
-        repo.updateConnectivity(.init(availability: .offline))
+        // fill caused by the deferred echo is the only latest read here.
         _ = try await repo.load(sessionId: "session")
         #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
-        repo.updateConnectivity(.init(availability: .online))
 
         let model = repo.session(id: "session")
         let connection = Task { await model.connect() }
@@ -196,7 +194,10 @@ import Testing
         try await eventually { latestStarted }
 
         // The echo is deferred: no confirmation, no row, and the window still
-        // reports that it is behind.
+        // reports that it is behind. The count assertion is what makes a
+        // premature confirmation (the pre-fix behaviour) fail loudly instead
+        // of reading as "first?.delivery == nil".
+        #expect(model.pendingMessages.count == 1)
         #expect(model.pendingMessages.first?.delivery != V2PendingMessage.Delivery.confirmed)
         #expect(!model.timeline.contains { $0.value.id == "item-601" })
         #expect(model.hasNewerItems)

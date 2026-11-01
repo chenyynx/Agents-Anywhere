@@ -101,7 +101,8 @@ struct CodeStepGroupDetailView: View {
                                 // (pp 2026-10-30).
                                 CodeThinkingMarkdownView(text: thinkingText(id: id, fallback: fallback))
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                if let chat, let item = thinkingItem(id), item.isDeferred {
+                                if let chat, let item = thinkingItem(id),
+                                   item.isDeferred || chat.deferredItems.phase(item.id) == .loaded {
                                     DeferredLoadFooter(chat: chat, id: item.id, kind: .thinking)
                                 }
                             }

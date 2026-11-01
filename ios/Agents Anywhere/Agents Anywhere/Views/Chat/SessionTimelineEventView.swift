@@ -122,7 +122,7 @@ struct SessionTimelineEventView: View {
                             .id(row.layoutGeneration).padding(.leading, 24).foregroundStyle(.secondary)
                             // Reasoning stays well below the reply text.
                             .environment(\.chatMarkdownFont, .caption2)
-                        if deferred {
+                        if deferred || chat.deferredItems.phase(row.id) == .loaded {
                             DeferredLoadFooter(chat: chat, id: row.id, kind: .thinking)
                         }
                     }
@@ -213,7 +213,7 @@ private struct TimelineToolDetails: View {
             if let output = value.output {
                 TimelineCodePanel(label: String(localized: "Output"), code: output)
             }
-            if deferred {
+            if deferred || chat.deferredItems.phase(row.id) == .loaded {
                 DeferredLoadFooter(chat: chat, id: row.id, kind: .output)
             }
         }

@@ -27,9 +27,14 @@ struct CodeThinkingDetailView: View {
         chat?.session.timeline.first { $0.id == id }?.value
     }
 
+    /// Every row the block was built from, in order.
+    private var allIDs: [V2TimelineItemID] {
+        sourceIDs.isEmpty ? (itemID.map { [$0] } ?? []) : sourceIDs
+    }
+
     /// The merged block's rows that are still summarized.
     private var deferredIDs: [V2TimelineItemID] {
-        sourceIDs.filter { liveItem($0)?.isDeferred == true }
+        allIDs.filter { liveItem($0)?.isDeferred == true }
     }
 
     private var bodyText: String {
@@ -51,8 +56,10 @@ struct CodeThinkingDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     CodeThinkingMarkdownView(text: bodyText)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if let chat, !deferredIDs.isEmpty {
-                        DeferredLoadFooter(chat: chat, ids: deferredIDs, kind: .thinking)
+                    if let chat,
+                       !deferredIDs.isEmpty
+                        || allIDs.contains(where: { chat.deferredItems.phase($0) == .loaded }) {
+                        DeferredLoadFooter(chat: chat, ids: allIDs, kind: .thinking)
                     }
                 }
                 .padding(.horizontal, 16)

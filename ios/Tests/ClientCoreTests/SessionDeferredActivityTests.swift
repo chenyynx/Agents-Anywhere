@@ -447,12 +447,12 @@ import Testing
 
 /// The per-row read store behind a deferred summary row.
 @Suite @MainActor struct DeferredItemStoreTests {
-    @Test func aSuccessfulReadReturnsToIdle() async throws {
+    @Test func aSuccessfulReadReportsLoaded() async throws {
         var reads: [V2TimelineItemID] = []
         let store = DeferredItemStore { id in reads.append(id) }
         store.load("row")
         try await eventually { reads == ["row"] }
-        try await eventually { store.phase("row") == .idle }
+        try await eventually { store.phase("row") == .loaded }
     }
 
     @Test func failureAndOfflineAreClassified() async throws {
@@ -476,7 +476,7 @@ import Testing
         try await eventually { store.phase("row") == .failed }
         store.retry("row")
         try await eventually { attempts == 2 }
-        try await eventually { store.phase("row") == .idle }
+        try await eventually { store.phase("row") == .loaded }
     }
 
     @Test func theSameRowIsReadOnceAtATime() async throws {
@@ -487,7 +487,7 @@ import Testing
         store.load("row")
         try await eventually { started == 1 }
         gate.release()
-        try await eventually { store.phase("row") == .idle }
+        try await eventually { store.phase("row") == .loaded }
         #expect(started == 1)
     }
 
@@ -507,6 +507,6 @@ import Testing
         store.load("row")
         try await eventually { store.phase("row") == .loading }
         gate.release()
-        try await eventually { store.phase("row") == .idle }
+        try await eventually { store.phase("row") == .loaded }
     }
 }

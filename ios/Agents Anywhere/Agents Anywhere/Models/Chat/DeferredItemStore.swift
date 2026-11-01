@@ -7,8 +7,8 @@ import Observation
 /// carries `content.deferred == true` and its original byte size. The full row
 /// comes from the single-item read (`GET …/timeline/items/{item_id}`), which
 /// the repository projects into the window in place. This store owns only the
-/// outcome the UI renders per row — idle, loading, failed or offline — plus the
-/// in-flight dedupe.
+/// outcome the UI renders per row — idle, loading, loaded, failed or offline —
+/// plus the in-flight dedupe.
 ///
 /// The read is explicit: the row shows its preview and a load control, and the
 /// user asks for the full payload (the official transcript's "Load full file").
@@ -24,6 +24,9 @@ final class DeferredItemStore {
         /// The explicit read is in flight. The row keeps its preview; only the
         /// load control reflects this state.
         case loading
+        /// The full row is in the window. The detail keeps the official
+        /// "Full file loaded" footnote instead of offering the control again.
+        case loaded
         /// The read failed for a reason other than a down path (a 404, an
         /// HTTP error, an unreadable response). Retryable.
         case failed
@@ -84,7 +87,7 @@ final class DeferredItemStore {
     private func fetch(_ id: V2TimelineItemID, token: UUID) async {
         do {
             try await loader(id)
-            if tokens[id] == token { phases[id] = nil }
+            if tokens[id] == token { phases[id] = .loaded }
         } catch {
             let failure = V2ClientFailure(error)
             if failure.kind != .cancelled, tokens[id] == token {

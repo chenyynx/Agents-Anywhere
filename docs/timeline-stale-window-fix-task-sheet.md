@@ -249,10 +249,13 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
    旧缓存第一次打开补读一次 deferred 窗口；缺 echo（老服务端）才退休该 entry 的
    开页补读，显式 false（当前服务端本次未 deferred）下次访问重问；
    `fill`/`reconcile`/发送 authoritative 读共用同一契约。
-2. 交互按官方：折叠行不动；详情里保留预览并显示显式截断说明
-   （工具行「已在工具输出上限处截断」，思考行「已按上下文预算截断」），
-   由用户点「加载完整输出/加载完整思考」才按 id 拉全文；加载中只有按钮态，
-   失败「无法加载完整输出」+重试，离线「离线 · 无法加载完整输出」。
+2. 交互按官方：折叠行不动；详情里是官方的 `ToolCallDetailFootnote`（`.footnote`
+   次要色脚注）+ `AsyncButton` 文字按钮，不是自造灰底横条。工具行脚注用官方
+   「显示 N 行（已在工具输出上限处截断）」（N=预览实际行数；无预览时退回
+   「已在工具输出上限处截断」），Read 类按钮「加载完整文件」、其它工具「加载完整输出」
+   （官方无对应入口，AA 扩展）、思考「加载完整思考」；加载中显示小 ProgressView，
+   失败「无法加载完整文件。/无法加载完整输出」+「重试」，成功后显示官方
+   「已加载完整文件/已加载完整输出/已加载完整思考」，离线前缀「离线 · 」。
    **不做自动展开拉全文，也不做预取**。
 3. 发送状态按官方：HTTP 已接受（accepted）的直发不再因 echo 超时降级
    「不确定」；看门狗做最多 3 次独立权威窗口读（注入的间隔，失败/判废也继续
@@ -260,9 +263,9 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
    队列的 60s 兜底保留（它是释放队列头的安全阀，不是直发路径）。
 4. Code profile 的同一条链路：`CodeToolGroupDetailView` / `CodeStepGroupDetailView` 把
    `SessionChatModel` 传进 `CodeToolCallDetailView`，`CodeThinkingDetailView` 同时
-   接 `itemID` 与同一 store；工具与思考详情都从页面的实时行读取 item，摘要行显示
-   同一个 `DeferredLoadFooter`，加载后原地换成全文。默认的 Code 展示形态（消息组
-   与步骤组）都能看到截断说明与加载入口。
+   接 `itemID`/`sourceIDs` 与同一 store；工具与思考详情都从页面的实时行读取 item，
+   摘要行显示同一个官方样式 `DeferredLoadFooter`，加载后原地换成全文并显示
+   「已加载完整…」。默认的 Code 展示形态（消息组与步骤组）都能看到脚注与加载入口。
 5. 投影与缓存：同一 revision 的摘要页不得把窗口里已加载的全文降级
    （`merge`/`mergeSingle` 的 `downgradesCompleteRow`）；`replaceDeferredItem` 只接受
    仍 supersede 当前行的全文，加载竞态以可重试失败呈现。

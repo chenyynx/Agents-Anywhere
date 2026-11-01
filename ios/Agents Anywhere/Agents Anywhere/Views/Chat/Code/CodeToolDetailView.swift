@@ -297,7 +297,8 @@ struct CodeToolCallDetailView: View {
     /// what this detail opened from; the full payload arrives only when the
     /// reader asks for it, and the window replaces the row in place.
     @ViewBuilder private var deferredSection: some View {
-        if let chat, liveItem.isDeferred {
+        if let chat,
+           liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded {
             DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output)
         }
     }

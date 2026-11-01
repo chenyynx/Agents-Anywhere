@@ -1,15 +1,21 @@
 import SwiftUI
 
-/// The official transcript's truncation footnote plus its explicit load
-/// control. The preview is already on screen; the full payload is fetched only
-/// when the reader asks for it, and only the row's own control reflects the
-/// in-flight state — the row never turns into a spinner.
+/// The official transcript's truncation footnote (`ToolCallDetailFootnote`)
+/// and its explicit load control (`AsyncButton`), not a container of our own:
+/// one footnote line in the secondary footnote style and, below it, a plain
+/// tinted text button. The preview is already on screen; the full payload is
+/// fetched only when the reader asks for it.
 ///
 /// Shared by the chat profile's tool/reasoning folds and the Code profile's
-/// tool detail: both profiles read the same deferred window, so both must make
-/// the truncation visible and offer the same one-row completion.
+/// tool/thinking details: both profiles read the same deferred window, so both
+/// must make the truncation visible and offer the same one-row completion.
 struct DeferredLoadFooter: View {
-    enum Kind: Equatable { case output, thinking }
+    /// `fileOutput` is the official Read shape ("Load full file"); `output` is
+    /// the AA extension for any other tool row the deferred window summarised
+    /// (the official has no load control there because its tool output is the
+    /// tool's own final text). `thinking` is AA-only: the server's budget trim
+    /// can summarise a reasoning row.
+    enum Kind: Equatable { case fileOutput, output, thinking }
 
     let chat: SessionChatModel
     /// One footer can complete several rows: a merged thinking block joins
@@ -29,23 +35,66 @@ struct DeferredLoadFooter: View {
         self.kind = kind
     }
 
-    /// One aggregate state: a failure wins over loading wins over idle, so the
-    /// control never claims everything is fine while one row is still behind.
+    /// One aggregate state: a failure wins over loading wins over idle, and
+    /// `loaded` only when every row is complete.
     private var phase: DeferredItemStore.Phase {
         let phases = ids.map { chat.deferredItems.phase($0) }
         if phases.contains(.failed) { return .failed }
         if phases.contains(.offline) { return .offline }
         if phases.contains(.loading) { return .loading }
+        if !phases.isEmpty, phases.allSatisfy({ $0 == .loaded }) { return .loaded }
         return .idle
+    }
+
+    /// The row behind the control, used for the official line count and the
+    /// Read/full-file wording.
+    private var item: V2TimelineItem? {
+        guard let id = ids.first else { return nil }
+        return chat.session.timeline.first { $0.id == id }?.value
+    }
+
+    private var effectiveKind: Kind {
+        guard kind == .output,
+              let name = [item?.raw["content"]?["toolName"],
+                          item?.raw["content"]?["name"],
+                          item?.raw["content"]?["tool"]]
+                    .compactMap({ $0?.stringValue }).first?.lowercased()
+        else { return kind }
+        return name == "read" || name == "readfile" ? .fileOutput : .output
+    }
+
+    /// Lines the preview actually shows. The official unknown-total footnote
+    /// ("Showing %lld lines…") counts what is on screen; the stub carries a
+    /// bounded tail preview, so its line count is the honest number.
+    private var shownLines: Int {
+        guard let preview = item?.raw["content"]?["outputPreview"]?.stringValue,
+              !preview.isEmpty else { return 0 }
+        return preview.split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     var body: some View {
         let phase = phase
-        HStack(spacing: 8) {
-            Text(note(phase)).font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(note(phase))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            control(phase)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func control(_ phase: DeferredItemStore.Phase) -> some View {
+        switch phase {
+        case .loading:
+            ProgressView()
+                .controlSize(.small)
+                .frame(minHeight: 44)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .idle, .failed, .offline:
             Button(buttonTitle(phase)) {
-                for id in ids {
+                for id in ids where chat.deferredItems.phase(id) != .loaded {
                     if phase == .failed || phase == .offline {
                         chat.deferredItems.retry(id)
                     } else {
@@ -53,13 +102,14 @@ struct DeferredLoadFooter: View {
                     }
                 }
             }
-            .buttonStyle(.plain).font(.caption.weight(.medium)).foregroundStyle(.tint)
-            .disabled(phase == .loading)
-            .padding(.horizontal, 8).frame(minHeight: 44)
+            .buttonStyle(.plain)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.tint)
+            .frame(minHeight: 44)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .loaded:
+            EmptyView()
         }
-        .padding(.leading, 12)
-        .frame(minHeight: 44)
-        .background(.quaternary.opacity(0.3))
     }
 
     /// The truncation note stays visible while loading; a failure replaces it
@@ -74,34 +124,51 @@ struct DeferredLoadFooter: View {
             return "\(String(localized: "离线")) · \(failedTitle)"
         case .idle, .loading:
             return truncationNote
+        case .loaded:
+            return loadedTitle
         }
     }
 
     private var truncationNote: String {
-        switch kind {
-        case .output: return String(localized: "已在工具输出上限处截断")
-        case .thinking: return String(localized: "已按上下文预算截断")
+        switch effectiveKind {
+        case .fileOutput, .output:
+            guard shownLines > 0 else { return String(localized: "已在工具输出上限处截断") }
+            // Official zh swaps the positional arguments: preserve %n$ when
+            // the catalog gains the total-known variant.
+            return String(format: String(localized: "显示 %lld 行（已在工具输出上限处截断）"), shownLines)
+        case .thinking:
+            return String(localized: "已按上下文预算截断")
         }
     }
 
     private var failedTitle: String {
-        switch kind {
+        switch effectiveKind {
+        case .fileOutput: return String(localized: "无法加载完整文件。")
         case .output: return String(localized: "无法加载完整输出")
         case .thinking: return String(localized: "无法加载完整思考")
+        }
+    }
+
+    private var loadedTitle: String {
+        switch effectiveKind {
+        case .fileOutput: return String(localized: "已加载完整文件")
+        case .output: return String(localized: "已加载完整输出")
+        case .thinking: return String(localized: "已加载完整思考")
         }
     }
 
     private func buttonTitle(_ phase: DeferredItemStore.Phase) -> String {
         switch phase {
         case .idle:
-            switch kind {
+            switch effectiveKind {
+            case .fileOutput: return String(localized: "加载完整文件")
             case .output: return String(localized: "加载完整输出")
             case .thinking: return String(localized: "加载完整思考")
             }
-        case .loading:
-            return String(localized: "正在加载…")
         case .failed, .offline:
             return String(localized: "重试")
+        case .loading, .loaded:
+            return ""
         }
     }
 }

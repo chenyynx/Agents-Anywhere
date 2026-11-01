@@ -193,3 +193,62 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 - 已知风险 / 后续：服务端 `timeline?mode=latest|history` 没有字节预算
   （2 MB 预算只在 snapshot / deferred / children）；用户手动"加载更早"或
   残留 latest 路径仍可能拉大页。列为下一次的服务器侧任务。
+
+## 追加：R25 latest 页无字节上限 → 窗口再次冻结（2026-11-01 17:06 CST）
+
+### 症状
+
+b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 60s 后提示
+「上次发送的结果尚未确认」，随后回复才出现。探针（`diagnostics-20261101-170621.txt`）：
+
+- `W endSeq=10242 cursor=153735 hasNewer=1 anchored=0 deferred=2
+  latest[start 5 applied 0 skipped 0 canceled 0 failed 3] last=fill-started`
+- `window_stale`：`newer` 持续 90s。
+- 数据库：该会话 2656 条主行 / 40 MB；最新 200 条主行 payload 10,067 KB，
+  单条最大 2.26 MB（工具行内嵌图片/文件）。
+- nginx（`/var/log/nginx/moonveil_timing.log`）：同一路径的响应体
+  7.0–9.8 MB，`rt=0.4–20.7s`，其中两次 499（客户端主动断开）。
+
+### 根因
+
+1. `timeline?mode=latest` 的 legacy 分支没有字节上限（2 MB 预算只作用于
+   snapshot / deferred / children）。会话的实时尾部是工具行，latest 页被
+   撑到约 10 MB；手机侧下载 1–20s，期间任意一次新的 latest 读取都会把
+   `readVersion` 推高，使在飞的页在 `requireCurrent` 处被判废。
+2. 自动 latest（窗口触底）、发送的 authoritative latest、补页 fill 三者
+   互相判废；页越大窗口越长，形成活锁。窗口始终不前进 → 实时 echo 被
+   defer → pending 永不确认 → 60s 看门狗把它降级为 uncertain。
+
+### 修复
+
+服务端在 v2_48 已部署 `deferActivity` 摘要窗口（`list_deferred_window`：
+按展示行锚定、>8 KB 工具行用 `stub_json` 摘要、2 MB 序列化上限、span 300
+行；`deferActivity` 只在 `excludeAgentChildren` 同开时生效，deferred 被
+decline 时回退页同样套 2 MB 预算）。本次把客户端接到该能力上：
+
+- 所有窗口读取（snapshot / latest / history）带 `deferActivity=true`；
+  `changes` 与 `children` 不带（增量/子行必须完整）。
+- 摘要行（`content.deferred=true`）展开时用 `GET /timeline/items/{id}`
+  按 id 拉全文，原地替换（`V2SessionProjection.replaceDeferredItem`）；
+  折叠态显示「输出预览」+ 失败/离线时的静态重试行，不显示 loading。
+- 首屏与归档保存 `windowDeferredActivity`；旧归档打开时只补读一次
+  （服务端回 echo 为 false 后本进程不再问）。
+- 导出保持 undeferred（`exportTimeline` 显式 `deferActivity: false`）。
+
+### 验证
+
+- 单测（`SessionDeferredActivityTests`）：窗口读取带参、`changes`/`children`
+  不带参、缺 echo 读 false、旧归档只补读一次、离线保缓存、摘要原地替换
+  （旧 revision 不覆盖新行、窗口外不插入）、归档往返、摘要页治愈
+  `hasNewerItems` 的冻结窗口。
+- CI：iOS test + app build（build job 才是 Views 编译判据）。
+- 真机：打开本会话（40 MB）应在 1–2s 内出首屏；发消息后气泡应在数秒内
+  变实；工具行折叠显示「输出预览」，点开后补全文；断网时显示静态重试。
+
+### 已知边界
+
+- 摘要阈值 8 KB、span 300 行、2 MB 预算都由服务端控制；客户端只负责
+  渲染与补读。
+- 极老服务端（无 `deferActivity`/`timeline/items`）：窗口读取仍带参，
+  响应无 echo → 客户端按普通完整页处理，不显示「输出预览」；补读入口
+  只对 `content.deferred` 行出现，老服务端不会产生这种行。

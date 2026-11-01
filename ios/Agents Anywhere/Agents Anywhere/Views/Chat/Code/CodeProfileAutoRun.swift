@@ -2385,7 +2385,7 @@ final class CodeProfileAutoRunModel {
                                      settleMilliseconds: Int = 0) async -> RendererCellMeasurement {
         let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
                                                      width: hostWidth, height: 300))
-        cell.configure(row, policy: .measured,
+        cell.configure(row, itemID: "gate-renderer-cell", policy: .measured,
                        isMeasured: false, reportsContentHeight: false,
                        seededHeight: nil)
         window.addSubview(cell)
@@ -2428,7 +2428,7 @@ final class CodeProfileAutoRunModel {
         -> (height: CGFloat?, safeTop: CGFloat, safeBottom: CGFloat) {
         let cell = TimelineHostingCell(frame: CGRect(x: 0, y: 0,
                                                      width: hostWidth, height: 300))
-        cell.configure(row, policy: .measured,
+        cell.configure(row, itemID: "gate-content-fit-cell", policy: .measured,
                        isMeasured: false, reportsContentHeight: false,
                        seededHeight: nil)
         window.addSubview(cell)
@@ -2726,7 +2726,8 @@ final class CodeProfileAutoRunModel {
             let cell = collectionView.dequeueReusableCell(
                 withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                 for: indexPath) as! TimelineHostingCell
-            cell.configure(row, policy: .measured,
+            cell.configure(row, itemID: "gate-collection-\(indexPath.item)",
+                           policy: .measured,
                            isMeasured: false, reportsContentHeight: false,
                            seededHeight: seed)
             if forceContentLayout {

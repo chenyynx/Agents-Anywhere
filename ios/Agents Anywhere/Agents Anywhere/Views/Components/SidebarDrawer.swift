@@ -778,8 +778,15 @@ private struct SidebarDrawerMainCard<Content: View>: View {
 }
 
 private enum SidebarDrawerCardShape {
+    /// The card is a plain full-window rectangle translated by the offset;
+    /// the system screen mask is the only source of corner rounding. A
+    /// container-concentric shape resolved its corner against the window and
+    /// painted the hairline arc inside the screen corner even while the card
+    /// was translated out (pp 2026-11-01: visible arc + drawer surface in the
+    /// top-right/bottom-right corners).
     static func shape(isFullyClosed: Bool) -> ConcentricRectangle {
-        ConcentricRectangle(corners: isFullyClosed ? .fixed(0) : .concentric)
+        _ = isFullyClosed
+        return ConcentricRectangle(corners: .fixed(0))
     }
 }
 

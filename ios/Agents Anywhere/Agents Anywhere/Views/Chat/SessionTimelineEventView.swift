@@ -213,6 +213,13 @@ private struct TimelineToolDetails: View {
             if let output = value.output {
                 TimelineCodePanel(label: String(localized: "Output"), code: output)
             }
+            // The official in-card note: what is on screen is cut (deferred
+            // summary or a preview-only row). Read keeps its own full-file
+            // footnote in the footer instead.
+            if (deferred || ToolTruncation.isPreviewOnly(row.value)),
+               !ToolTruncation.isReadTool(row.value) {
+                ToolTruncatedNote()
+            }
             if deferred || chat.deferredItems.phase(row.id) == .loaded {
                 DeferredLoadFooter(chat: chat, id: row.id, kind: .output)
             }
@@ -387,7 +394,7 @@ struct TimelineCodePanel: View {
                 }
             }
             .frame(height: min(320, max(76, CGFloat(panel.lineCount) * rowHeight + 24)))
-            if displayCode.count < code.count { Text(String(localized: "预览已截断，复制可获取完整内容")).font(.caption).foregroundStyle(.secondary).padding(8) }
+            if displayCode.count < code.count { ToolTruncatedNote() }
         }.background(Color(uiColor: .secondarySystemBackground))
     }
     private func diffColor(_ kind: TimelineDiff.Line.Kind) -> Color {

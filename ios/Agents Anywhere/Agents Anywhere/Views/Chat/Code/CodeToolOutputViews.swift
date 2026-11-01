@@ -36,6 +36,11 @@ struct CodeToolOutputView: View {
     /// structured JSON object"). The Prettify button still requires the
     /// body itself to sniff as JSON (R-U §1/E3).
     var detectsJSON: Bool = false
+    /// What is on screen is cut (deferred summary, preview-only row, or the
+    /// client's 200k cap). Draws the official in-card "已截断" note; Read is
+    /// excluded by the caller because its full-file footnote owns that
+    /// surface.
+    var truncated: Bool = false
 
     var body: some View {
         switch output {
@@ -53,12 +58,13 @@ struct CodeToolOutputView: View {
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
                                   code: text,
-                                  detectsJSON: detectsJSON)
+                                  detectsJSON: detectsJSON,
+                                  truncated: truncated)
             }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
         case let .diff(diff):
-            CodeToolDiffOutputView(diff: diff)
+            CodeToolDiffOutputView(diff: diff, truncated: truncated)
         case let .submittedAnswers(answers):
             CodeToolSubmittedAnswersOutputView(answers: answers)
         case .approvedPlan:
@@ -318,6 +324,9 @@ struct CodeToolCodeCard: View {
     /// AA's `detectsJSON` mapping (R-U §1). The Prettify button also requires
     /// the body to sniff as JSON and the state not to be `.failed` (R-U §3).
     let detectsJSON: Bool
+    /// The row itself is cut (deferred summary / preview-only), not only the
+    /// client's 200k render cap.
+    var truncated: Bool = false
     /// Sniffed once at init so a body re-evaluation never re-trims the payload.
     private let sniffsAsJSON: Bool
 
@@ -326,10 +335,12 @@ struct CodeToolCodeCard: View {
     @State private var displayCode: String
     @State private var prettify: CodeToolPrettify = .initial
 
-    init(title: String?, code: String, detectsJSON: Bool = false) {
+    init(title: String?, code: String, detectsJSON: Bool = false,
+         truncated: Bool = false) {
         self.title = title
         self.code = code
         self.detectsJSON = detectsJSON
+        self.truncated = truncated
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(code)
         _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
@@ -357,12 +368,8 @@ struct CodeToolCodeCard: View {
                 CodeToolCardDivider()
             }
             CodeToolCodeBody(code: displayCode)
-            if visibleText.count > CodeToolCardMetrics.previewLimit {
-                Text(String(localized: "预览已截断，复制可获取完整内容"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
-                    .padding(.bottom, 12)
+            if visibleText.count > CodeToolCardMetrics.previewLimit || truncated {
+                ToolTruncatedNote()
             }
         }
         .codeToolCardChrome()
@@ -605,6 +612,8 @@ private struct CodeToolTodosOutputView: View {
 
 private struct CodeToolDiffOutputView: View {
     let diff: CodeToolDiff
+    /// The row is cut (deferred summary / preview-only), not only paged.
+    var truncated: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -657,6 +666,7 @@ private struct CodeToolDiffOutputView: View {
                     .frame(height: 1 / displayScale)
                 loadMore
             }
+            if truncated { ToolTruncatedNote() }
         }
         .background(surface)
         .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,

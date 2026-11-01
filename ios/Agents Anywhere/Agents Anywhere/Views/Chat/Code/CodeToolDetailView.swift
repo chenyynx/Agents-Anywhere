@@ -220,6 +220,12 @@ struct CodeToolCallDetailView: View {
     /// input is a structured JSON object. The output card still needs the
     /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
     private var detectsJSON: Bool { CodeToolInputFields.detectsJSON(for: liveCall) }
+    /// The visible payload is cut: the deferred summary is on screen, or the
+    /// row carries only `outputPreview`. Read keeps its own full-file footnote,
+    /// so it does not take the generic in-card note.
+    private var showsTruncationNote: Bool {
+        call.kind != .read && (liveItem.isDeferred || ToolTruncation.isPreviewOnly(liveItem))
+    }
 
     @Environment(\.colorScheme) private var colorScheme
     /// The D9 placeholder line box (see `CodeDetailRowHooks`).
@@ -289,7 +295,8 @@ struct CodeToolCallDetailView: View {
         if !output.isEmpty {
             CodeToolOutputView(output: output,
                                kind: call.kind,
-                               detectsJSON: detectsJSON)
+                               detectsJSON: detectsJSON,
+                               truncated: showsTruncationNote)
         }
     }
 

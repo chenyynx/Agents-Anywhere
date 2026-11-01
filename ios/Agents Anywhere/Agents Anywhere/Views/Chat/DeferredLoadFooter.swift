@@ -54,13 +54,8 @@ struct DeferredLoadFooter: View {
     }
 
     private var effectiveKind: Kind {
-        guard kind == .output,
-              let name = [item?.raw["content"]?["toolName"],
-                          item?.raw["content"]?["name"],
-                          item?.raw["content"]?["tool"]]
-                    .compactMap({ $0?.stringValue }).first?.lowercased()
-        else { return kind }
-        return name == "read" || name == "readfile" ? .fileOutput : .output
+        guard kind == .output, ToolTruncation.isReadTool(item) else { return kind }
+        return .fileOutput
     }
 
     /// Lines the preview actually shows. The official unknown-total footnote
@@ -74,11 +69,14 @@ struct DeferredLoadFooter: View {
 
     var body: some View {
         let phase = phase
+        let note = note(phase)
         VStack(alignment: .leading, spacing: 6) {
-            Text(note(phase))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if !note.isEmpty {
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             control(phase)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,21 +121,31 @@ struct DeferredLoadFooter: View {
         case .offline:
             return "\(String(localized: "离线")) · \(failedTitle)"
         case .idle, .loading:
-            return truncationNote
+            // A non-Read row carries the official in-card "已截断" note; only
+            // Read keeps the official full-file footnote here.
+            switch effectiveKind {
+            case .fileOutput, .thinking: return truncationNote
+            case .output: return ""
+            }
         case .loaded:
-            return loadedTitle
+            switch effectiveKind {
+            case .fileOutput, .thinking: return loadedTitle
+            case .output: return ""
+            }
         }
     }
 
     private var truncationNote: String {
         switch effectiveKind {
-        case .fileOutput, .output:
+        case .fileOutput:
             guard shownLines > 0 else { return String(localized: "已在工具输出上限处截断") }
             // Official zh swaps the positional arguments: preserve %n$ when
             // the catalog gains the total-known variant.
             return String(format: String(localized: "显示 %lld 行（已在工具输出上限处截断）"), shownLines)
         case .thinking:
             return String(localized: "已按上下文预算截断")
+        case .output:
+            return ""
         }
     }
 

@@ -16596,23 +16596,6 @@
         }
       }
     },
-    "预览已截断，复制可获取完整内容": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preview truncated. Copy to get the full content"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预览已截断，复制可获取完整内容"
-          }
-        }
-      }
-    },
     "预览页面已退出，请重新加载。": {
       "extractionState": "manual",
       "localizations": {
@@ -19251,6 +19234,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已在工具输出上限处截断"
+          }
+        }
+      }
+    },
+    "已截断": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Truncated"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已截断"
           }
         }
       }

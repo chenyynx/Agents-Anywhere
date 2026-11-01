@@ -188,8 +188,7 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
     全绿；run 835（head `c0b908fa`）test（1259 条）与 build 全绿并出包，
     timeline-autorun 在 harness 的 prepend 锚点停放检查失败
     （`screenY -673.0, expected 68.0`；该 harness 不经过本次改动的
-    repository/model，run 831/832/834 的同一 gate 均绿），已重跑 run 839
-    复核。
+    repository/model，run 831/832/834 的同一 gate 均绿），已重跑 run 839（同 head）timeline-autorun 绿，确认为 harness 抖动。
   - 真机：待验。装 b835 后打开被淘汰会话，应显示遮罩并在数秒内出行。
 - 已知风险 / 后续：服务端 `timeline?mode=latest|history` 没有字节预算
   （2 MB 预算只在 snapshot / deferred / children）；用户手动"加载更早"或

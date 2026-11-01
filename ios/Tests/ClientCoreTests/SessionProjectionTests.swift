@@ -236,6 +236,23 @@ import Testing
         #expect(!projection.data.hasNewerItems)
     }
 
+    /// A settled row always wins over an active one, even when its sequence is
+    /// older: a missed terminal update used to leave a step spinning in the
+    /// cached history forever (device 2026-11-01).
+    @Test func aTerminalStatusReplacesAnActiveRowWithAnOlderSequence() throws {
+        var held = try itemObject(id: "step", order: 1, revision: 5, seq: 50)
+        held["status"] = "running"
+        var projection = V2SessionProjection(snapshot: try snapshot(items: [held]),
+                                             maximumItems: 100)
+        #expect(projection.data.items.first?.status == .running)
+
+        var settled = try itemObject(id: "step", order: 1, revision: 4, seq: 40)
+        settled["status"] = "done"
+        try projection.apply(event("timeline.item_updated", seq: 40,
+                                   payload: ["item": settled]))
+        #expect(projection.data.items.first?.status == .done)
+    }
+
     /// A latest page selected before a deferred row existed must not clear the
     /// flag: the row would be lost with the event cursor already past it.
     @Test func anOlderPageDoesNotHideTheDeferredRow() throws {

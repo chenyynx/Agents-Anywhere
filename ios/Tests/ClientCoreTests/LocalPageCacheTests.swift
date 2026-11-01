@@ -244,6 +244,51 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// A history page served from the archive can carry a step the server has
+    /// already finished. The disk page must not win when it holds an active
+    /// status: the repository reads the server's page for that range and the
+    /// settled row replaces it (device 2026-11-01: a step spun forever).
+    @Test func anArchivedActiveRowIsRefreshedFromTheServerOnHistoryPaging() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let http = TestHTTPTransport()
+        let seedStore = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        do {
+            let seedRepo = repository(transport: TestHTTPTransport(), localStore: seedStore)
+            var items = try (1...600).map { try itemObject(id: "item-\($0)", order: $0) }
+            var active = try itemObject(id: "item-200", order: 200)
+            active["status"] = "running"
+            items[199] = active
+            let data = V2SessionData(snapshot: try snapshot(items: items, hasMore: true))
+            await seedStore.saveSession(V2SessionArchive(data: data,
+                                                         model: seedRepo.session(id: "session")))
+            seedRepo.reset()
+            await seedStore.close(removing: false)
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+
+        var page = try fixtureObject("timeline")
+        var pageItems = try (101...300).map { try itemObject(id: "item-\($0)", order: $0) }
+        var settled = try itemObject(id: "item-200", order: 200)
+        settled["status"] = "done"
+        pageItems[99] = settled
+        page["items"] = pageItems
+        page["hasMore"] = true
+        let pageData = try JSONSerialization.data(withJSONObject: page)
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
+            return pageData
+        }
+
+        let repo = repository(transport: http, localStore: store)
+        defer { repo.reset() }
+        _ = try await repo.load(sessionId: "session")
+        let older = try await repo.loadOlder(sessionId: "session")
+        #expect(http.count("timeline") == 1)
+        #expect(older.items.first { $0.id == "item-200" }?.status == .done)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
     /// A stale window is healed on resume for an observed session even when no
     /// opening or bottom trigger runs (the app was only backgrounded).
     @Test func resumeFillsAStaleWindowForAnObservedSession() async throws {

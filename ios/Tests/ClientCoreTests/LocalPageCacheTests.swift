@@ -148,7 +148,17 @@ import Testing
 
         let http = TestHTTPTransport()
         let gate = TestGate()
-        let latestPage = try timelinePage(451...601, hasMore: true)
+        // The page must carry the echo's clientMessageId: that is what retires
+        // the pending bubble once the row is present.
+        var page = try fixtureObject("timeline")
+        var pageItems = try (451...600).map {
+            try itemObject(id: "item-\($0)", order: $0, seq: $0)
+        }
+        pageItems.append(try itemObject(id: "item-601", order: 601, seq: 601,
+                                        text: "hi", clientID: "client"))
+        page["items"] = pageItems
+        page["hasMore"] = true
+        let latestPage = try JSONSerialization.data(withJSONObject: page)
         var latestStarted = false
         http.respond = { call in
             guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
@@ -167,10 +177,11 @@ import Testing
         let repo = repository(transport: http, realtime: realtime, policy: policy, localStore: store)
         defer { gate.release(); repo.reset() }
 
-        // Offline opening keeps the cached window and its newer flag without
-        // issuing a latest read; the fill below is the first network read.
+        // Restore the cached window with its newer flag but do not open: the
+        // fill is the only latest read this test is about.
         repo.updateConnectivity(.init(availability: .offline))
-        _ = try await repo.open(sessionId: "session")
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
         repo.updateConnectivity(.init(availability: .online))
 
         let model = repo.session(id: "session")

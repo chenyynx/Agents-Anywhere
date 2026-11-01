@@ -322,6 +322,129 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// An empty restored window has no self-heal trigger left (the saved newer
+    /// flag is cleared and there is no row to page from), so a failed opening
+    /// read must be picked up by the connection lifecycle: the entry is marked
+    /// for a snapshot and the next connection hydrates it. Otherwise an
+    /// offline open stays an empty transcript after the network returns.
+    @Test func anEvictedWindowRecoversWhenConnectivityReturns() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, hasNewerItems: true)
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        await store.trimCache(to: 0)
+
+        let http = TestHTTPTransport()
+        let realtime = TestRealtimeAPI()
+        realtime.onRecover = {
+            V2EventRecoveryResponse(events: [], nextCursor: "seq:1000",
+                                    snapshotRequired: false, serverTime: "")
+        }
+        let repo = repository(transport: http, realtime: realtime, localStore: store)
+        defer { repo.reset() }
+
+        // The chat page observes for its whole visit; the connection itself
+        // only starts once the network is usable.
+        repo.updateConnectivity(.init(availability: .offline))
+        let observation = repo.observe(sessionId: "session")
+        let consumer = Task { for await _ in observation {} }
+        defer { consumer.cancel() }
+
+        var offline = false
+        do { _ = try await repo.open(sessionId: "session") } catch { offline = true }
+        #expect(offline)
+        #expect(repo.cached(sessionId: "session")?.items.isEmpty == true)
+        #expect(http.calls.isEmpty)
+
+        repo.updateConnectivity(.init(availability: .online))
+        try await eventually { repo.cached(sessionId: "session")?.items.isEmpty == false }
+        #expect(http.count("snapshot") == 1)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
+    /// A latest read on the wire owns the newest side: the observed
+    /// lifecycle's fill and a bottom return must not start a second page.
+    @Test func aLatestReadInFlightIsNotDuplicatedByTheFill() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        // JSON-only store: the row store cannot answer a latest page, so the
+        // read below takes the direct network path that sets the in-flight
+        // marker.
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        do {
+            let seedRepo = repository(transport: TestHTTPTransport(), localStore: store)
+            var data = V2SessionData(snapshot: try snapshot(items: [
+                try itemObject(id: "reply-1", order: 1, seq: 1),
+            ], hasMore: true))
+            data.hasNewerItems = true
+            await store.saveSession(V2SessionArchive(data: data, model: seedRepo.session(id: "session")))
+            seedRepo.reset()
+            await store.close(removing: false)
+        }
+        let reopened = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        var reads = 0
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
+            reads += 1
+            await gate.wait()
+            return try timelinePage(1...5)
+        }
+        let repo = repository(transport: http, localStore: reopened)
+        defer { gate.release(); repo.reset() }
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
+
+        let read = Task { _ = try? await repo.loadLatest(sessionId: "session") }
+        defer { read.cancel() }
+        try await eventually { reads == 1 }
+
+        // The page starts observing and returns to the bottom while the read
+        // is still blocked.
+        let observation = repo.observe(sessionId: "session")
+        let consumer = Task { for await _ in observation {} }
+        defer { consumer.cancel() }
+        repo.followLatest(sessionId: "session")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(reads == 1)
+
+        gate.release()
+        await read.value
+        #expect(reads == 1)
+
+        repo.reset(); await reopened.close(removing: true)
+    }
+
+    /// The fill belongs to the observed lifecycle: a session nobody watches
+    /// must not poll a multi-megabyte newest page.
+    @Test func anUnobservedWindowDoesNotStartTheFill() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        do {
+            let seedRepo = repository(transport: TestHTTPTransport(), localStore: store)
+            var data = V2SessionData(snapshot: try snapshot(items: [
+                try itemObject(id: "reply-1", order: 1, seq: 1),
+            ], hasMore: true))
+            data.hasNewerItems = true
+            await store.saveSession(V2SessionArchive(data: data, model: seedRepo.session(id: "session")))
+            seedRepo.reset()
+            await store.close(removing: false)
+        }
+        let reopened = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http, localStore: reopened)
+        defer { repo.reset() }
+
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
+        repo.followLatest(sessionId: "session")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(http.count("timeline") == 0)
+
+        repo.reset(); await reopened.close(removing: true)
+    }
+
     /// A stale window is healed on resume for an observed session even when no
     /// opening or bottom trigger runs (the app was only backgrounded).
     @Test func resumeFillsAStaleWindowForAnObservedSession() async throws {

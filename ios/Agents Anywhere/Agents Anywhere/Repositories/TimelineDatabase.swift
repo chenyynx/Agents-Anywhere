@@ -254,8 +254,9 @@ nonisolated final class TimelineDatabase {
                   var archive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) else {
                 return nil
             }
-            // The rows are gone; an online open must fetch the latest page
-            // rather than present an empty window.
+            // The rows are gone; an online open must fetch the bounded
+            // snapshot rather than present an empty window (the repository
+            // keys its evicted-window branch on this flag).
             archive.hasOlderItems = true
             return archive
         }
@@ -343,8 +344,8 @@ nonisolated final class TimelineDatabase {
                 try db.execute(sql: "DELETE FROM timeline_items WHERE session_id = ?",
                                arguments: [id])
                 // Keep the meta (drafts/queue) but flag that the window is no
-                // longer complete, so an online open re-reads the latest page
-                // instead of presenting an empty timeline.
+                // longer complete, so an online open re-reads it (the bounded
+                // snapshot) instead of presenting an empty timeline.
                 try db.execute(sql: """
                     UPDATE session_meta SET cache_bytes = 0, has_older = 1
                     WHERE session_id = ?

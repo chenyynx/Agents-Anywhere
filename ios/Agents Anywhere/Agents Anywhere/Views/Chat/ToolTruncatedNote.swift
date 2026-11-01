@@ -1,35 +1,41 @@
 import SwiftUI
 
-/// The official tool-result truncation note.
+/// The shared face for an in-card tool status line ("已截断" / "已加载完整
+/// 文件" / failure).
 ///
 /// Source: `0d8e.tool_truncated` = "Truncated" / "已截断"
-/// (`EVIDENCE/strings-diff.csv:3548`, ClaudeChatUI bundle). The official view
-/// at `0x102a4a92c` builds `Text(LocalizedStringKey)` and applies
-/// `foregroundStyle(Color)`, `_FlexFrameLayout` and `_PaddingLayout` (type
-/// records `0x105c4b9f8` / `0x105c4bd50`; the padding constant is 12 at
-/// `0x105a68220`). It sits inside the tool card at the bottom, centred in the
-/// secondary ink — the Edit-detail screenshot (pp 2026-11-01) shows exactly
-/// this.
-///
-/// This is not the Read full-file footnote (`tool_detail_read_truncated`,
-/// "Showing %lld of %lld lines…"): that one belongs to the Read detail's
-/// full-file control and stays in `DeferredLoadFooter`.
-///
-/// AA shows the note whenever what is on screen is cut: the server's deferred
-/// summary, an `outputPreview`-only row, or the client's 200k preview cap. The
-/// full-row load control (where one exists) is a separate AA affordance.
-struct ToolTruncatedNote: View {
-    /// The official `_PaddingLayout` value (`0x105a68220` = 12.0); the
-    /// surrounding `_FlexFrameLayout` is the full-width centred frame.
-    private static let verticalPadding: CGFloat = 12
+/// (`EVIDENCE/strings-diff.csv:3548`). The official view at `0x102a4a92c` is
+/// `Text + foregroundStyle(Color) + _FlexFrameLayout + _PaddingLayout`; the
+/// pp screenshot (2026-11-01) pins the rest: bottom-left inside the card,
+/// ~16 pt leading inset, ~12 pt vertical padding, 13 pt ink, and a dark
+/// neutral (~sRGB 0.31) rather than SwiftUI's lighter `.secondary`. The
+/// binary's color getter (`0x1029e4810`) is a token cache that does not expose
+/// the RGB in the decoded path, so the literal comes from the screenshot.
+struct ToolStatusText: View {
+    let text: String
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Text(String(localized: "已截断"))
-            // [U] the exact font; the official type records do not name one.
+        Text(text)
             .font(.footnote)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, Self.verticalPadding)
+            .foregroundStyle(Self.ink(for: colorScheme))
+    }
+
+    static func ink(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(.sRGB, red: 0.75, green: 0.75, blue: 0.74)
+            : Color(.sRGB, red: 0.31, green: 0.31, blue: 0.30)
+    }
+}
+
+/// One-line official truncation note: bottom-left inside the card.
+struct ToolTruncatedNote: View {
+    var body: some View {
+        ToolStatusText(text: String(localized: "已截断"))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
     }
 }
 
@@ -45,28 +51,9 @@ nonisolated enum ToolTruncation {
             .lowercased()
     }
 
-    /// Read carries its own full-file control and footnote, so it must not
-    /// also take the generic in-card note.
+    /// Read carries its own full-file wording; the load control is the same.
     static func isReadTool(_ item: V2TimelineItem?) -> Bool {
         let name = toolName(item)
         return name == "read" || name == "readfile"
-    }
-
-    /// No full output value exists; the row carries only `outputPreview`.
-    /// Mirrors `CodeToolOutput.outputPayload`'s full-value keys.
-    static func isPreviewOnly(_ item: V2TimelineItem) -> Bool {
-        let content = item.raw["content"] ?? .object([:])
-        let hasFull = ["output", "outputText", "result", "text"].contains { key in
-            guard let value = content[key], value != .null else { return false }
-            switch value {
-            case let .string(text): return !text.isEmpty
-            case let .array(items): return !items.isEmpty
-            case let .object(fields): return !fields.isEmpty
-            default: return true
-            }
-        }
-        guard let preview = content["outputPreview"], preview != .null else { return false }
-        if case let .string(text) = preview, text.isEmpty { return false }
-        return !hasFull
     }
 }

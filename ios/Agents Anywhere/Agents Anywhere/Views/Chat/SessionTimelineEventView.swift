@@ -213,13 +213,6 @@ private struct TimelineToolDetails: View {
             if let output = value.output {
                 TimelineCodePanel(label: String(localized: "Output"), code: output)
             }
-            // The official in-card note: what is on screen is cut (deferred
-            // summary or a preview-only row). Read keeps its own full-file
-            // footnote in the footer instead.
-            if (deferred || ToolTruncation.isPreviewOnly(row.value)),
-               !ToolTruncation.isReadTool(row.value) {
-                ToolTruncatedNote()
-            }
             if deferred || chat.deferredItems.phase(row.id) == .loaded {
                 DeferredLoadFooter(chat: chat, id: row.id, kind: .output)
             }

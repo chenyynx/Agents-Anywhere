@@ -220,15 +220,9 @@ struct CodeToolCallDetailView: View {
     /// input is a structured JSON object. The output card still needs the
     /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
     private var detectsJSON: Bool { CodeToolInputFields.detectsJSON(for: liveCall) }
-    /// The visible payload is cut: the deferred summary is on screen, or the
-    /// row carries only `outputPreview`. Read keeps its own full-file footnote,
-    /// so it does not take the generic in-card note.
-    private var showsTruncationNote: Bool {
-        call.kind != .read && (liveItem.isDeferred || ToolTruncation.isPreviewOnly(liveItem))
-    }
-
-    /// The deferred full-row control, drawn inside the output card so the
-    /// truncation note and its load action share one surface (pp 2026-11-01).
+    /// The deferred full-row status/load line, drawn at the output card's
+    /// bottom-left so the truncation note and its action share one surface
+    /// (pp 2026-11-01).
     private var deferredFooter: AnyView? {
         guard let chat,
               liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
@@ -236,28 +230,9 @@ struct CodeToolCallDetailView: View {
         return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output))
     }
 
-    /// Read's truncation footnote belongs inside the card; its load status
-    /// and capsule button are a separate HStack below the card (official
-    /// `FileReadDetailView.Body`: card, metadata, then `HStack<Text,
-    /// AsyncButton?>`).
-    private var readCardNote: AnyView? {
-        guard call.kind == .read, let chat,
-              liveItem.isDeferred || ToolTruncation.isPreviewOnly(liveItem)
-        else { return nil }
-        return AnyView(ReadTruncationFootnote(chat: chat, id: liveItem.id))
-    }
-
-    /// The card-owned footer: Read's in-card footnote, or the AA load control
-    /// for the non-Read code/diff cards.
-    private var inCardFooter: AnyView? {
-        call.kind == .read ? readCardNote : deferredFooter
-    }
-
-    /// Only the non-Read code/diff cards own a card footer; Read keeps its
-    /// control below the card, and the remaining output shapes keep it in the
-    /// section below.
+    /// The code/read/diff cards own the footer inside their chrome; the
+    /// remaining output shapes keep it in the section below.
     private var outputCardTakesFooter: Bool {
-        if call.kind == .read { return false }
         switch output {
         case .text, .diff: return true
         default: return false
@@ -333,8 +308,7 @@ struct CodeToolCallDetailView: View {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
-                               truncated: showsTruncationNote,
-                               footer: inCardFooter)
+                               footer: deferredFooter)
         }
     }
 
@@ -344,8 +318,7 @@ struct CodeToolCallDetailView: View {
     @ViewBuilder private var deferredSection: some View {
         if let chat,
            liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded {
-            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
-                               showsTruncationNote: call.kind != .read)
+            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output)
         }
     }
 

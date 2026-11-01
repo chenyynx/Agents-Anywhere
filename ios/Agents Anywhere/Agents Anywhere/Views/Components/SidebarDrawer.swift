@@ -263,8 +263,6 @@ private struct SidebarDrawerInteractive<
                 .accessibilityHidden(!interaction.acceptsSidebarTouches)
                 .modifier(SidebarDrawerSidebarShade(motion: motion))
 
-                SidebarDrawerSeamShade(motion: motion, revealWidth: revealWidth)
-
                 SidebarDrawerMainCard(
                     size: screenSize,
                     isFullyClosed: interaction.acceptsContentTouches,
@@ -771,10 +769,9 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     let content: Content
 
     var body: some View {
-        // The card is a plain rectangle at every offset; the drawer surface's
-        // screen-space clip supplies the display corners, so the card's left
-        // seam stays straight and no sidebar surface peeks through it
-        // (pp 2026-11-01).
+        // The card is the official full-window rounded rectangle: the same
+        // display-radius corners at every offset, clipped once with the
+        // drawer surface so the screen corners always match (pp 2026-11-01).
         let screenShape = SidebarDrawerCardShape.shape(isFullyClosed: isFullyClosed)
 
         content
@@ -791,17 +788,24 @@ private struct SidebarDrawerMainCard<Content: View>: View {
     }
 }
 
-/// The card's visible left outline while the drawer moves: one straight seam
-/// from the top edge to the bottom edge. A rounded moving edge exposed the
-/// drawer surface beyond the card at the top and bottom, which read as a
-/// translucent vertical line through the status bar and home indicator
-/// (pp 2026-11-01). The window's own corners are rounded by the container
-/// clip, not by this moving edge.
+/// The card's visible left outline: the top-left corner arc, the straight
+/// left edge, then the bottom-left arc. Official drawerA measures this arc
+/// at radius 165px = 55pt, i.e. the display's own corner radius, and the 1px
+/// edge line follows it (pp 2026-11-01).
 private struct CardSeamLine: Shape {
+    let radius: CGFloat
+
     func path(in rect: CGRect) -> Path {
+        let r = max(0, min(radius, min(rect.width, rect.height) / 2))
         var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.move(to: CGPoint(x: r, y: rect.minY))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                    tangent2End: CGPoint(x: rect.minX, y: rect.minY + r),
+                    radius: r)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+        path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY),
+                    tangent2End: CGPoint(x: rect.minX + r, y: rect.maxY),
+                    radius: r)
         return path
     }
 }
@@ -827,15 +831,15 @@ private enum SidebarDrawerScreenCorner {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card is a plain rectangle at every offset. The drawer surface's
-    /// screen-space clip owns the display's corners; the moving card's left
-    /// edge is a seam in the middle of the screen and must stay straight. A
-    /// rounded moving edge exposed the drawer surface beyond the card at the
-    /// top and bottom, which read as a translucent vertical line through the
-    /// system areas (pp 2026-11-01).
-    static func shape(isFullyClosed: Bool) -> Rectangle {
+    /// The card is the full-window rounded rectangle at the display's own
+    /// corner radius (official drawerA: the top-left arc fits a 165px = 55pt
+    /// circle, the edge line follows it). The container clip keeps the screen
+    /// corners; the card shape is identical at every offset so the seam never
+    /// jumps during the drag (pp 2026-11-01).
+    static func shape(isFullyClosed: Bool) -> RoundedRectangle {
         _ = isFullyClosed
-        return Rectangle()
+        return RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                style: .circular)
     }
 }
 
@@ -909,10 +913,9 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // open, so the official scrim token is not applied here.
             .overlay {
                 // [E] contentBorder alpha is binary: (fraction > 0) ? 1 : 0
-                // (0x10105186c). The seam is straight from the top edge to
-                // the bottom edge; the window's corners come from the
-                // container clip (pp 2026-11-01).
-                CardSeamLine()
+                // (0x10105186c). The line follows the card's left outline —
+                // top arc, straight edge, bottom arc (official drawerA).
+                CardSeamLine(radius: SidebarDrawerScreenCorner.radius)
                     .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))
                     .opacity(progress > 0.001 ? 1 : 0)
                     .allowsHitTesting(false)
@@ -922,6 +925,11 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // change paragraph wrapping. Keep the whole translation out of
             // layout, including every interpolated frame of the spring.
             .modifier(SidebarDrawerTranslation(x: revealWidth * progress).ignoredByLayout())
+            // The drawer-side attenuation follows the card's rounded outline;
+            // official drawerA measures ~10.7pt with ~5% at the edge. A band
+            // anchored to the straight seam left a vertical shadow strip in
+            // the corner regions, above and below the arcs (pp 2026-11-01).
+            .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 0)
     }
 }
 
@@ -938,30 +946,6 @@ private struct SidebarDrawerSidebarShade: ViewModifier {
                     .opacity(max(0, 1 - motion.progress) * 0.4)
                     .allowsHitTesting(false)
             }
-    }
-}
-
-/// [E] The drawer shadow's visible falloff sits on the drawer side of the
-/// seam: the reference profile drops 243 → 231 over the last ~10.7pt before
-/// the 1px edge line, while the content side stays flat at 249. Anchored to
-/// the card's left edge so it travels with the moving seam.
-private struct SidebarDrawerSeamShade: View {
-    let motion: SidebarDrawerMotion
-    let revealWidth: CGFloat
-
-    var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .black.opacity(0), location: 0),
-                .init(color: .black.opacity(0.05), location: 1)
-            ],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .frame(width: 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .offset(x: revealWidth * motion.progress - 12)
-        .allowsHitTesting(false)
     }
 }
 

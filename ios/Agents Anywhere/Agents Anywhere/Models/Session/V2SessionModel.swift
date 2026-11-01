@@ -525,11 +525,11 @@ final class V2SessionModel: Identifiable {
         repository?.cancelLatestReconcile(sessionId: id)
     }
 
-    func loadLatest() async {
+    func loadLatest(authoritative: Bool = false) async {
         guard let repository, isValid, !isLoadingHistory else { return }
         isLoadingHistory = true
         defer { isLoadingHistory = false }
-        do { _ = try await repository.loadLatest(sessionId: id) }
+        do { _ = try await repository.loadLatest(sessionId: id, authoritative: authoritative) }
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
@@ -611,7 +611,10 @@ final class V2SessionModel: Identifiable {
             guard !Task.isCancelled, let self, let pending, self.isValid,
                   self.pendingMessages.contains(where: { $0.id == pending.id }),
                   pending.delivery == .accepted else { return }
-            _ = try? await self.repository?.loadLatest(sessionId: self.id)
+            // The echo never reached the window through the live path; read
+            // the server's newest page authoritatively instead of the store's
+            // possibly-stale page.
+            _ = try? await self.repository?.loadLatest(sessionId: self.id, authoritative: true)
             // The local-first page can be stale; the network reconcile runs
             // in the background. Give it one more window before demoting
             // (the queue's own echo timeout is 60 s).

@@ -497,16 +497,17 @@ final class TimelineChatBridge: ObservableObject {
     /// seconds later when the upload/echo finally lands.
     func noteComposerSend() {
         guard model.session.hasNewerItems else { return }
-        loadLatest()
+        loadLatest(authoritative: true)
     }
 
-    private func loadLatest(auto: Bool = false) {
+    private func loadLatest(auto: Bool = false, authoritative: Bool = false) {
         guard !navigationSuspended, model.session.isValid,
               model.session.hasNewerItems, !model.session.isLoadingHistory,
               !isLoadingLatest else { return }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteHistory(
-            "bridge loadLatest auto=\(auto ? 1 : 0) off=\(controller?.collectionView.contentOffset.y ?? -1) "
+            "bridge loadLatest auto=\(auto ? 1 : 0) auth=\(authoritative ? 1 : 0) "
+            + "off=\(controller?.collectionView.contentOffset.y ?? -1) "
             + "items=\(controller?.items.count ?? 0)")
 #endif
         if !auto { controller?.allowLatestAfterHistoryGesture() }
@@ -519,12 +520,12 @@ final class TimelineChatBridge: ObservableObject {
         controller?.beginWindowReplacementReturn()
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.model.session.loadLatest()
+            await self.model.session.loadLatest(authoritative: authoritative)
             self.adapter.historyLoadDirection = nil
             self.isLoadingLatest = false
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteHistory(
-                "bridge loadLatest done auto=\(auto ? 1 : 0) "
+                "bridge loadLatest done auto=\(auto ? 1 : 0) auth=\(authoritative ? 1 : 0) "
                 + "off=\(self.controller?.collectionView.contentOffset.y ?? -1) "
                 + "items=\(self.controller?.items.count ?? 0) "
                 + "newer=\(self.model.session.hasNewerItems ? 1 : 0)")

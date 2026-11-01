@@ -214,7 +214,11 @@ final class V2SessionRepository {
         let windowHoldsNoMainRow = window?.items.contains { SubAgentProgress.parentItemID($0) == nil } == false
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
-            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize)
+            // Opening must not present a window the cache itself reports as
+            // behind: the authoritative read fills the newest side now, and
+            // only falls back to the store when the network fails.
+            return try await loadLatest(sessionId: sessionId, limit: policy.networkPageSize,
+                                        authoritative: true)
         }
         return entry.projection!.data
     }
@@ -395,7 +399,13 @@ final class V2SessionRepository {
         entries[sessionId]?.projection?.followLatest()
     }
 
-    func loadLatest(sessionId: V2SessionID, limit: Int? = nil) async throws -> V2SessionData {
+    /// `authoritative` is for callers that must not show a stale window: an
+    /// opening whose cache says it is behind, a composer send, and the echo
+    /// watchdog. They skip the local-first shortcut and read the newest page
+    /// from the server; a failed read still falls back to the store so the
+    /// page stays usable, with the newer flag kept for the retry.
+    func loadLatest(sessionId: V2SessionID, limit: Int? = nil,
+                    authoritative: Bool = false) async throws -> V2SessionData {
         let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
@@ -410,39 +420,60 @@ final class V2SessionRepository {
         // local page is applied immediately; if its saved cursor is behind the
         // live projection (or it says its tail is incomplete), a background
         // network read reconciles it without blocking the return.
-        //
-        // `>=`, not `>`: browsing history keeps both sides of the reader
-        // (V2SessionProjection.browseMaximumItems), so the projection's last
-        // row can already be the store's newest row. Requiring a strictly
-        // newer local row sent that equal-end case to the network and made
-        // the return-to-bottom block on it (and hang when the read was held).
-        if let localStore,
-           let local = await localStore.latestRows(sessionID: sessionId, limit: pageLimit),
-           let newest = local.items.last?.orderSeq,
-           let end = entry.projection?.data.items.last?.orderSeq,
-           newest >= end {
-            try requireCurrent(entry, version: version)
-            let localIsCurrent = !local.hasNewerRows
-                && V2SessionProjection.sequence(local.cursor) >= (entry.projection?.sequence ?? 0)
-            let page = V2SessionTimelinePage(
-                sessionId: sessionId, items: local.items,
-                nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
-                hasMore: entry.projection?.data.hasOlderItems ?? false,
-                serverTime: nil,
-                excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
-            entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
-            entry.projection?.setLocalOlderAvailable(local.hasMore)
-            emit(entry)
-            if !localIsCurrent {
-                startLatestReconcile(entry, limit: pageLimit, version: version)
-            }
-            return entry.projection!.data
+        if !authoritative,
+           let local = try await applyUsableLocalLatest(entry, limit: pageLimit, version: version) {
+            return local
         }
-        try requireNetwork()
-        let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
+        do {
+            try requireNetwork()
+            let page = try await detail.latestItems(sessionId: sessionId, limit: pageLimit, excludeAgentChildren: true)
+            try requireCurrent(entry, version: version)
+            entry.projection?.applyLatest(page)
+            emit(entry)
+            return entry.projection!.data
+        } catch {
+            guard authoritative else { throw error }
+            if let fallback = try? await applyUsableLocalLatest(entry, limit: pageLimit, version: version) {
+                return fallback
+            }
+            // The entry moved on while the read was in flight; its current
+            // window is already at least as new as the local page we could
+            // not apply. Never fail an opening for a stale local read.
+            if let current = entry.projection?.data { return current }
+            throw error
+        }
+    }
+
+    /// Applies the store's newest page when it reaches the held window's end.
+    /// Returns nil when the disk page cannot stand in for a latest read.
+    ///
+    /// `>=`, not `>`: browsing history keeps both sides of the reader
+    /// (V2SessionProjection.browseMaximumItems), so the projection's last
+    /// row can already be the store's newest row. Requiring a strictly
+    /// newer local row sent that equal-end case to the network and made
+    /// the return-to-bottom block on it (and hang when the read was held).
+    private func applyUsableLocalLatest(_ entry: Entry, limit: Int,
+                                        version: Int) async throws -> V2SessionData? {
+        guard let localStore,
+              let local = await localStore.latestRows(sessionID: entry.id, limit: limit),
+              let newest = local.items.last?.orderSeq,
+              let end = entry.projection?.data.items.last?.orderSeq,
+              newest >= end else { return nil }
         try requireCurrent(entry, version: version)
-        entry.projection?.applyLatest(page)
+        let localIsCurrent = !local.hasNewerRows
+            && V2SessionProjection.sequence(local.cursor) >= (entry.projection?.sequence ?? 0)
+        let page = V2SessionTimelinePage(
+            sessionId: entry.id, items: local.items,
+            nextSeq: local.items.map(\.updatedSeq).max() ?? 0,
+            hasMore: entry.projection?.data.hasOlderItems ?? false,
+            serverTime: nil,
+            excludesAgentChildren: entry.projection?.data.windowExcludesAgentChildren ?? false)
+        entry.projection?.applyLatest(page, hasNewerAfterApply: !localIsCurrent)
+        entry.projection?.setLocalOlderAvailable(local.hasMore)
         emit(entry)
+        if !localIsCurrent {
+            startLatestReconcile(entry, limit: limit, version: version)
+        }
         return entry.projection!.data
     }
 

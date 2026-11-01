@@ -137,6 +137,67 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// The 2026-11-01 incident end to end: the echo of a sent message sits
+    /// beyond a stale window, so the projection refuses it. The pending bubble
+    /// must not be confirmed while the row is missing; the deferred-row fill
+    /// then opens the window and both the echo and the bubble settle.
+    @Test func aDeferredEchoWaitsForTheLatestFillBeforeConfirming() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, hasNewerItems: true)
+
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        let latestPage = try timelinePage(451...601, hasMore: true)
+        var latestStarted = false
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
+            latestStarted = true
+            await gate.wait()
+            return latestPage
+        }
+        let realtime = TestRealtimeAPI()
+        realtime.onRecover = {
+            V2EventRecoveryResponse(events: [], nextCursor: "seq:1000",
+                                    snapshotRequired: false, serverTime: "")
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.maximumTimelineItems = 150
+        let repo = repository(transport: http, realtime: realtime, policy: policy, localStore: store)
+        defer { gate.release(); repo.reset() }
+
+        // Offline opening keeps the cached window and its newer flag without
+        // issuing a latest read; the fill below is the first network read.
+        repo.updateConnectivity(.init(availability: .offline))
+        _ = try await repo.open(sessionId: "session")
+        repo.updateConnectivity(.init(availability: .online))
+
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        model.stage(V2PendingMessage(id: "client", content: "hi", attachmentIDs: []))
+
+        realtime.yield(try event("timeline.item_created", seq: 1001, payload: [
+            "item": itemObject(id: "item-601", order: 601, seq: 1001,
+                               text: "hi", clientID: "client")]))
+        try await eventually { latestStarted }
+
+        // The echo is deferred: no confirmation, no row, and the window still
+        // reports that it is behind.
+        #expect(model.pendingMessages.first?.delivery != .confirmed)
+        #expect(!model.timeline.contains { $0.value.id == "item-601" })
+        #expect(model.session.hasNewerItems)
+
+        gate.release()
+        try await eventually { model.pendingMessages.isEmpty }
+        #expect(model.timeline.contains { $0.value.id == "item-601" })
+        #expect(!model.session.hasNewerItems)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
     @Test func historyAnchorKeepsTheReaderInsideTheWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 600)

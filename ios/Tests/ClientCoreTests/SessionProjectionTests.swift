@@ -211,6 +211,30 @@ import Testing
         #expect(projection.data.items.map(\.orderSeq) == Array(482...501))
     }
 
+    /// The 2026-11-01 incident shape: the cached window ends at order 3 and
+    /// already knows it is behind; a live row at order 9 cannot be inserted
+    /// (orders 4...8 are missing from both), so the projection defers it and
+    /// only the latest page brings it back.
+    @Test func aLiveRowBeyondAStaleWindowIsDeferredUntilTheLatestPage() throws {
+        let recent = try [3].map { try itemObject(id: "item-\($0)", order: $0, seq: 30) }
+        var projection = V2SessionProjection(archive: try snapshot(items: recent, hasMore: true),
+                                             hasNewerItems: true, maximumItems: 100)
+        let outcome = try projection.apply(event("timeline.item_created", seq: 40, payload: [
+            "item": itemObject(id: "item-9", order: 9, seq: 40, text: "Late")]))
+        #expect(outcome?.deferredNewer == true)
+        #expect(!projection.data.items.contains { $0.id == "item-9" })
+        #expect(projection.data.hasNewerItems)
+        #expect(projection.isFollowingLatest)
+
+        let page = try [3, 9].map {
+            try decode(itemObject(id: "item-\($0)", order: $0, seq: 40), as: V2TimelineItem.self)
+        }
+        projection.applyLatest(V2SessionTimelinePage(sessionId: "session", items: page,
+            nextSeq: 40, hasMore: true, serverTime: nil))
+        #expect(projection.data.items.map(\.orderSeq) == [3, 9])
+        #expect(!projection.data.hasNewerItems)
+    }
+
     @Test func historyPagingNeverDropsTheNewestRowsUntilTheWindowIsFull() throws {
         let recent = try (101...300).map { try itemObject(id: "item-\($0)", order: $0) }
         var projection = V2SessionProjection(snapshot: try snapshot(items: recent), maximumItems: 1000)

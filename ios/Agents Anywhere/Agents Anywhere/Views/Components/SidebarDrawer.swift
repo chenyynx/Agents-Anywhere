@@ -333,6 +333,10 @@ private struct SidebarDrawerInteractive<
             }
         }
         .ignoresSafeArea()
+        // Window rounding belongs to the container, not to the moving card:
+        // clip the whole drawer once in screen space so the corners stay
+        // round at rest, during the drag and after settling.
+        .clipShape(ConcentricRectangle(corners: .concentric))
         .environment(\.sidebarDrawerPresentation, .drawer)
         .environment(\.sidebarDrawerObscuresDetail, isOpen || motion.restingProgress > 0)
         .environment(\.sidebarDrawerIsTransitioning, isAnimating || dragStartProgress != nil
@@ -784,11 +788,13 @@ private struct SidebarDrawerMainCard<Content: View>: View {
 }
 
 private enum SidebarDrawerCardShape {
-    /// The card's corners follow the screen's corner radius while it is a
-    /// card; the concentric shape is what paints the rounding (pp
-    /// 2026-11-01: a plain rectangle looked square on device).
+    /// The card is always a plain rectangle: it is translated by the drawer
+    /// offset, so a shape attached to it either goes offscreen or resolves
+    /// against the window and paints its arc over the card. The window
+    /// rounding is clipped once on the drawer container instead.
     static func shape(isFullyClosed: Bool) -> ConcentricRectangle {
-        ConcentricRectangle(corners: isFullyClosed ? .fixed(0) : .concentric)
+        _ = isFullyClosed
+        return ConcentricRectangle(corners: .fixed(0))
     }
 }
 
@@ -852,8 +858,9 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // exposed — the side-by-side layout. The overlay drawer is
                 // `edgesShown = false`, so its in-card shadow stays at 0;
                 // the visible seam shadow comes from the drawer below.
+                // Opaque at every offset: fading the fill with progress made
+                // the card translucent while it moved (pp 2026-11-01).
                 screenShape.fill(drawerCardBackground)
-                    .opacity(progress)
                     .allowsHitTesting(false)
             }
             // No scrim on the card: both reference screenshots keep the

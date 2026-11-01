@@ -210,6 +210,38 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// The send path's guarantee: an authoritative read must not be answered
+    /// from the stale local page even when that page reaches the held window's
+    /// end. Without it, a send made from a stale window kept the transcript
+    /// behind until a background read happened to land.
+    @Test func authoritativeLatestSkipsTheStaleLocalPage() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),
+                       count: 600, hasNewerItems: true)
+
+        let http = TestHTTPTransport()
+        let latestPage = try timelinePage(501...700, hasMore: true)
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else { return try http.defaultResponse(call) }
+            return latestPage
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.maximumTimelineItems = 150
+        let repo = repository(transport: http, policy: policy, localStore: store)
+        defer { repo.reset() }
+
+        _ = try await repo.load(sessionId: "session")
+        #expect(repo.cached(sessionId: "session")?.hasNewerItems == true)
+
+        let latest = try await repo.loadLatest(sessionId: "session", authoritative: true)
+        #expect(http.count("timeline") == 1)
+        #expect(latest.items.last?.orderSeq == 700)
+        #expect(!latest.hasNewerItems)
+
+        repo.reset(); await store.close(removing: true)
+    }
+
     @Test func historyAnchorKeepsTheReaderInsideTheWindow() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true), count: 600)

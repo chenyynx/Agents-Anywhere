@@ -41,6 +41,10 @@ struct CodeToolOutputView: View {
     /// excluded by the caller because its full-file footnote owns that
     /// surface.
     var truncated: Bool = false
+    /// The deferred full-row control. It is drawn inside the output card's
+    /// chrome (pp 2026-11-01: the truncation note and its load action belong
+    /// to the same card, never a separate block below it).
+    var footer: AnyView? = nil
 
     var body: some View {
         switch output {
@@ -54,17 +58,20 @@ struct CodeToolOutputView: View {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 EmptyView()
             } else if kind == .read {
-                CodeFileReadOutputView(text: text, detectsJSON: detectsJSON)
+                CodeFileReadOutputView(text: text, detectsJSON: detectsJSON,
+                                       footer: footer)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
                                   code: text,
                                   detectsJSON: detectsJSON,
-                                  truncated: truncated)
+                                  truncated: truncated,
+                                  footer: footer)
             }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
         case let .diff(diff):
-            CodeToolDiffOutputView(diff: diff, truncated: truncated)
+            CodeToolDiffOutputView(diff: diff, truncated: truncated,
+                                   footer: footer)
         case let .submittedAnswers(answers):
             CodeToolSubmittedAnswersOutputView(answers: answers)
         case .approvedPlan:
@@ -93,15 +100,18 @@ struct CodeToolOutputView: View {
 private struct CodeFileReadOutputView: View {
     let text: String
     let detectsJSON: Bool
+    /// The deferred full-file control, drawn inside this card's chrome.
+    var footer: AnyView? = nil
     /// Sniffed once at init: the body can be a whole file, and a body
     /// re-evaluation must not re-trim it.
     private let sniffsAsJSON: Bool
     @State private var chunks: [String]
     @State private var prettify: CodeToolPrettify = .initial
 
-    init(text: String, detectsJSON: Bool = false) {
+    init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil) {
         self.text = text
         self.detectsJSON = detectsJSON
+        self.footer = footer
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
         _chunks = State(initialValue: CodeFileReadChunks.split(text))
     }
@@ -149,6 +159,10 @@ private struct CodeFileReadOutputView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CodeToolCardMetrics.contentInset)
+            if let footer {
+                footer
+                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
+            }
         }
         .codeToolCardChrome()
         .onChange(of: text) { _, newText in
@@ -327,6 +341,8 @@ struct CodeToolCodeCard: View {
     /// The row itself is cut (deferred summary / preview-only), not only the
     /// client's 200k render cap.
     var truncated: Bool = false
+    /// The deferred full-row control, drawn inside this card's chrome.
+    var footer: AnyView? = nil
     /// Sniffed once at init so a body re-evaluation never re-trims the payload.
     private let sniffsAsJSON: Bool
 
@@ -336,11 +352,12 @@ struct CodeToolCodeCard: View {
     @State private var prettify: CodeToolPrettify = .initial
 
     init(title: String?, code: String, detectsJSON: Bool = false,
-         truncated: Bool = false) {
+         truncated: Bool = false, footer: AnyView? = nil) {
         self.title = title
         self.code = code
         self.detectsJSON = detectsJSON
         self.truncated = truncated
+        self.footer = footer
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(code)
         _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
@@ -370,6 +387,10 @@ struct CodeToolCodeCard: View {
             CodeToolCodeBody(code: displayCode)
             if visibleText.count > CodeToolCardMetrics.previewLimit || truncated {
                 ToolTruncatedNote()
+            }
+            if let footer {
+                footer
+                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
             }
         }
         .codeToolCardChrome()
@@ -614,6 +635,8 @@ private struct CodeToolDiffOutputView: View {
     let diff: CodeToolDiff
     /// The row is cut (deferred summary / preview-only), not only paged.
     var truncated: Bool = false
+    /// The deferred full-row control, drawn inside this card's chrome.
+    var footer: AnyView? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -667,6 +690,10 @@ private struct CodeToolDiffOutputView: View {
                 loadMore
             }
             if truncated { ToolTruncatedNote() }
+            if let footer {
+                footer
+                    .padding(.horizontal, CodeToolCardMetrics.contentInset)
+            }
         }
         .background(surface)
         .clipShape(RoundedRectangle(cornerRadius: CodeToolCardMetrics.cornerRadius,

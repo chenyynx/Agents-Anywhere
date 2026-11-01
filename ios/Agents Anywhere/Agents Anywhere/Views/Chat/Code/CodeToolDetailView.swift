@@ -227,6 +227,24 @@ struct CodeToolCallDetailView: View {
         call.kind != .read && (liveItem.isDeferred || ToolTruncation.isPreviewOnly(liveItem))
     }
 
+    /// The deferred full-row control, drawn inside the output card so the
+    /// truncation note and its load action share one surface (pp 2026-11-01).
+    private var deferredFooter: AnyView? {
+        guard let chat,
+              liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
+        else { return nil }
+        return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output))
+    }
+
+    /// Only the code/read/diff cards own a card footer; the remaining output
+    /// shapes keep the control in the section below.
+    private var outputCardTakesFooter: Bool {
+        switch output {
+        case .text, .diff: return true
+        default: return false
+        }
+    }
+
     @Environment(\.colorScheme) private var colorScheme
     /// The D9 placeholder line box (see `CodeDetailRowHooks`).
     @ScaledMetric(relativeTo: CodeDetailRowHooks.textStyle)
@@ -254,7 +272,7 @@ struct CodeToolCallDetailView: View {
             VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
                 detailSection
                 outputSection
-                deferredSection
+                if !outputCardTakesFooter { deferredSection }
                 footnoteSection
             }
             .padding(.horizontal, CodeToolDetailMetrics.contentInset)
@@ -296,7 +314,8 @@ struct CodeToolCallDetailView: View {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
-                               truncated: showsTruncationNote)
+                               truncated: showsTruncationNote,
+                               footer: deferredFooter)
         }
     }
 

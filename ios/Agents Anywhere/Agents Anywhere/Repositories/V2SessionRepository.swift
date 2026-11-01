@@ -239,13 +239,17 @@ final class V2SessionRepository {
         // `refresh` replaces the window and re-establishes live recovery, so
         // a frame in flight cannot land on the old shell. The flag is only
         // set by a restore, so a session that is genuinely empty is not
-        // snapshotted twice.
+        // snapshotted twice; it stays set when the read fails (offline or
+        // transient) so the retry path runs the same read again.
         let restoredEmptyWindow = entry.restoredEmptyWindow
-        entry.restoredEmptyWindow = false
         if window?.items.isEmpty == true, restoredEmptyWindow,
-           !entry.model.isLocalCreation, network.availability != .offline {
-            return try await refresh(sessionId: sessionId)
+           !entry.model.isLocalCreation {
+            try requireNetwork()
+            let data = try await refresh(sessionId: sessionId)
+            entry.restoredEmptyWindow = false
+            return data
         }
+        entry.restoredEmptyWindow = false
         if window?.hasNewerItems == true
             || (network.availability != .offline && window?.hasOlderItems == true && windowHoldsNoMainRow) {
             // Keep the instant local return, but the stale branch of the local

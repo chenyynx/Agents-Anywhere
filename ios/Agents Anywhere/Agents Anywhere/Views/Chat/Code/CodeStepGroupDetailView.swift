@@ -10,6 +10,9 @@ import SwiftUI
 struct CodeStepGroupDetailView: View {
     let group: TimelineStepGroup
     let cwd: String?
+    /// The page's deferred-item reader. Present in the product presentation;
+    /// nil in previews and the gate, which have no live window behind them.
+    var chat: SessionChatModel? = nil
     /// The adapter's live groups. While the turn streams, the sheet reads the
     /// current group instead of the tapped snapshot: a running step settles in
     /// place and newly emitted calls append at the tail (pp 2026-10-30). The
@@ -103,7 +106,7 @@ struct CodeStepGroupDetailView: View {
                         .navigationTitle(Text(String(localized: "thought_process")))
                         .navigationBarTitleDisplayMode(.inline)
                     case let .tool(call):
-                        CodeToolCallDetailView(call: call)
+                        CodeToolCallDetailView(call: call, chat: chat)
                     }
                 }
             }

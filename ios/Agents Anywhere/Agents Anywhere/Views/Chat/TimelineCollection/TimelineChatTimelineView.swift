@@ -236,12 +236,14 @@ struct TimelineChatTimelineView: View {
                     // The official first layer is the span summary list;
                     // tapping one of its rows pushes the single-call page.
                     CodeToolGroupDetailView(calls: tool.calls,
-                                            cwd: model.session.metadata?.cwd)
+                                            cwd: model.session.metadata?.cwd,
+                                            chat: model)
                 case let .thinking(thinking):
                     CodeThinkingDetailView(text: thinking.text)
                 case let .stepGroup(stepGroup):
                     CodeStepGroupDetailView(group: stepGroup.group,
                                             cwd: model.session.metadata?.cwd,
+                                            chat: model,
                                             liveGroups: bridge.adapter.liveStepGroups,
                                             startsAtBottom: stepGroup.startsAtBottom)
                 }

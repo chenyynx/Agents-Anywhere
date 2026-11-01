@@ -45,6 +45,9 @@ import Foundation
 struct CodeToolGroupDetailView: View {
     let calls: [CodeToolCall]
     let cwd: String?
+    /// The page's deferred-item reader. Present in the product presentation;
+    /// nil in previews and the gate, which have no live window behind them.
+    var chat: SessionChatModel? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -89,7 +92,7 @@ struct CodeToolGroupDetailView: View {
             .contentMargins(.vertical, CodeToolDetailMetrics.verticalInset,
                             for: .scrollContent)
             .navigationDestination(for: CodeToolCall.self) { call in
-                CodeToolCallDetailView(call: call)
+                CodeToolCallDetailView(call: call, chat: chat)
             }
             .background {
                 CodeToolDetailMetrics.pageBackground
@@ -203,8 +206,11 @@ struct CodeToolLabelText: View {
 struct CodeToolCallDetailView: View {
     let call: CodeToolCall
     let footnote: String?
+    /// The page's deferred-item reader. Present in the product presentation;
+    /// nil in previews and the gate, which have no live window behind them.
+    var chat: SessionChatModel? = nil
 
-    private let output: CodeToolOutput
+    private var output: CodeToolOutput { CodeToolOutput(item: liveItem, kind: call.kind) }
     private let inputText: String?
     /// AA's mapping of the official `detectsJSON` bit (R-U §1): the call's
     /// input is a structured JSON object. The output card still needs the
@@ -217,12 +223,22 @@ struct CodeToolCallDetailView: View {
     private var detailTextLineHeight = CodePageTheme.toolRowTextLineHeight
 
     init(call: CodeToolCall,
-         footnote: String? = nil) {
+         footnote: String? = nil,
+         chat: SessionChatModel? = nil) {
         self.call = call
         self.footnote = footnote
-        output = CodeToolOutput(item: call.item, kind: call.kind)
+        self.chat = chat
         inputText = Self.inputText(for: call)
         detectsJSON = CodeToolInputFields.detectsJSON(for: call)
+    }
+
+    /// The row's current item. The page's window replaces a deferred summary
+    /// in place, so an opened detail reads the live row when it can — the
+    /// captured `call.item` is only the fallback once the row left the
+    /// window.
+    private var liveItem: V2TimelineItem {
+        guard let chat else { return call.item }
+        return chat.session.timeline.first { $0.id == call.id }?.value ?? call.item
     }
 
     var body: some View {
@@ -230,6 +246,7 @@ struct CodeToolCallDetailView: View {
             VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
                 detailSection
                 outputSection
+                deferredSection
                 footnoteSection
             }
             .padding(.horizontal, CodeToolDetailMetrics.contentInset)
@@ -271,6 +288,15 @@ struct CodeToolCallDetailView: View {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON)
+        }
+    }
+
+    /// The deferred summary's explicit completion control. A summary row is
+    /// what this detail opened from; the full payload arrives only when the
+    /// reader asks for it, and the window replaces the row in place.
+    @ViewBuilder private var deferredSection: some View {
+        if let chat, liveItem.isDeferred {
+            DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output)
         }
     }
 

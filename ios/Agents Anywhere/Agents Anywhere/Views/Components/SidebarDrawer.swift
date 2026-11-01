@@ -823,12 +823,6 @@ private struct SidebarDrawerCardMotion: ViewModifier {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
 
-    /// [E] Official content scrim over the card: rgba(0,0,0,0.4) light,
-    /// rgba(0,0,0,0.5) dark (token slot 0x108151640).
-    private var drawerScrimColor: Color {
-        colorScheme == .dark ? Color.black.opacity(0.5) : Color.black.opacity(0.4)
-    }
-
     /// The official card edge: 1px hairline in rgb(205,205,202) on light.
     /// The dark value is not closed yet, so the previous primary hairline
     /// stays there.
@@ -853,18 +847,9 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                     .opacity(progress)
                     .allowsHitTesting(false)
             }
-            .overlay {
-                ZStack(alignment: .leading) {
-                    // [E] Overlay scrim on the content: light rgba(0,0,0,0.4),
-                    // dark rgba(0,0,0,0.5), ramping with the drawer offset.
-                    // Clipped to the card so the rounded corners stay clean.
-                    screenShape
-                        .fill(drawerScrimColor)
-                        .opacity(progress)
-                        .allowsHitTesting(false)
-                }
-                .clipShape(screenShape)
-            }
+            // No scrim on the card: both reference screenshots keep the
+            // content surface at its undimmed value (249) at full and half
+            // open, so the official scrim token is not applied here.
             .overlay {
                 screenShape
                     .stroke(edgeLineColor, lineWidth: 1 / max(displayScale, 1))

@@ -187,6 +187,8 @@ import Testing
         defer { connection.cancel() }
         try await eventually { model.connection == .connected }
         model.stage(V2PendingMessage(id: "client", content: "hi", attachmentIDs: []))
+        // Production reaches the echo with the write already accepted.
+        model.pendingMessages.first?.update(.accepted)
 
         realtime.yield(try event("timeline.item_created", seq: 1001, payload: [
             "item": itemObject(id: "item-601", order: 601, seq: 1001,

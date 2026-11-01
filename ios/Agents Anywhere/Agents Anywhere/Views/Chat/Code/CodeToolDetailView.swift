@@ -261,39 +261,9 @@ struct CodeToolCallDetailView: View {
               liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
         else { return nil }
         return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
-                                          showsControl: false))
+                                          showsControl: true))
     }
 
-    /// The deferred load/retry drawn with the existing Prettify face in the
-    /// card header (pp 2026-11-01: no capsule).
-    private var cardHeaderAction: CodeToolCardAction? {
-        guard let chat,
-              liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
-        else { return nil }
-        let phase = chat.deferredItems.phase(liveItem.id)
-        switch phase {
-        case .loaded:
-            return nil
-        case .loading:
-            return CodeToolCardAction(title: "", isBusy: true, action: {})
-        case .idle, .failed, .offline:
-            let title: String
-            if phase == .failed || phase == .offline {
-                title = String(localized: "重试")
-            } else {
-                title = ToolTruncation.isReadTool(liveItem)
-                    ? String(localized: "加载完整文件")
-                    : String(localized: "加载完整输出")
-            }
-            return CodeToolCardAction(title: title, isBusy: false) {
-                if phase == .failed || phase == .offline {
-                    chat.deferredItems.retry(liveItem.id)
-                } else {
-                    chat.deferredItems.load(liveItem.id)
-                }
-            }
-        }
-    }
 
     /// The code/read/diff cards own the footer inside their chrome; the
     /// remaining output shapes keep it in the section below.
@@ -374,7 +344,6 @@ struct CodeToolCallDetailView: View {
                                kind: call.kind,
                                detectsJSON: detectsJSON,
                                footer: inCardFooter,
-                               headerAction: cardHeaderAction,
                                truncated: dataTruncated,
                                readFullFile: readFullFileAction)
         }

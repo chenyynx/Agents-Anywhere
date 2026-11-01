@@ -189,18 +189,6 @@ private struct CodeFileReadOutputView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             CodeToolCardHeader(title: String(localized: "Output")) {
-                if truncated, let readFullFile, loadedFile == nil {
-                    if isLoadingFile {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        CodeToolTextActionButton(
-                            title: loadFileError == nil
-                                ? String(localized: "加载完整文件")
-                                : String(localized: "重试")) {
-                            Task { await loadFullFile(readFullFile) }
-                        }
-                    }
-                }
                 if let headerAction { codeToolHeaderAction(headerAction) }
                 if showsPrettify {
                     CodeToolPrettifyButton(title: prettifyTitle,
@@ -229,9 +217,29 @@ private struct CodeFileReadOutputView: View {
             if let loadedFile {
                 ToolStatusLine(text: loadedFile.note)
             } else if let loadFileError {
-                ToolStatusLine(text: loadFileError)
+                bottomStatusLine {
+                    if let readFullFile, !isLoadingFile {
+                        CodeToolTextActionButton(title: String(localized: "重试")) {
+                            Task { await loadFullFile(readFullFile) }
+                        }
+                    } else if isLoadingFile {
+                        ProgressView().controlSize(.small)
+                    }
+                } status: {
+                    ToolStatusText(text: loadFileError)
+                }
             } else if truncated {
-                ToolTruncatedNote()
+                bottomStatusLine {
+                    if let readFullFile, !isLoadingFile {
+                        CodeToolTextActionButton(title: String(localized: "加载完整文件")) {
+                            Task { await loadFullFile(readFullFile) }
+                        }
+                    } else if isLoadingFile {
+                        ProgressView().controlSize(.small)
+                    }
+                } status: {
+                    ToolStatusText(text: String(localized: "已截断"))
+                }
             }
             if let footer { footer }
         }
@@ -243,6 +251,21 @@ private struct CodeFileReadOutputView: View {
             loadedChunks = []
             loadFileError = nil
         }
+    }
+
+    /// The bottom-of-card status row: status text at the leading edge and the
+    /// plain text action (the existing Prettify face) right after it.
+    private func bottomStatusLine<Action: View, Status: View>(
+        @ViewBuilder action: () -> Action,
+        @ViewBuilder status: () -> Status
+    ) -> some View {
+        HStack(spacing: 12) {
+            status()
+            action()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     @MainActor

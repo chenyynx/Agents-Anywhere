@@ -414,6 +414,25 @@ struct V2SessionProjection {
         return V2TimelineMergeOutcome(item: item, wasInserted: true)
     }
 
+    /// Re-applies rows a previous projection had already completed in full.
+    /// A snapshot/refresh replaces the whole projection, so the merge guard
+    /// cannot protect those rows; the server's deferred snapshot carries
+    /// summaries for them. Only a row the new window still holds and that is
+    /// still summarized is replaced, and only when it still supersedes the
+    /// summary.
+    @discardableResult
+    mutating func graftCompleteRows(_ rows: [V2TimelineItem]) -> Int {
+        var grafted = 0
+        for row in rows where !row.isDeferred {
+            guard let index = data.items.firstIndex(where: { $0.id == row.id }) else { continue }
+            let held = data.items[index]
+            guard held.isDeferred, row.supersedes(held) else { continue }
+            data.items[index] = row
+            grafted += 1
+        }
+        return grafted
+    }
+
     /// A window page can carry a server summary of a row this window already
     /// holds in full. The two share the same revision and `updatedSeq`, so
     /// `supersedes` cannot tell them apart; the full row is strictly more

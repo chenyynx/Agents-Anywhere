@@ -78,7 +78,7 @@ private func descriptor(_ segment: CodeToolSegment) -> String {
 private func blockDescriptors(_ row: CodeMessageRow) -> [String] {
     row.blocks.map { block in
         switch block {
-        case let .reasoning(id, _, _): return "reasoning:\(id)"
+        case let .reasoning(id, _, _, _): return "reasoning:\(id)"
         case let .text(id, _): return "text:\(id)"
         case let .attachments(id, _, _): return "attachments:\(id)"
         case let .other(id, _): return "other:\(id)"
@@ -360,7 +360,7 @@ struct CodeMessageRowTests {
         let body = try makeBody(id: "m1", order: 2, message: "msg-1", text: "answer")
         let rows = CodeMessageBuilder.rows(for: [reasoning, body], profile: .claudeCode)
         #expect(rows.count == 1)
-        guard case let .reasoning(id, text, _) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, _, _) = rows[0].blocks[0] else {
             Issue.record("expected a reasoning block"); return
         }
         #expect(id == "r1")
@@ -390,11 +390,12 @@ struct CodeMessageRowTests {
                                   content: ["text": "second"],
                                   source: ["itemId": "msg-1"])
         let rows = CodeMessageBuilder.rows(for: [first, tool, second], profile: .claudeCode)
-        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status, sourceIDs) = rows[0].blocks[0] else {
             Issue.record("expected one merged reasoning block"); return
         }
         #expect(id == "r1")
         #expect(text == "first\n\nsecond")
+        #expect(sourceIDs == ["r1", "r2"])
         #expect(status == .done)
         #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "toolCalls"])
     }
@@ -410,11 +411,12 @@ struct CodeMessageRowTests {
                                 content: ["text": "done"],
                                 source: ["itemId": "msg-1"])
         let rows = CodeMessageBuilder.rows(for: [running, done], profile: .claudeCode)
-        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status, sourceIDs) = rows[0].blocks[0] else {
             Issue.record("expected a reasoning block"); return
         }
         #expect(id == "r2")
         #expect(text == "done")
+        #expect(sourceIDs == ["r2"])
         #expect(status == .done)
     }
 
@@ -812,11 +814,12 @@ struct CodeMessagePlannerTests {
         let rows = CodeMessageBuilder.rows(for: [first, tool, second, laterTool],
                                            profile: .claudeCode)
         #expect(rows.count == 1)
-        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status, sourceIDs) = rows[0].blocks[0] else {
             Issue.record("expected one merged thinking block"); return
         }
         #expect(id == "r1")
         #expect(text == "first\n\nsecond")
+        #expect(sourceIDs == ["r1", "r2"])
         #expect(status == .done)
         #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "toolCalls"])
         #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2"]])
@@ -843,11 +846,12 @@ struct CodeMessagePlannerTests {
             profile: .claudeCode)
         #expect(rows.count == 1)
         #expect(rows[0].id == "msg-1")
-        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status, sourceIDs) = rows[0].blocks[0] else {
             Issue.record("expected one merged thinking block"); return
         }
         #expect(id == "r1")
         #expect(text == "plan\n\ncheck\n\ndone")
+        #expect(sourceIDs == ["r1", "r2", "r3"])
         #expect(status == .done)
         #expect(blockDescriptors(rows[0]) == ["reasoning:r1", "text:m1", "toolCalls"])
         #expect(spanIDs(in: rows[0].blocks) == [["t1", "t2", "t3"]])
@@ -865,11 +869,12 @@ struct CodeMessagePlannerTests {
         let laterTool = try makeToolItem(id: "t2", order: 4, message: "msg-2", blockIndex: 0)
         let rows = CodeMessageBuilder.rows(for: [running, tool, done, laterTool],
                                            profile: .claudeCode)
-        guard case let .reasoning(id, text, status) = rows[0].blocks[0] else {
+        guard case let .reasoning(id, text, status, sourceIDs) = rows[0].blocks[0] else {
             Issue.record("expected one merged thinking block"); return
         }
         #expect(id == "r2")
         #expect(text == "done")
+        #expect(sourceIDs == ["r2"])
         #expect(status == .done)
     }
 

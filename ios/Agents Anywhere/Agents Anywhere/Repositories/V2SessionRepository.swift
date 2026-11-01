@@ -1154,7 +1154,13 @@ final class V2SessionRepository {
             let snapshot = try await detail.load(sessionId: entry.id, excludeAgentChildren: true)
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
+            // A snapshot replaces the projection, so the merge guard cannot
+            // protect rows the reader already completed; the deferred snapshot
+            // carries summaries for them. Carry those rows across the
+            // replacement instead of silently collapsing them back.
+            let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
+            entry.projection?.graftCompleteRows(completeRows)
             // The snapshot is already a window read with `deferActivity`; its
             // echo settles whether a later open-time repair could ever help.
             entry.deferredWindowUnsupported = (snapshot.deferredActivity == nil)

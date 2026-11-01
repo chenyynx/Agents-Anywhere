@@ -35,7 +35,7 @@ private func makeBody(id: String, order: Int, message: String, text: String,
 
 private func descriptor(_ block: CodeMessageRow.Block) -> String {
     switch block {
-    case let .reasoning(id, _, _): return "reasoning:\(id)"
+    case let .reasoning(id, _, _, _): return "reasoning:\(id)"
     case let .text(id, _): return "text:\(id)"
     case let .attachments(id, _, _): return "attachments:\(id)"
     case .toolCalls: return "toolCalls"

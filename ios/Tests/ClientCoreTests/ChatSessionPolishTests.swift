@@ -338,6 +338,40 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(session.pendingMessages.contains { $0.id == pending.id })
     }
 
+    /// A heal read that fails (or is invalidated) must not end the watchdog;
+    /// the next attempt still runs and the accepted bubble stays accepted.
+    @Test func aFailedHealReadDoesNotEndTheEchoWatchdog() async throws {
+        let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
+        let policy = V2SessionCachePolicy(
+            echoWatchdogDelay: .milliseconds(1), echoHealAttempts: 2)
+        let repo = repository(transport: http, realtime: realtime, policy: policy)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let connection = Task { await session.connect() }
+        defer { connection.cancel() }
+        try await eventually { session.canSend }
+
+        var latestReads = 0
+        http.respond = { call in
+            if call.path.hasSuffix("/timeline"),
+               call.query.contains(where: { $0.name == "mode" && $0.value == "latest" }) {
+                latestReads += 1
+                if latestReads == 1 {
+                    throw HTTPError.server(statusCode: 404, message: "not found")
+                }
+            }
+            return try http.defaultResponse(call)
+        }
+        session.draft = "Late echo"
+        let send = Task { await session.sendDraft() }
+        let pending = try #require(await send.value)
+        #expect(pending.delivery == .accepted)
+
+        try await eventually { latestReads >= 2 }
+        #expect(pending.delivery == .accepted)
+        #expect(session.pendingMessages.contains { $0.id == pending.id })
+    }
+
     @Test func attachmentServerPixelSizeRequiresPositiveWholeNumbers() {
         let sized = V2AttachmentContent(rawContent: .object(["fileId": .string("file_uploaded"),
             "width": .number(1179), "height": .number(2556)]))

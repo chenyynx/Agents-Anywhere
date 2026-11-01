@@ -67,12 +67,13 @@ b823 探针（12:40:41 导出，窗口 t=0 ≈ 12:38:17）：
 - 删除「从事件 payload 直接确认」的 `confirmEchoes`：live 与 recovery 都只从
   projection 实际并入（merge outcome）的行确认；未并入的行保持原状态。
 - 保持 `.accepted`：`watchEcho` 的 30s/60s 兜底仍然有效；不会绕过重复发送保护。
+  （2026-11-01 P0 更新：看门狗改为最多 3 次补读、不再降级 uncertain，见 R25 节。）
 
 ### P2 正确性入口走权威 latest
 
 - `loadLatest(sessionId:limit:authoritative:)`：`authoritative == true` 时跳过本地旧页，
   直接网络 latest；网络失败才退回本地页并保留 newer 标记。
-- 使用入口：`noteComposerSend()`（发送）与 `watchEcho` 的 30s 兜底
+- 使用入口：`noteComposerSend()`（发送）与 `watchEcho` 的 30s 兜底（P0 后为最多 3 次补读）
   （两者都在后台 Task 里，不阻塞界面）。
 - `open()` 与滚动回底保持本地优先（不让开页等网络）；本地页落后时
   `applyUsableLocalLatest` 同时排一次 P3 的保证性补页，开页后自动收敛。
@@ -271,6 +272,8 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 7. 详情的数据源统一读实时行：工具详情的 Input 也来自完整行（摘要的 input 有
    白名单截断）；合并的思考块携带 `sourceIDs`，详情按窗口重建所有行并用一个
    聚合 footer 完成全部摘要行。
+8. snapshot/refresh 会替换整个 projection，merge 守卫管不到：hydrate 前取旧窗口
+   的完整行，替换后用 `graftCompleteRows` 把仍在窗口内的行补回。
 
 ### 后续（不在 P0）
 
@@ -285,11 +288,12 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
 ### 验证
 
 - 单测（`SessionDeferredActivityTests`）：窗口读取带参、`changes/children` 不带参、
-  缺 echo 读 false、旧归档只补读一次、离线保缓存、摘要原地替换（旧 revision 不覆盖
+  缺字段读 nil（显式 false 另计）、旧归档只补读一次、离线保缓存、摘要原地替换（旧 revision 不覆盖
   新行、窗口外不插入）、归档往返、摘要页治愈 `hasNewerItems` 的冻结窗口；
   `aReadReportsLoadingUntilItSettles`。
 - 单测（`ChatSessionPolishTests`）：`anAcceptedSendIsNotDemotedByTheEchoWatchdog`
-  ——accepted 后看门狗发满 3 次 latest，pending 仍为 accepted（计数断言）。
+  ——accepted 后看门狗发满 3 次 latest（测试用非默认 2 次验证注入链），pending 仍为
+  accepted（计数断言）；`aFailedHealReadDoesNotEndTheEchoWatchdog` 覆盖首读失败后继续。
 - 单测（`SessionDeferredActivityTests`）：`aSummaryPageNeverDowngradesALoadedFullRow`、
   `aStaleCompleteRowNeverReplacesANewerSummary`、`aNewerSummaryStillReplacesAnOlderFullRow`、
   `aTerminalSummaryStillCompletesAnActiveFullRow`、`aCurrentServerThatSkippedDeferralIsAskedAgain`。
@@ -314,6 +318,10 @@ b841 真机（会话 `sess_DilUOLks4LdTwg`）：发送后气泡一直转，约 6
   deferred/deferredBytes，会丢掉 connector 盖在 reasoning 行上的 `usage`；若某轮最新
   usage carrier 恰是被裁剪的思考行，上下文圆环可能回退到更旧一次测量（同轮消息体通常
   也带同一 usage，未复现）。
+- 显式 false（窗口无展示锚点）时每次 open 会多一次有界的 authoritative latest（回退页
+  仍受 2 MB 限制）；这类会话很少，暂不加重武装条件。
+- 单条读在飞行中窗口已移走该行时，`replaceDeferredItem` 返回 false → 可重试失败；
+  重试仍会失败（行已不在窗口），属罕见竞态。
 - accepted 直发在 3 次补读后仍无 echo 时保持「发送中」（官方 posting 语义），不降级；
   真正写结果不明的 POST（超时等）仍是既有 `uncertain`，因为那次写入本身没有被确认。
 - Code 详情只有在从页面活跃的 `SessionChatModel` 打开时才提供加载入口；

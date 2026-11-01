@@ -270,6 +270,25 @@ import Testing
         #expect(projection.data.items.first?.isDeferred == false)
     }
 
+    /// A snapshot/refresh replaces the whole projection, so the merge guard
+    /// cannot protect a completed row; the repository carries those rows over
+    /// with `graftCompleteRows` instead of collapsing them back.
+    @Test func aSnapshotReplacementKeepsRowsTheReaderCompleted() throws {
+        let summary = try deferredObject(id: "tool", order: 2)
+        let full: V2TimelineItem = try decode(itemObject(id: "tool", order: 2, revision: 1))
+        var first = V2SessionProjection(
+            snapshot: try snapshot(items: [summary], hasMore: true), maximumItems: 100)
+        let replaced = first.replaceDeferredItem(full)
+        #expect(replaced)
+        let complete = first.data.items.filter { !$0.isDeferred }
+
+        var refreshed = V2SessionProjection(
+            snapshot: try snapshot(items: [summary], hasMore: true), maximumItems: 100)
+        let grafted = refreshed.graftCompleteRows(complete)
+        #expect(grafted == 1)
+        #expect(refreshed.data.items.first?.isDeferred == false)
+    }
+
     /// The guard is narrow: a summary that is genuinely a newer version must
     /// still replace the older full row the window held.
     @Test func aNewerSummaryStillReplacesAnOlderFullRow() throws {

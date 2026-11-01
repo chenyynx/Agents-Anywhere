@@ -220,14 +220,45 @@ struct CodeToolCallDetailView: View {
     /// input is a structured JSON object. The output card still needs the
     /// body to sniff as JSON before it offers Prettify (R-U §1/E3).
     private var detectsJSON: Bool { CodeToolInputFields.detectsJSON(for: liveCall) }
-    /// The deferred full-row status/load line, drawn at the output card's
-    /// bottom-left so the truncation note and its action share one surface
-    /// (pp 2026-11-01).
-    private var deferredFooter: AnyView? {
+    /// The deferred status line inside the card. The action itself is the
+    /// existing header text control (Prettify face), not a separate capsule.
+    private var inCardFooter: AnyView? {
         guard let chat,
               liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
         else { return nil }
-        return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output))
+        return AnyView(DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
+                                          showsControl: false))
+    }
+
+    /// The deferred load/retry drawn with the existing Prettify face in the
+    /// card header (pp 2026-11-01: no capsule).
+    private var cardHeaderAction: CodeToolCardAction? {
+        guard let chat,
+              liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded
+        else { return nil }
+        let phase = chat.deferredItems.phase(liveItem.id)
+        switch phase {
+        case .loaded:
+            return nil
+        case .loading:
+            return CodeToolCardAction(title: "", isBusy: true, action: {})
+        case .idle, .failed, .offline:
+            let title: String
+            if phase == .failed || phase == .offline {
+                title = String(localized: "重试")
+            } else {
+                title = ToolTruncation.isReadTool(liveItem)
+                    ? String(localized: "加载完整文件")
+                    : String(localized: "加载完整输出")
+            }
+            return CodeToolCardAction(title: title, isBusy: false) {
+                if phase == .failed || phase == .offline {
+                    chat.deferredItems.retry(liveItem.id)
+                } else {
+                    chat.deferredItems.load(liveItem.id)
+                }
+            }
+        }
     }
 
     /// The code/read/diff cards own the footer inside their chrome; the
@@ -308,7 +339,8 @@ struct CodeToolCallDetailView: View {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
-                               footer: deferredFooter)
+                               footer: inCardFooter,
+                               headerAction: cardHeaderAction)
         }
     }
 

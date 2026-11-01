@@ -21,17 +21,24 @@ struct DeferredLoadFooter: View {
     /// multiple summaries into one body, and one control must finish them.
     let ids: [V2TimelineItemID]
     let kind: Kind
+    /// The Code cards put the load/retry action in their header (the existing
+    /// Prettify face); their in-card footer is status-only.
+    var showsControl: Bool
 
-    init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind) {
+    init(chat: SessionChatModel, id: V2TimelineItemID, kind: Kind,
+         showsControl: Bool = true) {
         self.chat = chat
         self.ids = [id]
         self.kind = kind
+        self.showsControl = showsControl
     }
 
-    init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind) {
+    init(chat: SessionChatModel, ids: [V2TimelineItemID], kind: Kind,
+         showsControl: Bool = true) {
         self.chat = chat
         self.ids = ids
         self.kind = kind
+        self.showsControl = showsControl
     }
 
     /// One aggregate state: a failure wins over loading wins over idle, and
@@ -62,7 +69,9 @@ struct DeferredLoadFooter: View {
             if !note.isEmpty {
                 ToolStatusText(text: note)
             }
-            control(phase)
+            if showsControl {
+                control(phase)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
@@ -88,12 +97,8 @@ struct DeferredLoadFooter: View {
             .buttonStyle(.plain)
             .font(.footnote.weight(.medium))
             .foregroundStyle(.tint)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            // [U] official `ClaudeInlineButtonStyle` + `Capsule`; the fill
-            // and stroke constants are not decoded, so the outline uses tint.
-            .background(Capsule().strokeBorder(.tint, lineWidth: 1))
-            .contentShape(Capsule())
+            .contentShape(Rectangle())
+            .frame(minHeight: 44)
         case .loaded:
             EmptyView()
         }

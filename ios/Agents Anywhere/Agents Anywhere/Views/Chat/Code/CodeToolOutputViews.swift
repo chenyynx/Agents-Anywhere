@@ -28,6 +28,24 @@ private func codeOutputMonoFont(_ size: CGFloat) -> Font {
 
 // MARK: - Output switcher
 
+/// A card-header action drawn with the existing Prettify face: mono 13,
+/// secondary ink, no capsule. Used for the deferred load/retry, which pp
+/// wants to look like the already-implemented header controls (2026-11-01).
+struct CodeToolCardAction {
+    let title: String
+    let isBusy: Bool
+    let action: () -> Void
+}
+
+@ViewBuilder
+private func codeToolHeaderAction(_ action: CodeToolCardAction) -> some View {
+    if action.isBusy {
+        ProgressView().controlSize(.small)
+    } else {
+        CodeToolTextActionButton(title: action.title, action: action.action)
+    }
+}
+
 struct CodeToolOutputView: View {
     let output: CodeToolOutput
     var kind: CodeToolKind = .other
@@ -36,10 +54,12 @@ struct CodeToolOutputView: View {
     /// structured JSON object"). The Prettify button still requires the
     /// body itself to sniff as JSON (R-U §1/E3).
     var detectsJSON: Bool = false
-    /// The deferred full-row status/load line. It is drawn inside the output
-    /// card's chrome (pp 2026-11-01: the truncation note and its action live
-    /// at the card's bottom-left, never a separate block or a centred line).
+    /// The deferred full-row status line. It is drawn inside the output
+    /// card's chrome at the bottom-left (pp 2026-11-01).
     var footer: AnyView? = nil
+    /// The deferred load/retry action in the card header, using the existing
+    /// Prettify face (no capsule).
+    var headerAction: CodeToolCardAction? = nil
 
     var body: some View {
         switch output {
@@ -54,17 +74,20 @@ struct CodeToolOutputView: View {
                 EmptyView()
             } else if kind == .read {
                 CodeFileReadOutputView(text: text, detectsJSON: detectsJSON,
-                                       footer: footer)
+                                       footer: footer,
+                                       headerAction: headerAction)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
                                   code: text,
                                   detectsJSON: detectsJSON,
-                                  footer: footer)
+                                  footer: footer,
+                                  headerAction: headerAction)
             }
         case let .todos(todos):
             CodeToolTodosOutputView(todos: todos)
         case let .diff(diff):
-            CodeToolDiffOutputView(diff: diff, footer: footer)
+            CodeToolDiffOutputView(diff: diff, footer: footer,
+                                   headerAction: headerAction)
         case let .submittedAnswers(answers):
             CodeToolSubmittedAnswersOutputView(answers: answers)
         case .approvedPlan:
@@ -93,18 +116,22 @@ struct CodeToolOutputView: View {
 private struct CodeFileReadOutputView: View {
     let text: String
     let detectsJSON: Bool
-    /// The deferred full-file control, drawn inside this card's chrome.
+    /// The deferred status line, drawn inside this card's chrome.
     var footer: AnyView? = nil
+    /// The deferred load/retry text action in the header.
+    var headerAction: CodeToolCardAction? = nil
     /// Sniffed once at init: the body can be a whole file, and a body
     /// re-evaluation must not re-trim it.
     private let sniffsAsJSON: Bool
     @State private var chunks: [String]
     @State private var prettify: CodeToolPrettify = .initial
 
-    init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil) {
+    init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil,
+         headerAction: CodeToolCardAction? = nil) {
         self.text = text
         self.detectsJSON = detectsJSON
         self.footer = footer
+        self.headerAction = headerAction
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
         _chunks = State(initialValue: CodeFileReadChunks.split(text))
     }
@@ -128,6 +155,7 @@ private struct CodeFileReadOutputView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             CodeToolCardHeader(title: String(localized: "Output")) {
+                if let headerAction { codeToolHeaderAction(headerAction) }
                 if showsPrettify {
                     CodeToolPrettifyButton(title: prettifyTitle,
                                            isBusy: prettify.isFormatting,
@@ -328,9 +356,10 @@ struct CodeToolCodeCard: View {
     /// AA's `detectsJSON` mapping (R-U §1). The Prettify button also requires
     /// the body to sniff as JSON and the state not to be `.failed` (R-U §3).
     let detectsJSON: Bool
-    /// The deferred full-row status/load line, drawn inside this card's
-    /// chrome.
+    /// The deferred status line, drawn inside this card's chrome.
     var footer: AnyView? = nil
+    /// The deferred load/retry text action in the header.
+    var headerAction: CodeToolCardAction? = nil
     /// Sniffed once at init so a body re-evaluation never re-trims the payload.
     private let sniffsAsJSON: Bool
 
@@ -340,11 +369,12 @@ struct CodeToolCodeCard: View {
     @State private var prettify: CodeToolPrettify = .initial
 
     init(title: String?, code: String, detectsJSON: Bool = false,
-         footer: AnyView? = nil) {
+         footer: AnyView? = nil, headerAction: CodeToolCardAction? = nil) {
         self.title = title
         self.code = code
         self.detectsJSON = detectsJSON
         self.footer = footer
+        self.headerAction = headerAction
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(code)
         _displayCode = State(initialValue: String(code.prefix(CodeToolCardMetrics.previewLimit)))
     }
@@ -388,6 +418,7 @@ struct CodeToolCodeCard: View {
 
     private func header(_ title: String) -> some View {
         CodeToolCardHeader(title: title) {
+            if let headerAction { codeToolHeaderAction(headerAction) }
             if showsPrettify {
                 CodeToolPrettifyButton(title: prettifyTitle,
                                        isBusy: prettify.isFormatting,
@@ -619,9 +650,10 @@ private struct CodeToolTodosOutputView: View {
 
 private struct CodeToolDiffOutputView: View {
     let diff: CodeToolDiff
-    /// The deferred full-row status/load line, drawn inside this card's
-    /// chrome.
+    /// The deferred status line, drawn inside this card's chrome.
     var footer: AnyView? = nil
+    /// The deferred load/retry text action in the header.
+    var headerAction: CodeToolCardAction? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -706,6 +738,7 @@ private struct CodeToolDiffOutputView: View {
                     .foregroundStyle(CodeToolCardMetrics.diffStatRemove.resolved(for: colorScheme))
             }
             Spacer(minLength: 8)
+            if let headerAction { codeToolHeaderAction(headerAction) }
             CodeToolCopyButton(text: { diff.unifiedText },
                                label: String(localized: "复制 Diff"),
                                size: 44)
@@ -983,6 +1016,31 @@ private struct CodeToolCodeBody: View {
         }
         .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+}
+
+/// The existing header text-control face (Prettify / Show raw): mono 13,
+/// secondary ink, no capsule. The deferred load/retry uses the same face
+/// instead of the capsule pp rejected (2026-11-01).
+private struct CodeToolTextActionButton: View {
+    let title: String
+    let action: () -> Void
+
+    @ScaledMetric(relativeTo: .caption) private var fontSize =
+        CodeToolCardMetrics.titleFontSize
+    @ScaledMetric(relativeTo: .caption) private var headerHeight =
+        CodeToolCardMetrics.headerHeight
+
+    var body: some View {
+        Button(action: action) {
+            Text(verbatim: title)
+                .font(codeOutputMonoFont(fontSize))
+                .foregroundStyle(.secondary)
+                .frame(height: headerHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(verbatim: title))
     }
 }
 

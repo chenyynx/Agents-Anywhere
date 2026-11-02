@@ -368,14 +368,15 @@ struct CodeToolCallDetailView: View {
         }
     }
 
-    /// Inline result images, after the output card (the official detail draws
-    /// its image bar in the same order). Rows are laid out exactly as before;
-    /// this section exists only on the pushed single-call page.
+    /// Inline result images, after the output card. The official detail draws
+    /// an `AttachmentBar` here (RE: horizontal 96×96 tiles, tap opens the
+    /// full-screen gallery). Rows are laid out exactly as before; this section
+    /// exists only on the pushed single-call page.
     @ViewBuilder private var imageSection: some View {
         if !outputImages.isEmpty {
-            ToolImagePreviewSection(images: outputImages,
-                                    itemId: liveItem.id,
-                                    contentHash: liveItem.contentHash)
+            ToolImageAttachmentBar(images: outputImages,
+                                   itemId: liveItem.id,
+                                   contentHash: liveItem.contentHash)
         }
     }
 

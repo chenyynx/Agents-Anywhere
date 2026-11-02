@@ -361,6 +361,19 @@ def test_node_budget_fails_open_instead_of_summarizing_a_partial_walk() -> None:
     assert normalized["content"]["result"] == result
 
 
+def test_node_budget_counts_nodes_at_the_depth_boundary() -> None:
+    # The big list sits at depth 4; its entries are at depth 5 and are not
+    # scanned, but they are still iterated. They must consume the budget.
+    big = [{"x": index} for index in range(2000)]
+    result = [{"content": [{"content": big}]}]
+
+    assert summarize_images(result) is None
+    item = _tool_item(result=result)
+    normalized, _saved = normalize_item_payload(item)
+
+    assert normalized["content"]["output"] == item["content"]["output"]
+
+
 def test_depth_bound_ignores_an_image_nested_too_deep() -> None:
     nested: dict = {"type": "image", "source": {
         "type": "base64", "media_type": "image/png", "data": _b64(_png())}}

@@ -201,11 +201,15 @@ def _scan_result_into(
     *,
     depth: int,
 ) -> None:
-    if scan.exceeded or depth > _MAX_DEPTH:
+    if scan.exceeded:
         return
+    # Count before the depth check: children at the boundary are still
+    # iterated by the parent, so leaving them uncounted defeats the budget.
     scan.visited += 1
     if scan.visited > _MAX_VISITED:
         scan.exceeded = True
+        return
+    if depth > _MAX_DEPTH:
         return
     if isinstance(value, Mapping):
         block_type = value.get("type")
@@ -234,9 +238,10 @@ def summarize_images(result: Any) -> str | None:
 
     ``None`` is deliberate: the caller then leaves the payload untouched.  A
     single image renders ``[Image] PNG · 1170×4100 · 559 KB``; several render
-    ``[Image 1] …`` / ``[Image 2] …`` on separate lines.  A segment is omitted
-    when the payload does not carry that fact (no dimensions = no size
-    segment; no byte body = no size segment).
+    ``[Image 1] …`` / ``[Image 2] …`` on separate lines.  A missing header
+    omits the dimension segment, but an image block without inline bytes (for
+    example a URL-only source) fails the whole summary open: replacing
+    ``output`` would drop the URL while no client renders it.
     """
 
     scan = _scan_result(result)

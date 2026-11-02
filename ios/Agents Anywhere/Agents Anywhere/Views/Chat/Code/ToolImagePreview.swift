@@ -38,7 +38,9 @@ struct ToolImageAttachmentBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Self.tileSpacing) {
+            // Lazy: a pathological row can carry 100 blocks; only the visible
+            // tiles should mount and start decoding.
+            LazyHStack(spacing: Self.tileSpacing) {
                 ForEach(Array(images.enumerated()), id: \.element.id) { index, image in
                     Button {
                         selection = ToolImageSelection(index: index)
@@ -326,10 +328,6 @@ final class ToolImagePreviewCache {
     func insert(_ image: UIImage, for key: String) {
         let pixels = image.size.width * image.scale * image.size.height * image.scale
         cache.setObject(image, forKey: key as NSString, cost: Int(pixels * 4))
-    }
-
-    func removeAll() {
-        cache.removeAllObjects()
     }
 }
 

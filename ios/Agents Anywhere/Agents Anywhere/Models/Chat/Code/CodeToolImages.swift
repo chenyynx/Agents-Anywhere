@@ -30,20 +30,6 @@ nonisolated struct CodeToolImage: Hashable, Identifiable {
     let byteCount: Int?
     /// Pixel size parsed from the format header; nil for unknown/corrupt data.
     let pixelSize: CGSize?
-
-    /// True when the source exceeds the detail view's display ceiling, so the
-    /// view will draw a downsampled thumbnail. A header we cannot parse falls
-    /// back to the byte size: a very large body is still called out.
-    var isDownsampled: Bool {
-        if let pixelSize {
-            return max(pixelSize.width, pixelSize.height)
-                > CodeToolImages.maximumDisplayPixelSize
-        }
-        if let byteCount {
-            return byteCount > 8 * 1024 * 1024
-        }
-        return false
-    }
 }
 
 nonisolated enum CodeToolImages {
@@ -71,9 +57,16 @@ nonisolated enum CodeToolImages {
             guard let rawData = source["data"]?.stringValue ?? object["data"]?.stringValue,
                   !rawData.isEmpty else { return nil }
             let (data, dataURLMediaType) = normalizedBase64(rawData)
-            let mediaType = source["media_type"]?.stringValue
-                ?? source["mediaType"]?.stringValue
-                ?? dataURLMediaType
+            // The server reads `source.media_type`, `source.mediaType`, then the
+            // block-level keys, and only then the data URL. An empty string is
+            // not a declaration. Keep the same order so both sides print the
+            // same type label (and `isServerImageSummary` matches).
+            let mediaType = firstNonEmptyString(
+                source["media_type"]?.stringValue,
+                source["mediaType"]?.stringValue,
+                object["media_type"]?.stringValue,
+                object["mediaType"]?.stringValue,
+                dataURLMediaType)
             // Decode the header once: it validates the base64 prefix and
             // yields the aspect size. Invalid data keeps the block (the view
             // shows its failure state) but reports no size.
@@ -189,7 +182,10 @@ nonisolated enum CodeToolImages {
     }
 
     private static func structuralByteCount(base64: String) -> Int? {
-        guard !base64.isEmpty, base64.count % 4 == 0 else { return nil }
+        // `utf8` is the correct unit for base64 and avoids the grapheme walk
+        // `String.count` performs over a multi-megabyte body.
+        let length = base64.utf8.count
+        guard length > 0, length % 4 == 0 else { return nil }
         let padding: Int
         if base64.hasSuffix("==") {
             padding = 2
@@ -198,9 +194,16 @@ nonisolated enum CodeToolImages {
         } else {
             padding = 0
         }
-        let bodyEnd = base64.count - padding
-        if base64.prefix(bodyEnd).contains("=") { return nil }
-        return base64.count / 4 * 3 - padding
+        let bodyEnd = length - padding
+        if base64.utf8.prefix(bodyEnd).contains(UInt8(ascii: "=")) { return nil }
+        return length / 4 * 3 - padding
+    }
+
+    private static func firstNonEmptyString(_ values: String?...) -> String? {
+        for value in values {
+            if let value, !value.isEmpty { return value }
+        }
+        return nil
     }
 
     /// Header-only pixel size for PNG / JPEG / GIF / WebP.

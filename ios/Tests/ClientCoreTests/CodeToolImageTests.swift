@@ -159,6 +159,42 @@ struct CodeToolImageTests {
         #expect(CodeToolImages.summary(for: images).hasPrefix("[Image] JPEG · 30×40 · "))
     }
 
+    @Test func fallsBackToTheBlockLevelMediaType() {
+        let data = pngData()
+        let block = JSONValue.object([
+            "type": .string("image"),
+            "media_type": .string("image/webp"),
+            "source": .object([
+                "type": .string("base64"),
+                "data": .string(base64(data)),
+            ]),
+        ])
+
+        let images = CodeToolImages.images(in: content([block]), itemId: "item-1")
+
+        #expect(images.count == 1)
+        #expect(images[0].mediaType == "image/webp")
+        #expect(CodeToolImages.summary(for: images).hasPrefix("[Image] WEBP · "))
+    }
+
+    @Test func emptyDeclaredMediaTypeFallsThroughToTheNextDeclaration() {
+        let data = pngData()
+        let block = JSONValue.object([
+            "type": .string("image"),
+            "media_type": .string("image/png"),
+            "source": .object([
+                "type": .string("base64"),
+                "media_type": .string(""),
+                "data": .string(base64(data)),
+            ]),
+        ])
+
+        let images = CodeToolImages.images(in: content([block]), itemId: "item-1")
+
+        #expect(images.count == 1)
+        #expect(images[0].mediaType == "image/png")
+    }
+
     @Test func malformedBase64KeepsTheBlockWithoutSize() {
         let images = CodeToolImages.images(
             in: content([imageBlock("!!!!")]),

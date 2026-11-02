@@ -229,6 +229,25 @@ class TimelineJanitorRepository(Protocol):
         closed_by_evidence: str,
     ) -> TimelineBatchWriteResult: ...
 
+
+class RestartReconcileRepository(SessionStateRepository, Protocol):
+    """Ports used when a reconnecting connector proves a turn is gone."""
+
+    async def list_sessions_for_restart_reconcile(
+        self,
+        *,
+        connector_id: str,
+        limit: int,
+    ) -> list[SessionView]: ...
+
+    async def close_running_tool_items(
+        self,
+        *,
+        session_id: str,
+        closed_by_evidence: str,
+    ) -> TimelineBatchWriteResult: ...
+
+
 class InteractionResolutionRepository(
     SessionLookupRepository,
     TimelineEffectRepository,

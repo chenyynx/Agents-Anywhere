@@ -1287,37 +1287,154 @@ class TimelineRepositoryMixin:
             ]
             if not doomed:
                 return _JANITOR_NO_CHANGE
-            first_seq = await self._reserve_session_revisions(
+            closed = await self._close_running_tool_items_locked(
                 conn,
-                session_id,
-                count=len(doomed),
-                touch_updated_at=False,
+                session_id=session_id,
+                doomed=doomed,
+                closed_by_evidence=closed_by_evidence,
+                now=now,
             )
-            for index, existing in enumerate(sorted(doomed, key=lambda item: item.id)):
-                content = existing.content
-                if isinstance(content, Mapping):
-                    content = {**content, "closedByEvidence": closed_by_evidence}
-                closed.append(
-                    existing.model_copy(
-                        update={
-                            "status": "interrupted",
-                            "content": content,
-                            "contentHash": timeline_item_content_hash(
-                                item_type=existing.type,
-                                status="interrupted",
-                                role=existing.role,
-                                content=content,
-                            ),
-                            "revision": existing.revision + 1,
-                            "updatedSeq": first_seq + index,
-                            "updatedAt": now,
-                        }
-                    )
-                )
-            await self.timeline.upsert_many(conn, closed)
         if closed:
             logger.info(
                 "Timeline age janitor closed stale tool rows session_id={} closed={}",
+                session_id,
+                sorted(item.id for item in closed),
+            )
+        return TimelineBatchWriteResult(items=tuple(closed), changed=True)
+
+    async def _close_running_tool_items_locked(
+        self,
+        conn: AsyncConnection,
+        *,
+        session_id: str,
+        doomed: list[TimelineItem],
+        closed_by_evidence: str,
+        now: datetime,
+    ) -> list[TimelineItem]:
+        """Rewrite already-vetted ``running`` tool rows to ``interrupted``.
+
+        The caller owns the session lock, the transaction, and every guard
+        that decides *which* rows are doomed; this helper only performs the
+        shared write shape (one reserved revision per row, payload status,
+        ``closedByEvidence``, canonical state hash, ``revision + 1``) so the
+        age-bounded janitor and the restart reconciliation cannot drift apart.
+        """
+
+        if not doomed:
+            return []
+        first_seq = await self._reserve_session_revisions(
+            conn,
+            session_id,
+            count=len(doomed),
+            touch_updated_at=False,
+        )
+        closed: list[TimelineItem] = []
+        for index, existing in enumerate(sorted(doomed, key=lambda item: item.id)):
+            content = existing.content
+            if isinstance(content, Mapping):
+                content = {**content, "closedByEvidence": closed_by_evidence}
+            closed.append(
+                existing.model_copy(
+                    update={
+                        "status": "interrupted",
+                        "content": content,
+                        "contentHash": timeline_item_content_hash(
+                            item_type=existing.type,
+                            status="interrupted",
+                            role=existing.role,
+                            content=content,
+                        ),
+                        "revision": existing.revision + 1,
+                        "updatedSeq": first_seq + index,
+                        "updatedAt": now,
+                    }
+                )
+            )
+        await self.timeline.upsert_many(conn, closed)
+        return closed
+
+    @session_revision_fenced
+    async def close_running_tool_items(
+        self,
+        *,
+        session_id: str,
+        closed_by_evidence: str,
+    ) -> TimelineBatchWriteResult:
+        """Close every ``running`` tool row in a session on external evidence.
+
+        Unlike ``close_stale_running_tool_items`` this has no age bound: the
+        caller has already proven (by asking the connector that owns the
+        session) that no turn is running there, so a freshly stranded row is
+        exactly what it must heal. The remaining guards stay:
+
+        - the row is still ``type='tool' AND status='running'`` — queued
+          messages and approvals are never touched;
+        - the row has settled: ``updated_seq`` at or below the session fence
+          (a higher value is an in-flight buffered write);
+        - the session has no ``session_active_runs`` row, re-checked here
+          under the timeline lock because a turn may have started between the
+          caller's probe and this write.
+
+        Guard *failure* is silence (``_JANITOR_NO_CHANGE``): the caller's
+        evidence is only a hint until re-validated inside the fence. The
+        write shape is shared with the age janitor
+        (``_close_running_tool_items_locked``), including
+        ``touch_updated_at=False`` and ``mark_read=False``.
+        """
+
+        now = utc_now()
+        closed: list[TimelineItem] = []
+        async with self._timeline_lock(session_id), self._engine.begin() as conn:
+            session_row = (
+                await conn.execute(
+                    select(sessions_t.c.seq)
+                    .where(sessions_t.c.id == session_id)
+                    .with_for_update()
+                )
+            ).first()
+            if session_row is None:
+                raise KeyError(session_id)
+            active_run = (
+                await conn.execute(
+                    select(active_runs_t.c.session_id).where(
+                        active_runs_t.c.session_id == session_id
+                    )
+                )
+            ).first()
+            if active_run is not None:
+                return _JANITOR_NO_CHANGE
+            fence = int(session_row.seq)
+            rows = (
+                await conn.execute(
+                    select(
+                        timeline_items_t.c.id,
+                        timeline_items_t.c.updated_seq,
+                        timeline_items_t.c.payload_json,
+                    ).where(
+                        timeline_items_t.c.session_id == session_id,
+                        timeline_items_t.c.type == "tool",
+                        timeline_items_t.c.status == "running",
+                    )
+                )
+            ).all()
+            doomed = [
+                TimelineItem.model_validate_json(payload_json)
+                for _item_id, updated_seq, payload_json in rows
+                if int(updated_seq) <= fence
+            ]
+            if not doomed:
+                return _JANITOR_NO_CHANGE
+            closed = await self._close_running_tool_items_locked(
+                conn,
+                session_id=session_id,
+                doomed=doomed,
+                closed_by_evidence=closed_by_evidence,
+                now=now,
+            )
+        if closed:
+            logger.info(
+                "Timeline restart reconcile closed running tool rows "
+                "session_id={} closed={}",
                 session_id,
                 sorted(item.id for item in closed),
             )

@@ -1,0 +1,25 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv PYTHONPATH=/app/server AGENT_SERVER_DB_BACKEND=postgres AGENT_SERVER_HOST=0.0.0.0 AGENT_SERVER_STATIC_DIR=/app/web-static
+ARG UV_INDEX_URL=
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini git && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv
+
+# Dependencies install BEFORE the source tree, so a code-only change never
+# reinstalls them. This layer is invalidated only when the dependency manifest
+# (pyproject.toml) changes — the deploy repo keeps no lockfile, so the manifest
+# content is the cache key. `--no-install-project` installs only third-party
+# deps here; the project itself is installed after COPY below.
+COPY server/pyproject.toml server/README.md /app/server/
+RUN cd /app/server && uv sync --no-dev --no-install-project
+
+# Source tree last: this is the layer that changes on every deploy. The uv cache
+# from the previous step makes this install near-instant.
+COPY server/ /app/server/
+RUN cd /app/server && uv sync --no-dev
+
+RUN mkdir -p /app/web-static
+EXPOSE 8000
+WORKDIR /app/server
+CMD ["/opt/venv/bin/python", "-m", "agent_server.main"]

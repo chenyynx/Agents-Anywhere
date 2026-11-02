@@ -46,3 +46,6 @@ docs/reference/*
 _reference/*
 !_reference/httpx-s3-client/
 !_reference/httpx-s3-client/**
+
+# Production deploy secrets (kept outside the repo)
+deploy/moonveil/.env

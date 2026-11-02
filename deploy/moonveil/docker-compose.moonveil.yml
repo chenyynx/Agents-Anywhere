@@ -1,0 +1,93 @@
+# Moonveil cloud v0 — full AA feature surface, nothing cut:
+#   postgres + redis + server(API, python) + web(Next SSR console).
+# web runs in SSR (NEXT_OUTPUT unset) so dynamic /share/[[...shareId]] works.
+# NOTE registration is NOT an env var: it is a DB instance setting
+#   (instance_settings_facade.is_registration_open; absent row => closed by default),
+#   flipped by the admin UI after first-admin setup. Do not add REGISTRATION_OPEN env.
+# restart: unless-stopped added 2026-09-15 — 162 reboots must not require manual up.
+name: moonveil-cloud
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: moonveil
+      POSTGRES_USER: moonveil
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - moonveil-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moonveil -d moonveil"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: [redis-server, --save, "", --appendonly, "yes", --appendfsync, everysec, --maxmemory-policy, noeviction]
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - moonveil-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  server:
+    command: ["/opt/venv/bin/uvicorn", "agent_server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    image: moonveil-cloud-server:latest
+    build:
+      context: ../..
+      dockerfile: deploy/moonveil/Dockerfile.server
+      args:
+        UV_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    environment:
+      AGENT_SERVER_DB_URL: "postgresql+asyncpg://moonveil:${POSTGRES_PASSWORD}@postgres:5432/moonveil"
+      AGENT_SERVER_DB_BACKEND: "postgres"
+      AGENT_SERVER_REDIS_URL: "redis://redis:6379/0"
+      AGENT_SERVER_SECRET: "${AGENT_SERVER_SECRET}"
+      AGENT_SERVER_HOST: "0.0.0.0"
+      AGENT_SERVER_PORT: "8000"
+      # Pin the attachment store path explicitly (it was CWD-relative default)
+      # so it keeps matching the volume mount below regardless of WORKDIR.
+      AGENT_SERVER_FILES_LOCAL_ROOT: "/app/server/agent-server-moonveil.files"
+    volumes:
+      # Persistent attachment store. Without this, every server recreate wipes
+      # all stored attachment blobs (found 2026-10-07: image tap 404'd after a
+      # redeploy). Same treatment as postgres/redis data.
+      - moonveil-server-files:/app/server/agent-server-moonveil.files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:8811:8000"
+  web:
+    image: ghcr.io/chenyynx/moonveil-cloud-web:latest
+    build:
+      context: ../..
+      dockerfile: deploy/moonveil/Dockerfile.web
+      args:
+        YARN_REGISTRY: https://registry.npmmirror.com
+        # P4: empty => the browser calls same-origin /api/v2; the edge
+        # (moonveil.pipicore.cn) routes /api/v2 -> :8811 and / -> this service.
+        AGENTS_ANYWHERE_BROWSER_API: "${MOONVEIL_BROWSER_API:-}"
+    restart: unless-stopped
+    environment:
+      # SSR-side target = in-network service name. The previous default
+      # (127.0.0.1:8811) is a host-published port and does NOT exist inside this
+      # container, so every SSR-side rewrite/rewrite-proxy was silently doomed.
+      AGENTS_ANYWHERE_API: "${MOONVEIL_INTERNAL_API:-http://server:8000}"
+    depends_on:
+      - server
+    ports:
+      - "0.0.0.0:8812:5174"
+volumes:
+  moonveil-pg:
+  moonveil-redis:
+  moonveil-server-files:

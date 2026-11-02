@@ -211,6 +211,22 @@ struct CodeToolCallDetailView: View {
     var chat: SessionChatModel? = nil
 
     private var output: CodeToolOutput { CodeToolOutput(item: liveItem, kind: call.kind) }
+    /// Inline images carried by the structured `result`. The server keeps
+    /// `result` intact and replaces only `output` with a summary (AA S1), so
+    /// this reads the bytes from `result`, never from the summary text.
+    private var outputImages: [CodeToolImage] { CodeToolImages.images(in: liveItem) }
+    /// A pure-image result's `output` is either the server's summary or — on
+    /// a pre-S1 server — the serialized result with base64. The image section
+    /// already carries that content, so the text card is skipped. Mixed
+    /// text + image output keeps its text card and draws the images after it.
+    private func isRedundantImageText(
+        _ output: CodeToolOutput,
+        images: [CodeToolImage]
+    ) -> Bool {
+        guard !images.isEmpty, case let .text(text) = output else { return false }
+        return CodeToolImages.isServerImageSummary(text, images: images)
+            || CodeToolImages.isSerializedImagePayload(text)
+    }
     /// The input is read from the live row too: the server's summary keeps a
     /// bounded input whitelist, so a summary-only read can miss structured
     /// keys that the completed row carries.
@@ -301,10 +317,15 @@ struct CodeToolCallDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
+        // Extract once per body evaluation: the walk decodes a 64 KiB header
+        // per block, and `outputSection` / `imageSection` used to repeat it.
+        let images = outputImages
+        let outputIsRedundant = isRedundantImageText(output, images: images)
+        return ScrollView {
             VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
                 detailSection
-                outputSection
+                outputSection(redundantImageText: outputIsRedundant)
+                imageSection(images: images)
                 if !outputCardTakesFooter { deferredSection }
                 footnoteSection
             }
@@ -342,8 +363,8 @@ struct CodeToolCallDetailView: View {
     /// The main content: the official five-case output switch. With no
     /// output the section is omitted entirely instead of drawing an empty
     /// "Output" header.
-    @ViewBuilder private var outputSection: some View {
-        if !output.isEmpty {
+    @ViewBuilder private func outputSection(redundantImageText: Bool) -> some View {
+        if !output.isEmpty && !redundantImageText {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
@@ -351,6 +372,18 @@ struct CodeToolCallDetailView: View {
                                truncated: dataTruncated,
                                readMetadata: readMetadata,
                                readFullFile: readFullFileAction)
+        }
+    }
+
+    /// Inline result images, after the output card. The official detail draws
+    /// an `AttachmentBar` here (RE: horizontal 96×96 tiles, tap opens the
+    /// full-screen gallery). Rows are laid out exactly as before; this section
+    /// exists only on the pushed single-call page.
+    @ViewBuilder private func imageSection(images: [CodeToolImage]) -> some View {
+        if !images.isEmpty {
+            ToolImageAttachmentBar(images: images,
+                                   itemId: liveItem.id,
+                                   contentHash: liveItem.contentHash)
         }
     }
 

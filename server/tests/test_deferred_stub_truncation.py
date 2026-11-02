@@ -9,6 +9,27 @@ from agent_server.infra.timeline_store import (
 )
 
 
+def test_v2_49_builder_matches_the_live_writer() -> None:
+    """The migration must rebuild stubs exactly like the write path."""
+    from migrations.versions import v2_49
+
+    content = {
+        "kind": "tool_call",
+        "toolName": "Read",
+        "toolUseId": "tool-1",
+        "output": "x" * 200_000,
+        "truncated": True,
+        "readMetadata": {
+            "filePath": "/tmp/a.txt",
+            "numLines": 1769,
+            "totalLines": 3000,
+        },
+    }
+    assert v2_49._build_stub_content(content, 200_000) == build_stub_content(
+        content, 200_000
+    )
+
+
 def _stub_bytes(stub: dict[str, object]) -> int:
     return len(
         json.dumps(stub, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(

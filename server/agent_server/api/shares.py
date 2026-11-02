@@ -22,6 +22,10 @@ from agent_server.deps import (
 )
 from agent_server.infra.repositories.facade import Store
 from agent_server.services.attachments import AttachmentService
+from agent_server.services.timeline_payload import (
+    log_slim_stats,
+    normalize_timeline_items,
+)
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
 
 router = APIRouter(tags=["session-shares"])
@@ -117,6 +121,14 @@ async def public_session_share(
         items = [TimelineItem.model_validate(item) for item in snapshot["items"]]
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail="invalid share snapshot") from exc
+    # A share snapshot is frozen at creation time; slim only this read so the
+    # stored snapshot stays a faithful copy of the shared conversation.
+    items, slim_stats = normalize_timeline_items(items)
+    log_slim_stats(
+        surface="share.public",
+        session_id=None,
+        stats=slim_stats,
+    )
     return PublicSessionShareResponse(
         shareId=share["id"],
         scope=share["scope"],

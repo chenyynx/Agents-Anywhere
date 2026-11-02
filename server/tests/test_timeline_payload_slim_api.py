@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from test_backend_mvp import create_connector_and_session, make_client
 
 _ITEM_ID = "tl_image_1"
@@ -98,7 +100,40 @@ def _assert_slim(content: dict, result: list[dict]) -> None:
     assert "outputText" not in content
 
 
-def test_image_payload_is_slimmed_on_every_timeline_egress(tmp_path) -> None:
+def _read_surface(surface: str, client, session_id: str, headers: dict) -> list[dict]:
+    if surface == "timeline":
+        response = client.get(f"/sessions/{session_id}/timeline", headers=headers)
+        assert response.status_code == 200, response.text
+        return [item["content"] for item in response.json()["items"]]
+    if surface == "snapshot":
+        response = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
+        assert response.status_code == 200, response.text
+        return [item["content"] for item in response.json()["timeline"]["items"]]
+    if surface == "detail":
+        response = client.get(
+            f"/sessions/{session_id}/timeline/items/{_ITEM_ID}",
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        return [response.json()["content"]]
+    if surface == "events":
+        response = client.get(f"/sessions/{session_id}/events?after=seq:0", headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["snapshotRequired"] is False
+        # The whole recovery response — every event envelope included — stays
+        # below the 3 MiB gate even though the stored row had four copies.
+        assert len(response.content) < 3 * 1024 * 1024
+        return [
+            event["payload"]["item"]["content"]
+            for event in body["events"]
+            if event["payload"].get("item", {}).get("id") == _ITEM_ID
+        ]
+    raise AssertionError(f"unknown surface {surface!r}")
+
+
+@pytest.mark.parametrize("surface", ["timeline", "snapshot", "detail", "events"])
+def test_image_payload_is_slimmed_on_every_timeline_egress(tmp_path, surface) -> None:
     client = make_client(tmp_path)
     _, access_token, session_id, headers = create_connector_and_session(
         client, runtime="claude"
@@ -106,34 +141,10 @@ def test_image_payload_is_slimmed_on_every_timeline_egress(tmp_path) -> None:
     item, result = _image_item(session_id, _png_base64())
     _ingest(client, access_token, session_id, item)
 
-    timeline = client.get(f"/sessions/{session_id}/timeline", headers=headers)
-    assert timeline.status_code == 200, timeline.text
-    _assert_slim(timeline.json()["items"][0]["content"], result)
+    contents = _read_surface(surface, client, session_id, headers)
 
-    snapshot = client.get(f"/sessions/{session_id}/snapshot", headers=headers)
-    assert snapshot.status_code == 200, snapshot.text
-    _assert_slim(snapshot.json()["timeline"]["items"][0]["content"], result)
-
-    detail = client.get(
-        f"/sessions/{session_id}/timeline/items/{_ITEM_ID}",
-        headers=headers,
-    )
-    assert detail.status_code == 200, detail.text
-    _assert_slim(detail.json()["content"], result)
-
-    events = client.get(f"/sessions/{session_id}/events?after=seq:0", headers=headers)
-    assert events.status_code == 200, events.text
-    body = events.json()
-    assert body["snapshotRequired"] is False
-    item_events = [
-        event
-        for event in body["events"]
-        if event["payload"].get("item", {}).get("id") == _ITEM_ID
-    ]
-    assert len(item_events) == 1
-    _assert_slim(item_events[0]["payload"]["item"]["content"], result)
-    # The whole recovery response, aliases and base64 included, is below 3 MiB.
-    assert len(events.content) < 3 * 1024 * 1024
+    assert len(contents) == 1
+    _assert_slim(contents[0], result)
 
 
 def test_public_share_read_is_slimmed_without_touching_the_snapshot(tmp_path) -> None:
@@ -155,4 +166,6 @@ def test_public_share_read_is_slimmed_without_touching_the_snapshot(tmp_path) ->
     # ``/public`` is not one of the test client's auto-prefixed API roots.
     public = client.get(f"/api/v2/public/shares/{share_id}")
     assert public.status_code == 200, public.text
-    _assert_slim(public.json()["items"][0]["content"], result)
+    contents = [item["content"] for item in public.json()["items"]]
+    assert len(contents) == 1
+    _assert_slim(contents[0], result)

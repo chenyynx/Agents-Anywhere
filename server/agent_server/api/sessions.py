@@ -949,9 +949,9 @@ async def session_timeline(
                         limit=limit,
                     )
                 else:
-                    # ``changes`` is the export/recovery feed: it must keep its
-                    # exact pre-existing semantics, so neither
-                    # ``excludeAgentChildren`` nor ``deferActivity`` applies.
+                    # ``changes`` is the export/recovery feed: the window flags
+                    # (``excludeAgentChildren`` / ``deferActivity``) do not
+                    # apply to it. Egress normalization still does.
                     items, has_more = await db.list_timeline_since(
                         session_id=session_id,
                         after_seq=after_seq,

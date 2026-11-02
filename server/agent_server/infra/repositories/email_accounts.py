@@ -93,7 +93,9 @@ def _scope(email: str, purpose: str, user_id: str) -> str:
 
 
 def _code_hash(nonce: str, code: str) -> str:
-    secret = os.environ.get("AGENT_SERVER_SECRET", "agent-server-dev-secret").encode()
+    # Same fail-fast rule as token signing: an email code must never be
+    # derivable from a public development default.
+    secret = os.environ["AGENT_SERVER_SECRET"].encode()
     return hmac.new(
         secret, f"email-code:{nonce}:{code}".encode(), hashlib.sha256
     ).hexdigest()

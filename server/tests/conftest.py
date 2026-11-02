@@ -25,6 +25,9 @@ from fastapi.testclient import TestClient
 # production timeout for every runtime RPC.
 os.environ.setdefault("AGENT_SERVER_RUNTIME_RPC_TIMEOUT_SECONDS", "0.2")
 os.environ.setdefault("AGENT_SERVER_SESSION_RPC_TIMEOUT_SECONDS", "0.2")
+# Token signing now fails fast when the secret is missing; tests supply their
+# own so the suite never depends on a development default.
+os.environ.setdefault("AGENT_SERVER_SECRET", "test-secret")
 # Every test signs in at least once; the production PBKDF2 cost dominates otherwise.
 os.environ.setdefault("AGENT_SERVER_PASSWORD_ITERATIONS", "1000")
 # Most tests exercise protocol behavior. The process pool has dedicated tests.

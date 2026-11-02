@@ -8,6 +8,8 @@ import datetime as dt
 import hashlib
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from agent_server.core.auth import hash_password
 from agent_server.core.setup_token import SetupToken
 from agent_server.services.oauth import OAuthIdentity, create_pending_token
@@ -1055,3 +1057,20 @@ def test_mobile_login_exchange_rejects_user_mismatch(tmp_path):
         json={"userId": "other", "loginToken": qr_body["loginToken"]},
     )
     assert exchanged.status_code == 401
+
+
+def test_missing_secret_fails_fast(monkeypatch):
+    """A missing secret must crash, not fall back to a public default."""
+    from agent_server.core import auth
+
+    monkeypatch.delenv("AGENT_SERVER_SECRET", raising=False)
+    with pytest.raises(KeyError):
+        auth._secret()
+
+
+def test_email_code_hash_needs_the_secret(monkeypatch):
+    from agent_server.infra.repositories import email_accounts
+
+    monkeypatch.delenv("AGENT_SERVER_SECRET", raising=False)
+    with pytest.raises(KeyError):
+        email_accounts._code_hash("nonce", "123456")

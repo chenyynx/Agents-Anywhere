@@ -1354,6 +1354,11 @@
       "title": "Catalogs",
       "type": "object"
     },
+    "deferredActivity": {
+      "default": false,
+      "title": "Deferredactivity",
+      "type": "boolean"
+    },
     "effectiveCapabilities": {
       "$ref": "#/$defs/ProtocolCapabilitySet"
     },

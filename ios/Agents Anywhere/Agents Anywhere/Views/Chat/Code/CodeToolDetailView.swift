@@ -361,7 +361,7 @@ struct CodeToolCallDetailView: View {
         if let chat,
            liveItem.isDeferred || chat.deferredItems.phase(liveItem.id) == .loaded {
             DeferredLoadFooter(chat: chat, id: liveItem.id, kind: .output,
-                               contentPadding: .zero)
+                               contentPadding: EdgeInsets())
         }
     }
 

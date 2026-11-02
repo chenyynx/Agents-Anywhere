@@ -89,7 +89,9 @@ struct CodeToolImageTests {
             itemId: "item-1")
 
         #expect(images.count == 1)
-        #expect(images[0].id == "item-1#1")
+        // The ordinal counts image blocks, not every content block: a text
+        // block before the image does not shift the id.
+        #expect(images[0].id == "item-1#0")
         #expect(images[0].mediaType == "image/png")
         #expect(images[0].byteCount == data.count)
         #expect(images[0].pixelSize == CGSize(width: 10, height: 20))

@@ -199,7 +199,11 @@ private struct ToolImageGallery: View {
                 ? "\(index + 1) / \(images.count)" : ""))
             .navigationBarTitleDisplayMode(.inline)
         }
-        .preferredColorScheme(.dark)
+        // A local environment override, not `preferredColorScheme`: the
+        // presentation-level preference leaked back into the tool-detail
+        // sheet and left it dark after the gallery was dismissed.
+        .environment(\.colorScheme, .dark)
+        .statusBarHidden(true)
     }
 }
 

@@ -38,6 +38,10 @@ from agent_server.services.runtime_ingress import runtime_notification_is_allowe
 from agent_server.services.session_runtime_state_cache import (
     SessionRuntimeStateCache,
 )
+from agent_server.services.timeline_payload import (
+    log_slim_stats,
+    normalize_item_payloads,
+)
 
 INGEST_REJECTION_MESSAGE_MAX_LENGTH = 500
 
@@ -335,6 +339,15 @@ class ConnectorIngestService:
                 if bucket["notices"] or bucket["catalogs"]
                 else next_seq
             )
+            def egress_items() -> list[dict[str, Any]]:
+                normalized, slim_stats = normalize_item_payloads(bucket["items"])
+                log_slim_stats(
+                    surface="ws.ingest",
+                    session_id=session_id,
+                    stats=slim_stats,
+                )
+                return normalized
+
             envelope: dict[str, Any] = {
                 "sessionId": session_id,
                 "nextSeq": envelope_sequence,
@@ -343,9 +356,9 @@ class ConnectorIngestService:
                 envelope["refetch"] = True
             elif bucket["timeline_reset"]:
                 envelope["timelineReset"] = True
-                envelope["items"] = bucket["items"]
+                envelope["items"] = egress_items()
             elif bucket["items"]:
-                envelope["items"] = bucket["items"]
+                envelope["items"] = egress_items()
             runtime_state: SessionRuntimeState | None = None
             if bucket["runtime_state"]:
                 bound_session = await self._store.get_session(session_id)

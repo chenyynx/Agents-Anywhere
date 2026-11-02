@@ -35,6 +35,12 @@ from agent_server.services.session_revision_allocator import (
     SessionRevisionAllocator,
     SessionRevisionRepairNeeded,
 )
+from agent_server.services.timeline_payload import (
+    SlimStats,
+    log_slim_stats,
+    normalize_item_json,
+    normalize_item_payloads,
+)
 
 DEFAULT_FLUSH_INTERVAL_SECONDS = 1.0
 DEFAULT_LANE_CACHE_ITEMS = 1024
@@ -62,6 +68,23 @@ def _state_deletions(envelope: dict[str, Any], deleted: tuple[str, ...]) -> None
     envelope["refetch"] = True
     if len(deleted) <= MAX_STATED_DELETIONS:
         envelope["deleted"] = list(deleted)
+
+
+def _slim_egress_items(
+    session_id: str,
+    items: list[dict[str, Any]],
+    *,
+    surface: str,
+) -> list[dict[str, Any]]:
+    """Normalize item dicts on their way into a live envelope.
+
+    The store keeps the full row; only this outbound copy is slimmed. Returns
+    fresh dicts for changed rows and the original dicts for the rest.
+    """
+
+    normalized, stats = normalize_item_payloads(items)
+    log_slim_stats(surface=surface, session_id=session_id, stats=stats)
+    return normalized
 
 
 @dataclass(slots=True)
@@ -435,12 +458,23 @@ class TimelineWriteBuffer:
             probe.mark("stage")
             self._remember(lane, normalized)
             lane.max_order_seq = max(max_order_seq, normalized.orderSeq)
+            # ``raw_item`` is also the pending-projection copy that will be
+            # persisted verbatim; slim only the copy spliced into the live
+            # envelope so storage is untouched.
+            published_item, saved_bytes = (
+                normalize_item_json(raw_item) if raw_item is not None else (None, 0)
+            )
+            log_slim_stats(
+                surface="ws.live",
+                session_id=session_id,
+                stats=SlimStats().add(saved_bytes),
+            )
             await self._broker.publish_message(
                 session_id,
                 timeline_envelope_message(
                     session_id=session_id,
                     next_seq=normalized.updatedSeq,
-                    raw_items=[raw_item] if raw_item is not None else [],
+                    raw_items=[published_item] if published_item is not None else [],
                 ),
             )
             probe.mark("publish")
@@ -557,7 +591,11 @@ class TimelineWriteBuffer:
             session = await self._project_session_connector_status(result)
             envelope["session"] = session.model_dump(mode="json")
         elif isinstance(result, TimelineItemWriteResult):
-            envelope["items"] = [result.item.model_dump(mode="json")]
+            envelope["items"] = _slim_egress_items(
+                session_id,
+                [result.item.model_dump(mode="json")],
+                surface="ws.revision",
+            )
             if deleted:
                 # A single-row writer states a surviving item but may also have
                 # removed a converged twin; nothing else carries that removal.
@@ -572,9 +610,11 @@ class TimelineWriteBuffer:
                 envelope.pop("timelineReset", None)
                 envelope["refetch"] = True
             else:
-                envelope["items"] = [
-                    item.model_dump(mode="json") for item in result_items
-                ]
+                envelope["items"] = _slim_egress_items(
+                    session_id,
+                    [item.model_dump(mode="json") for item in result_items],
+                    surface="ws.revision",
+                )
             if operation == "replace_timeline_snapshot" and "items" in envelope:
                 envelope["timelineReset"] = True
             if deleted and operation != "replace_timeline_snapshot":
@@ -627,9 +667,11 @@ class TimelineWriteBuffer:
                     "nextSeq": next_seq,
                 }
                 if result.items:
-                    envelope["items"] = [
-                        item.model_dump(mode="json") for item in result.items
-                    ]
+                    envelope["items"] = _slim_egress_items(
+                        session_id,
+                        [item.model_dump(mode="json") for item in result.items],
+                        surface="ws.flush",
+                    )
                 if result.deleted:
                     # A converged twin's removal must reach the client: there is
                     # no surviving item to carry it, so state the ids and force

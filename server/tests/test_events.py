@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import json
 from collections.abc import Awaitable, Callable
@@ -320,8 +321,8 @@ def test_timeline_snapshot_replace_requires_snapshot_for_deleted_items(
     asyncio.run(exercise())
 
 
-def test_recovery_requires_snapshot_when_the_serialized_delta_exceeds_the_byte_limit(
-    tmp_path, monkeypatch
+def test_recovery_requires_snapshot_when_the_serialized_response_exceeds_the_byte_limit(
+    tmp_path,
 ) -> None:
     """T1: ten large items cross the byte gate while the count gate is open."""
 
@@ -339,20 +340,7 @@ def test_recovery_requires_snapshot_when_the_serialized_delta_exceeds_the_byte_l
         )
         measured_bytes = await _stored_delta_bytes(store, session.id)
         assert measured_bytes > DEFAULT_RECOVERY_BYTE_LIMIT
-        assert DEFAULT_RECOVERY_BYTE_LIMIT == 4 * 1024 * 1024
-
-        serialized_items: list[str] = []
-        original_serialized_payload_bytes = event_recovery._serialized_payload_bytes
-
-        def counting_serialized_payload_bytes(payload: dict[str, Any]) -> int:
-            serialized_items.append(str(payload["item"]["id"]))
-            return original_serialized_payload_bytes(payload)
-
-        monkeypatch.setattr(
-            event_recovery,
-            "_serialized_payload_bytes",
-            counting_serialized_payload_bytes,
-        )
+        assert DEFAULT_RECOVERY_BYTE_LIMIT == 3 * 1024 * 1024
         sequence = await store.get_session_seq(session.id)
 
         with captured_loguru() as messages:
@@ -365,11 +353,6 @@ def test_recovery_requires_snapshot_when_the_serialized_delta_exceeds_the_byte_l
         assert response.snapshotRequired is True
         assert response.events == []
         assert response.nextCursor == event_cursor(sequence)
-        # The dumped payload of every inspected item is reused for the events
-        # that are actually returned, and an over-limit batch stops early.
-        assert serialized_items
-        assert len(serialized_items) == len(set(serialized_items))
-        assert len(serialized_items) < 10
 
         downgrades = [
             message for message in messages if "recovery byte limit exceeded" in message
@@ -379,11 +362,14 @@ def test_recovery_requires_snapshot_when_the_serialized_delta_exceeds_the_byte_l
         assert f"session_id={session.id}" in line
         assert f"byte_limit={DEFAULT_RECOVERY_BYTE_LIMIT}" in line
         assert int(line.split(" items=")[1].split(" ")[0]) == 10
-        assert int(line.split("measured_items=")[1].split(" ")[0]) < 10
+        # The gate measures the complete response, so every item is counted.
+        assert int(line.split("measured_items=")[1].split(" ")[0]) == 10
         assert (
             int(line.split("payload_bytes=")[1].split(" ")[0])
             > DEFAULT_RECOVERY_BYTE_LIMIT
         )
+        assert "normalized_items=0" in line
+        assert "saved_bytes=0" in line
 
     _run_recovery_case(tmp_path, exercise)
 
@@ -413,10 +399,20 @@ def test_recovery_byte_gate_measures_serialized_utf8_payload_bytes(tmp_path) -> 
             after_seq=0,
             limit=DEFAULT_RECOVERY_LIMIT,
         )
-        payloads = [item.model_dump(mode="json") for item in items]
-        measured_characters = sum(len(_recovery_payload_json(p)) for p in payloads)
-        measured_bytes = sum(
-            len(_recovery_payload_json(p).encode("utf-8")) for p in payloads
+        baseline = await EventRecoveryService(
+            store,
+            presence,
+            byte_limit=10**9,
+        ).recover(session.id, after=event_cursor(0), user_id="user-1")
+        assert baseline.snapshotRequired is False
+        measured_bytes = event_recovery._serialized_response_bytes(baseline)
+        measured_characters = len(
+            json.dumps(
+                baseline.model_dump(mode="json"),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
         )
         # A character-based metric would let this limit pass; byte count does not.
         assert measured_characters < measured_bytes - 1
@@ -446,6 +442,165 @@ def test_recovery_byte_gate_measures_serialized_utf8_payload_bytes(tmp_path) -> 
         assert over.snapshotRequired is True
         assert over.events == []
         assert over.nextCursor == event_cursor(sequence)
+
+    _run_recovery_case(tmp_path, exercise)
+
+
+def _png_base64(
+    *,
+    width: int = 1170,
+    height: int = 4100,
+    padding: int = 0,
+) -> str:
+    """A PNG whose header carries real dimensions plus optional bulk bytes.
+
+    Only the header is parsed; ``padding`` makes the encoded body large enough
+    to stand in for a screenshot without shipping a real image fixture.
+    """
+
+    header = (
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, "big")
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + bytes([8, 6, 0, 0, 0])
+        + b"\x00\x00\x00\x00"
+    )
+    return base64.b64encode(header + b"\x00" * padding).decode("ascii")
+
+
+def _image_tool_item(
+    session_id: str,
+    item_id: str,
+    order_seq: int,
+    *,
+    data: str,
+    media_type: str = "image/png",
+) -> TimelineItemIn:
+    result = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+    ]
+    output = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return TimelineItemIn.model_validate(
+        {
+            "id": item_id,
+            "sessionId": session_id,
+            "type": "tool",
+            "status": "done",
+            "role": "tool",
+            "content": {
+                "kind": "tool_result",
+                "toolUseId": item_id,
+                "output": output,
+                "text": output,
+                "outputText": output,
+                "outputPreview": output[-4000:],
+                "outputLength": len(output),
+                "result": result,
+            },
+            "source": {
+                "runtime": "claude",
+                "sessionId": "thread-1",
+                "itemId": item_id,
+            },
+            "orderSeq": order_seq,
+            "revision": 1,
+            "contentHash": f"sha256:{item_id}",
+        }
+    )
+
+
+def test_recovery_slims_image_payload_but_keeps_result_and_stays_under_the_gate(
+    tmp_path,
+) -> None:
+    """An image tool row is summarized before the byte gate, not after it."""
+
+    async def exercise(
+        store: Store,
+        presence: ConnectorRpcManager,
+        session: SessionView,
+    ) -> None:
+        item = _image_tool_item(
+            session.id,
+            "tool-image-1",
+            1,
+            # ~700 KiB decoded: the four stored copies are together well past
+            # the 3 MiB gate, while the surviving ``result`` copy is not.
+            data=_png_base64(padding=700_000),
+        )
+        await store.sync_timeline_items(session_id=session.id, items=[item])
+
+        response = await EventRecoveryService(store, presence).recover(
+            session.id,
+            after=event_cursor(0),
+            user_id="user-1",
+        )
+
+        assert response.snapshotRequired is False
+        assert event_recovery._serialized_response_bytes(response) < (
+            DEFAULT_RECOVERY_BYTE_LIMIT
+        )
+        timeline_events = [
+            event
+            for event in response.events
+            if event.type in {"timeline.item_created", "timeline.item_updated"}
+        ]
+        assert len(timeline_events) == 1
+        payload_item = timeline_events[0].payload["item"]
+        content = payload_item["content"]
+        assert content["result"] == item.content["result"]
+        assert content["output"].startswith("[Image] PNG · 1170×4100 · ")
+        assert "base64" not in content["output"]
+        assert content["outputPreview"] == content["output"]
+        assert content["outputLength"] == len(content["output"])
+        assert "text" not in content
+        assert "outputText" not in content
+        assert payload_item["contentHash"] == item.contentHash
+
+    _run_recovery_case(tmp_path, exercise)
+
+
+def test_recovery_4_15mb_unnormalized_row_still_requires_a_snapshot(tmp_path) -> None:
+    """A row the normalizer cannot summarize must still hit the three-megabyte gate."""
+
+    async def exercise(
+        store: Store,
+        presence: ConnectorRpcManager,
+        session: SessionView,
+    ) -> None:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                _timeline_item(
+                    session.id,
+                    "item-large",
+                    1,
+                    text="x" * 4_150_000,
+                )
+            ],
+        )
+
+        response = await EventRecoveryService(store, presence).recover(
+            session.id,
+            after=event_cursor(0),
+            user_id="user-1",
+        )
+
+        assert response.snapshotRequired is True
+        assert response.events == []
 
     _run_recovery_case(tmp_path, exercise)
 

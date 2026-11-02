@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from contextlib import contextmanager
 from typing import Any, cast
@@ -281,6 +282,56 @@ async def test_ingest_publishes_before_timeline_row_is_durable(tmp_path) -> None
 
 
 @pytest.mark.anyio
+async def test_ingest_envelope_slims_an_image_before_the_row_is_durable(
+    tmp_path,
+) -> None:
+    store, broker, buffer, connector, session = await create_buffer(tmp_path)
+
+    class NoopRealtime:
+        async def apply(self, **_values) -> bool:
+            return False
+
+    notifications = ConnectorNotificationService(
+        store,
+        NoopRealtime(),  # type: ignore[arg-type]
+        buffer,
+    )
+    ingest = ConnectorIngestService(
+        store,
+        notifications,
+        broker,
+        cast(Any, None),
+        cast(Any, None),
+        SessionRuntimeStateCache(),
+    )
+    queue = await broker.register(session.id)
+    try:
+        item = _image_tool_input(session.id, data=_png_base64())
+        await ingest.handle_notification_message(
+            connector_id=connector.id,
+            method="timeline.itemUpsert",
+            params={"sessionId": session.id, "item": item.model_dump(mode="json")},
+        )
+
+        envelope = json.loads(await asyncio.wait_for(queue.get(), timeout=1))
+        published_content = envelope["items"][0]["content"]
+        assert published_content["output"].startswith("[Image] PNG · 10×20 · ")
+        assert "text" not in published_content
+        assert "outputText" not in published_content
+        assert published_content["result"] == item.content["result"]
+        assert await store.timeline.read(session.id) == []
+
+        await buffer.flush_through(session.id)
+        stored = await store.timeline.read(session.id)
+        assert stored[0].content["output"] == item.content["output"]
+        assert stored[0].content["result"] == item.content["result"]
+    finally:
+        await broker.unregister(session.id, queue)
+        await buffer.close()
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_complete_snapshot_fences_older_delayed_item(tmp_path) -> None:
     store, _broker, buffer, _connector, session = await create_buffer(tmp_path)
     try:
@@ -371,6 +422,91 @@ async def test_successful_live_publish_is_not_repeated_on_flush(
         ]
         stored = await store.timeline.read(session.id)
         assert [item.updatedSeq for item in stored] == [accepted.item.updatedSeq]
+    finally:
+        monkeypatch.setattr(broker, "publish_message", original_publish)
+        await buffer.close()
+        await store.close()
+
+
+def _image_tool_input(session_id: str, *, data: str) -> TimelineItemIn:
+    result = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": data},
+        }
+    ]
+    output = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return TimelineItemIn.model_validate(
+        {
+            "id": "item_image",
+            "sessionId": session_id,
+            "type": "tool",
+            "status": "done",
+            "role": "tool",
+            "content": {
+                "kind": "tool_result",
+                "output": output,
+                "text": output,
+                "outputText": output,
+                "outputPreview": output[-4000:],
+                "outputLength": len(output),
+                "result": result,
+            },
+            "source": {"runtime": "claude", "itemId": "runtime-image"},
+            "orderSeq": 1,
+            "revision": 1,
+            "contentHash": "sha256:image",
+        }
+    )
+
+
+def _png_base64() -> str:
+    header = (
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, "big")
+        + b"IHDR"
+        + (10).to_bytes(4, "big")
+        + (20).to_bytes(4, "big")
+        + bytes([8, 6, 0, 0, 0])
+        + b"\x00\x00\x00\x00"
+    )
+    return base64.b64encode(header).decode("ascii")
+
+
+@pytest.mark.anyio
+async def test_live_envelope_slims_image_result_but_storage_keeps_it(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, broker, buffer, _connector, session = await create_buffer(tmp_path)
+    original_publish = broker.publish_message
+    payloads: list[dict[str, Any]] = []
+
+    async def record_publish(_session_id: str, message: str) -> None:
+        payloads.append(json.loads(message))
+
+    monkeypatch.setattr(broker, "publish_message", record_publish)
+    try:
+        item = _image_tool_input(session.id, data=_png_base64())
+        await buffer.accept(session_id=session.id, item=item)
+        await buffer.flush_through(session.id)
+
+        published_content = payloads[0]["items"][0]["content"]
+        assert published_content["output"].startswith("[Image] PNG · 10×20 · ")
+        assert "text" not in published_content
+        assert "outputText" not in published_content
+        assert published_content["result"] == item.content["result"]
+
+        # The persisted row keeps every copy: only the wire copy is slimmed.
+        stored = await store.timeline.read(session.id)
+        assert stored[0].content["output"] == item.content["output"]
+        assert stored[0].content["text"] == item.content["output"]
+        assert stored[0].content["result"] == item.content["result"]
     finally:
         monkeypatch.setattr(broker, "publish_message", original_publish)
         await buffer.close()

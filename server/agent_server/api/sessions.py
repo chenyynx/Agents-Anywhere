@@ -129,6 +129,12 @@ from agent_server.services.session_meta_projection import (
 )
 from agent_server.services.session_run import SessionRunError, SessionRunService
 from agent_server.services.session_runtime_state_cache import SessionRuntimeStateCache
+from agent_server.services.timeline_payload import (
+    SlimStats,
+    log_slim_stats,
+    normalize_timeline_item,
+    normalize_timeline_items,
+)
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
 from agent_server.services.usage_events import UsageRecorder
 
@@ -897,6 +903,14 @@ async def session_timeline(
                     )
                 )
                 if deferred_applied:
+                    # Slim before the budget walk so the window is measured in
+                    # the bytes it will actually send.
+                    items, slim_stats = normalize_timeline_items(items)
+                    log_slim_stats(
+                        surface="timeline.deferred",
+                        session_id=session_id,
+                        stats=slim_stats,
+                    )
                     items, trimmed = _trim_deferred_window_items(
                         session_id,
                         items,
@@ -934,15 +948,6 @@ async def session_timeline(
                         before_order_seq=before_order_seq,
                         limit=limit,
                     )
-                    # A card's child rows can be as large as any timeline row, so
-                    # the same 2MB serialized-byte ceiling that guards the snapshot
-                    # applies here: keep the newest rows and tell the client more
-                    # remain via hasMore.
-                    items, budget_has_more = _apply_snapshot_timeline_byte_budget(
-                        session_id,
-                        items,
-                    )
-                    has_more = has_more or budget_has_more
                 else:
                     # ``changes`` is the export/recovery feed: it must keep its
                     # exact pre-existing semantics, so neither
@@ -952,6 +957,24 @@ async def session_timeline(
                         after_seq=after_seq,
                         limit=limit,
                     )
+            if not deferred_applied:
+                items, slim_stats = normalize_timeline_items(items)
+                log_slim_stats(
+                    surface=f"timeline.{mode}",
+                    session_id=session_id,
+                    stats=slim_stats,
+                )
+                if mode == "children":
+                    # A card's child rows can be as large as any timeline row,
+                    # so the same 2MB serialized-byte ceiling that guards the
+                    # snapshot applies here: keep the newest rows and tell the
+                    # client more remain via hasMore. Normalize first so the
+                    # ceiling measures the bytes actually sent.
+                    items, budget_has_more = _apply_snapshot_timeline_byte_budget(
+                        session_id,
+                        items,
+                    )
+                    has_more = has_more or budget_has_more
             if deferred_requested and not deferred_applied:
                 # The client asked for a bounded window; a declined deferred
                 # read (no display row to anchor on) must still respect the
@@ -997,7 +1020,9 @@ async def session_timeline_item(
 
     The expanded view behind a deferred summary: a window may carry
     ``content.deferred`` rows, and the client replaces one in place with this
-    read. The row is returned exactly as stored — never summarised — and the
+    read. The row is never replaced by a stored summary; only the egress
+    duplicate aliases (``text`` / ``outputText``) and, for image results, the
+    serialized ``output`` copy are slimmed — ``result`` stays complete. The
     session lookup is what enforces ownership (another user's session answers
     404, the same as an unknown row).
     """
@@ -1013,6 +1038,12 @@ async def session_timeline_item(
         )
     if item is None:
         raise HTTPException(status_code=404, detail="timeline item not found")
+    item, saved_bytes = normalize_timeline_item(item)
+    log_slim_stats(
+        surface="timeline.item",
+        session_id=session_id,
+        stats=SlimStats().add(saved_bytes),
+    )
     return item
 
 
@@ -1350,6 +1381,12 @@ async def session_snapshot(
                     )
                 )
                 if deferred_applied:
+                    items, slim_stats = normalize_timeline_items(items)
+                    log_slim_stats(
+                        surface="snapshot.deferred",
+                        session_id=session_id,
+                        stats=slim_stats,
+                    )
                     items, trimmed = _trim_deferred_window_items(
                         session_id,
                         items,
@@ -1362,11 +1399,23 @@ async def session_snapshot(
                     limit=limit,
                     main_only=exclude_agent_children,
                 )
+                items, slim_stats = normalize_timeline_items(items)
+                log_slim_stats(
+                    surface="snapshot",
+                    session_id=session_id,
+                    stats=slim_stats,
+                )
             # P1: in-flight Agent cards ride beside the timeline page, outside
             # its (100-item / byte-budget) window and outside the 2MB timeline
             # budget itself. Read under the same fence as `items` so the two
             # surfaces cannot disagree about a card's state.
             active_agents = await db.list_active_agent_cards(session_id=session_id)
+            active_agents, active_agent_stats = normalize_timeline_items(active_agents)
+            log_slim_stats(
+                surface="snapshot.active_agents",
+                session_id=session_id,
+                stats=active_agent_stats,
+            )
             next_seq = await db.get_session_seq(session_id)
         session = session_with_runtime_state(session, runtime_state)
         session = await with_effective_session_connector_status(manager, session)

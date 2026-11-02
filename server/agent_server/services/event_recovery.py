@@ -19,23 +19,32 @@ from agent_server.services.effective_capabilities import (
     SessionCapabilityRepository,
     project_session_capabilities,
 )
+from agent_server.services.timeline_payload import (
+    SlimStats,
+    log_slim_stats,
+    normalize_item_payload,
+)
 from agent_server.services.timeline_write_buffer import TimelineWriteBuffer
 
 DEFAULT_RECOVERY_LIMIT = 500
-DEFAULT_RECOVERY_BYTE_LIMIT = 4 * 1024 * 1024
+#: The recovery response is one atomic batch on the client. 3 MiB leaves room
+#: for the session/capability events that ride with the items while staying
+#: below the 4 MiB body that once stalled a client for 19 hours.
+DEFAULT_RECOVERY_BYTE_LIMIT = 3 * 1024 * 1024
 DEFAULT_STABILITY_ATTEMPTS = 3
 
 
-def _serialized_payload_bytes(payload: dict[str, Any]) -> int:
-    """Byte size of one event payload as the recovery response serializes it.
+def _serialized_response_bytes(response: ProtocolEventRecoveryResponse) -> int:
+    """Byte size of the complete response as the endpoint serializes it.
 
-    The response is written as UTF-8 JSON with compact separators, so the byte
-    gate measures that same encoding and cannot drift away from the wire size.
+    The gate covers the whole envelope — item events plus the session and
+    capability projections and the cursor fields — because the client applies
+    the response as one batch.
     """
 
     return len(
         json.dumps(
-            payload,
+            response.model_dump(mode="json"),
             ensure_ascii=False,
             separators=(",", ":"),
             default=str,
@@ -179,21 +188,11 @@ class EventRecoveryService:
             return self._snapshot_required(current_sequence)
 
         item_payloads: list[dict[str, Any]] = []
-        accumulated_bytes = 0
+        slim_stats = SlimStats()
         for item in items:
             dumped_item = item.model_dump(mode="json")
-            accumulated_bytes += _serialized_payload_bytes({"item": dumped_item})
-            if accumulated_bytes > self._byte_limit:
-                logger.info(
-                    "recovery byte limit exceeded session_id={} items={} "
-                    "measured_items={} payload_bytes={} byte_limit={}",
-                    session_id,
-                    len(items),
-                    len(item_payloads),
-                    accumulated_bytes,
-                    self._byte_limit,
-                )
-                return self._snapshot_required(current_sequence)
+            dumped_item, saved_bytes = normalize_item_payload(dumped_item)
+            slim_stats = slim_stats.add(saved_bytes)
             item_payloads.append(dumped_item)
 
         events = timeline_events_from_items(session_id, item_payloads)
@@ -216,12 +215,33 @@ class EventRecoveryService:
                 )
             )
         events.sort(key=lambda event: (event.sequence, event.eventId))
-        return ProtocolEventRecoveryResponse(
+        response = ProtocolEventRecoveryResponse(
             events=events,
             nextCursor=event_cursor(current_sequence),
             snapshotRequired=False,
             serverTime=utc_now(),
         )
+        log_slim_stats(
+            surface="recovery",
+            session_id=session_id,
+            stats=slim_stats,
+        )
+        payload_bytes = _serialized_response_bytes(response)
+        if payload_bytes > self._byte_limit:
+            logger.info(
+                "recovery byte limit exceeded session_id={} items={} "
+                "measured_items={} payload_bytes={} byte_limit={} "
+                "normalized_items={} saved_bytes={}",
+                session_id,
+                len(items),
+                len(item_payloads),
+                payload_bytes,
+                self._byte_limit,
+                slim_stats.normalized,
+                slim_stats.saved_bytes,
+            )
+            return self._snapshot_required(current_sequence)
+        return response
 
     @staticmethod
     def _snapshot_required(current_sequence: int) -> ProtocolEventRecoveryResponse:

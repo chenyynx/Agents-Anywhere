@@ -1014,9 +1014,105 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     )
 
 
-def test_current_schema_version_is_v2_48() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_48"
-    assert CURRENT_SCHEMA_VERSION == "2.48"
+def test_current_schema_version_is_v2_49() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_49"
+    assert CURRENT_SCHEMA_VERSION == "2.49"
+
+
+def test_v2_49_rebuilds_v1_stubs_with_the_truncation_fields(fresh_database_url) -> None:
+    """v2_48 backfilled format-1 stubs; the reader only accepts format 2, so
+    those rows would keep being served in full. v2_49 rebuilds them with
+    ``truncated`` / ``readMetadata`` and marks unparseable payloads processed
+    instead of retrying them forever."""
+
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_48")
+    payload = {
+        "id": "t1",
+        "type": "tool",
+        "content": {
+            "kind": "tool_call",
+            "toolName": "Read",
+            "toolUseId": "t1",
+            "output": "x" * 20_000,
+            "truncated": True,
+            "readMetadata": {
+                "filePath": "/tmp/a.txt",
+                "numLines": 1769,
+                "totalLines": 3000,
+                "truncatedByTokenCap": True,
+            },
+        },
+    }
+    payload_json = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    v1_stub = {
+        **payload,
+        "content": {
+            "kind": "tool_call",
+            "toolName": "Read",
+            "toolUseId": "t1",
+            "outputPreview": "tail",
+            "deferred": True,
+            "deferredBytes": len(payload_json.encode("utf-8")),
+        },
+    }
+    v1_stub_json = json.dumps(
+        v1_stub, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.begin() as connection:
+            _insert_required(connection, "connectors", {"id": "c1", "revoked": 0})
+            _insert_required(connection, "sessions", {
+                "id": "s1", "connector_id": "c1", "runtime": "claude", "runtime_id": "r1",
+            })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1",
+                "id": "t1",
+                "type": "tool",
+                "payload_json": payload_json,
+                "payload_bytes": len(payload_json.encode("utf-8")),
+                "kind": "tool_call",
+                "stub_json": v1_stub_json,
+                "stub_version": 1,
+            })
+            _insert_required(connection, "timeline_items", {
+                "session_id": "s1",
+                "id": "t2",
+                "type": "tool",
+                "payload_json": "not json",
+                "payload_bytes": 8,
+                "kind": "tool_call",
+                "stub_json": v1_stub_json,
+                "stub_version": 1,
+            })
+    finally:
+        engine.dispose()
+
+    upgrade_database(db_url=url)
+
+    engine = create_engine(_sync_url(url))
+    try:
+        with engine.connect() as connection:
+            rows = {
+                row[0]: (row[1], row[2])
+                for row in connection.execute(
+                    text("SELECT id, stub_version, stub_json FROM timeline_items")
+                )
+            }
+    finally:
+        engine.dispose()
+
+    version, stub_json = rows["t1"]
+    assert version == 2
+    stub = json.loads(stub_json)["content"]
+    assert stub["deferred"] is True
+    assert stub["truncated"] is True
+    assert stub["readMetadata"]["totalLines"] == 3000
+    assert "output" not in stub
+    assert rows["t2"] == (2, None)
 
 
 def _insert_required(connection, table: str, values: dict) -> None:

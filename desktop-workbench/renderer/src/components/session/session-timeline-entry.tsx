@@ -137,6 +137,9 @@ function timelineItemCopyText(item: TimelineItem): string {
     item.content.text,
     item.content.message,
     item.content.rawText,
+    // Tool rows no longer carry `text` when it duplicated `output`
+    // (server-side egress dedupe); `output` is the canonical copy.
+    item.content.output,
     item.content.command,
     item.content.label,
     item.content.title,

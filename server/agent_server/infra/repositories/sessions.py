@@ -247,6 +247,20 @@ def _session_view_query(latest_item: tuple[Any, Any] | None = None) -> Any:
     )
 
 
+# Statuses that may still represent in-flight work. The runtime-settle path and
+# the connector restart reconciliation both use this set; anything outside it
+# has already reached a resting state a write must not disturb.
+_ACTIVE_SESSION_STATUSES = (
+    "waiting",
+    "pending",
+    "running",
+    "stopping",
+    "waiting_approval",
+    "error",
+    "blocked",
+)
+
+
 class SessionRepositoryMixin:
     async def get_session_runtime(self, session_id: str) -> str | None:
         async with self._engine.connect() as conn:
@@ -1244,23 +1258,45 @@ class SessionRepositoryMixin:
             .where(
                 sessions_t.c.connector_id == connector_id,
                 sessions_t.c.runtime_id == runtime_id,
-                sessions_t.c.status.in_(
-                    (
-                        "waiting",
-                        "pending",
-                        "running",
-                        "stopping",
-                        "waiting_approval",
-                        "error",
-                        "blocked",
-                    )
-                ),
+                sessions_t.c.status.in_(_ACTIVE_SESSION_STATUSES),
                 connectors_t.c.revoked == 0,
             )
             .order_by(sessions_t.c.updated_at.asc())
         )
         if user_id is not None:
             query = query.where(connectors_t.c.user_id == user_id)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        return [await self._session_from_row(row) for row in rows]
+
+    async def list_sessions_for_restart_reconcile(
+        self,
+        *,
+        connector_id: str,
+        limit: int,
+    ) -> list[SessionView]:
+        """Active sessions on one connector, newest write first, bounded.
+
+        A reconnect can only have stranded rows in sessions the server still
+        considers active, so those are the only ones worth asking the
+        connector about. The ordering and the cap stay in SQL: the session's
+        own ``updated_at`` is the write clock the reconcile must walk (the
+        ``SessionView`` model does not expose it), and a bounded sweep must
+        reach the most recently written sessions first.
+        """
+
+        if limit <= 0:
+            return []
+        query = (
+            _session_view_query()
+            .where(
+                sessions_t.c.connector_id == connector_id,
+                sessions_t.c.status.in_(_ACTIVE_SESSION_STATUSES),
+                connectors_t.c.revoked == 0,
+            )
+            .order_by(sessions_t.c.updated_at.desc(), sessions_t.c.id)
+            .limit(limit)
+        )
         async with self._engine.connect() as conn:
             rows = (await conn.execute(query)).mappings().all()
         return [await self._session_from_row(row) for row in rows]

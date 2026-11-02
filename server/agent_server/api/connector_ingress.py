@@ -67,6 +67,7 @@ from agent_server.services.device_runtimes import (
 from agent_server.services.effective_capabilities import (
     publish_connector_session_capabilities,
 )
+from agent_server.services.restart_reconcile import RestartReconcileService
 from agent_server.services.runtime_ingress import (
     notification_runtime_id,
     runtime_notification_is_allowed,
@@ -580,6 +581,7 @@ async def connector_ws(
         return
 
     discovery_task: asyncio.Task[str | None] | None = None
+    restart_reconcile_task: asyncio.Task[None] | None = None
     flush_task: asyncio.Task[None] | None = None
     completion_task: asyncio.Task[None] | None = None
     reader_task: asyncio.Task[None] | None = None
@@ -605,6 +607,17 @@ async def connector_ws(
             name=f"runtime-discover-{connection.connection_id}",
         )
         logger.info("connector connected: {}", connector_id)
+        # A reconnect is evidence that a turn owned by the previous connector
+        # process is gone. The probe/repair is independent of message routing
+        # and must not delay the reader, so it gets its own cancellable task.
+        restart_reconcile_task = asyncio.create_task(
+            _reconcile_restart_turns(
+                websocket.app.state.restart_reconcile,
+                connector_id,
+                connection,
+            ),
+            name=f"connector-restart-reconcile-{connection.connection_id}",
+        )
         reader_task = asyncio.create_task(
             _read_connector_messages(
                 websocket,
@@ -681,6 +694,9 @@ async def connector_ws(
             if discovery_task is not None:
                 discovery_task.cancel()
                 await asyncio.gather(discovery_task, return_exceptions=True)
+            if restart_reconcile_task is not None:
+                restart_reconcile_task.cancel()
+                await asyncio.gather(restart_reconcile_task, return_exceptions=True)
             if flush_task is not None:
                 flush_task.cancel()
                 await asyncio.gather(flush_task, return_exceptions=True)
@@ -761,6 +777,23 @@ async def _discover_runtimes(
             connection.connection_id,
         )
         return None
+
+
+async def _reconcile_restart_turns(
+    service: RestartReconcileService,
+    connector_id: str,
+    connection: ConnectorConnection,
+) -> None:
+    try:
+        await service.reconcile_connector(connector_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - background task errors must be observed
+        logger.exception(
+            "restart reconciliation crashed connector_id={} connection_id={}",
+            connector_id,
+            connection.connection_id,
+        )
 
 
 async def _complete_runtime_discovery(

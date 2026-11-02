@@ -64,6 +64,7 @@ from agent_server.services.device_runtimes import DeviceRuntimeService
 from agent_server.services.effective_capabilities import (
     publish_connector_session_capabilities,
 )
+from agent_server.services.restart_reconcile import RestartReconcileService
 from agent_server.services.session_runtime_state_cache import SessionRuntimeStateCache
 from agent_server.services.setup_tokens import SetupTokenService
 from agent_server.services.shell_tasks import ShellTaskManager
@@ -351,6 +352,12 @@ def create_app(
         app.state.timeline_write_buffer, app.state.session_runtime_state_cache, app.state.timeline_broker,
     )
     app.state.timeline_janitor = TimelineJanitor.from_environment(app.state.store)
+    app.state.restart_reconcile = RestartReconcileService.from_environment(
+        app.state.store,
+        app.state.rpc,
+    )
+    if not app.state.restart_reconcile.enabled:
+        logger.info("connector restart reconciliation disabled by configuration")
     app.state.usage_recorder = UsageRecorder(
         app.state.store,
         flush_interval_seconds=float(

@@ -145,6 +145,15 @@ nonisolated enum CodeToolImages {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Whether `text` is a pre-S1 serialized image result. An older server
+    /// leaves the full `result` JSON in `output`; the image section already
+    /// renders those bytes, so the text card would only repeat base64.
+    static func isSerializedImagePayload(_ text: String) -> Bool {
+        guard text.contains("\"base64\"") else { return false }
+        return text.contains("\"type\":\"image\"")
+            || text.contains("\"type\": \"image\"")
+    }
+
     // MARK: - Formatting
 
     static func typeLabel(_ mediaType: String?) -> String {

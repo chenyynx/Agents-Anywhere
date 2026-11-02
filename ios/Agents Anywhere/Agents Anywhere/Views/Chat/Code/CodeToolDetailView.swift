@@ -215,12 +215,14 @@ struct CodeToolCallDetailView: View {
     /// `result` intact and replaces only `output` with a summary (AA S1), so
     /// this reads the bytes from `result`, never from the summary text.
     private var outputImages: [CodeToolImage] { CodeToolImages.images(in: liveItem) }
-    /// A pure-image result's `output` is exactly the server's summary; the
-    /// image section already says that, so the text card is skipped. Mixed
+    /// A pure-image result's `output` is either the server's summary or — on
+    /// a pre-S1 server — the serialized result with base64. The image section
+    /// already carries that content, so the text card is skipped. Mixed
     /// text + image output keeps its text card and draws the images after it.
-    private var outputIsImageSummary: Bool {
+    private var outputIsRedundantImageText: Bool {
         guard !outputImages.isEmpty, case let .text(text) = output else { return false }
         return CodeToolImages.isServerImageSummary(text, images: outputImages)
+            || CodeToolImages.isSerializedImagePayload(text)
     }
     /// The input is read from the live row too: the server's summary keeps a
     /// bounded input whitelist, so a summary-only read can miss structured
@@ -355,7 +357,7 @@ struct CodeToolCallDetailView: View {
     /// output the section is omitted entirely instead of drawing an empty
     /// "Output" header.
     @ViewBuilder private var outputSection: some View {
-        if !output.isEmpty && !outputIsImageSummary {
+        if !output.isEmpty && !outputIsRedundantImageText {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,

@@ -258,6 +258,16 @@ struct CodeToolImageTests {
         #expect(!CodeToolImages.isServerImageSummary("[Image] PNG", images: images))
     }
 
+    @Test func detectsAPreS1SerializedImageResult() {
+        let serialized = #"[{"type":"image","source":{"type":"base64","data":"abc"}}]"#
+        let spaced = #"[{"type": "image", "source": {"type": "base64", "data": "abc"}}]"#
+
+        #expect(CodeToolImages.isSerializedImagePayload(serialized))
+        #expect(CodeToolImages.isSerializedImagePayload(spaced))
+        #expect(!CodeToolImages.isSerializedImagePayload("[Image] PNG · 10×20 · 33 B"))
+        #expect(!CodeToolImages.isSerializedImagePayload("base64 without an image type"))
+    }
+
     @Test func byteFormattingKeepsOneDecimalAtMost() {
         #expect(CodeToolImages.formatBytes(11) == "11 B")
         #expect(CodeToolImages.formatBytes(1024) == "1 KB")

@@ -122,7 +122,12 @@ def timeline_item_from_runtime_input(
     if revision is not None:
         data["revision"] = revision
     data["createdAt"] = item.createdAt or (existing.createdAt if existing else now)
-    data["updatedAt"] = item.updatedAt or now
+    # A history rebuild carries the source ``createdAt`` but no ``updatedAt``.
+    # Stamping ``now`` would rewrite an old row's time, and ``item_time`` is
+    # derived from these fields, so the session would jump to the top of the
+    # dashboard. The source creation time is the truthful fallback; only a row
+    # with neither timestamp is genuinely "now".
+    data["updatedAt"] = item.updatedAt or item.createdAt or now
     return TimelineItem.model_validate(data)
 
 

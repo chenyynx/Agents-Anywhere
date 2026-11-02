@@ -250,3 +250,35 @@ async def test_complete_snapshot_only_writes_changed_items(
         } == {"item_1"}
     finally:
         await store.close()
+
+
+def test_missing_updated_at_falls_back_to_created_at() -> None:
+    """History rebuilds carry ``createdAt`` but no ``updatedAt``.
+
+    ``item_time`` is derived from ``max(createdAt, completedAt, updatedAt)``,
+    so stamping ``now`` on a replayed old row would jump its session to the
+    top of the dashboard. The source creation time is the truthful fallback.
+    """
+    from agent_server.core.timeline import timeline_item_from_runtime_input
+
+    incoming = timeline_input("item_1").model_copy(
+        update={"createdAt": "2026-10-11T04:24:18Z", "updatedAt": None}
+    )
+    stored = timeline_item_from_runtime_input(
+        incoming, updated_seq=1, now="2026-11-02T10:03:12Z"
+    )
+
+    assert stored.updatedAt == "2026-10-11T04:24:18Z"
+
+
+def test_missing_both_timestamps_still_uses_now() -> None:
+    from agent_server.core.timeline import timeline_item_from_runtime_input
+
+    incoming = timeline_input("item_1").model_copy(
+        update={"createdAt": None, "updatedAt": None}
+    )
+    stored = timeline_item_from_runtime_input(
+        incoming, updated_seq=1, now="2026-11-02T10:03:12Z"
+    )
+
+    assert stored.updatedAt == "2026-11-02T10:03:12Z"

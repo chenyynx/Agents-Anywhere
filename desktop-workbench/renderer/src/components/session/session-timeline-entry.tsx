@@ -140,6 +140,10 @@ function timelineItemCopyText(item: TimelineItem): string {
     item.content.command,
     item.content.label,
     item.content.title,
+    // Last resort only: tool rows no longer carry `text` when it duplicated
+    // `output` (server-side egress dedupe). Appending it keeps every
+    // previously non-empty copy result byte-identical.
+    item.content.output,
   )?.trim() ?? ""
 }
 

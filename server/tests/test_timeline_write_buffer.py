@@ -14,6 +14,7 @@ from sqlalchemy import event, select, update
 
 from agent_server.core.models import TimelineItemIn
 from agent_server.core.protocol import PROTOCOL_MAX_REVISION
+from agent_server.core.timeline import TimelineBatchWriteResult
 from agent_server.infra.db import sessions as sessions_t
 from agent_server.infra.redis_coordinator import RedisCoordinator
 from agent_server.infra.repositories.facade import Store
@@ -282,7 +283,7 @@ async def test_ingest_publishes_before_timeline_row_is_durable(tmp_path) -> None
 
 
 @pytest.mark.anyio
-async def test_ingest_envelope_slims_an_image_before_the_row_is_durable(
+async def test_notification_live_envelope_slims_an_image_before_the_row_is_durable(
     tmp_path,
 ) -> None:
     store, broker, buffer, connector, session = await create_buffer(tmp_path)
@@ -327,6 +328,146 @@ async def test_ingest_envelope_slims_an_image_before_the_row_is_durable(
         assert stored[0].content["result"] == item.content["result"]
     finally:
         await broker.unregister(session.id, queue)
+        await buffer.close()
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_ingest_bucket_envelope_slims_an_image_without_a_write_buffer(
+    tmp_path,
+) -> None:
+    """The bucket path (``ws.ingest``) is reached when no buffer is wired."""
+
+    store = Store()
+    connector, _, _ = await store.create_connector(name="dev", user_id="user_1")
+    session = await create_session_with_project(store, connector_id=connector.id)
+    coordinator = RedisCoordinator()
+    broker = TimelineBroker(coordinator)
+
+    class NoopRealtime:
+        async def apply(self, **_values) -> bool:
+            return False
+
+    notifications = ConnectorNotificationService(
+        store,
+        NoopRealtime(),  # type: ignore[arg-type]
+        None,
+    )
+    ingest = ConnectorIngestService(
+        store,
+        notifications,
+        broker,
+        cast(Any, None),
+        cast(Any, None),
+        SessionRuntimeStateCache(),
+    )
+    queue = await broker.register(session.id)
+    try:
+        item = _image_tool_input(session.id, data=_png_base64())
+        await ingest.handle_notification_message(
+            connector_id=connector.id,
+            method="timeline.itemUpsert",
+            params={"sessionId": session.id, "item": item.model_dump(mode="json")},
+        )
+
+        envelope = json.loads(await asyncio.wait_for(queue.get(), timeout=1))
+        published_content = envelope["items"][0]["content"]
+        assert published_content["output"].startswith("[Image] PNG · 10×20 · ")
+        assert "text" not in published_content
+        assert "outputText" not in published_content
+        assert published_content["result"] == item.content["result"]
+
+        stored = await store.timeline.read(session.id)
+        assert stored[0].content["text"] == item.content["output"]
+        assert stored[0].content["result"] == item.content["result"]
+    finally:
+        await broker.unregister(session.id, queue)
+        await store.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("batch", [False, True])
+async def test_revision_result_envelope_slims_an_image_item(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    batch: bool,
+) -> None:
+    store, broker, buffer, _connector, session = await create_buffer(tmp_path)
+    envelopes: list[dict[str, Any]] = []
+
+    async def record_publish(_session_id: str, payload: dict[str, Any]) -> None:
+        envelopes.append(payload)
+
+    monkeypatch.setattr(broker, "publish", record_publish)
+    try:
+        accepted = await buffer.accept(
+            session_id=session.id,
+            item=_image_tool_input(session.id, data=_png_base64()),
+        )
+        result = (
+            TimelineBatchWriteResult(items=(accepted.item,), changed=True)
+            if batch
+            else accepted
+        )
+
+        await buffer.publish_revision_result(
+            session.id,
+            operation="test",
+            result=result,
+        )
+
+        item_envelopes = [payload for payload in envelopes if payload.get("items")]
+        assert len(item_envelopes) == 1
+        published_content = item_envelopes[0]["items"][0]["content"]
+        assert published_content["output"].startswith("[Image] PNG · 10×20 · ")
+        assert "text" not in published_content
+        assert "outputText" not in published_content
+        assert published_content["result"] == accepted.item.content["result"]
+    finally:
+        await buffer.close()
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_flush_envelope_slims_an_image_after_a_failed_live_publish(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, broker, buffer, _connector, session = await create_buffer(tmp_path)
+    envelopes: list[dict[str, Any]] = []
+    publish_attempts = 0
+
+    async def fail_first_message(_session_id: str, _message: str) -> None:
+        nonlocal publish_attempts
+        publish_attempts += 1
+        if publish_attempts == 1:
+            raise RuntimeError("broker unavailable")
+
+    async def record_publish(_session_id: str, payload: dict[str, Any]) -> None:
+        envelopes.append(payload)
+
+    monkeypatch.setattr(broker, "publish_message", fail_first_message)
+    monkeypatch.setattr(broker, "publish", record_publish)
+    try:
+        item = _image_tool_input(session.id, data=_png_base64())
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            await buffer.accept(session_id=session.id, item=item)
+
+        # The live publish never reached the broker, so the flush is the first
+        # envelope that carries this row.
+        await buffer.flush_through(session.id)
+
+        item_envelopes = [payload for payload in envelopes if payload.get("items")]
+        assert len(item_envelopes) == 1
+        published_content = item_envelopes[0]["items"][0]["content"]
+        assert published_content["output"].startswith("[Image] PNG · 10×20 · ")
+        assert "text" not in published_content
+        assert "outputText" not in published_content
+        assert published_content["result"] == item.content["result"]
+
+        stored = await store.timeline.read(session.id)
+        assert stored[0].content["text"] == item.content["output"]
+    finally:
         await buffer.close()
         await store.close()
 

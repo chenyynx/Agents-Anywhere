@@ -159,7 +159,13 @@ def reset_shared_database() -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_shared_database() -> None:
+    # The summary cache is process-global; TRUNCATE does not touch it, and a
+    # row left by one test could otherwise seed the next one's egress.
+    from agent_server.services.timeline_payload import _cache_clear
+
+    _cache_clear()
     reset_shared_database()
+    _cache_clear()
 
 
 async def _run_maintenance(url: str, sql: str) -> None:

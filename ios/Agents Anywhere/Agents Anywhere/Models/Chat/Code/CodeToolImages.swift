@@ -32,10 +32,17 @@ nonisolated struct CodeToolImage: Hashable, Identifiable {
     let pixelSize: CGSize?
 
     /// True when the source exceeds the detail view's display ceiling, so the
-    /// view will draw a downsampled thumbnail.
+    /// view will draw a downsampled thumbnail. A header we cannot parse falls
+    /// back to the byte size: a very large body is still called out.
     var isDownsampled: Bool {
-        guard let pixelSize else { return false }
-        return max(pixelSize.width, pixelSize.height) > CodeToolImages.maximumDisplayPixelSize
+        if let pixelSize {
+            return max(pixelSize.width, pixelSize.height)
+                > CodeToolImages.maximumDisplayPixelSize
+        }
+        if let byteCount {
+            return byteCount > 8 * 1024 * 1024
+        }
+        return false
     }
 }
 

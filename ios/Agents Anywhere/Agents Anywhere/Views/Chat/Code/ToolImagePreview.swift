@@ -15,6 +15,10 @@ import UIKit
 //
 // Only the full-screen tool detail renders this view: collapsed rows and row
 // height plans never see it, so the timeline's row geometry is unchanged.
+//
+// The bytes are inline in the timeline row, so there is no network/offline
+// state to wait on: "failed" here means the base64 or image data could not be
+// decoded, and retry re-runs the same local decode.
 
 /// One tool-result image with its own loading / loaded / failed state.
 struct ToolImagePreview: View {

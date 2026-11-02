@@ -14,7 +14,10 @@ DEFAULT_USER_EXPIRES_IN = 60 * 60 * 24 * 7
 
 
 def _secret() -> bytes:
-    value = os.environ.get("AGENT_SERVER_SECRET", "agent-server-dev-secret")
+    # Fail fast: a missing secret must never fall back to a public default.
+    # Docker Compose substitutes an empty string for an unset variable, so a
+    # silent fallback would sign every token with a known key.
+    value = os.environ["AGENT_SERVER_SECRET"]
     return value.encode("utf-8")
 
 

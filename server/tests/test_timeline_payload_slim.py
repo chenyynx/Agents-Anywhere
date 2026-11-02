@@ -164,9 +164,9 @@ def test_image_dimensions_reads_each_supported_header(payload, expected) -> None
 def test_summary_uses_the_single_image_form_and_reports_a_readable_size() -> None:
     summary = summarize_images(_image_result(_b64(_png(padding=600_000))))
 
-    assert summary is not None
-    assert summary.startswith("[Image] PNG · 1170×4100 · ")
-    assert summary.endswith(" KB")
+    # Exact string: iOS suppresses its text card only when the summary it
+    # generates is byte-identical to this one.
+    assert summary == "[Image] PNG · 1170×4100 · 586 KB"
 
 
 def test_summary_numbers_multiple_images_and_puts_each_on_its_own_line() -> None:
@@ -204,20 +204,47 @@ def test_summary_accepts_a_wrapper_mapping_and_data_url() -> None:
     assert summary.startswith("[Image] PNG · 3×4 · ")
 
 
-def test_summary_does_not_decode_the_whole_body() -> None:
+def test_summary_decodes_only_the_header_prefix(monkeypatch) -> None:
     """A multi-megabyte body is summarized from its header and length alone."""
 
+    decoded_sizes: list[int] = []
+    real_b64decode = timeline_payload.base64.b64decode
+
+    def spy(data, *args, **kwargs):
+        decoded_sizes.append(len(data))
+        return real_b64decode(data, *args, **kwargs)
+
+    monkeypatch.setattr(timeline_payload.base64, "b64decode", spy)
     data = _b64(_png(padding=5_000_000))
     summary = summarize_images(_image_result(data))
 
+    assert summary == "[Image] PNG · 1170×4100 · 4.8 MB"
+    assert decoded_sizes
+    max_decoded_bytes = max(decoded_sizes) // 4 * 3
+    assert max_decoded_bytes <= timeline_payload.IMAGE_HEADER_BYTES + 2
+
+
+def test_block_cap_limits_the_summary_to_one_hundred_images() -> None:
+    summary = summarize_images(_image_result(_b64(_png(10, 20))) * 150)
+
     assert summary is not None
-    assert summary.startswith("[Image] PNG · 1170×4100 · ")
-    assert summary.endswith(" MB")
+    assert len(summary.split("\n")) == 100
 
 
 def test_invalid_base64_refuses_to_summarize() -> None:
     assert summarize_images(_image_result("!!!!")) is None
     assert summarize_images(_image_result("abc")) is None
+
+
+def test_invalid_base64_never_reaches_the_output_field() -> None:
+    item = _tool_item(result=_image_result("!!!!"))
+    original_output = item["content"]["output"]
+
+    normalized, _saved = normalize_item_payload(item)
+
+    assert normalized["content"]["output"] == original_output
+    assert "[Image" not in normalized["content"]["output"]
+    assert normalized["content"]["result"] == item["content"]["result"]
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +309,80 @@ def test_non_image_item_only_drops_identical_output_aliases() -> None:
     assert "outputText" not in normalized["content"]
 
 
+def test_mixed_text_and_image_result_keeps_the_human_readable_output() -> None:
+    result = [
+        {"type": "text", "text": "Screenshot captured of the checkout page."},
+        *_image_result(_b64(_png())),
+    ]
+    item = _tool_item(
+        result=result,
+        output="Screenshot captured of the checkout page.",
+    )
+
+    normalized, saved = normalize_item_payload(item)
+
+    assert saved > 0
+    # The output keeps the human text; only the exact aliases disappear.
+    assert normalized["content"]["output"] == "Screenshot captured of the checkout page."
+    assert "text" not in normalized["content"]
+    assert "outputText" not in normalized["content"]
+    assert normalized["content"]["result"] == result
+
+
+def test_url_only_image_block_fails_open() -> None:
+    result = [
+        {
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.invalid/shot.png"},
+        }
+    ]
+    item = _tool_item(result=result)
+    original_output = item["content"]["output"]
+
+    normalized, _saved = normalize_item_payload(item)
+
+    # No summary is invented; the URL stays recoverable from `output`.
+    assert normalized["content"]["output"] == original_output
+    assert "https://example.invalid/shot.png" in normalized["content"]["output"]
+    assert "[Image" not in normalized["content"]["output"]
+
+
+def test_node_budget_fails_open_instead_of_summarizing_a_partial_walk() -> None:
+    filler = [{"type": "tool_use", "id": f"block-{index}"} for index in range(2000)]
+    result = [*filler, *_image_result(_b64(_png()))]
+
+    assert summarize_images(result) is None
+    item = _tool_item(result=result)
+    original_output = item["content"]["output"]
+    normalized, _saved = normalize_item_payload(item)
+
+    assert normalized["content"]["output"] == original_output
+    assert "base64" in normalized["content"]["output"]
+    assert normalized["content"]["result"] == result
+
+
+def test_node_budget_counts_nodes_at_the_depth_boundary() -> None:
+    # The big list sits at depth 4; its entries are at depth 5 and are not
+    # scanned, but they are still iterated. They must consume the budget.
+    big = [{"x": index} for index in range(2000)]
+    result = [{"content": [{"content": big}]}]
+
+    assert summarize_images(result) is None
+    item = _tool_item(result=result)
+    normalized, _saved = normalize_item_payload(item)
+
+    assert normalized["content"]["output"] == item["content"]["output"]
+
+
+def test_depth_bound_ignores_an_image_nested_too_deep() -> None:
+    nested: dict = {"type": "image", "source": {
+        "type": "base64", "media_type": "image/png", "data": _b64(_png())}}
+    for _ in range(8):
+        nested = {"content": nested}
+
+    assert summarize_images(nested) is None
+
+
 def test_non_image_item_without_duplicate_aliases_is_unchanged() -> None:
     item = _tool_item(output="plain output", text="other", output_text="third")
 
@@ -311,6 +412,54 @@ def test_normalization_is_idempotent() -> None:
     assert first_saved > 0
     assert second_saved == 0
     assert second == first
+
+
+def test_cache_separates_revisions_by_content_hash() -> None:
+    png = _tool_item(result=_image_result(_b64(_png())))
+    png["contentHash"] = "sha256:png"
+    jpeg = _tool_item(
+        result=_image_result(_b64(_jpeg()), media_type="image/jpeg"))
+    jpeg["contentHash"] = "sha256:jpeg"
+
+    first, _first_saved = normalize_item_payload(png)
+    second, _second_saved = normalize_item_payload(jpeg)
+
+    assert first["content"]["output"].startswith("[Image] PNG")
+    assert second["content"]["output"].startswith("[Image] JPEG")
+
+
+def test_cache_separates_revisions_by_updated_seq() -> None:
+    png = _tool_item(updated_seq=1, result=_image_result(_b64(_png())))
+    jpeg = _tool_item(
+        updated_seq=2,
+        result=_image_result(_b64(_jpeg()), media_type="image/jpeg"))
+
+    first, _first_saved = normalize_item_payload(png)
+    second, _second_saved = normalize_item_payload(jpeg)
+
+    assert first["content"]["output"].startswith("[Image] PNG")
+    assert second["content"]["output"].startswith("[Image] JPEG")
+
+
+def test_second_normalization_uses_the_cached_summary(monkeypatch) -> None:
+    item = _tool_item(result=_image_result(_b64(_png())))
+    first, first_saved = normalize_item_payload(item)
+    assert first_saved > 0
+
+    calls = 0
+    real_summarize = timeline_payload._summarize_blocks
+
+    def spy(blocks):
+        nonlocal calls
+        calls += 1
+        return real_summarize(blocks)
+
+    monkeypatch.setattr(timeline_payload, "_summarize_blocks", spy)
+    second, second_saved = normalize_item_payload(item)
+
+    assert calls == 0
+    assert second_saved == first_saved
+    assert second["content"]["output"] == first["content"]["output"]
 
 
 def test_switch_off_returns_the_original_object(monkeypatch) -> None:

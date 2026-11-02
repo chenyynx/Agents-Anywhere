@@ -362,8 +362,10 @@ def test_recovery_requires_snapshot_when_the_serialized_response_exceeds_the_byt
         assert f"session_id={session.id}" in line
         assert f"byte_limit={DEFAULT_RECOVERY_BYTE_LIMIT}" in line
         assert int(line.split(" items=")[1].split(" ")[0]) == 10
-        # The gate measures the complete response, so every item is counted.
-        assert int(line.split("measured_items=")[1].split(" ")[0]) == 10
+        # The incremental tripwire stops as soon as the items alone prove the
+        # response is over the limit; it must not serialize all ten.
+        measured_items = int(line.split("measured_items=")[1].split(" ")[0])
+        assert 0 < measured_items < 10
         assert (
             int(line.split("payload_bytes=")[1].split(" ")[0])
             > DEFAULT_RECOVERY_BYTE_LIMIT
@@ -416,6 +418,13 @@ def test_recovery_byte_gate_measures_serialized_utf8_payload_bytes(tmp_path) -> 
         )
         # A character-based metric would let this limit pass; byte count does not.
         assert measured_characters < measured_bytes - 1
+        # The gate covers the whole envelope, not just the item payloads.
+        items_only_bytes = sum(
+            event_recovery._serialized_payload_bytes(
+                {"item": item.model_dump(mode="json")})
+            for item in items
+        )
+        assert measured_bytes > items_only_bytes
         sequence = await store.get_session_seq(session.id)
 
         below = await EventRecoveryService(

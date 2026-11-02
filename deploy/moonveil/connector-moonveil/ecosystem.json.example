@@ -1,0 +1,16 @@
+{
+  "apps": [
+    {
+      "name": "moonveil-connector",
+      "script": "run.sh",
+      "cwd": "__HOME__/moonveil-connector",
+      "interpreter": "none",
+      "autorestart": true,
+      "time": true,
+      "env": {
+        "MOONVEIL_CONNECTOR_HOME": "__HOME__/.agents-anywhere-moonveil",
+        "MOONVEIL_SERVER_URL": "https://moonveil.pipicore.cn"
+      }
+    }
+  ]
+}

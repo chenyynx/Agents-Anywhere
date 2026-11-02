@@ -188,21 +188,21 @@ private struct ToolImageGallery: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .background(Color.black.ignoresSafeArea())
+            // The official gallery's `_BackgroundStyleModifier<Color>` is a
+            // design token, not a literal black/white. Follow the app's
+            // adaptive background so light mode stays light.
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .toolbar {
                 SheetCloseToolbar { dismiss() }
             }
-            .toolbarBackground(.black.opacity(0.35), for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .navigationTitle(Text(verbatim: images.count > 1
                 ? "\(index + 1) / \(images.count)" : ""))
             .navigationBarTitleDisplayMode(.inline)
         }
-        // A local environment override, not `preferredColorScheme`: the
-        // presentation-level preference leaked back into the tool-detail
-        // sheet and left it dark after the gallery was dismissed.
-        .environment(\.colorScheme, .dark)
+        // No `preferredColorScheme` and no colorScheme environment override:
+        // either one can leak back into the presenting tool-detail sheet and
+        // leave it dark after the gallery closes.
         .statusBarHidden(true)
     }
 }
@@ -222,7 +222,7 @@ private struct ToolImagePreview: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color(uiColor: .systemBackground).ignoresSafeArea()
             if let loadedImage {
                 Image(uiImage: loadedImage)
                     .resizable()
@@ -237,11 +237,11 @@ private struct ToolImagePreview: View {
                         Text("重试")
                             .font(.caption)
                     }
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             } else {
-                ProgressView().tint(.white)
+                ProgressView()
             }
         }
         .task(id: "\(cacheKey)#\(attempt)") {

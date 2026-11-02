@@ -70,6 +70,8 @@ struct CodeToolOutputView: View {
     /// The tool result itself was cut at the tool output limit
     /// (`ToolResult.isTruncated`), not the deferred client window.
     var truncated: Bool = false
+    /// The Read result's line counts for the official truncation note.
+    var readMetadata: CodeReadMetadata? = nil
     /// Read's "Load full file": fetches the full workspace file when the
     /// tool result was cut. Nil outside the session presentation.
     var readFullFile: (() async throws -> CodeLoadedFile)? = nil
@@ -90,6 +92,7 @@ struct CodeToolOutputView: View {
                                        footer: footer,
                                        headerAction: headerAction,
                                        truncated: truncated,
+                                       readMetadata: readMetadata,
                                        readFullFile: readFullFile)
             } else {
                 CodeToolCodeCard(title: String(localized: "Output"),
@@ -139,6 +142,8 @@ private struct CodeFileReadOutputView: View {
     var headerAction: CodeToolCardAction? = nil
     /// The tool result itself was cut at the tool output limit.
     var truncated: Bool = false
+    /// Line counts behind the official "Showing X of Y lines" note.
+    var readMetadata: CodeReadMetadata? = nil
     /// Read's "Load full file"; nil outside the session presentation.
     var readFullFile: (() async throws -> CodeLoadedFile)? = nil
     /// Sniffed once at init: the body can be a whole file, and a body
@@ -153,12 +158,14 @@ private struct CodeFileReadOutputView: View {
 
     init(text: String, detectsJSON: Bool = false, footer: AnyView? = nil,
          headerAction: CodeToolCardAction? = nil, truncated: Bool = false,
+         readMetadata: CodeReadMetadata? = nil,
          readFullFile: (() async throws -> CodeLoadedFile)? = nil) {
         self.text = text
         self.detectsJSON = detectsJSON
         self.footer = footer
         self.headerAction = headerAction
         self.truncated = truncated
+        self.readMetadata = readMetadata
         self.readFullFile = readFullFile
         sniffsAsJSON = CodeToolJSON.sniffsAsJSON(text)
         _chunks = State(initialValue: CodeFileReadChunks.split(text))
@@ -215,31 +222,13 @@ private struct CodeFileReadOutputView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CodeToolCardMetrics.contentInset)
             if let loadedFile {
-                ToolStatusLine(text: loadedFile.note)
+                readFooter(note: loadedFile.note)
             } else if let loadFileError {
-                bottomStatusLine {
-                    if let readFullFile, !isLoadingFile {
-                        CodeToolTextActionButton(title: String(localized: "重试")) {
-                            Task { await loadFullFile(readFullFile) }
-                        }
-                    } else if isLoadingFile {
-                        ProgressView().controlSize(.small)
-                    }
-                } status: {
-                    ToolStatusText(text: loadFileError)
-                }
+                readFooter(note: loadFileError,
+                           actionTitle: String(localized: "重试"))
             } else if truncated {
-                bottomStatusLine {
-                    if let readFullFile, !isLoadingFile {
-                        CodeToolTextActionButton(title: String(localized: "加载完整文件")) {
-                            Task { await loadFullFile(readFullFile) }
-                        }
-                    } else if isLoadingFile {
-                        ProgressView().controlSize(.small)
-                    }
-                } status: {
-                    ToolStatusText(text: String(localized: "已截断"))
-                }
+                readFooter(note: truncationNote,
+                           actionTitle: String(localized: "加载完整文件"))
             }
             if let footer { footer }
         }
@@ -253,19 +242,31 @@ private struct CodeFileReadOutputView: View {
         }
     }
 
-    /// The bottom-of-card status row: status text at the leading edge and the
-    /// plain text action (the existing Prettify face) right after it.
-    private func bottomStatusLine<Action: View, Status: View>(
-        @ViewBuilder action: () -> Action,
-        @ViewBuilder status: () -> Status
-    ) -> some View {
-        HStack(spacing: 12) {
-            status()
-            action()
+    /// The official `FileReadDetailView` footer (R-T2/R-T4): the truncation
+    /// note sits above the action in a leading VStack with 8 pt spacing.
+    private func readFooter(note: String, actionTitle: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            CodeFootnoteText(text: note, tone: .readNote)
+            if let actionTitle, let readFullFile {
+                Button {
+                    Task { await loadFullFile(readFullFile) }
+                } label: {
+                    Text(actionTitle)
+                }
+                .buttonStyle(CodeInlineButtonStyle(isLoading: isLoadingFile))
+                .disabled(isLoadingFile)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, CodeToolCardMetrics.contentInset)
         .padding(.vertical, 12)
+    }
+
+    /// `Showing %lld of %lld lines (truncated at the tool output limit)`;
+    /// when the producer did not report a total, the single-argument variant.
+    private var truncationNote: String {
+        CodeReadTruncationText.note(shown: readMetadata?.numLines,
+                                    total: readMetadata?.totalLines)
     }
 
     @MainActor
@@ -278,7 +279,14 @@ private struct CodeFileReadOutputView: View {
             loadedChunks = CodeFileReadChunks.split(file.text)
             prettify = .initial
         } catch {
-            loadFileError = (error as? V2ClientFailure)?.message ?? error.localizedDescription
+            let failure = V2ClientFailure(error)
+            if failure.kind == .timeout {
+                loadFileError = String(localized: "Timed out. The session may be disconnected.")
+            } else {
+                loadFileError = String(
+                    format: String(localized: "Couldn't load the full file: %@"),
+                    failure.message)
+            }
         }
         isLoadingFile = false
     }
@@ -859,7 +867,7 @@ private struct CodeToolDiffOutputView: View {
             visibleCount = min(visibleCount + CodeToolCardMetrics.diffPageSize,
                                diff.lines.count)
         } label: {
-            Text(String(localized: "Expand"))
+            Text(String(localized: "Show more"))
                 .font(.footnote.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())

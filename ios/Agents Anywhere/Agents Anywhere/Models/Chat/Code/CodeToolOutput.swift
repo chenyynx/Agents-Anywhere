@@ -86,6 +86,25 @@ nonisolated struct CodeReadMetadata: Hashable {
     }
 }
 
+/// The official `FileReadDetailView` truncation note (R-T2 E8):
+/// `Showing %lld of %lld lines (truncated at the tool output limit)`, or the
+/// single-argument variant when the producer did not report a total.
+nonisolated enum CodeReadTruncationText {
+    static func note(shown: Int?, total: Int?) -> String {
+        if let shown, let total {
+            return String(
+                format: String(localized: "Showing %lld of %lld lines (truncated at the tool output limit)"),
+                shown, total)
+        }
+        if let shown {
+            return String(
+                format: String(localized: "Showing %lld lines (truncated at the tool output limit)"),
+                shown)
+        }
+        return String(localized: "已截断")
+    }
+}
+
 /// The tool result itself was cut at the tool output limit (`ToolResult.
 /// isTruncated` in the official model). This is deliberately **not** the
 /// deferred client window: `content.deferred` only says the row was not

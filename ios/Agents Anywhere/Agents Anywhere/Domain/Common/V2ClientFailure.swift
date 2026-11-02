@@ -2,7 +2,7 @@ import Foundation
 
 /// Presentation can choose recovery actions without interpreting localized messages.
 nonisolated struct V2ClientFailure: Error, Hashable, LocalizedError {
-    enum Kind: Hashable { case offline, transient, authentication, unavailable, rejected, cancelled, invalidResponse }
+    enum Kind: Hashable { case offline, transient, timeout, authentication, unavailable, rejected, cancelled, invalidResponse }
     let kind: Kind
     let message: String
     let code: String?
@@ -20,7 +20,11 @@ nonisolated struct V2ClientFailure: Error, Hashable, LocalizedError {
         if error is CancellationError || (error as? URLError)?.code == .cancelled {
             kind = .cancelled
         } else if let error = error as? URLError {
-            kind = error.code == .notConnectedToInternet ? .offline : .transient
+            switch error.code {
+            case .notConnectedToInternet: kind = .offline
+            case .timedOut: kind = .timeout
+            default: kind = .transient
+            }
         } else if let error = error as? HTTPError {
             switch error {
             case .unauthorized: kind = .authentication
@@ -40,7 +44,9 @@ nonisolated struct V2ClientFailure: Error, Hashable, LocalizedError {
     }
 
     var errorDescription: String? { message }
-    var permitsAutomaticReconnect: Bool { kind == .transient || kind == .offline }
+    var permitsAutomaticReconnect: Bool {
+        kind == .transient || kind == .timeout || kind == .offline
+    }
 
     /// Once a write has started, only a definite local/HTTP rejection proves it was not accepted.
     /// RPC timeouts, 5xx, decoding failures and cancellation can all follow server execution.

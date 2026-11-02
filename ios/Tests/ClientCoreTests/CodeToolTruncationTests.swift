@@ -89,4 +89,35 @@ struct CodeToolTruncationTests {
         ])
         #expect(!CodeToolTruncation.isTruncated(item))
     }
+
+    // MARK: - Official Read truncation note
+
+    @Test func readNoteCarriesBothLineCounts() {
+        let note = CodeReadTruncationText.note(shown: 1769, total: 3000)
+        #expect(note.contains("1769"))
+        #expect(note.contains("3000"))
+    }
+
+    @Test func readNoteUsesTheSingleCountWhenTotalIsUnknown() {
+        let note = CodeReadTruncationText.note(shown: 1769, total: nil)
+        #expect(note.contains("1769"))
+        #expect(!note.contains("3000"))
+    }
+
+    @Test func readNoteIsNeverEmpty() {
+        #expect(!CodeReadTruncationText.note(shown: nil, total: nil).isEmpty)
+    }
+}
+
+@Suite("Client failure kinds")
+struct ClientFailureKindTests {
+    @Test func timedOutIsItsOwnRetryableKind() {
+        let failure = V2ClientFailure(URLError(.timedOut))
+        #expect(failure.kind == .timeout)
+        #expect(failure.permitsAutomaticReconnect)
+    }
+
+    @Test func notConnectedStaysOffline() {
+        #expect(V2ClientFailure(URLError(.notConnectedToInternet)).kind == .offline)
+    }
 }

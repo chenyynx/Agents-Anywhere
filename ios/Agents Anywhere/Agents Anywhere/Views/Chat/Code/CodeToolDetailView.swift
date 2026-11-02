@@ -211,6 +211,17 @@ struct CodeToolCallDetailView: View {
     var chat: SessionChatModel? = nil
 
     private var output: CodeToolOutput { CodeToolOutput(item: liveItem, kind: call.kind) }
+    /// Inline images carried by the structured `result`. The server keeps
+    /// `result` intact and replaces only `output` with a summary (AA S1), so
+    /// this reads the bytes from `result`, never from the summary text.
+    private var outputImages: [CodeToolImage] { CodeToolImages.images(in: liveItem) }
+    /// A pure-image result's `output` is exactly the server's summary; the
+    /// image section already says that, so the text card is skipped. Mixed
+    /// text + image output keeps its text card and draws the images after it.
+    private var outputIsImageSummary: Bool {
+        guard !outputImages.isEmpty, case let .text(text) = output else { return false }
+        return CodeToolImages.isServerImageSummary(text, images: outputImages)
+    }
     /// The input is read from the live row too: the server's summary keeps a
     /// bounded input whitelist, so a summary-only read can miss structured
     /// keys that the completed row carries.
@@ -305,6 +316,7 @@ struct CodeToolCallDetailView: View {
             VStack(alignment: .leading, spacing: CodePageTheme.blockSpacing) {
                 detailSection
                 outputSection
+                imageSection
                 if !outputCardTakesFooter { deferredSection }
                 footnoteSection
             }
@@ -343,7 +355,7 @@ struct CodeToolCallDetailView: View {
     /// output the section is omitted entirely instead of drawing an empty
     /// "Output" header.
     @ViewBuilder private var outputSection: some View {
-        if !output.isEmpty {
+        if !output.isEmpty && !outputIsImageSummary {
             CodeToolOutputView(output: output,
                                kind: call.kind,
                                detectsJSON: detectsJSON,
@@ -351,6 +363,17 @@ struct CodeToolCallDetailView: View {
                                truncated: dataTruncated,
                                readMetadata: readMetadata,
                                readFullFile: readFullFileAction)
+        }
+    }
+
+    /// Inline result images, after the output card (the official detail draws
+    /// its image bar in the same order). Rows are laid out exactly as before;
+    /// this section exists only on the pushed single-call page.
+    @ViewBuilder private var imageSection: some View {
+        if !outputImages.isEmpty {
+            ToolImagePreviewSection(images: outputImages,
+                                    itemId: liveItem.id,
+                                    contentHash: liveItem.contentHash)
         }
     }
 

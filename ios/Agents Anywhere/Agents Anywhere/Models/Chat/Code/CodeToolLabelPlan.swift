@@ -557,13 +557,55 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
         if !found {
             for change in content["changes"]?.arrayValue ?? [] {
                 guard let diff = (change["diff"] ?? change["patch"])?.stringValue else { continue }
-                for line in diff.components(separatedBy: "\n") {
-                    if line.hasPrefix("+"), !line.hasPrefix("+++ ") { added += 1; found = true }
-                    else if line.hasPrefix("-"), !line.hasPrefix("--- ") { removed += 1; found = true }
+                let action = (change["action"]?.stringValue
+                    ?? change["kind"]?["type"]?.stringValue
+                    ?? change["type"]?.stringValue
+                    ?? change["kind"]?.stringValue ?? "").lowercased()
+                let isAdd = ["add", "added", "create", "created", "new"].contains(action)
+                let isDelete = ["delete", "deleted", "remove", "removed"].contains(action)
+                if isAdd || isDelete {
+                    // `_file_diff`: a created/deleted file's `diff` is the whole
+                    // file, not a patch. A body line that happens to start with
+                    // `-`/`+` (Markdown bullets, front matter, code) is text,
+                    // not a removal/addition. Only a declared patch — one with
+                    // real headers — keeps prefix counting.
+                    if TimelineDiff.isStrictUnified(diff) {
+                        let counts = prefixCounts(diff)
+                        added += counts.added
+                        removed += counts.removed
+                    } else {
+                        let count = contentLineCount(diff)
+                        if isAdd { added += count } else { removed += count }
+                    }
+                    found = true
+                } else {
+                    let counts = prefixCounts(diff)
+                    added += counts.added
+                    removed += counts.removed
+                    if counts.added > 0 || counts.removed > 0 { found = true }
                 }
             }
         }
         guard found, added > 0 || removed > 0 else { return nil }
         return CodeDiffStat(added: added, removed: removed)
+    }
+
+    private static func prefixCounts(_ diff: String) -> (added: Int, removed: Int) {
+        var added = 0
+        var removed = 0
+        for line in diff.components(separatedBy: "\n") {
+            if line.hasPrefix("+"), !line.hasPrefix("+++ ") { added += 1 }
+            else if line.hasPrefix("-"), !line.hasPrefix("--- ") { removed += 1 }
+        }
+        return (added, removed)
+    }
+
+    /// Whole-file content: one line per `\n`, without the empty line a final
+    /// newline would add (the same rule `CodeToolOutput.addedLines` uses when
+    /// it renders the same field as an all-add page).
+    private static func contentLineCount(_ text: String) -> Int {
+        var lines = text.components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        return lines.count
     }
 }

@@ -145,13 +145,20 @@ struct TimelineFileChange: Hashable, Identifiable {
         action = Self.action(raw)
         code = TimelineText.first(raw["diff"], raw["patch"], raw["content"])?.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         if let code {
-            if TimelineDiff.isUnified(code) { diff = code }
-            else if action == .add || action == .delete {
-                let sign = action == .add ? "+" : "-"
-                var lines = code.components(separatedBy: "\n")
-                if lines.last == "" { lines.removeLast() }
-                diff = lines.map { sign + $0 }.joined(separator: "\n")
-            } else { diff = nil }
+            if action == .add || action == .delete {
+                // `_file_diff` puts the whole file into `diff` for a created
+                // or deleted path; only a declared patch (real headers) is a
+                // diff. A Markdown bullet or `---` front matter that starts a
+                // body line must not be read as a removal.
+                if TimelineDiff.isStrictUnified(code) { diff = code }
+                else {
+                    let sign = action == .add ? "+" : "-"
+                    var lines = code.components(separatedBy: "\n")
+                    if lines.last == "" { lines.removeLast() }
+                    diff = lines.map { sign + $0 }.joined(separator: "\n")
+                }
+            } else if TimelineDiff.isUnified(code) { diff = code }
+            else { diff = nil }
         } else { diff = nil }
     }
     static func rawChanges(_ raw: JSONValue, allowDirect: Bool = true) -> [JSONValue] {

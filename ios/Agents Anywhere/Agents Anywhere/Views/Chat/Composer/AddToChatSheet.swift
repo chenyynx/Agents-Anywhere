@@ -28,11 +28,10 @@ struct AddToChatSheet: View {
     @State private var recent = RecentPhotosLoader()
     @State private var selectedPhotoIDs: Set<String> = []
     @State private var isAddingPhotos = false
-    @State private var showsModelSheet = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    private enum Page: Hashable { case permissions }
+    private enum Page: Hashable { case models, permissions }
     private let tile: CGFloat = 96
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -44,25 +43,25 @@ struct AddToChatSheet: View {
                 VStack(spacing: 16) {
                     attachmentSources
                     card {
-                        row(icon: "doc", title: String(localized: "添加文件"),
+                        row(icon: "file.up", title: String(localized: "添加文件"),
                             value: nil, enabled: canAttach, action: onFiles)
                     }
                     card {
                         row(icon: "sparkles", title: String(localized: "模型"),
                             value: settings.modelLabel,
                             enabled: canSelectModel && !settings.catalog.models.isEmpty) {
-                            showsModelSheet = true
+                            path.append(.models)
                         }
                     }
                     card {
-                        row(icon: "checkmark.shield", title: String(localized: "权限"),
+                        row(icon: "chevrons.right", title: String(localized: "权限"),
                             value: settings.permission?.title ?? String(localized: "默认"),
                             enabled: canSelectPermission && !settings.catalog.permissions.isEmpty) {
                             path.append(.permissions)
                         }
                     }
                     card {
-                        row(icon: "puzzlepiece.extension", title: String(localized: "连接器"),
+                        row(icon: "layout.grid", title: String(localized: "连接器"),
                             value: String(localized: "即将支持"), enabled: false) {}
                     }
                     takeoverCard
@@ -93,18 +92,26 @@ struct AddToChatSheet: View {
                 SheetCloseToolbar { dismiss() }
                 ToolbarItem(placement: .principal) {
                     Text(String(localized: "添加到会话"))
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(String(localized: "照片")) { onPhotos() }
-                        .font(.system(size: 19))
+                        .font(.system(size: 17))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                         .disabled(!canAttach)
                 }
             }
             .navigationDestination(for: Page.self) { page in
                 switch page {
+                case .models:
+                    ModelSelectionList(settings: settings,
+                        canSelectModel: canSelectModel,
+                        isLoading: isLoading, loadingError: loadingError,
+                        onReload: onReload, onApply: onApply, applyError: applyError,
+                        onFinished: { dismiss() })
+                        .navigationTitle(String(localized: "选择模型"))
+                        .navigationBarTitleDisplayMode(.inline)
                 case .permissions: permissionsPage
                 }
             }
@@ -115,12 +122,6 @@ struct AddToChatSheet: View {
         } message: {
             Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。"))
         }
-        .sheet(isPresented: $showsModelSheet) {
-            ModelPickerSheet(settings: settings,
-                canSelectModel: canSelectModel,
-                isLoading: isLoading, loadingError: loadingError,
-                onReload: onReload, onApply: onApply, applyError: applyError)
-        }
         .safeAreaInset(edge: .bottom) {
             if !selectedPhotoIDs.isEmpty {
                 Button(action: addSelectedPhotos) {
@@ -129,7 +130,7 @@ struct AddToChatSheet: View {
                         Text(isAddingPhotos
                              ? String(localized: "正在添加…")
                              : String(localized: "添加 \(selectedPhotoIDs.count) 张照片"))
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                     }
                     .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
                     .frame(maxWidth: .infinity)
@@ -226,10 +227,9 @@ struct AddToChatSheet: View {
     private var cameraTile: some View {
         Button(action: onCamera) {
             VStack(spacing: 6) {
-                Image(systemName: "camera")
-                    .font(.system(size: 26, weight: .regular))
+                AppSymbol("camera", size: 32)
                 Text(String(localized: "相机"))
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             .frame(width: tile, height: tile)
@@ -251,16 +251,16 @@ struct AddToChatSheet: View {
                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                AppSymbol(icon, size: 17)
-                    .frame(width: 24)
-                Text(title).font(.system(size: 17))
+                AppSymbol(icon, size: 22)
+                    .frame(width: 28)
+                Text(title).font(.system(size: 15))
                 Spacer(minLength: 8)
                 if let value {
-                    Text(value).font(.system(size: 17))
+                    Text(value).font(.system(size: 15))
                         .lineLimit(1)
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
-                AppSymbol("chevron.right", size: 12)
+                AppSymbol("chevron.right", size: 16)
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
@@ -305,23 +305,51 @@ struct AddToChatSheet: View {
     // MARK: - Permissions
 
     private var permissionsPage: some View {
-        List {
-            Section {
-                ForEach(settings.catalog.permissions) { option in
-                    InlineSelectionButton(title: option.title,
-                        detail: option.isEnabled ? option.detail : option.disabledReason ?? option.detail,
-                        isSelected: settings.permissionID == option.id) {
-                        apply { settings.selectPermission(option.id) }
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(settings.catalog.permissions.enumerated()), id: \.element.id) { index, option in
+                    if index > 0 {
+                        Divider().padding(.leading, 48)
                     }
+                    Button {
+                        apply { settings.selectPermission(option.id) }
+                    } label: {
+                        HStack(spacing: 12) {
+                            AppSymbol("checkmark", size: 18)
+                                .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
+                                .frame(width: 20)
+                                .opacity(settings.permissionID == option.id ? 1 : 0)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(option.title)
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                                if !option.detail.isEmpty {
+                                    Text(option.detail)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+                                }
+                            }
+                            Spacer(minLength: 8)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     .disabled(!option.isEnabled)
+                    .opacity(option.isEnabled ? 1 : 0.5)
                 }
             }
+            .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
+            .padding(16)
         }
+        .scrollIndicators(.hidden)
+        .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text(String(localized: "权限"))
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             }
         }

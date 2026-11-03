@@ -28,14 +28,14 @@ struct ModelSelectionList: View {
                 if isLoading { ProgressView().padding(.vertical, 24) }
                 if let loadingError {
                     VStack(spacing: 8) {
-                        Text(loadingError).font(.system(size: 13)).foregroundStyle(.secondary)
+                        Text(loadingError).font(.system(size: 12)).foregroundStyle(.secondary)
                         Button(String(localized: "重新加载")) { Task { await onReload() } }
-                            .font(.system(size: 13))
+                            .font(.system(size: 12))
                     }
                 }
                 if settings.catalog.models.isEmpty && !isLoading {
                     Text(String(localized: "没有可选的模型"))
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
@@ -80,18 +80,18 @@ struct ModelSelectionList: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.option.title)
-                        .font(.system(size: 18))
+                        .font(.system(size: 15))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                     if !model.option.detail.isEmpty {
                         Text(model.option.detail)
-                            .font(.system(size: 13))
+                            .font(.system(size: 12))
                             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                             .lineLimit(2)
                     }
                 }
                 Spacer(minLength: 8)
                 if settings.modelID == model.id {
-                    AppSymbol("checkmark", size: 17)
+                    AppSymbol("checkmark", size: 18)
                         .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                 }
             }
@@ -109,13 +109,13 @@ struct ModelSelectionList: View {
     private var effortRow: some View {
         HStack(spacing: 8) {
             Text(String(localized: "思考强度"))
-                .font(.system(size: 17))
+                .font(.system(size: 15))
                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             Spacer()
             Text(settings.reasoning?.title ?? String(localized: "默认"))
-                .font(.system(size: 17))
+                .font(.system(size: 15))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-            AppSymbol("chevron.right", size: 12)
+            AppSymbol("chevron.right", size: 16)
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
         .padding(.horizontal, 16)
@@ -138,11 +138,11 @@ struct ModelSelectionList: View {
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(option.title)
-                                    .font(.system(size: 17))
+                                    .font(.system(size: 15))
                                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                                 if !option.detail.isEmpty {
                                     Text(option.detail)
-                                        .font(.system(size: 13))
+                                        .font(.system(size: 12))
                                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                                 }
                             }
@@ -170,7 +170,7 @@ struct ModelSelectionList: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text(String(localized: "思考强度"))
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             }
         }

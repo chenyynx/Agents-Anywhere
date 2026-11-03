@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The official "选择模型" sheet (round30 §3.5): a card of model rows with a
-/// subtitle and a selection checkmark, followed by a separate effort row that
-/// pushes the reasoning list.
-struct ModelPickerSheet: View {
+/// The model list shared by the add-to-chat sheet's "模型" page. Rows carry a
+/// subtitle and a selection checkmark (round30 §3.5); the effort row pushes a
+/// second list of reasoning options.
+struct ModelSelectionList: View {
     @Bindable var settings: ConversationSettings
     var canSelectModel = true
     var isLoading = false
@@ -11,9 +11,11 @@ struct ModelPickerSheet: View {
     var onReload: () async -> Void = {}
     var onApply: () async -> Bool = { true }
     var applyError: () -> String? = { nil }
+    /// Called after a selection is accepted; the host closes its sheet.
+    var onFinished: () -> Void = {}
+
     @State private var isApplying = false
     @State private var showsApplyError = false
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
     private var cardShape: RoundedRectangle {
@@ -21,56 +23,36 @@ struct ModelPickerSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    if isLoading { ProgressView().padding(.vertical, 24) }
-                    if let loadingError {
-                        VStack(spacing: 8) {
-                            Text(loadingError).font(.footnote).foregroundStyle(.secondary)
-                            Button(String(localized: "重新加载")) { Task { await onReload() } }
-                                .font(.footnote)
-                        }
-                    }
-                    if settings.catalog.models.isEmpty && !isLoading {
-                        Text(String(localized: "没有可选的模型"))
+        ScrollView {
+            VStack(spacing: 16) {
+                if isLoading { ProgressView().padding(.vertical, 24) }
+                if let loadingError {
+                    VStack(spacing: 8) {
+                        Text(loadingError).font(.footnote).foregroundStyle(.secondary)
+                        Button(String(localized: "重新加载")) { Task { await onReload() } }
                             .font(.footnote)
-                            .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 24)
-                    } else {
-                        modelCard
-                    }
-                    if settings.model != nil, !reasoningOptions.isEmpty {
-                        NavigationLink { effortList } label: { effortRow }
-                            .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .scrollIndicators(.hidden)
-            .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
-            .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
-            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-            .navigationTitle(String(localized: "选择模型"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
-                            .frame(width: 36, height: 36)
-                            .background(Circle().fill(AppTheme.composerTileBackground(colorScheme)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "关闭"))
+                if settings.catalog.models.isEmpty && !isLoading {
+                    Text(String(localized: "没有可选的模型"))
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                } else {
+                    modelCard
+                }
+                if settings.model != nil, !reasoningOptions.isEmpty {
+                    NavigationLink { effortList } label: { effortRow }
+                        .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
         }
-        .disabled(isApplying)
+        .scrollIndicators(.hidden)
+        .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
         .alert(String(localized: "无法更改设置"), isPresented: $showsApplyError) {
             Button(String(localized: "好"), role: .cancel) {}
         } message: {
@@ -98,7 +80,7 @@ struct ModelPickerSheet: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.option.title)
-                        .font(.title3)
+                        .font(.body)
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                     if !model.option.detail.isEmpty {
                         Text(model.option.detail)
@@ -110,7 +92,7 @@ struct ModelPickerSheet: View {
                 Spacer(minLength: 8)
                 if settings.modelID == model.id {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                 }
             }
@@ -126,7 +108,7 @@ struct ModelPickerSheet: View {
     private var reasoningOptions: [CatalogOption] { settings.model?.reasoning ?? [] }
 
     private var effortRow: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text(String(localized: "思考强度"))
                 .font(.body)
                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
@@ -135,11 +117,11 @@ struct ModelPickerSheet: View {
                 .font(.body)
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.vertical, 14)
         .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
         .contentShape(Rectangle())
     }
@@ -169,7 +151,7 @@ struct ModelPickerSheet: View {
                             Spacer(minLength: 8)
                             if settings.reasoningID == option.id {
                                 Image(systemName: "checkmark")
-                                    .font(.system(size: 18, weight: .semibold))
+                                    .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                             }
                         }
@@ -197,7 +179,7 @@ struct ModelPickerSheet: View {
         Task { @MainActor in
             let accepted = await onApply()
             isApplying = false
-            if accepted { dismiss() } else { showsApplyError = true }
+            if accepted { onFinished() } else { showsApplyError = true }
         }
     }
 }

@@ -11,6 +11,7 @@ struct AddToChatSheet: View {
     var onCamera: () -> Void = {}
     var onRecentPhoto: (Data) -> Void = { _ in }
     var canAttach = true
+    var canSelectModel = true
     var canSelectPermission = true
     var isLoading = false
     var loadingError: String?
@@ -27,7 +28,7 @@ struct AddToChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    private enum Page: Hashable { case permissions }
+    private enum Page: Hashable { case models, permissions }
     private let tile: CGFloat = 96
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -41,6 +42,13 @@ struct AddToChatSheet: View {
                     card {
                         row(icon: "doc", title: String(localized: "添加文件"),
                             value: nil, enabled: canAttach, action: onFiles)
+                    }
+                    card {
+                        row(icon: "sparkles", title: String(localized: "模型"),
+                            value: settings.modelLabel,
+                            enabled: canSelectModel && !settings.catalog.models.isEmpty) {
+                            path.append(.models)
+                        }
                     }
                     card {
                         row(icon: "checkmark.shield", title: String(localized: "权限"),
@@ -99,6 +107,14 @@ struct AddToChatSheet: View {
             }
             .navigationDestination(for: Page.self) { page in
                 switch page {
+                case .models:
+                    ModelSelectionList(settings: settings,
+                        canSelectModel: canSelectModel,
+                        isLoading: isLoading, loadingError: loadingError,
+                        onReload: onReload, onApply: onApply, applyError: applyError,
+                        onFinished: { dismiss() })
+                        .navigationTitle(String(localized: "模型"))
+                        .navigationBarTitleDisplayMode(.inline)
                 case .permissions: permissionsPage
                 }
             }
@@ -109,6 +125,8 @@ struct AddToChatSheet: View {
         } message: {
             Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。"))
         }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
         .task { await recent.load() }
     }
 
@@ -158,7 +176,7 @@ struct AddToChatSheet: View {
         Button(action: onCamera) {
             VStack(spacing: 6) {
                 Image(systemName: "camera")
-                    .font(.system(size: 24, weight: .regular))
+                    .font(.system(size: 22, weight: .regular))
                 Text(String(localized: "相机"))
                     .font(.footnote)
             }
@@ -183,8 +201,8 @@ struct AddToChatSheet: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 20, weight: .regular))
-                    .frame(width: 28)
+                    .font(.system(size: 18, weight: .regular))
+                    .frame(width: 24)
                 Text(title).font(.body)
                 Spacer(minLength: 8)
                 if let value {
@@ -192,12 +210,12 @@ struct AddToChatSheet: View {
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             .padding(.horizontal, 16)
-            .padding(.vertical, 16)
+            .padding(.vertical, 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

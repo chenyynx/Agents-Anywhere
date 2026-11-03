@@ -12,11 +12,6 @@ struct ChatComposer: View {
     let onSend: () -> Void
     let onStop: () -> Void
     let onOptions: () -> Void
-    /// The model pill beside the plus key. Nil hides it (no model catalog or
-    /// model selection unavailable for this runtime).
-    var modelTitle: String? = nil
-    var modelEffort: String? = nil
-    var onModelTap: () -> Void = {}
     /// Shown in the send cluster when the session's runtime offers slash
     /// commands — left of the context ring when the ring is visible, left of
     /// send when it is not.
@@ -72,10 +67,6 @@ struct ChatComposer: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel(String(localized: "附件与对话选项"))
                         .accessibilityIdentifier("chat.composer.options")
-
-                        if let modelTitle {
-                            modelPill(title: modelTitle)
-                        }
                     }
 
                     ZStack(alignment: .topLeading) {
@@ -193,30 +184,6 @@ struct ChatComposer: View {
         case .stop: return String(localized: "停止生成")
         case .send: return String(localized: "发送消息")
         }
-    }
-
-    /// The official composer model pill: model name in `text100`, effort in
-    /// `text300`, capsule on the shared control fill (round30 §3.3).
-    private func modelPill(title: String) -> some View {
-        Button(action: onModelTap) {
-            HStack(spacing: 4) {
-                Text(title)
-                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
-                if let modelEffort, !modelEffort.isEmpty {
-                    Text(modelEffort)
-                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-                }
-            }
-            .font(.body)
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .frame(height: controls.sendDiameter)
-            .background(AppTheme.composerControlFill(colorScheme), in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(String(localized: "选择模型"))
-        .accessibilityValue(modelEffort.map { "\(title)，\($0)" } ?? title)
-        .accessibilityIdentifier("chat.composer.model")
     }
 
     private var attachmentTray: some View {

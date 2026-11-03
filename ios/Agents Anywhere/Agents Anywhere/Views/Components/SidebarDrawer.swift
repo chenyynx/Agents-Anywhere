@@ -220,6 +220,11 @@ private struct SidebarDrawerInteractive<
     @State private var animationGeneration = 0
     @State private var isAnimating = false
     @State private var feedbackTrigger = 0
+    /// The last open/closed target this drawer committed. `isOpen` is
+    /// published one main-queue turn after the spring lands, so a fast
+    /// open→close leaves the binding stale and made the close gesture look
+    /// like "no flip" (pp 2026-11-03: fast swipes played only one cue).
+    @State private var committedOpen: Bool
 
     init(
         isOpen: Binding<Bool>,
@@ -231,6 +236,7 @@ private struct SidebarDrawerInteractive<
     ) {
         _isOpen = isOpen
         _motion = State(initialValue: SidebarDrawerMotion(progress: isOpen.wrappedValue ? 1 : 0))
+        _committedOpen = State(initialValue: isOpen.wrappedValue)
         self.configuration = configuration
         self.safeAreaInsets = safeAreaInsets
         self.sidebarHeader = sidebarHeader
@@ -550,13 +556,16 @@ private struct SidebarDrawerInteractive<
     ) {
         let target = rawTarget.clamped(to: 0 ... 1)
         // Only a real open/closed flip haptics; a drag that springs back to
-        // the same `isOpen` does not (CANONICAL/11-motion-haptics.md §2.1).
-        // A fast flick can already sit on the target when the finger lifts
-        // (progress 1 after dragging the card all the way). Requiring a
-        // progress delta suppressed the haptic exactly in that case; only a
-        // real open/closed flip should fire it.
+        // the same target does not (CANONICAL/11-motion-haptics.md §2.1).
+        // The comparison uses the last committed target, not `isOpen`: the
+        // binding is published one main-queue turn after the spring lands, so
+        // a fast open→close read `isOpen == false` and suppressed the close
+        // cue (pp 2026-11-03: fast swipes played only one of the two).
         let shouldProvideFeedback = feedback
-            && (forceFeedback || ((target > 0.5) != isOpen))
+            && (forceFeedback
+                || SidebarDrawerGestureRules.commitsFlip(targetProgress: target,
+                                                         committedOpen: committedOpen))
+        committedOpen = target > 0.5
 
         animationGeneration &+= 1
         let generation = animationGeneration

@@ -21,9 +21,9 @@ final class RecentPhotosLoader {
     private(set) var isLoading = false
 
     func load(limit: Int = 12) async {
-        var granted = PHPhotoLibrary.authorizationStatus(for: .read)
+        var granted = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if granted == .notDetermined {
-            granted = await PHPhotoLibrary.requestAuthorization(for: .read)
+            granted = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         }
         status = granted
         guard granted == .authorized || granted == .limited else {

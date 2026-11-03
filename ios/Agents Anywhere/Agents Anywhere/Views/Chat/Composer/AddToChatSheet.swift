@@ -9,7 +9,8 @@ struct AddToChatSheet: View {
     var onPhotos: () -> Void
     var onFiles: () -> Void
     var onCamera: () -> Void = {}
-    var onRecentPhoto: (Data) -> Void = { _ in }
+    var onRecentPhotos: ([Data]) -> Void = { _ in }
+    var maxPhotoSelection = 5
     var canAttach = true
     var canSelectModel = true
     var canSelectPermission = true
@@ -25,6 +26,8 @@ struct AddToChatSheet: View {
     @State private var showsApplyError = false
     @State private var path: [Page] = []
     @State private var recent = RecentPhotosLoader()
+    @State private var selectedPhotoIDs: Set<String> = []
+    @State private var isAddingPhotos = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
@@ -125,6 +128,27 @@ struct AddToChatSheet: View {
         } message: {
             Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。"))
         }
+        .safeAreaInset(edge: .bottom) {
+            if !selectedPhotoIDs.isEmpty {
+                Button(action: addSelectedPhotos) {
+                    HStack(spacing: 8) {
+                        if isAddingPhotos { ProgressView().tint(AppTheme.primaryControlForeground(colorScheme)) }
+                        Text(isAddingPhotos
+                             ? String(localized: "正在添加…")
+                             : String(localized: "添加 \(selectedPhotoIDs.count) 张照片"))
+                            .font(.body.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(AppTheme.primaryControlBackground(colorScheme), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isAddingPhotos)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+        }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .task { await recent.load() }
@@ -143,11 +167,7 @@ struct AddToChatSheet: View {
                     HStack(spacing: 8) {
                         ForEach(recent.items) { photo in
                             Button {
-                                Task {
-                                    if let data = await recent.imageData(for: photo) {
-                                        onRecentPhoto(data)
-                                    }
-                                }
+                                togglePhoto(photo.id)
                             } label: {
                                 ZStack {
                                     AppTheme.composerControlFill(colorScheme)
@@ -159,9 +179,20 @@ struct AddToChatSheet: View {
                                 }
                                 .frame(width: tile, height: tile)
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(alignment: .topTrailing) {
+                                    if selectedPhotoIDs.contains(photo.id) {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(Color(white: 0.10))
+                                            .frame(width: 22, height: 22)
+                                            .background(Circle().fill(.white))
+                                            .padding(6)
+                                    }
+                                }
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(String(localized: "最近照片"))
+                            .accessibilityAddTraits(selectedPhotoIDs.contains(photo.id) ? .isSelected : [])
                         }
                     }
                 }
@@ -169,6 +200,32 @@ struct AddToChatSheet: View {
                 .disabled(!canAttach)
             }
             .frame(height: tile)
+        }
+    }
+
+    private func togglePhoto(_ id: String) {
+        if selectedPhotoIDs.contains(id) {
+            selectedPhotoIDs.remove(id)
+        } else if selectedPhotoIDs.count < max(0, maxPhotoSelection) {
+            selectedPhotoIDs.insert(id)
+        }
+    }
+
+    private func addSelectedPhotos() {
+        guard !isAddingPhotos else { return }
+        let picked = recent.items.filter { selectedPhotoIDs.contains($0.id) }
+        guard !picked.isEmpty else { return }
+        isAddingPhotos = true
+        Task {
+            var payloads: [Data] = []
+            for photo in picked {
+                if let data = await recent.imageData(for: photo) { payloads.append(data) }
+            }
+            isAddingPhotos = false
+            selectedPhotoIDs.removeAll()
+            guard !payloads.isEmpty else { return }
+            onRecentPhotos(payloads)
+            dismiss()
         }
     }
 

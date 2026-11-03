@@ -105,12 +105,15 @@ struct ChatComposerDock: View {
             AddToChatSheet(settings: settings,
                 onPhotos: { queue(.photos) }, onFiles: { queue(.files) },
                 onCamera: { pendingCamera = true; showsOptions = false },
-                onRecentPhoto: { data in
+                onRecentPhotos: { payloads in
                     Task {
-                        await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
-                                     data: data, mediaType: "image/jpeg")
+                        for data in payloads {
+                            await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
+                                         data: data, mediaType: "image/jpeg")
+                        }
                     }
                 },
+                maxPhotoSelection: max(0, 5 - draft.attachments.count),
                 canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
                 canSelectModel: canSelectModel,
                 canSelectPermission: canSelectPermission,

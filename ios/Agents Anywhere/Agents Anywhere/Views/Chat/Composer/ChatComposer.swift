@@ -92,9 +92,17 @@ struct ChatComposer: View {
                     } label: {
                         AppSymbol(accentSymbol, size: accentSymbolSize)
                             .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
+                            // Official stop key: neutral chrome (light #F0EFEC /
+                            // dark white 8%) with a black text100 square — only
+                            // the send key wears the accent fill.
+                            .foregroundStyle(isStopState
+                                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
+                                : AnyShapeStyle(AppTheme.accentForeground(accent, colorScheme)))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background(AppTheme.accentBackground(accent, colorScheme).opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
+                            .background((isStopState
+                                ? AppTheme.composerControlFill(colorScheme)
+                                : AppTheme.accentBackground(accent, colorScheme))
+                                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
                     }
@@ -175,8 +183,11 @@ struct ChatComposer: View {
     }
 
     private var accentSymbolSize: CGFloat {
-        affordance.shape == .stop ? 13 : 18
+        // Official: the square is ~11–12 pt, the send arrow ~16 pt.
+        affordance.shape == .stop ? 12 : 16
     }
+
+    private var isStopState: Bool { affordance.shape == .stop }
 
     private var accentLabel: String {
         switch affordance.shape {

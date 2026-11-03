@@ -1139,7 +1139,8 @@ jobs:
     # to its own `ipa-<branch>` tag and never touches `ipa-dev`, so a
     # half-finished branch can never clobber the dev line's installable IPA.
     if: |
-      (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/code-profile-beta' || inputs.build)
+      always()
+      && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/code-profile-beta' || inputs.build)
       && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: macos-15
     timeout-minutes: 90

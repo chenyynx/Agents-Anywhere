@@ -19,6 +19,9 @@ struct CodeThinkingDetailView: View {
     /// The page's deferred-item reader. Present in the product presentation;
     /// nil in previews and the gate.
     var chat: SessionChatModel? = nil
+    /// True while the row belongs to the running turn: open on the newest
+    /// text and keep following it as it streams (pp 2026-11-03).
+    var startsAtBottom: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -66,6 +69,10 @@ struct CodeThinkingDetailView: View {
                 .padding(.vertical, 16)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            // A live thinking row opens on its newest text and follows the
+            // stream; a settled row keeps the top (pp 2026-11-03).
+            .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
+            .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .sizeChanges)
             .background {
                 CodePageTheme.pageBackgroundColor
                     .resolved(for: colorScheme)

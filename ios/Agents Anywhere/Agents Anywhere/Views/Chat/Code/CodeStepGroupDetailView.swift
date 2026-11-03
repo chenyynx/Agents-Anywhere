@@ -108,6 +108,12 @@ struct CodeStepGroupDetailView: View {
                             }
                             .padding(16)
                         }
+                        // The pushed page inherits the sheet's live state: a
+                        // live group's thinking opens on its newest text and
+                        // follows the stream; a settled group's keeps the top
+                        // (pp 2026-11-03).
+                        .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
+                        .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .sizeChanges)
                         .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
                             .ignoresSafeArea())
                         .navigationTitle(Text(String(localized: "thought_process")))

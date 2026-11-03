@@ -867,6 +867,9 @@ struct CodeThinkingDetailRequest: Identifiable {
     /// all of them — otherwise a completed row would replace the merged text
     /// with its first line only.
     var sourceIDs: [String] = []
+    /// True while the row belongs to the running turn: the sheet opens on the
+    /// newest text and follows it as it streams (pp 2026-11-03).
+    var startsAtBottom = false
 }
 
 /// The chat profile's step-group detail request: the whole group, in order.

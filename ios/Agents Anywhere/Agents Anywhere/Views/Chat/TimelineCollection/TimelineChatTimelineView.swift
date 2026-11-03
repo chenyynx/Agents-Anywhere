@@ -242,7 +242,8 @@ struct TimelineChatTimelineView: View {
                                             chat: model)
                 case let .thinking(thinking):
                     CodeThinkingDetailView(text: thinking.text, itemID: thinking.id,
-                                           sourceIDs: thinking.sourceIDs, chat: model)
+                                           sourceIDs: thinking.sourceIDs, chat: model,
+                                           startsAtBottom: thinking.startsAtBottom)
                 case let .stepGroup(stepGroup):
                     CodeStepGroupDetailView(group: stepGroup.group,
                                             cwd: model.session.metadata?.cwd,

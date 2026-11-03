@@ -1133,6 +1133,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         self?.onCodeToolDetail?(request)
                     },
                     onThinkingDetail: { [weak self] request in
+                        var request = request
+                        // The live detail follows the tail like the step sheet:
+                        // the turn is running and this row belongs to it.
+                        let lastUserOrder = chatModel.session.timeline.last {
+                            $0.value.role == .user
+                        }?.value.orderSeq
+                        if let lastUserOrder,
+                           let row = chatModel.session.timeline.first(where: { $0.id == request.id }) {
+                            request.startsAtBottom = chatModel.isRunning
+                                && row.value.orderSeq > lastUserOrder
+                        }
                         self?.onCodeThinkingDetail?(request)
                     },
                     attachmentResolver: { contents, clientID in
@@ -1635,7 +1646,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 if case .stepGroup = last { return true }
                 return false
             }()
-            chatLiveTailGroupID = (model.sendingPlaceholder != nil && lastUnitIsStepGroup)
+            // The live tail follows the whole running turn, not just the
+            // optimistic send window: `sendingPlaceholder` alone clears while
+            // the turn is still running (stopping/blocked, or a stale status),
+            // and a tap in that gap opened the sheet at the top
+            // (pp 2026-11-03). Keep the old window as the fallback for the
+            // frames before the runtime reports the turn.
+            let turnActive = model.isRunning || model.sendingPlaceholder != nil
+            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup)
                 ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil

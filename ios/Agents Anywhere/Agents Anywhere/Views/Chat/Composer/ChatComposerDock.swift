@@ -109,6 +109,10 @@ struct ChatComposerDock: View {
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in activeSheet = .options }
+        // The model pill and picker read from `settings`, which only the
+        // catalog load fills. Load once when the composer appears instead of
+        // waiting for a sheet, otherwise the pill never surfaces.
+        .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {

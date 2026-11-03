@@ -74,6 +74,8 @@ struct AddToChatSheet: View {
             }
             .scrollIndicators(.hidden)
             .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
+            .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .navigationTitle(String(localized: "添加到会话"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

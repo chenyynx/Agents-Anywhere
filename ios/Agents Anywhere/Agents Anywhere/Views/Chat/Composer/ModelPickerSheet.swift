@@ -52,6 +52,8 @@ struct ModelPickerSheet: View {
             }
             .scrollIndicators(.hidden)
             .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
+            .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .navigationTitle(String(localized: "选择模型"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

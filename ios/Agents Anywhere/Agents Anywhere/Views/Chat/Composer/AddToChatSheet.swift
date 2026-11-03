@@ -28,10 +28,11 @@ struct AddToChatSheet: View {
     @State private var recent = RecentPhotosLoader()
     @State private var selectedPhotoIDs: Set<String> = []
     @State private var isAddingPhotos = false
+    @State private var showsModelSheet = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    private enum Page: Hashable { case models, permissions }
+    private enum Page: Hashable { case permissions }
     private let tile: CGFloat = 96
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -50,7 +51,7 @@ struct AddToChatSheet: View {
                         row(icon: "sparkles", title: String(localized: "模型"),
                             value: settings.modelLabel,
                             enabled: canSelectModel && !settings.catalog.models.isEmpty) {
-                            path.append(.models)
+                            showsModelSheet = true
                         }
                     }
                     card {
@@ -90,17 +91,7 @@ struct AddToChatSheet: View {
             .navigationTitle(String(localized: "添加到会话"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
-                            .frame(width: 36, height: 36)
-                            .background(Circle().fill(AppTheme.composerTileBackground(colorScheme)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "关闭"))
-                }
+                SheetCloseToolbar { dismiss() }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(String(localized: "照片")) { onPhotos() }
                         .font(.body)
@@ -110,14 +101,6 @@ struct AddToChatSheet: View {
             }
             .navigationDestination(for: Page.self) { page in
                 switch page {
-                case .models:
-                    ModelSelectionList(settings: settings,
-                        canSelectModel: canSelectModel,
-                        isLoading: isLoading, loadingError: loadingError,
-                        onReload: onReload, onApply: onApply, applyError: applyError,
-                        onFinished: { dismiss() })
-                        .navigationTitle(String(localized: "模型"))
-                        .navigationBarTitleDisplayMode(.inline)
                 case .permissions: permissionsPage
                 }
             }
@@ -127,6 +110,12 @@ struct AddToChatSheet: View {
             Button(String(localized: "好"), role: .cancel) {}
         } message: {
             Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。"))
+        }
+        .sheet(isPresented: $showsModelSheet) {
+            ModelPickerSheet(settings: settings,
+                canSelectModel: canSelectModel,
+                isLoading: isLoading, loadingError: loadingError,
+                onReload: onReload, onApply: onApply, applyError: applyError)
         }
         .safeAreaInset(edge: .bottom) {
             if !selectedPhotoIDs.isEmpty {

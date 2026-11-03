@@ -186,7 +186,7 @@ struct ChatComposer: View {
         // Official glyph ink: send arrow ~11×13 pt, stop square 12×12 pt.
         // The Lucide assets fill 14/24 (arrow) and 18/24 (square) of their
         // frame, so the frames are 20 and 16 to land on the official ink.
-        affordance.shape == .stop ? 16 : 20
+        affordance.shape == .stop ? 18 : 20
     }
 
     private var isStopState: Bool { affordance.shape == .stop }

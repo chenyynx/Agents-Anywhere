@@ -114,36 +114,39 @@ struct AddToChatSheet: View {
 
     // MARK: - Sources
 
+    @ViewBuilder
     private var attachmentSources: some View {
-        HStack(spacing: 8) {
-            if CameraPicker.isAvailable {
-                cameraTile
-            }
-            ScrollView(.horizontal) {
-                HStack(spacing: 8) {
-                    ForEach(recent.items) { photo in
-                        Button {
-                            Task {
-                                if let data = await recent.imageData(for: photo) {
-                                    onRecentPhoto(data)
+        if CameraPicker.isAvailable || !recent.items.isEmpty {
+            HStack(spacing: 8) {
+                if CameraPicker.isAvailable {
+                    cameraTile
+                }
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(recent.items) { photo in
+                            Button {
+                                Task {
+                                    if let data = await recent.imageData(for: photo) {
+                                        onRecentPhoto(data)
+                                    }
                                 }
+                            } label: {
+                                Image(uiImage: photo.thumbnail)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: tile, height: tile)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             }
-                        } label: {
-                            Image(uiImage: photo.thumbnail)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: tile, height: tile)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(String(localized: "最近照片"))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(String(localized: "最近照片"))
                     }
                 }
+                .scrollIndicators(.hidden)
+                .disabled(!canAttach)
             }
-            .scrollIndicators(.hidden)
-            .disabled(!canAttach)
+            .frame(height: tile)
         }
-        .frame(height: tile)
     }
 
     private var cameraTile: some View {

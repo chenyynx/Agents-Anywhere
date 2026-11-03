@@ -97,18 +97,26 @@ private struct ChatMessageImageGrid: View {
     let onOpen: (V2AttachmentContent, UIImage?) -> Void
     let loadThumbnail: (V2AttachmentContent) async throws -> Data?
 
-    private var columns: [GridItem] {
-        let cellSize = ChatImageThumbnail.gridCellSize()
-        return [GridItem(.fixed(cellSize), spacing: 4), GridItem(.fixed(cellSize), spacing: 4)]
-    }
+    private let spacing: CGFloat = 4
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 4) {
-            ForEach(files) { file in
-                ChatMessageImage(file: file, onOpen: onOpen, loadThumbnail: loadThumbnail, layout: .square)
+        // Explicit rows keep every gap identical: LazyVGrid with fixed columns
+        // spreads any extra proposed width into the inter-column spacing, which
+        // made the visible gaps uneven.
+        let cell = ChatImageThumbnail.gridCellSize(spacing: spacing)
+        let rows = stride(from: 0, to: files.count, by: 2).map {
+            Array(files[$0..<min($0 + 2, files.count)])
+        }
+        VStack(alignment: .trailing, spacing: spacing) {
+            ForEach(rows.indices, id: \.self) { index in
+                HStack(spacing: spacing) {
+                    ForEach(rows[index]) { file in
+                        ChatMessageImage(file: file, onOpen: onOpen, loadThumbnail: loadThumbnail, layout: .square)
+                    }
+                }
             }
         }
-        .frame(maxWidth: ChatImageThumbnail.maximumBubbleWidth, alignment: .trailing)
+        .frame(width: cell * 2 + spacing, alignment: .trailing)
     }
 }
 

@@ -62,7 +62,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
     # measurement/offset/state-machine behaviour from the JSON it writes.
     needs: test
     if: inputs.timeline_autorun == true
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -662,7 +662,7 @@ jobs:
     # distinguishable from a single jump. No device or recording needed.
     needs: test
     if: inputs.anchor_probe == true
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -782,7 +782,7 @@ jobs:
     # PNGs, and this job fails when the report completed with any failure.
     needs: test
     if: inputs.code_profile == true
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -997,7 +997,7 @@ jobs:
     # inside the report fails.
     needs: test
     if: inputs.textkit_spike == true
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -1134,7 +1134,7 @@ jobs:
     # to its own `ipa-<branch>` tag and never touches `ipa-dev`, so a
     # half-finished branch can never clobber the dev line's installable IPA.
     if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat/code-profile-beta' || inputs.build
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

@@ -28,14 +28,14 @@ struct ModelSelectionList: View {
                 if isLoading { ProgressView().padding(.vertical, 24) }
                 if let loadingError {
                     VStack(spacing: 8) {
-                        Text(loadingError).font(.footnote).foregroundStyle(.secondary)
+                        Text(loadingError).font(.system(size: 13)).foregroundStyle(.secondary)
                         Button(String(localized: "重新加载")) { Task { await onReload() } }
-                            .font(.footnote)
+                            .font(.system(size: 13))
                     }
                 }
                 if settings.catalog.models.isEmpty && !isLoading {
                     Text(String(localized: "没有可选的模型"))
-                        .font(.footnote)
+                        .font(.system(size: 13))
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
@@ -80,11 +80,11 @@ struct ModelSelectionList: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.option.title)
-                        .font(.body)
+                        .font(.system(size: 18))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                     if !model.option.detail.isEmpty {
                         Text(model.option.detail)
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                             .lineLimit(2)
                     }
@@ -110,11 +110,11 @@ struct ModelSelectionList: View {
     private var effortRow: some View {
         HStack(spacing: 8) {
             Text(String(localized: "思考强度"))
-                .font(.body)
+                .font(.system(size: 17))
                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             Spacer()
             Text(settings.reasoning?.title ?? String(localized: "默认"))
-                .font(.body)
+                .font(.system(size: 17))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             Image(systemName: "chevron.right")
                 .font(.system(size: 11, weight: .semibold))
@@ -140,11 +140,11 @@ struct ModelSelectionList: View {
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(option.title)
-                                    .font(.body)
+                                    .font(.system(size: 17))
                                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                                 if !option.detail.isEmpty {
                                     Text(option.detail)
-                                        .font(.subheadline)
+                                        .font(.system(size: 13))
                                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                                 }
                             }
@@ -169,8 +169,14 @@ struct ModelSelectionList: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
-        .navigationTitle(String(localized: "思考强度"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(String(localized: "思考强度"))
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+            }
+        }
     }
 
     private func select(_ change: () -> Bool) {

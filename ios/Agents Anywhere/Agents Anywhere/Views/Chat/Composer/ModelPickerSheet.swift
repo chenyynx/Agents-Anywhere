@@ -20,11 +20,17 @@ struct ModelPickerSheet: View {
                 isLoading: isLoading, loadingError: loadingError,
                 onReload: onReload, onApply: onApply, applyError: applyError,
                 onFinished: { dismiss() })
-                .navigationTitle(String(localized: "选择模型"))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
                 .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-                .toolbar { SheetCloseToolbar { dismiss() } }
+                .toolbar {
+                    SheetCloseToolbar { dismiss() }
+                    ToolbarItem(placement: .principal) {
+                        Text(String(localized: "选择模型"))
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                    }
+                }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)

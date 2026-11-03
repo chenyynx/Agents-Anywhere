@@ -68,15 +68,15 @@ struct AddToChatSheet: View {
                     takeoverCard
                     if !canAttach {
                         Text(String(localized: "当前运行状态不支持添加附件"))
-                            .font(.footnote)
+                            .font(.system(size: 13))
                             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                     }
                     if isLoading { ProgressView(String(localized: "加载对话选项…")) }
                     if let loadingError {
                         VStack(spacing: 8) {
-                            Text(loadingError).font(.footnote).foregroundStyle(.secondary)
+                            Text(loadingError).font(.system(size: 13)).foregroundStyle(.secondary)
                             Button(String(localized: "重新加载")) { Task { await onReload() } }
-                                .font(.footnote)
+                                .font(.system(size: 13))
                         }
                     }
                 }
@@ -88,13 +88,17 @@ struct AddToChatSheet: View {
             .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
             .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-            .navigationTitle(String(localized: "添加到会话"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 SheetCloseToolbar { dismiss() }
+                ToolbarItem(placement: .principal) {
+                    Text(String(localized: "添加到会话"))
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(String(localized: "照片")) { onPhotos() }
-                        .font(.body)
+                        .font(.system(size: 17))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                         .disabled(!canAttach)
                 }
@@ -125,7 +129,7 @@ struct AddToChatSheet: View {
                         Text(isAddingPhotos
                              ? String(localized: "正在添加…")
                              : String(localized: "添加 \(selectedPhotoIDs.count) 张照片"))
-                            .font(.body.weight(.semibold))
+                            .font(.system(size: 17, weight: .semibold))
                     }
                     .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
                     .frame(maxWidth: .infinity)
@@ -224,7 +228,7 @@ struct AddToChatSheet: View {
                 Image(systemName: "camera")
                     .font(.system(size: 22, weight: .regular))
                 Text(String(localized: "相机"))
-                    .font(.footnote)
+                    .font(.system(size: 15))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             .frame(width: tile, height: tile)
@@ -249,10 +253,10 @@ struct AddToChatSheet: View {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .regular))
                     .frame(width: 24)
-                Text(title).font(.body)
+                Text(title).font(.system(size: 17))
                 Spacer(minLength: 8)
                 if let value {
-                    Text(value).font(.body)
+                    Text(value).font(.system(size: 17))
                         .lineLimit(1)
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
@@ -283,14 +287,14 @@ struct AddToChatSheet: View {
                 Text(meta.takeover
                      ? String(localized: "已开启，可从 Agents Anywhere 继续操作。")
                      : String(localized: "只读模式，开启接管后可以继续发送消息。"))
-                    .font(.footnote)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 if let error = chat.takeoverError {
-                    Text(error).font(.footnote).foregroundStyle(.secondary)
+                    Text(error).font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 if chat.takeoverUncertain || !chat.session.runtime.isFresh {
                     Button(String(localized: "刷新接管状态")) { Task { await chat.refreshTakeover() } }
-                        .font(.footnote)
+                        .font(.system(size: 13))
                         .disabled(chat.isWorking || chat.session.network.availability == .offline)
                 }
             }
@@ -314,8 +318,14 @@ struct AddToChatSheet: View {
                 }
             }
         }
-        .navigationTitle(String(localized: "权限"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(String(localized: "权限"))
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+            }
+        }
     }
 
     private func apply(_ selection: () -> Bool) {

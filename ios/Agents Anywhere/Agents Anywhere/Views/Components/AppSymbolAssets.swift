@@ -36,6 +36,8 @@ enum AppSymbolAssets {
         "clock": "aa-Clock",
         "cloud": "aa-Cloud",
         "command": "aa-Command",
+        "anthropicon.agent": "anthropicon-agent",
+        "anthropicon.hand": "anthropicon-hand",
         "anthropicon.camera": "anthropicon-camera",
         "anthropicon.fileAdd": "anthropicon-fileAdd",
         "anthropicon.fastforward": "anthropicon-fastforward",

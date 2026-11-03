@@ -47,7 +47,7 @@ struct AddToChatSheet: View {
                             value: nil, enabled: canAttach, action: onFiles)
                     }
                     card {
-                        row(icon: "sparkles", title: String(localized: "模型"),
+                        row(icon: "anthropicon.agent", title: String(localized: "模型"),
                             value: settings.modelLabel,
                             enabled: canSelectModel && !settings.catalog.models.isEmpty) {
                             path.append(.models)
@@ -281,7 +281,14 @@ struct AddToChatSheet: View {
         if let chat = sessionChat, let meta = chat.session.metadata {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(isOn: Binding(get: { meta.takeover }, set: { pendingTakeover = $0 })) {
-                    Label(String(localized: "接管会话"), appSymbol: "hand.raised")
+                    HStack(spacing: 12) {
+                        AppSymbol("anthropicon.hand", size: 19)
+                            .frame(width: 28)
+                            .foregroundStyle(AppTheme.composerRowIcon(colorScheme))
+                        Text(String(localized: "接管会话"))
+                            .font(.system(size: 15))
+                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                    }
                 }
                 .toggleStyle(.switch)
                 .tint(AppTheme.primaryControlBackground(colorScheme))
@@ -289,14 +296,14 @@ struct AddToChatSheet: View {
                 Text(meta.takeover
                      ? String(localized: "已开启，可从 Agents Anywhere 继续操作。")
                      : String(localized: "只读模式，开启接管后可以继续发送消息。"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 if let error = chat.takeoverError {
-                    Text(error).font(.system(size: 13)).foregroundStyle(.secondary)
+                    Text(error).font(.system(size: 12)).foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
                 if chat.takeoverUncertain || !chat.session.runtime.isFresh {
                     Button(String(localized: "刷新接管状态")) { Task { await chat.refreshTakeover() } }
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .disabled(chat.isWorking || chat.session.network.availability == .offline)
                 }
             }

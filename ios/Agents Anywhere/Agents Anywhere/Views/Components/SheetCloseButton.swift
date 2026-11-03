@@ -4,11 +4,11 @@ struct SheetCloseButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(role: .close, action: action) {
-            Label(String(localized: "Close"), appSymbol: "xmark")
-        }
-        .labelStyle(.iconOnly)
-        .keyboardShortcut(.cancelAction)
+        // iOS 26 的 close role 自带系统 xmark 与液态玻璃圆钮。
+        // 自定义 label/icon 会让它退化成普通工具栏按钮（没有玻璃底），
+        // 所以这里只给 role，图标和外观交给系统。
+        Button(role: .close) { action() }
+            .keyboardShortcut(.cancelAction)
     }
 }
 

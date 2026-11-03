@@ -85,8 +85,6 @@ struct AddToChatSheet: View {
             }
             .scrollIndicators(.hidden)
             .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
-            .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
-            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 SheetCloseToolbar { dismiss() }

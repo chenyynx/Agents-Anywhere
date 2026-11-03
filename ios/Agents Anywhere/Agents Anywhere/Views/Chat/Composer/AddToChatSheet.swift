@@ -201,16 +201,17 @@ struct AddToChatSheet: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .regular))
+                    .font(.system(size: 16, weight: .regular))
                     .frame(width: 24)
                 Text(title).font(.body)
                 Spacer(minLength: 8)
                 if let value {
                     Text(value).font(.body)
+                        .lineLimit(1)
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))

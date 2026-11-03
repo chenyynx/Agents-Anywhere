@@ -25,6 +25,36 @@ enum AppTheme {
         scheme == .dark ? Color.white.opacity(0.52) : Color.white.opacity(0.34)
     }
 
+    /// Official composer control chrome (Claude 1.261023.20,
+    /// `ChatInputControlChrome`): light #F0EFEC, dark white at 8%.
+    static func composerControlFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color(red: 240.0 / 255.0, green: 239.0 / 255.0, blue: 236.0 / 255.0)
+    }
+
+    /// Official `text100`: light #131313, dark #F9F9F7.
+    static func composerControlGlyph(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 249.0 / 255.0, green: 249.0 / 255.0, blue: 247.0 / 255.0)
+            : Color(red: 19.0 / 255.0, green: 19.0 / 255.0, blue: 19.0 / 255.0)
+    }
+
+    /// Official `text300`: light #383835, dark #C3C2B7.
+    static func composerSecondaryGlyph(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 195.0 / 255.0, green: 194.0 / 255.0, blue: 183.0 / 255.0)
+            : Color(red: 56.0 / 255.0, green: 56.0 / 255.0, blue: 53.0 / 255.0)
+    }
+
+    /// Official `bg000`, the composer attachment tile fill:
+    /// light #FFFFFF, dark #20201F.
+    static func composerTileBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 32.0 / 255.0, green: 32.0 / 255.0, blue: 31.0 / 255.0)
+            : Color.white
+    }
+
     static func secondaryControlStroke(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.14)
     }

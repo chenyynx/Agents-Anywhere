@@ -51,6 +51,14 @@ struct ChatComposerDock: View {
     /// by the shared pure function (`ComposerQueueAffordance`) so the branch —
     /// queueing implies streaming, which the earlier inline order got wrong —
     /// is owned by one tested source instead of a view-local re-derivation.
+    /// The model pill only exists when this runtime offers a model catalog and
+    /// the settings have resolved a model. Until then the composer keeps its
+    /// previous, pill-less layout.
+    private var modelPillTitle: String? {
+        guard canSelectModel, let model = settings.model else { return nil }
+        return model.option.title
+    }
+
     private var affordance: ComposerQueueAffordance {
         ComposerQueueAffordance.resolve(
             isStreaming: isStreaming,
@@ -71,6 +79,9 @@ struct ChatComposerDock: View {
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
                 onOptions: { showsOptions = true },
+                modelTitle: modelPillTitle,
+                modelEffort: settings.reasoning?.title,
+                onModelTap: { showsOptions = true },
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 contextUsage: contextUsage,

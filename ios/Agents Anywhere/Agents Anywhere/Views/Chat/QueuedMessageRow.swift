@@ -21,7 +21,7 @@ struct QueuedMessageRow: View {
     let model: SessionChatModel
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     /// The whole queue is paused: this row shows the paused outline and glyph,

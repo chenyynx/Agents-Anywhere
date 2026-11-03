@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AccentSettingsView: View {
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {

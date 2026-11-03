@@ -4,7 +4,7 @@ struct AccountSettingsSheet: View {
     let appState: AppState
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppAppearance.storageKey) private var appearanceValue = AppAppearance.system.rawValue
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(TimelineRenderModeSwitch.key)

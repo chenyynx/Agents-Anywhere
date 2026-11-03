@@ -3,7 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     @State private var showingManualLogin = false
     @State private var showingQRCodeLogin = false
 

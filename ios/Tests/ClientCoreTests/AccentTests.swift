@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// Pins the accent model's two contracts: the persisted raw values — nine
+/// Pins the accent model's two contracts: the persisted raw values — ten
 /// strings that outlive any one build — and the color math. Every pair the
 /// views render must clear its WCAG bar, so a hex edit that dims a glyph or a
 /// bubble fails here, in CI, before it reaches a device.
@@ -28,7 +28,7 @@ import Testing
     /// passes, so the order is pinned here too.
     @Test func rawValuesAreThePersistedContract() {
         #expect(AppAccent.allCases.map(\.rawValue)
-            == ["default", "blue", "cyan", "green", "lime", "yellow", "orange", "pink", "magenta"])
+            == ["claude", "default", "blue", "cyan", "green", "lime", "yellow", "orange", "pink", "magenta"])
     }
 
     @Test func storageKeyIsTheAppStorageKey() {
@@ -45,6 +45,19 @@ import Testing
         #expect(AppAccent.default.darkBackgroundHex == 0xFFFFFF)
         #expect(AppAccent.default.darkForegroundHex == 0x000000)
         #expect(AppAccent.default.darkTextHex == 0xFFFFFF)
+    }
+
+    /// The shipped default since the composer visual alignment (round30):
+    /// the official terracotta control fill, same value in both schemes.
+    @Test func claudeAccentIsTheOfficialTerracotta() {
+        #expect(AppAccent.storageDefault == .claude)
+        #expect(AppAccent.claude.lightBackgroundHex == 0xC6613F)
+        #expect(AppAccent.claude.darkBackgroundHex == 0xC6613F)
+        #expect(AppAccent.claude.lightForegroundHex == 0xFFFFFF)
+        #expect(AppAccent.claude.darkForegroundHex == 0xFFFFFF)
+        // Control-only: the text role keeps the neutral black/white pair.
+        #expect(AppAccent.claude.lightTextHex == 0x000000)
+        #expect(AppAccent.claude.darkTextHex == 0xFFFFFF)
     }
 
     /// The glyph rule: white on the fill everywhere except lime and yellow,

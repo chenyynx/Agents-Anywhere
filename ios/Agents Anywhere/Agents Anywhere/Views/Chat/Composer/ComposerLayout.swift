@@ -21,8 +21,11 @@ struct ComposerLayout: Layout {
         let buttonY = expanded
             ? bounds.maxY - controls.expandedBottomInset - button
             : bounds.midY - button / 2
+        // The leading slot is a cluster (plus key + optional model pill), so
+        // its width comes from its own ideal size rather than the touch slot.
+        let leadingWidth = max(button, subviews[0].sizeThatFits(.init(width: nil, height: button)).width)
         subviews[0].place(at: CGPoint(x: bounds.minX + leadingInset, y: buttonY),
-                          proposal: .init(width: button, height: button))
+                          proposal: .init(width: leadingWidth, height: button))
         // Trailing controls stack leftward from the right edge in declaration
         // order: send first, then the optional context ring and command menu.
         // Uniform touch slots keep the three centres evenly spaced.
@@ -32,7 +35,7 @@ struct ComposerLayout: Layout {
                 proposal: .init(width: button, height: button))
         }
         let textHeight = editorHeight(width: bounds.width, subviews: subviews)
-        let textX = expanded ? controls.textInset : leadingInset + button + controls.collapsedTextGap
+        let textX = expanded ? controls.textInset : leadingInset + leadingWidth + controls.collapsedTextGap
         subviews[1].place(
             at: CGPoint(x: bounds.minX + textX, y: expanded ? bounds.minY + controls.textInset : bounds.midY - textHeight / 2),
             proposal: .init(width: editorWidth(in: bounds.width, subviews: subviews), height: textHeight)
@@ -46,8 +49,10 @@ struct ComposerLayout: Layout {
         let leading = expanded ? controls.expandedContentInset : controls.collapsedLeadingInset
         let trailing = expanded ? controls.expandedContentInset : controls.collapsedTrailingInset
         let trailingControls = CGFloat(max(0, subviews.count - 2)) * controls.touchTarget
+        let button = controls.touchTarget
+        let leadingWidth = max(button, subviews[0].sizeThatFits(.init(width: nil, height: button)).width)
         return max(1, expanded ? width - controls.textInset * 2
-            : width - (leading + controls.touchTarget + controls.collapsedTextGap)
+            : width - (leading + leadingWidth + controls.collapsedTextGap)
                 - trailing - trailingControls)
     }
 

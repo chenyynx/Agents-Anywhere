@@ -428,7 +428,13 @@ private struct SidebarDrawerInteractive<
             revealWidth: revealWidth
         )
 
-        settle(to: target, initialVelocity: initialVelocity, feedback: !cancelled)
+        // The haptic follows the open/closed flip, not the release velocity.
+        // A fast flick can end in `.cancelled` (the system takes the touch
+        // away), and `feedback: !cancelled` swallowed the close cue exactly
+        // when the drawer still snapped shut. `shouldProvideFeedback` in
+        // `settle` already refuses a gesture that springs back to the same
+        // state, so cancellation only decides the target, not the cue.
+        settle(to: target, initialVelocity: initialVelocity, feedback: true)
     }
 
     private func drawerGesture(revealWidth: CGFloat) -> some Gesture {
@@ -560,6 +566,9 @@ private struct SidebarDrawerInteractive<
         #endif
 
         if shouldProvideFeedback {
+            // The drawer's cue is a direct-manipulation haptic: it owns the
+            // engine briefly so a turn/tool phase cue cannot swallow it.
+            HapticGate.noteUserAction()
             feedbackTrigger &+= 1
         }
 

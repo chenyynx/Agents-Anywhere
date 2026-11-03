@@ -222,10 +222,12 @@ struct TimelineChatTimelineView: View {
             // tokens never play a haptic.
             .sensoryFeedback(.selection, trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .selection
+                    && !sidebarIsTransitioning && HapticGate.statusAllowed()
             }
             .sensoryFeedback(.impact(weight: .light, intensity: 1.0),
                              trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
+                    && !sidebarIsTransitioning && HapticGate.statusAllowed()
             }
             // The Code page's tool detail (official full-screen presentation).
             // Rows report taps through the adapter; this page-level sheet

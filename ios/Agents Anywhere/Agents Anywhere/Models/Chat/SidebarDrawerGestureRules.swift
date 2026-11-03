@@ -68,6 +68,14 @@ enum SidebarDrawerGestureRules {
     /// Converts a release velocity in points per second into the
     /// "fraction of the remaining distance per second" value SwiftUI's
     /// interpolating spring expects.
+    /// The haptic rule for a settle: it fires only when the target commits
+    /// the other open/closed state. `committedOpen` is the last target this
+    /// drawer committed — not the deferred `isOpen` binding, which still reads
+    /// the old state when a fast open is followed by a close (pp 2026-11-03).
+    static func commitsFlip(targetProgress: CGFloat, committedOpen: Bool) -> Bool {
+        (targetProgress > 0.5) != committedOpen
+    }
+
     static func normalizedVelocity(
         velocityX: CGFloat,
         progress: CGFloat,

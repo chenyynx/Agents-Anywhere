@@ -197,4 +197,15 @@ import Testing
         #expect(frameVelocity != nil)
         #expect(abs((frameVelocity ?? 0) - 120) < 1e-9)
     }
+
+    /// A fast open→close haptics on both gestures: the close compares against
+    /// the target the open committed, not the deferred `isOpen` binding
+    /// (pp 2026-11-03: fast swipes played only one cue).
+    @Test func commitFlipTracksTheCommittedTarget() {
+        #expect(SidebarDrawerGestureRules.commitsFlip(targetProgress: 1, committedOpen: false))
+        #expect(SidebarDrawerGestureRules.commitsFlip(targetProgress: 0, committedOpen: true))
+        // A drag that springs back to the same state stays silent.
+        #expect(!SidebarDrawerGestureRules.commitsFlip(targetProgress: 1, committedOpen: true))
+        #expect(!SidebarDrawerGestureRules.commitsFlip(targetProgress: 0, committedOpen: false))
+    }
 }

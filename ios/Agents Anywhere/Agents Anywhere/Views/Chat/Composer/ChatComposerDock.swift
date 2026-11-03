@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Both New Session and existing sessions use the same persistent editor and
@@ -35,7 +36,10 @@ struct ChatComposerDock: View {
     var onQueueSend: () async -> Void = {}
 
     @State private var editor = ComposerEditorController()
-    @State private var showsOptions = false
+    /// One sheet host for the composer's two presentations: the add-to-chat
+    /// options and the model picker. Two `.sheet` modifiers on the same view
+    /// race, so both route through this enum.
+    @State private var activeSheet: ComposerSheet?
     @State private var pendingPicker: AttachmentPicker?
     @State private var picker: AttachmentPicker?
     @State private var photos: [PhotosPickerItem] = []
@@ -43,9 +47,18 @@ struct ChatComposerDock: View {
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
+    @State private var showsCamera = false
+    @State private var pendingCamera = false
     @Environment(\.displayScale) private var displayScale
 
     private enum AttachmentPicker { case photos, files }
+
+    /// The two composer sheets. One `.sheet(item:)` host keeps them from
+    /// racing on the same view.
+    private enum ComposerSheet: String, Identifiable {
+        case options, model
+        var id: String { rawValue }
+    }
 
     /// Which control the trailing slot shows, and whether it is live. Resolved
     /// by the shared pure function (`ComposerQueueAffordance`) so the branch —
@@ -78,10 +91,10 @@ struct ChatComposerDock: View {
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
-                onOptions: { showsOptions = true },
+                onOptions: { activeSheet = .options },
                 modelTitle: modelPillTitle,
                 modelEffort: settings.reasoning?.title,
-                onModelTap: { showsOptions = true },
+                onModelTap: { activeSheet = .model },
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 contextUsage: contextUsage,
@@ -95,7 +108,7 @@ struct ChatComposerDock: View {
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
-        .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
+        .onChange(of: sessionChat?.optionsRequest) { _, _ in activeSheet = .options }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {
@@ -106,14 +119,36 @@ struct ChatComposerDock: View {
                     allowsMultipleSelection: true, onCompletion: importFiles)
             }
         }
-        .sheet(isPresented: $showsOptions, onDismiss: presentPicker) {
-            ComposerOptionsSheet(settings: settings,
-                onPhotos: { queue(.photos) }, onFiles: { queue(.files) },
-                canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
-                canSelectModel: canSelectModel, canSelectPermission: canSelectPermission,
-                isLoading: isLoadingSettings, loadingError: settingsError,
-                onReload: onLoadSettings, onApply: onApplySettings, applyError: applyError, sessionChat: sessionChat)
-                .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
+        .sheet(item: $activeSheet, onDismiss: presentPicker) { sheet in
+            switch sheet {
+            case .options:
+                AddToChatSheet(settings: settings,
+                    onPhotos: { queue(.photos) }, onFiles: { queue(.files) },
+                    onCamera: { pendingCamera = true; activeSheet = nil },
+                    onRecentPhoto: { data in
+                        Task {
+                            await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
+                                         data: data, mediaType: "image/jpeg")
+                        }
+                    },
+                    canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
+                    canSelectPermission: canSelectPermission,
+                    isLoading: isLoadingSettings, loadingError: settingsError,
+                    onReload: onLoadSettings, onApply: onApplySettings, applyError: applyError, sessionChat: sessionChat)
+                    .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
+            case .model:
+                ModelPickerSheet(settings: settings,
+                    canSelectModel: canSelectModel,
+                    isLoading: isLoadingSettings, loadingError: settingsError,
+                    onReload: onLoadSettings, onApply: onApplySettings, applyError: applyError)
+                    .task(id: canSelectModel) { await onLoadSettings() }
+            }
+        }
+        .fullScreenCover(isPresented: $showsCamera) {
+            CameraPicker { image in
+                appendCamera(image)
+            }
+            .ignoresSafeArea()
         }
         .onChange(of: photos) { _, items in importPhotos(items) }
         .onDisappear {
@@ -150,13 +185,26 @@ struct ChatComposerDock: View {
         }
     }
 
-    private func queue(_ next: AttachmentPicker) { pendingPicker = next; showsOptions = false }
+    private func queue(_ next: AttachmentPicker) { pendingPicker = next; activeSheet = nil }
     private func presentPicker() {
+        if pendingCamera {
+            pendingCamera = false
+            showsCamera = true
+            return
+        }
         guard let next = pendingPicker else { return }
         pendingPicker = nil; picker = next
     }
     private func pickerBinding(_ value: AttachmentPicker) -> Binding<Bool> {
         Binding(get: { picker == value }, set: { if $0 { picker = value } else if picker == value { picker = nil } })
+    }
+
+    private func appendCamera(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        Task {
+            await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
+                         data: data, mediaType: "image/jpeg")
+        }
     }
 
     private func append(name: String, data: Data, mediaType: String) async {

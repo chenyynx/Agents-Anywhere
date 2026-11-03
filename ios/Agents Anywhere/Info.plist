@@ -17,6 +17,10 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>拍摄照片并作为附件发送给 Agent。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>显示最近照片，并把选中的照片作为附件发送给 Agent。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

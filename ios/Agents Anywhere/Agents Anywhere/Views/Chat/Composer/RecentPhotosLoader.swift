@@ -37,10 +37,24 @@ final class RecentPhotosLoader {
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         options.fetchLimit = limit
         let result = PHAsset.fetchAssets(with: .image, options: options)
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in assets.append(asset) }
+
+        // Thumbnail requests are synchronous by design; run them off the main
+        // thread so opening the sheet never blocks the composer.
+        let photos = await Task.detached(priority: .userInitiated) {
+            Self.thumbnails(for: assets)
+        }.value
+        items = photos
+    }
+
+    private nonisolated static func thumbnails(for assets: [PHAsset]) -> [RecentPhoto] {
         let manager = PHImageManager.default()
         let target = CGSize(width: 240, height: 240)
         var found: [RecentPhoto] = []
-        result.enumerateObjects { asset, _, _ in
+        found.reserveCapacity(assets.count)
+        for asset in assets {
             let request = PHImageRequestOptions()
             request.isSynchronous = true
             request.deliveryMode = .highQualityFormat
@@ -53,7 +67,7 @@ final class RecentPhotosLoader {
                 found.append(RecentPhoto(id: asset.localIdentifier, thumbnail: thumbnail, asset: asset))
             }
         }
-        items = found
+        return found
     }
 
     /// The original bytes for a picked thumbnail. Network access is allowed so

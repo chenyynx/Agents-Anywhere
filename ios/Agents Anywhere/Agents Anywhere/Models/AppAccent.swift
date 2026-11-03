@@ -17,9 +17,6 @@ import Foundation
 /// Hex data only — no `Color`, no SwiftUI — so `ClientCore` tests can pin the
 /// persisted strings and the contrast math without a UI framework.
 enum AppAccent: String, CaseIterable, Identifiable, Hashable {
-    /// The official Claude terracotta (`#C6613F`), selectable in settings.
-    /// Not the app default: only the composer's send key opts into it.
-    case claude = "claude"
     case `default`
     case blue
     case cyan
@@ -42,7 +39,6 @@ enum AppAccent: String, CaseIterable, Identifiable, Hashable {
     /// The English key; the catalog adds the translations.
     var title: LocalizedStringResource {
         switch self {
-        case .claude: "Claude"
         case .default: "Default"
         case .blue: "Blue"
         case .cyan: "Cyan"
@@ -79,10 +75,6 @@ enum AppAccent: String, CaseIterable, Identifiable, Hashable {
     /// so a value may only move if the math moves with it.
     private var palette: Palette {
         switch self {
-        // The official terracotta fills controls only. Its text role stays the
-        // default black/white pair: links, the caret and the selection tint
-        // must not turn terracotta (the official app keeps those neutral).
-        case .claude: Palette(lightBackground: 0xC6613F, darkBackground: 0xC6613F, lightForeground: 0xFFFFFF, darkForeground: 0xFFFFFF, lightText: 0x000000, darkText: 0xFFFFFF)
         case .default: Palette(lightBackground: 0x000000, darkBackground: 0xFFFFFF, lightForeground: 0xFFFFFF, darkForeground: 0x000000, lightText: 0x000000, darkText: 0xFFFFFF)
         case .blue: Palette(lightBackground: 0x007AFF, darkBackground: 0x0A84FF, lightForeground: 0xFFFFFF, darkForeground: 0xFFFFFF, lightText: 0x007AFF, darkText: 0x0A84FF)
         case .cyan: Palette(lightBackground: 0x32ADE6, darkBackground: 0x5ABDE6, lightForeground: 0xFFFFFF, darkForeground: 0xFFFFFF, lightText: 0x0B7285, darkText: 0x64D2FF)

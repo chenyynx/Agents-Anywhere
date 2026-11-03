@@ -34,9 +34,7 @@ extension AppTheme {
     /// of the same wash, which would otherwise dissolve into the black
     /// background.
     static func accentBubbleBackground(_ accent: AppAccent, _ scheme: ColorScheme) -> Color {
-        // `.claude` is the official control-only accent: the official app does
-        // not wash the user bubble with it, so it keeps the shipped gray.
-        guard accent != .default, accent != .claude else {
+        guard accent != .default else {
             return scheme == .dark ? Color(white: 0.13) : Color(white: 0.94)
         }
         return accentBackground(accent, scheme).opacity(scheme == .dark ? 0.20 : 0.14)

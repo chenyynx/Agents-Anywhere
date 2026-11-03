@@ -120,7 +120,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// Whether the cursor text view actually carries the reveal mask. The
     /// clamp flag is a proxy; the gate checks the layer itself.
     var debugMaskLayerInstalled: Bool {
-        revealCursorView?.layer.mask != nil
+        revealCursorView?.assistantMarkdownMaskHost.layer.mask != nil
     }
     var debugRevealedCharacters: Int { revealDriver.released ?? 0 }
     /// Last row height the reveal reported (`nil` once the row uses its full
@@ -373,7 +373,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
             let height = AssistantMarkdownTextLayout.height(
                 of: block, width: width,
                 displayScale: traitCollection.displayScale)
-            if let view = tailViews[id] as? AssistantMarkdownBlockTextView,
+            if let view = tailViews[id]?.assistantMarkdownTextView,
                case .text(let text) = block {
                 if let current = view.attributedText,
                    current.isEqual(to: text.attributed) {
@@ -459,8 +459,7 @@ final class AssistantMarkdownCell: UICollectionViewCell {
            cursorIndex < streaming.blockIDs.count,
            case .text = blocks[cursorIndex],
            let id = cursorID,
-           let view = (stableViews[id] ?? tailViews[id])
-                        as? AssistantMarkdownBlockTextView {
+           let view = (stableViews[id] ?? tailViews[id])?.assistantMarkdownTextView {
             revealCatchUpTask?.cancel()
             var blockStart = 0
             for index in 0..<cursorIndex {

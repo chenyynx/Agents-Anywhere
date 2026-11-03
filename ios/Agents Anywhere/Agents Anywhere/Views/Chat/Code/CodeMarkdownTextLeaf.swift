@@ -475,7 +475,7 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         }
         switch block {
         case .text(let text):
-            guard let view = record.view as? AssistantMarkdownBlockTextView else {
+            guard let view = record.view.assistantMarkdownTextView else {
                 replaceRecord(at: index, block: block, key: record.key,
                               digest: digest, width: width)
                 return

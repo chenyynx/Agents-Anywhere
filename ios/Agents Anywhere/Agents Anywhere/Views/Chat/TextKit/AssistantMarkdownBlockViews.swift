@@ -19,8 +19,8 @@ enum AssistantMarkdownBlockViewFactory {
             of: block, width: width, displayScale: displayScale)
         switch block {
         case .text(let text):
-            let view = AssistantMarkdownBlockTextView(interactive: interactiveText)
-            view.attributedText = text.attributed
+            let view = AssistantMarkdownTextBlockView(interactive: interactiveText)
+            view.textView.attributedText = text.attributed
             return (view, height)
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
@@ -49,6 +49,88 @@ enum AssistantMarkdownBlockViewFactory {
         case .divider:
             return (AssistantDividerBlockView(), height)
         }
+    }
+}
+
+/// Body-text block with 4 pt of extra drawing room on each side.
+///
+/// The inline-code chip is drawn 4 pt past the code run on both sides. A
+/// `UITextView`'s `draw(_:)` is clipped to its bounds, so a chip that starts
+/// a line used to lose its rounded cap and its left padding. The official
+/// renderer (`ClaudeCoreUI.InlineCodeChips.Renderer`) paints the same rect
+/// outside the text layout; here a sibling overlay does it instead, while the
+/// transparent text view sits on top and keeps the text layout untouched
+/// (`AssistantMarkdownTextLayout.height(of:)` still measures the same width).
+final class AssistantMarkdownTextBlockView: UIView {
+    let textView: AssistantMarkdownBlockTextView
+    private let chipOverlay = AssistantInlineCodeChipOverlayView()
+
+    init(interactive: Bool) {
+        textView = AssistantMarkdownBlockTextView(interactive: interactive)
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isOpaque = false
+        chipOverlay.textView = textView
+        // Overlay first: chips must sit under the glyphs.
+        addSubview(chipOverlay)
+        addSubview(textView)
+        textView.chipOverlay = chipOverlay
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        textView.frame = bounds
+        chipOverlay.frame = CGRect(x: -4, y: 0,
+                                   width: bounds.width + 8,
+                                   height: bounds.height)
+        chipOverlay.setNeedsDisplay()
+    }
+}
+
+/// Draws the chip decoration behind `AssistantMarkdownTextBlockView`'s text
+/// view. The overlay starts 4 pt left of the text view, so the text
+/// container's origin is at x = 4 in overlay coordinates.
+final class AssistantInlineCodeChipOverlayView: UIView {
+    weak var textView: AssistantMarkdownBlockTextView?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ rect: CGRect) {
+        guard let textView,
+              let attributed = textView.attributedText,
+              let manager = textView.textLayoutManager,
+              AssistantInlineCodeChipRenderer.containsChip(attributed) else { return }
+        AssistantInlineCodeChipRenderer.drawChips(
+            in: attributed,
+            layoutManager: manager,
+            origin: CGPoint(x: 4, y: 0),
+            traitCollection: traitCollection)
+    }
+}
+
+extension UIView {
+    /// The text view behind a markdown text block, whether the block is the
+    /// bare view or the chip-overlay container.
+    var assistantMarkdownTextView: AssistantMarkdownBlockTextView? {
+        if let textView = self as? AssistantMarkdownBlockTextView { return textView }
+        return (self as? AssistantMarkdownTextBlockView)?.textView
+    }
+
+    /// The layer the streaming reveal masks. When the text view lives in the
+    /// chip-overlay container, masking the container covers the chips and the
+    /// glyphs together; without the container it stays the text view itself.
+    var assistantMarkdownMaskHost: UIView {
+        (superview as? AssistantMarkdownTextBlockView) ?? self
     }
 }
 
@@ -1158,14 +1240,12 @@ enum AssistantInlineCodeChipRenderer {
             bottom = baseline + descent
         }
         let height = max(1, bottom - top)
-        var x = frame.minX - style.horizontalPadding
-        var width = frame.width + style.horizontalPadding * 2
-        // The text view paints into its own bounds; a chip that starts a line
-        // would otherwise lose its rounded cap (and its 4 pt padding) at x < 0.
-        if x < 0 {
-            width += x
-            x = 0
-        }
+        // No clamp at x = 0: the overlay that hosts this pass is 4 pt wider
+        // than the text view on each side, so a line-leading chip keeps its
+        // rounded cap and padding (the official renderer does the same by
+        // drawing outside the text layout).
+        let x = frame.minX - style.horizontalPadding
+        let width = frame.width + style.horizontalPadding * 2
         guard width > 0 else { return }
         let rect = CGRect(x: x, y: top, width: width, height: height)
         guard rect.width > 0, rect.height > 0 else { return }

@@ -68,9 +68,10 @@ enum AssistantMarkdownMaskRenderer {
                           fadeDuration: CFTimeInterval = 0.6) -> CAShapeLayer? {
         guard let layer = makeRunLayer(rects: rects, in: textView,
                                        fadeDuration: fadeDuration) else { return nil }
-        if textView.layer.mask !== mask {
+        let host = textView.assistantMarkdownMaskHost
+        if host.layer.mask !== mask {
             mask.frame = textView.bounds
-            textView.layer.mask = mask
+            host.layer.mask = mask
         }
         mask.addSublayer(layer)
         return layer

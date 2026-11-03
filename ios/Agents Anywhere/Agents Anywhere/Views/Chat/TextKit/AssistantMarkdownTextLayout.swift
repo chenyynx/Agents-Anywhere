@@ -527,24 +527,22 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         return false
     }
 
-    /// Paints the official inline-code chips *under* the glyphs. The chip is a
-    /// pure decoration of the attributed run
-    /// (`EVIDENCE/round19/typography-inline.md` §3): it adds no attribute that
-    /// TextKit lays out, so this drawing pass cannot change the height that
-    /// `AssistantMarkdownTextLayout.height(of:)` reports.
-    override func draw(_ rect: CGRect) {
-        // The same view class draws fenced-code bodies (no chip marker); the
-        // marker scan keeps that path from paying for a chip layout pass.
-        if let attributedText, let manager = textLayoutManager,
-           AssistantInlineCodeChipRenderer.containsChip(attributedText) {
-            AssistantInlineCodeChipRenderer.drawChips(
-                in: attributedText,
-                layoutManager: manager,
-                origin: CGPoint(x: textContainerInset.left,
-                                y: textContainerInset.top),
-                traitCollection: traitCollection)
-        }
-        super.draw(rect)
+    /// The inline-code chip background is painted by the overlay in
+    /// `AssistantMarkdownTextBlockView`, not here: a text view's `draw(_:)`
+    /// is clipped to its bounds, which cut the 4 pt left padding (and the
+    /// rounded cap) off any chip that started a line. The overlay is a
+    /// sibling 4 pt wider on each side, so the chip keeps the geometry the
+    /// official `InlineCodeChips.Renderer` draws outside the text layout.
+    weak var chipOverlay: AssistantInlineCodeChipOverlayView?
+
+    override func setNeedsDisplay() {
+        super.setNeedsDisplay()
+        chipOverlay?.setNeedsDisplay()
+    }
+
+    override func setNeedsDisplay(_ rect: CGRect) {
+        super.setNeedsDisplay(rect)
+        chipOverlay?.setNeedsDisplay()
     }
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {

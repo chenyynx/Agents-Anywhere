@@ -1,5 +1,11 @@
 # Composer 官方 Chat 视觉对齐 · 任务单
 
+> **实施状态（2026-11-03 21:30 CST）**
+> - 分支：`feat/composer-official-visual`（基于 beta `feat/code-profile-beta`），未合并。
+> - P1（底行/赤陶默认 accent/模型 pill）：CI test+build 绿（run 41639150724）。
+> - P2–P5（附件卡/添加到会话/选择模型/相机/最近照片）：CI test+build 绿（run 41643018230，head `9a7b0ff6`）。
+> - 最后一轮（空附件行修复 `9a488dd5`）验证中；真机验收待做，清单见 §8。
+
 > 日期：2026-11-03 CST　级别：**L**（跨组件、涉及权限/相机/新 sheet、影响 Chat 与 Code 两 profile）
 > 依据：`/home/ubuntu/aa-test/claude-ios-re/EVIDENCE/round30-composer-visuals/SUMMARY.md`（官方 1.261023.20 反编译 + 截图实测）
 > 版本说明：App Store 最新为 1.261030.19，手头解密包为 1.261023.20；截图来自更新的 App。数值以 1023 证据为准，截图实测作交叉校验。

@@ -46,4 +46,24 @@ nonisolated struct TimelineDiff {
                 || line.range(of: "^[+-]\\S", options: .regularExpression) != nil
         }
     }
+
+    /// Strong unified-diff evidence: a `diff --git` header, a numbered hunk
+    /// header (`@@ -N`), or a `--- ` / `+++ ` header pair.
+    ///
+    /// A created file's content can carry lines that begin with `-`/`+`
+    /// (Markdown bullets, front matter, code); `isUnified` alone would read
+    /// those as patch lines and count body text as deletions. Callers that
+    /// know the change action use this stricter test before treating the
+    /// text as a patch.
+    static func isStrictUnified(_ code: String) -> Bool {
+        var hasOldHeader = false
+        var hasNewHeader = false
+        for line in code.components(separatedBy: "\n") {
+            if line.hasPrefix("diff --git") { return true }
+            if line.hasPrefix("@@ -"), line.dropFirst(4).first?.isNumber == true { return true }
+            if line.hasPrefix("--- ") { hasOldHeader = true }
+            else if line.hasPrefix("+++ ") { hasNewHeader = true }
+        }
+        return hasOldHeader && hasNewHeader
+    }
 }

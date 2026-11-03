@@ -458,6 +458,64 @@ struct CodeToolLabelPlanTests {
         #expect(CodeToolLabelPlan.diffStat(for: [call]) == nil)
     }
 
+    /// Device report 2026-11-03: a created file's body can begin lines with
+    /// `-`/`+` (Markdown bullets, front matter). `_file_diff` puts the whole
+    /// file into `changes[].diff`, so those lines are additions, not removals.
+    @Test func diffBadgeCountsCreatedFileBodyAsAdditions() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "w1", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Write",
+                "text": "File created successfully at: /repo/NOTES.md",
+                "changes": [[
+                    "path": "/repo/NOTES.md", "action": "add",
+                    "diff": "# Title\n\n- one\n- two\n---\n",
+                ]],
+            ],
+            "source": ["itemId": "w1"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "w1",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [CodeToolCall(item: item, kind: .write)])
+            == CodeDiffStat(added: 5, removed: 0))
+    }
+
+    /// Content without any `-`/`+` body line still earns its +N badge; the old
+    /// prefix scan found nothing and suppressed the indicator entirely.
+    @Test func diffBadgeCountsCreatedFileWithoutPrefixes() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "w2", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Write",
+                "text": "File created successfully at: /repo/state.json",
+                "changes": [["path": "/repo/state.json", "action": "add",
+                             "diff": "{\n  \"a\": 1\n}\n"]],
+            ],
+            "source": ["itemId": "w2"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "w2",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [CodeToolCall(item: item, kind: .write)])
+            == CodeDiffStat(added: 3, removed: 0))
+    }
+
+    /// A created path that really carries a patch keeps prefix counting.
+    @Test func diffBadgeKeepsPrefixCountingForDeclaredCreatePatch() throws {
+        let item: V2TimelineItem = try decode([
+            "id": "w3", "sessionId": "session", "type": "tool", "status": "done",
+            "content": [
+                "kind": "file_change", "toolName": "Write",
+                "text": "File created successfully at: /repo/a.swift",
+                "changes": [[
+                    "path": "/repo/a.swift", "action": "add",
+                    "diff": "--- a.swift\n+++ a.swift\n@@ -0,0 +1 @@\n-let a = 1\n+let a = 2\n",
+                ]],
+            ],
+            "source": ["itemId": "w3"],
+            "orderSeq": 1, "revision": 1, "updatedSeq": 1, "contentHash": "w3",
+        ])
+        #expect(CodeToolLabelPlan.diffStat(for: [CodeToolCall(item: item, kind: .write)])
+            == CodeDiffStat(added: 1, removed: 1))
+    }
+
     // MARK: Official failure counts and target rule
 
     /// `0x10288e3c0`: each category's `failed` is the number of distinct

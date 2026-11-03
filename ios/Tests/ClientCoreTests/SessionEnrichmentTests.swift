@@ -97,6 +97,17 @@ import Testing
         #expect(TimelineTurnReview.build(items: [a, b, deleted], root: "C:/Repo", caseInsensitive: true).files.isEmpty)
     }
 
+    /// A created Markdown file's bullets/front matter are body text, not diff
+    /// lines: the Chat review must count them as additions (device report
+    /// 2026-11-03, the same `_file_diff` contract as the Code badge).
+    @Test func reviewCountsCreatedMarkdownBodyAsAdditions() throws {
+        let created = try item("md", order: 1, content: ["kind": "file_change", "changes": [
+            ["path": "notes.md", "action": "add", "diff": "---\nname: a\n---\n- one\n"],
+        ]])
+        let review = TimelineTurnReview.build(items: [created], root: "/repo")
+        #expect(review.additions == 4 && review.deletions == 0)
+    }
+
     @Test func toolOnlyTurnsGetACompletedReviewFooterAndStreamingDoesNot() throws {
         let change = ChatTimelineRowModel(try item("change", order: 1, content: ["kind": "file_change", "path": "a.swift", "action": "add", "diff": "a"] ))
         let groups = TimelineGrouping.groups([change], interactionTargets: [])

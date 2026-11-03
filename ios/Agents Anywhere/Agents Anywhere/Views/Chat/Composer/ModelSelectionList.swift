@@ -91,7 +91,8 @@ struct ModelSelectionList: View {
                 }
                 Spacer(minLength: 8)
                 if settings.modelID == model.id {
-                    AppSymbol("checkmark", size: 18)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                 }
             }
@@ -115,7 +116,8 @@ struct ModelSelectionList: View {
             Text(settings.reasoning?.title ?? String(localized: "默认"))
                 .font(.system(size: 15))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-            AppSymbol("chevron.right", size: 16)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
         .padding(.horizontal, 16)
@@ -148,7 +150,8 @@ struct ModelSelectionList: View {
                             }
                             Spacer(minLength: 8)
                             if settings.reasoningID == option.id {
-                                AppSymbol("checkmark", size: 16)
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                             }
                         }

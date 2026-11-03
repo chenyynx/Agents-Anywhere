@@ -40,6 +40,13 @@ enum AppTheme {
             : Color(red: 19.0 / 255.0, green: 19.0 / 255.0, blue: 19.0 / 255.0)
     }
 
+    /// Official sheet row icon stroke: light #52514E, dark #C3C2B7.
+    static func composerRowIcon(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 195.0 / 255.0, green: 194.0 / 255.0, blue: 183.0 / 255.0)
+            : Color(red: 82.0 / 255.0, green: 81.0 / 255.0, blue: 78.0 / 255.0)
+    }
+
     /// Official `text300`: light #383835, dark #C3C2B7.
     static func composerSecondaryGlyph(_ scheme: ColorScheme) -> Color {
         scheme == .dark

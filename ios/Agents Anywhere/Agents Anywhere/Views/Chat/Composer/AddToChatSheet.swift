@@ -43,7 +43,7 @@ struct AddToChatSheet: View {
                 VStack(spacing: 16) {
                     attachmentSources
                     card {
-                        row(icon: "file.up", title: String(localized: "添加文件"),
+                        row(icon: "anthropicon.fileAdd", title: String(localized: "添加文件"),
                             value: nil, enabled: canAttach, action: onFiles)
                     }
                     card {
@@ -54,14 +54,14 @@ struct AddToChatSheet: View {
                         }
                     }
                     card {
-                        row(icon: "chevrons.right", title: String(localized: "权限"),
+                        row(icon: "anthropicon.fastforward", title: String(localized: "权限"),
                             value: settings.permission?.title ?? String(localized: "默认"),
                             enabled: canSelectPermission && !settings.catalog.permissions.isEmpty) {
                             path.append(.permissions)
                         }
                     }
                     card {
-                        row(icon: "layout.grid", title: String(localized: "连接器"),
+                        row(icon: "anthropicon.connectors", title: String(localized: "连接器"),
                             value: String(localized: "即将支持"), enabled: false) {}
                     }
                     takeoverCard
@@ -154,46 +154,47 @@ struct AddToChatSheet: View {
     @ViewBuilder
     private var attachmentSources: some View {
         if CameraPicker.isAvailable || !recent.items.isEmpty {
-            HStack(spacing: 8) {
-                if CameraPicker.isAvailable {
-                    cameraTile
-                }
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(recent.items) { photo in
-                            Button {
-                                togglePhoto(photo.id)
-                            } label: {
-                                ZStack {
-                                    AppTheme.composerControlFill(colorScheme)
-                                    if let thumbnail = photo.thumbnail {
-                                        Image(uiImage: thumbnail)
-                                            .resizable()
-                                            .scaledToFill()
-                                    }
-                                }
-                                .frame(width: tile, height: tile)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .overlay(alignment: .topTrailing) {
-                                    if selectedPhotoIDs.contains(photo.id) {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundStyle(Color(white: 0.10))
-                                            .frame(width: 22, height: 22)
-                                            .background(Circle().fill(.white))
-                                            .padding(6)
-                                    }
+            // The camera card is the first item of the same horizontal strip:
+            // the whole row (camera + photos) scrolls together, as official.
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
+                    if CameraPicker.isAvailable {
+                        cameraTile
+                    }
+                    ForEach(recent.items) { photo in
+                        Button {
+                            togglePhoto(photo.id)
+                        } label: {
+                            ZStack {
+                                AppTheme.composerControlFill(colorScheme)
+                                if let thumbnail = photo.thumbnail {
+                                    Image(uiImage: thumbnail)
+                                        .resizable()
+                                        .scaledToFill()
                                 }
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(String(localized: "最近照片"))
-                            .accessibilityAddTraits(selectedPhotoIDs.contains(photo.id) ? .isSelected : [])
+                            .frame(width: 95, height: tile)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(alignment: .topTrailing) {
+                                if selectedPhotoIDs.contains(photo.id) {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(Color(white: 0.10))
+                                        .frame(width: 22, height: 22)
+                                        .background(Circle().fill(.white))
+                                        .padding(6)
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(String(localized: "最近照片"))
+                        .accessibilityAddTraits(selectedPhotoIDs.contains(photo.id) ? .isSelected : [])
                     }
                 }
-                .scrollIndicators(.hidden)
-                .disabled(!canAttach)
+                .padding(.trailing, 16)
             }
+            .scrollIndicators(.hidden)
+            .disabled(!canAttach)
             .frame(height: tile)
         }
     }
@@ -227,11 +228,11 @@ struct AddToChatSheet: View {
     private var cameraTile: some View {
         Button(action: onCamera) {
             VStack(spacing: 6) {
-                AppSymbol("camera", size: 32)
+                AppSymbol("anthropicon.camera", size: 20)
                 Text(String(localized: "相机"))
                     .font(.system(size: 14))
             }
-            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+            .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             .frame(width: tile, height: tile)
             .background(AppTheme.composerControlFill(colorScheme),
                         in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -251,8 +252,9 @@ struct AddToChatSheet: View {
                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                AppSymbol(icon, size: 22)
+                AppSymbol(icon, size: 19)
                     .frame(width: 28)
+                    .foregroundStyle(AppTheme.composerRowIcon(colorScheme))
                 Text(title).font(.system(size: 15))
                 Spacer(minLength: 8)
                 if let value {
@@ -260,7 +262,8 @@ struct AddToChatSheet: View {
                         .lineLimit(1)
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
-                AppSymbol("chevron.right", size: 16)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
@@ -315,7 +318,8 @@ struct AddToChatSheet: View {
                         apply { settings.selectPermission(option.id) }
                     } label: {
                         HStack(spacing: 12) {
-                            AppSymbol("checkmark", size: 18)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(AppTheme.pickerCheckmark(colorScheme))
                                 .frame(width: 20)
                                 .opacity(settings.permissionID == option.id ? 1 : 0)

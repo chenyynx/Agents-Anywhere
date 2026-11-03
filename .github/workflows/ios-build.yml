@@ -36,6 +36,10 @@ on:
         description: "Also build the unsigned IPA for this branch"
         type: boolean
         default: false
+      skip_test:
+        description: "Skip the unit-test job (runner shortage workaround)"
+        type: boolean
+        default: false
       timeline_autorun:
         description: "Run the 6b collection-timeline simulator gate"
         type: boolean
@@ -62,6 +66,7 @@ permissions:
 
 jobs:
   test:
+    if: inputs.skip_test != true
     runs-on: macos-15
     timeout-minutes: 45
     steps:

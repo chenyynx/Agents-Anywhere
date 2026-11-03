@@ -32,7 +32,7 @@ struct AddToChatSheet: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private enum Page: Hashable { case models, permissions }
-    private let tile: CGFloat = 96
+    private let tile: CGFloat = 100
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
     }

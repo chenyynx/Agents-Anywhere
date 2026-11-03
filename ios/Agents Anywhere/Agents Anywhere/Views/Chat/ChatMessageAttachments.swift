@@ -340,7 +340,6 @@ struct ChatComposerAttachment: View {
     }
 
     private var typeBadge: String? {
-        let ext = (attachment.name as NSString).pathExtension.uppercased()
-        return ext.isEmpty ? nil : ext
+        ComposerAttachmentBadge.text(for: attachment.name)
     }
 }

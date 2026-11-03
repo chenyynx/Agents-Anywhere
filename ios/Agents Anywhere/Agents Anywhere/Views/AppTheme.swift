@@ -55,6 +55,28 @@ enum AppTheme {
             : Color.white
     }
 
+    /// Official `border20` renders as a hairline over the tile fill. The base
+    /// colour behind the 30% alpha is not statically resolvable (round30 U),
+    /// so this approximates the screenshot hairline on both schemes.
+    static func composerTileBorder(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.10)
+    }
+
+    /// Official sheet page colour (screenshots): light #F9F9F7, dark #151515.
+    static func composerSheetBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 21.0 / 255.0, green: 21.0 / 255.0, blue: 21.0 / 255.0)
+            : Color(red: 249.0 / 255.0, green: 249.0 / 255.0, blue: 247.0 / 255.0)
+    }
+
+    /// Official model-picker checkmark (`accentSecondary000`, value still U in
+    /// the binary): the screenshot blue, approximated.
+    static func pickerCheckmark(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 110.0 / 255.0, green: 155.0 / 255.0, blue: 245.0 / 255.0)
+            : Color(red: 47.0 / 255.0, green: 95.0 / 255.0, blue: 191.0 / 255.0)
+    }
+
     static func secondaryControlStroke(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.14)
     }

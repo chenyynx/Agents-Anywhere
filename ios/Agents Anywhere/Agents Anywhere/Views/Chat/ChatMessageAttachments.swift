@@ -260,40 +260,87 @@ private struct ChatMessageImage: View {
     }
 }
 
+/// The composer's pending attachment tile. Official (1.261023.20, round30):
+/// `AttachmentBarTile` → `FilePreview` — 96 pt height cap, 16 pt radius,
+/// `bg000` fill, `border20` hairline, a 24 pt remove circle inset 8 pt, and a
+/// file face of type badge + name (no byte size).
 struct ChatComposerAttachment: View {
     let attachment: ChatAttachment
     let onRemove: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
     @State private var image: UIImage?
+
+    /// The screenshot renders 80 pt squares; the binary caps the height at 96
+    /// and lets the content decide, so 80 is the shipped-looking value.
+    private let tileSize: CGFloat = 80
+    private let cornerRadius: CGFloat = 16
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
     var body: some View {
-        Group {
+        ZStack {
+            AppTheme.composerTileBackground(colorScheme)
             if attachment.isImage {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12).fill(.quaternary)
-                    if let image { Image(uiImage: image).resizable().scaledToFill() }
-                    else { AppSymbol("photo").foregroundStyle(.secondary) }
-                }.frame(width: 72, height: 72).clipShape(.rect(cornerRadius: 12))
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    AppSymbol("photo", size: 20)
+                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+                }
             } else {
-                HStack(spacing: 8) {
-                    AppSymbol(AppFileSymbol.name(for: attachment.name), size: 20)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(attachment.name).font(.caption.weight(.medium)).lineLimit(2)
-                        Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }.frame(maxWidth: 140, alignment: .leading)
-                }.padding(.horizontal, 12).padding(.trailing, 20).frame(height: 72)
-                    .background(.primary.opacity(0.07), in: .rect(cornerRadius: 12))
+                fileFace
             }
         }
+        .frame(width: tileSize, height: tileSize)
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(AppTheme.composerTileBorder(colorScheme), lineWidth: 1) }
         .overlay(alignment: .topTrailing) {
             Button(action: onRemove) {
-                AppSymbol("xmark.circle.fill").symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, .black.opacity(0.7)).font(.system(size: 19))
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).offset(x: 9, y: -9).accessibilityLabel(String(localized: "移除 \(attachment.name)"))
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color(white: 0.10)))
+                    .shadow(color: .black.opacity(0.15), radius: 2)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(String(localized: "移除 \(attachment.name)"))
         }
         .task(id: attachment.id) {
             if let data = attachment.previewData { image = UIImage(data: data) }
         }
         .accessibilityLabel(attachment.name)
+    }
+
+    private var fileFace: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let badge = typeBadge {
+                Text(badge)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(AppTheme.composerTileBackground(colorScheme)))
+                    .overlay { Capsule().strokeBorder(AppTheme.composerTileBorder(colorScheme), lineWidth: 1) }
+            }
+            Spacer(minLength: 4)
+            Text(attachment.name)
+                .font(.system(size: 15))
+                .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(8)
+    }
+
+    private var typeBadge: String? {
+        let ext = (attachment.name as NSString).pathExtension.uppercased()
+        return ext.isEmpty ? nil : ext
     }
 }

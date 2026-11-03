@@ -221,7 +221,8 @@ struct ChatComposer: View {
 
     private var attachmentTray: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            // Official AttachmentBar: items 4 pt apart, 8 pt inside the card.
+            HStack(spacing: 4) {
                 ForEach(draft.attachments) { attachment in
                     ChatComposerAttachment(attachment: attachment) {
                         draft.attachments.removeAll { $0.id == attachment.id }
@@ -230,7 +231,8 @@ struct ChatComposer: View {
             }
         }
         .scrollIndicators(.hidden)
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 }

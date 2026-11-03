@@ -131,11 +131,16 @@ struct AddToChatSheet: View {
                                     }
                                 }
                             } label: {
-                                Image(uiImage: photo.thumbnail)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: tile, height: tile)
-                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                ZStack {
+                                    AppTheme.composerControlFill(colorScheme)
+                                    if let thumbnail = photo.thumbnail {
+                                        Image(uiImage: thumbnail)
+                                            .resizable()
+                                            .scaledToFill()
+                                    }
+                                }
+                                .frame(width: tile, height: tile)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(String(localized: "最近照片"))

@@ -3,11 +3,13 @@ import Observation
 import Photos
 import UIKit
 
-/// One recent photo in the add-to-chat strip.
+/// One recent photo in the add-to-chat strip. The thumbnail fills in
+/// asynchronously; until it does the tile draws a placeholder, matching the
+/// official `RecentPhotoThumbnail` (`Color.overlay(Image?)`).
 struct RecentPhoto: Identifiable, Equatable {
     let id: String
-    let thumbnail: UIImage
     let asset: PHAsset
+    var thumbnail: UIImage?
 
     static func == (lhs: RecentPhoto, rhs: RecentPhoto) -> Bool { lhs.id == rhs.id }
 }
@@ -30,6 +32,10 @@ final class RecentPhotosLoader {
             items = []
             return
         }
+        // The strip is stable for the sheet's lifetime; a second appearance
+        // reuses the already-resolved assets instead of refetching.
+        guard items.isEmpty else { return }
+
         isLoading = true
         defer { isLoading = false }
 
@@ -41,33 +47,34 @@ final class RecentPhotosLoader {
         assets.reserveCapacity(result.count)
         result.enumerateObjects { asset, _, _ in assets.append(asset) }
 
-        // Thumbnail requests are synchronous by design; run them off the main
-        // thread so opening the sheet never blocks the composer.
-        let photos = await Task.detached(priority: .userInitiated) {
-            Self.thumbnails(for: assets)
-        }.value
-        items = photos
-    }
-
-    private nonisolated static func thumbnails(for assets: [PHAsset]) -> [RecentPhoto] {
-        let manager = PHImageManager.default()
-        let target = CGSize(width: 240, height: 240)
-        var found: [RecentPhoto] = []
-        found.reserveCapacity(assets.count)
-        for asset in assets {
-            let request = PHImageRequestOptions()
-            request.isSynchronous = true
-            request.deliveryMode = .highQualityFormat
-            request.resizeMode = .exact
-            var thumbnail: UIImage?
-            manager.requestImage(for: asset, targetSize: target, contentMode: .aspectFill, options: request) { image, _ in
-                thumbnail = image
-            }
-            if let thumbnail {
-                found.append(RecentPhoto(id: asset.localIdentifier, thumbnail: thumbnail, asset: asset))
+        // Tiles render immediately with placeholders; each thumbnail decodes
+        // off the main thread and fills its tile when ready.
+        items = assets.map { RecentPhoto(id: $0.localIdentifier, asset: $0, thumbnail: nil) }
+        for item in items {
+            Task { [weak self] in
+                let image = await Task.detached(priority: .userInitiated) {
+                    Self.thumbnail(for: item.asset)
+                }.value
+                self?.apply(image, to: item.id)
             }
         }
-        return found
+    }
+
+    private func apply(_ image: UIImage?, to id: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].thumbnail = image
+    }
+
+    private nonisolated static func thumbnail(for asset: PHAsset) -> UIImage? {
+        let request = PHImageRequestOptions()
+        request.isSynchronous = true
+        request.deliveryMode = .highQualityFormat
+        request.resizeMode = .exact
+        var image: UIImage?
+        PHImageManager.default().requestImage(for: asset,
+            targetSize: CGSize(width: 240, height: 240),
+            contentMode: .aspectFill, options: request) { result, _ in image = result }
+        return image
     }
 
     /// The original bytes for a picked thumbnail. Network access is allowed so

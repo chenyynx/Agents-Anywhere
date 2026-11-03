@@ -47,10 +47,10 @@ import Testing
         #expect(AppAccent.default.darkTextHex == 0xFFFFFF)
     }
 
-    /// The shipped default since the composer visual alignment (round30):
-    /// the official terracotta control fill, same value in both schemes.
+    /// The optional Claude terracotta accent: control fill only; the app
+    /// default stays the black-and-white pair.
     @Test func claudeAccentIsTheOfficialTerracotta() {
-        #expect(AppAccent.storageDefault == .claude)
+        #expect(AppAccent.storageDefault == .default)
         #expect(AppAccent.claude.lightBackgroundHex == 0xC6613F)
         #expect(AppAccent.claude.darkBackgroundHex == 0xC6613F)
         #expect(AppAccent.claude.lightForegroundHex == 0xFFFFFF)

@@ -97,11 +97,11 @@ struct ChatComposer: View {
                             // the send key wears the accent fill.
                             .foregroundStyle(isStopState
                                 ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
-                                : AnyShapeStyle(AppTheme.accentForeground(accent, colorScheme)))
+                                : AnyShapeStyle(sendGlyph))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
                             .background((isStopState
                                 ? AppTheme.composerControlFill(colorScheme)
-                                : AppTheme.accentBackground(accent, colorScheme))
+                                : sendFill)
                                 .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
@@ -190,6 +190,17 @@ struct ChatComposer: View {
     }
 
     private var isStopState: Bool { affordance.shape == .stop }
+
+    /// The send key keeps the official terracotta while the app accent stays
+    /// the shipped black-and-white default; choosing another accent still
+    /// recolors the key, so the accent feature is intact.
+    private var sendFill: Color {
+        accent == .default ? AppTheme.claudeTerracotta : AppTheme.accentBackground(accent, colorScheme)
+    }
+
+    private var sendGlyph: Color {
+        accent == .default ? .white : AppTheme.accentForeground(accent, colorScheme)
+    }
 
     private var accentLabel: String {
         switch affordance.shape {

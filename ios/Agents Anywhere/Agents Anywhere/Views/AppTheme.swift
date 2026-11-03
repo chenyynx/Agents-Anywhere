@@ -62,6 +62,10 @@ enum AppTheme {
         scheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.10)
     }
 
+    /// The official composer send fill (#C6613F), used only by the send key
+    /// when the user keeps the default accent.
+    static let claudeTerracotta = Color(red: 198.0 / 255.0, green: 97.0 / 255.0, blue: 63.0 / 255.0)
+
     /// Official sheet page colour (screenshots): light #F9F9F7, dark #151515.
     static func composerSheetBackground(_ scheme: ColorScheme) -> Color {
         scheme == .dark

@@ -17,9 +17,8 @@ import Foundation
 /// Hex data only — no `Color`, no SwiftUI — so `ClientCore` tests can pin the
 /// persisted strings and the contrast math without a UI framework.
 enum AppAccent: String, CaseIterable, Identifiable, Hashable {
-    /// The official Claude terracotta (`#C6613F`). The shipped default since
-    /// the composer visual alignment (round30): the official send key is this
-    /// exact fill, and the text role clears the same contrast bars.
+    /// The official Claude terracotta (`#C6613F`), selectable in settings.
+    /// Not the app default: only the composer's send key opts into it.
     case claude = "claude"
     case `default`
     case blue
@@ -35,9 +34,8 @@ enum AppAccent: String, CaseIterable, Identifiable, Hashable {
     /// contract: installs already carry them, so the strings never change.
     static let storageKey = "agentsAnywhere.accent"
 
-    /// The accent new installs start on. Kept separate from `.default` (the
-    /// black-and-white inversion) so that look stays selectable.
-    static let storageDefault: AppAccent = .claude
+    /// The accent new installs start on: the shipped black-and-white look.
+    static let storageDefault: AppAccent = .default
 
     var id: String { rawValue }
 

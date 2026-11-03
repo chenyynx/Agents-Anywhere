@@ -32,6 +32,7 @@ struct ModelPickerSheet: View {
                     }
                 }
         }
+        .dynamicTypeSize(.large)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }

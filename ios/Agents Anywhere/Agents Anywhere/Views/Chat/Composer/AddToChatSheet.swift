@@ -62,7 +62,7 @@ struct AddToChatSheet: View {
                         }
                     }
                     card {
-                        row(icon: "square.grid.2x2", title: String(localized: "连接器"),
+                        row(icon: "puzzlepiece.extension", title: String(localized: "连接器"),
                             value: String(localized: "即将支持"), enabled: false) {}
                     }
                     takeoverCard
@@ -98,7 +98,7 @@ struct AddToChatSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(String(localized: "照片")) { onPhotos() }
-                        .font(.system(size: 17))
+                        .font(.system(size: 19))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                         .disabled(!canAttach)
                 }
@@ -142,6 +142,7 @@ struct AddToChatSheet: View {
                 .padding(.bottom, 8)
             }
         }
+        .dynamicTypeSize(.large)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .task { await recent.load() }
@@ -226,7 +227,7 @@ struct AddToChatSheet: View {
         Button(action: onCamera) {
             VStack(spacing: 6) {
                 Image(systemName: "camera")
-                    .font(.system(size: 22, weight: .regular))
+                    .font(.system(size: 26, weight: .regular))
                 Text(String(localized: "相机"))
                     .font(.system(size: 15))
             }
@@ -250,8 +251,7 @@ struct AddToChatSheet: View {
                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .regular))
+                AppSymbol(icon, size: 17)
                     .frame(width: 24)
                 Text(title).font(.system(size: 17))
                 Spacer(minLength: 8)
@@ -260,8 +260,7 @@ struct AddToChatSheet: View {
                         .lineLimit(1)
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
+                AppSymbol("chevron.right", size: 12)
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))

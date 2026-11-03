@@ -1249,7 +1249,12 @@ enum AssistantInlineCodeChipRenderer {
         guard width > 0 else { return }
         let rect = CGRect(x: x, y: top, width: width, height: height)
         guard rect.width > 0, rect.height > 0 else { return }
-        let radius = min(style.cornerRadius, rect.height / 2)
+        // Official `ChipCorners.heightShare(0.25)`: the corner is a quarter
+        // of the chip height, not the fixed 6.4 pt the Code page uses.
+        // Measured on the official capture: 14 px radius over a 54 px chip
+        // (3x). A fixed 6.4 pt made our caps visibly rounder than the
+        // reference.
+        let radius = rect.height * 0.25
         style.fill.setFill()
         UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
         let inset = lineWidth / 2

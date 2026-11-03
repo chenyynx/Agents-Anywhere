@@ -68,8 +68,8 @@ struct ChatComposerDock: View {
     /// the settings have resolved a model. Until then the composer keeps its
     /// previous, pill-less layout.
     private var modelPillTitle: String? {
-        guard canSelectModel, let model = settings.model else { return nil }
-        return model.option.title
+        guard canSelectModel, !settings.catalog.models.isEmpty else { return nil }
+        return settings.model?.option.title ?? String(localized: "默认模型")
     }
 
     private var affordance: ComposerQueueAffordance {

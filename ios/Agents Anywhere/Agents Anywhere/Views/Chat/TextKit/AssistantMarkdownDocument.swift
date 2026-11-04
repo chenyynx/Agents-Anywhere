@@ -1230,7 +1230,55 @@ enum AssistantMarkdownDocumentParser {
             }
             output.append(NSAttributedString(string: text, attributes: attributes))
         }
+        padInlineCodeChips(output)
         return output
+    }
+
+    /// Adds real layout space around every inline-code chip.
+    ///
+    /// The chip fill only overhangs the run; the next glyph's advance still
+    /// starts at the run boundary, so its ink lands inside the fill (Chinese
+    /// punctuation looked swallowed by the capsule). A zero-width word
+    /// joiner carrying `NSKern` moves the neighbouring glyph away without
+    /// adding a visible character or a line-break opportunity. Whitespace
+    /// already present in the source needs no extra advance.
+    private static func padInlineCodeChips(_ output: NSMutableAttributedString) {
+        let chipKern: CGFloat = 8
+        let string = output.string as NSString
+        let length = string.length
+        var insertions: [Int] = []
+        output.enumerateAttribute(
+            .assistantInlineCodeChip,
+            in: NSRange(location: 0, length: length),
+            options: []) { value, range, _ in
+            guard (value as? NSNumber)?.boolValue == true else { return }
+            if range.location > 0 {
+                let prev = string.character(at: range.location - 1)
+                if let scalar = Unicode.Scalar(prev),
+                   !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    insertions.append(range.location)
+                }
+            }
+            let end = range.location + range.length
+            if end < length {
+                let next = string.character(at: end)
+                if let scalar = Unicode.Scalar(next),
+                   !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    insertions.append(end)
+                }
+            }
+        }
+        guard !insertions.isEmpty else { return }
+        let font = output.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        for index in insertions.sorted(by: >) {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .kern: NSNumber(value: Double(chipKern)),
+            ]
+            if let font { attributes[.font] = font }
+            output.insert(
+                NSAttributedString(string: "\u{2060}", attributes: attributes),
+                at: index)
+        }
     }
 
     /// Block boundaries already provide the spacing between structures; the

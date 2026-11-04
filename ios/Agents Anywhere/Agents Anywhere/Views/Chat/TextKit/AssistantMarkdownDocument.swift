@@ -1238,12 +1238,11 @@ enum AssistantMarkdownDocumentParser {
     ///
     /// The chip fill only overhangs the run; the next glyph's advance still
     /// starts at the run boundary, so its ink lands inside the fill (Chinese
-    /// punctuation looked swallowed by the capsule). A zero-width word
-    /// joiner carrying `NSKern` moves the neighbouring glyph away without
-    /// adding a visible character or a line-break opportunity. Whitespace
-    /// already present in the source needs no extra advance.
+    /// punctuation looked swallowed by the capsule). A figure space (U+2007)
+    /// has a real digit-width advance and never breaks a line, so the
+    /// neighbouring glyph physically moves away. Whitespace already present
+    /// in the source needs no extra advance.
     private static func padInlineCodeChips(_ output: NSMutableAttributedString) {
-        let chipKern: CGFloat = 8
         let string = output.string as NSString
         let length = string.length
         var insertions: [Int] = []
@@ -1271,12 +1270,10 @@ enum AssistantMarkdownDocumentParser {
         guard !insertions.isEmpty else { return }
         let font = output.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
         for index in insertions.sorted(by: >) {
-            var attributes: [NSAttributedString.Key: Any] = [
-                .kern: NSNumber(value: Double(chipKern)),
-            ]
+            var attributes: [NSAttributedString.Key: Any] = [:]
             if let font { attributes[.font] = font }
             output.insert(
-                NSAttributedString(string: "\u{2060}", attributes: attributes),
+                NSAttributedString(string: "\u{2007}", attributes: attributes),
                 at: index)
         }
     }

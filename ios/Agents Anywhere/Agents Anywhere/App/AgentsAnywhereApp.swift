@@ -3,6 +3,9 @@ import SwiftUI
 @main
 struct AgentsAnywhereApp: App {
     @State private var appState = AppState()
+    /// One photo library read model for the whole scene, like the official
+    /// `PhotoLibraryAccess` in `ClaudeScene`; sheets then reuse its cache.
+    @State private var recentPhotos = RecentPhotosLoader()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearanceValue = AppAppearance.system.rawValue
 
@@ -55,6 +58,7 @@ struct AgentsAnywhereApp: App {
                 #endif
             }
                 .environment(appState)
+                .environment(recentPhotos)
                 .background {
                     #if targetEnvironment(macCatalyst)
                     MacCatalystWindowTitle(appState: appState)

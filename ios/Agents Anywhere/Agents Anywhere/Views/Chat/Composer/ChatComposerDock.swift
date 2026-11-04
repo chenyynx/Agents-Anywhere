@@ -47,6 +47,7 @@ struct ChatComposerDock: View {
     @State private var showsCamera = false
     @State private var pendingCamera = false
     @Environment(\.displayScale) private var displayScale
+    @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
     private enum AttachmentPicker { case photos, files }
 
@@ -91,6 +92,10 @@ struct ChatComposerDock: View {
         // The add-to-chat rows (permission/model) read from `settings`, which
         // only the catalog load fills; load once when the composer appears.
         .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
+        // Warm the photo strip as soon as a chat screen appears, so the first
+        // add-to-chat sheet opens on already-resolved assets. `preload` never
+        // asks for permission, so this cannot prompt outside the sheet.
+        .task { await recentPhotos?.preload() }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {

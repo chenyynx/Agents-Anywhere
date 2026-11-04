@@ -25,7 +25,11 @@ struct AddToChatSheet: View {
     @State private var isApplying = false
     @State private var showsApplyError = false
     @State private var path: [Page] = []
-    @State private var recent = RecentPhotosLoader()
+    /// The app-level store keeps photos and thumbnails warm across sheet
+    /// presentations; the local instance only serves previews and test hosts
+    /// that did not inject the shared one.
+    @Environment(RecentPhotosLoader.self) private var sharedRecentPhotos: RecentPhotosLoader?
+    @State private var localRecentPhotos = RecentPhotosLoader()
     @State private var selectedPhotoIDs: Set<String> = []
     @State private var isAddingPhotos = false
     @Environment(\.dismiss) private var dismiss
@@ -35,6 +39,10 @@ struct AddToChatSheet: View {
     private let tile: CGFloat = 100
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
+    }
+
+    private var recent: RecentPhotosLoader {
+        sharedRecentPhotos ?? localRecentPhotos
     }
 
     var body: some View {
@@ -153,13 +161,23 @@ struct AddToChatSheet: View {
 
     @ViewBuilder
     private var attachmentSources: some View {
-        if CameraPicker.isAvailable || !recent.items.isEmpty {
+        if CameraPicker.isAvailable || !recent.items.isEmpty || recent.isLoading {
             // The camera card is the first item of the same horizontal strip:
             // the whole row (camera + photos) scrolls together, as official.
             ScrollView(.horizontal) {
                 HStack(spacing: 12) {
                     if CameraPicker.isAvailable {
                         cameraTile
+                    }
+                    if recent.isLoading && recent.items.isEmpty {
+                        // Official's `.loading` state fills the strip with
+                        // placeholders instead of collapsing it to the camera.
+                        ForEach(Array(0..<min(max(maxPhotoSelection, 0), 3)), id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(AppTheme.composerControlFill(colorScheme))
+                                .frame(width: 95, height: tile)
+                                .accessibilityHidden(true)
+                        }
                     }
                     ForEach(recent.items) { photo in
                         Button {

@@ -75,7 +75,7 @@ struct ComposerImageEditor: View {
     private var floatingTopBar: some View {
         HStack(spacing: 8) {
             floatingButton(action: requestDismiss) {
-                AppSymbol("xmark", size: 22)
+                AppSymbol("xmark", size: 20)
             }
             .accessibilityLabel(String(localized: "关闭"))
             Spacer(minLength: 8)

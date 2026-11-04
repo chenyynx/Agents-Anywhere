@@ -40,7 +40,7 @@ struct ComposerImageEditor: View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
-                content
+                content.ignoresSafeArea()
                 if isSaving {
                     ProgressView()
                         .controlSize(.large)
@@ -61,12 +61,7 @@ struct ComposerImageEditor: View {
                     }
                     .accessibilityLabel(String(localized: "关闭"))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(String(localized: "保存"), action: save)
-                        .fontWeight(.semibold)
-                        .disabled(image == nil || isAnimated || isSaving)
-                }
-                ToolbarItemGroup(placement: .bottomBar) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { canvasHandle.undo() } label: {
                         Image(systemName: "arrow.uturn.backward")
                             .font(.system(size: 17))
@@ -79,6 +74,12 @@ struct ComposerImageEditor: View {
                     }
                     .disabled(!canRedo)
                     .accessibilityLabel(String(localized: "重做"))
+                    Button(action: save) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    .disabled(image == nil || isAnimated || isSaving)
+                    .accessibilityLabel(String(localized: "保存"))
                 }
             }
         }

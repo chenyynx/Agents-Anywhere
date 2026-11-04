@@ -74,7 +74,7 @@ struct ComposerImageEditor: View {
     /// own "标记" header, and a second title makes it read as two layers.
     private var floatingTopBar: some View {
         HStack(spacing: 8) {
-            floatingButton(action: requestDismiss, size: 58) {
+            floatingButton(action: requestDismiss) {
                 AppSymbol("xmark", size: 24)
             }
             .accessibilityLabel(String(localized: "关闭"))

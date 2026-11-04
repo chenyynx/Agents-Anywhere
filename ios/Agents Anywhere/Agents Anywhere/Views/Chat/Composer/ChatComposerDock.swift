@@ -75,13 +75,13 @@ struct ChatComposerDock: View {
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
-                onOptions: { showsOptions = true },
+                onOptions: presentOptions,
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
                 contextUsage: contextUsage,
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
-                onEditAttachment: { editingAttachment = $0 },
+                onEditAttachment: presentImageEditor,
                 affordance: affordance, onQueueSend: send)
                 .contentShape(Rectangle())
                 // K2 (round 1.1): the composer band owns vertical drags across
@@ -91,7 +91,7 @@ struct ChatComposerDock: View {
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
-        .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
+        .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
         // The add-to-chat rows (permission/model) read from `settings`, which
         // only the catalog load fills; load once when the composer appears.
         .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
@@ -171,6 +171,21 @@ struct ChatComposerDock: View {
             guard let text = await editor.committedTextForSend(dismissKeyboard: dismissKeyboard) else { return }
             if isStreaming { await onQueueSend() } else { await onSend(text) }
         }
+    }
+
+    /// A sheet cannot own the keyboard that belongs to the composer behind it;
+    /// resign first or the keyboard stays up over the add-to-chat menu (and can
+    /// survive the sheet's dismissal).
+    private func presentOptions() {
+        editor.finishEditing()
+        draft.isFocused = false
+        showsOptions = true
+    }
+
+    private func presentImageEditor(_ attachment: ChatAttachment) {
+        editor.finishEditing()
+        draft.isFocused = false
+        editingAttachment = attachment
     }
 
     private func queue(_ next: AttachmentPicker) { pendingPicker = next; showsOptions = false }

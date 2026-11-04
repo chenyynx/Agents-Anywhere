@@ -57,8 +57,7 @@ struct ComposerImageEditor: View {
         .preferredColorScheme(.dark)
         .tint(.white)
         .task(id: attachment.id) { await load() }
-        .confirmationDialog(String(localized: "放弃标记？"), isPresented: $showsDiscard,
-                            titleVisibility: .visible) {
+        .alert(String(localized: "放弃标记？"), isPresented: $showsDiscard) {
             Button(String(localized: "放弃"), role: .destructive) { dismiss() }
             Button(String(localized: "继续编辑"), role: .cancel) {}
         }
@@ -76,27 +75,27 @@ struct ComposerImageEditor: View {
     private var floatingTopBar: some View {
         HStack(spacing: 8) {
             floatingButton(action: requestDismiss) {
-                AppSymbol("xmark", size: 20)
+                AppSymbol("xmark", size: 22)
             }
             .accessibilityLabel(String(localized: "关闭"))
             Spacer(minLength: 8)
             floatingButton(action: { canvasHandle.undo() }) {
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 18, weight: .medium))
             }
             .disabled(!canUndo)
             .opacity(canUndo ? 1 : 0.45)
             .accessibilityLabel(String(localized: "撤销"))
             floatingButton(action: { canvasHandle.redo() }) {
                 Image(systemName: "arrow.uturn.forward")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 18, weight: .medium))
             }
             .disabled(!canRedo)
             .opacity(canRedo ? 1 : 0.45)
             .accessibilityLabel(String(localized: "重做"))
             floatingButton(action: save) {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
             }
             .disabled(image == nil || isAnimated || isSaving)
             .opacity((image == nil || isAnimated || isSaving) ? 0.45 : 1)
@@ -111,7 +110,7 @@ struct ComposerImageEditor: View {
         Button(action: action) {
             label()
                 .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+                .frame(width: 50, height: 50)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

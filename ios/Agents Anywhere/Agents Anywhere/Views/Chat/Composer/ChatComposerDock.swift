@@ -46,6 +46,7 @@ struct ChatComposerDock: View {
     @State private var showsCommandMenu = false
     @State private var showsCamera = false
     @State private var pendingCamera = false
+    @State private var editingAttachment: ChatAttachment?
     @Environment(\.displayScale) private var displayScale
     @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
@@ -80,6 +81,7 @@ struct ChatComposerDock: View {
                 contextUsage: contextUsage,
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
+                onEditAttachment: { editingAttachment = $0 },
                 affordance: affordance, onQueueSend: send)
                 .contentShape(Rectangle())
                 // K2 (round 1.1): the composer band owns vertical drags across
@@ -132,6 +134,9 @@ struct ChatComposerDock: View {
                 appendCamera(image)
             }
             .ignoresSafeArea()
+        }
+        .fullScreenCover(item: $editingAttachment) { attachment in
+            ComposerImageEditor(attachment: attachment, onSave: replaceEditedAttachment)
         }
         .onChange(of: photos) { _, items in importPhotos(items) }
         .onDisappear {
@@ -192,6 +197,12 @@ struct ChatComposerDock: View {
         draft.attachments.append(attachment)
         onDraftChange()
         return true
+    }
+
+    private func replaceEditedAttachment(_ updated: ChatAttachment) {
+        guard let index = draft.attachments.firstIndex(where: { $0.id == updated.id }) else { return }
+        draft.attachments[index] = updated
+        onDraftChange()
     }
 
     private func appendCamera(_ image: UIImage) {

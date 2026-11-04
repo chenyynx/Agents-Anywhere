@@ -275,6 +275,7 @@ private struct ChatMessageImage: View {
 struct ChatComposerAttachment: View {
     let attachment: ChatAttachment
     let onRemove: () -> Void
+    var onEdit: (() -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
     @State private var image: UIImage?
 
@@ -288,6 +289,30 @@ struct ChatComposerAttachment: View {
     }
 
     var body: some View {
+        tile
+            .frame(width: tileSize, height: tileSize)
+            .clipShape(shape)
+            .overlay { shape.strokeBorder(AppTheme.composerTileBorder(colorScheme), lineWidth: 1) }
+            .overlay(alignment: .topTrailing) { removeButton }
+            .task(id: attachment.previewData) {
+                if let data = attachment.previewData { image = UIImage(data: data) }
+            }
+            .accessibilityLabel(attachment.name)
+    }
+
+    @ViewBuilder
+    private var tile: some View {
+        if let onEdit, attachment.isImage {
+            Button(action: onEdit) { face }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityHint(String(localized: "编辑图片"))
+        } else {
+            face
+        }
+    }
+
+    private var face: some View {
         ZStack {
             AppTheme.composerTileBackground(colorScheme)
             if attachment.isImage {
@@ -301,27 +326,21 @@ struct ChatComposerAttachment: View {
                 fileFace
             }
         }
-        .frame(width: tileSize, height: tileSize)
-        .clipShape(shape)
-        .overlay { shape.strokeBorder(AppTheme.composerTileBorder(colorScheme), lineWidth: 1) }
-        .overlay(alignment: .topTrailing) {
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color(white: 0.10)))
-                    .shadow(color: .black.opacity(0.15), radius: 2)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "移除 \(attachment.name)"))
+    }
+
+    private var removeButton: some View {
+        Button(action: onRemove) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color(white: 0.10)))
+                .shadow(color: .black.opacity(0.15), radius: 2)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
         }
-        .task(id: attachment.id) {
-            if let data = attachment.previewData { image = UIImage(data: data) }
-        }
-        .accessibilityLabel(attachment.name)
+        .buttonStyle(.plain)
+        .accessibilityLabel(String(localized: "移除 \(attachment.name)"))
     }
 
     private var fileFace: some View {

@@ -28,6 +28,8 @@ struct ChatComposer: View {
     /// Converts a pasted log into an attachment before it reaches the editor.
     /// Returns true when the paste was consumed as a file.
     var onLongPaste: ((String) -> Bool)? = nil
+    /// Opens the markup editor for a staged image attachment.
+    var onEditAttachment: ((ChatAttachment) -> Void)? = nil
     /// Which control the single trailing key shows and whether it is live,
     /// resolved by `ComposerQueueAffordance` at the dock: the one key stops a
     /// textless running turn, enqueues a running turn's typed message, and
@@ -218,9 +220,10 @@ struct ChatComposer: View {
             // Official AttachmentBar: items 4 pt apart, 8 pt inside the card.
             HStack(spacing: 4) {
                 ForEach(draft.attachments) { attachment in
-                    ChatComposerAttachment(attachment: attachment) {
-                        draft.attachments.removeAll { $0.id == attachment.id }
-                    }
+                    ChatComposerAttachment(
+                        attachment: attachment,
+                        onRemove: { draft.attachments.removeAll { $0.id == attachment.id } },
+                        onEdit: onEditAttachment.map { edit in { edit(attachment) } })
                 }
             }
         }

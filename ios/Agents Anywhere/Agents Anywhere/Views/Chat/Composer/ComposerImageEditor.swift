@@ -71,40 +71,36 @@ struct ComposerImageEditor: View {
 
     /// Floating controls over the image, with no navigation-bar band: the
     /// official editor keeps the canvas edge-to-edge and the tools on glass.
+    /// No live title: a screenshot being edited can already contain the app's
+    /// own "标记" header, and a second title makes it read as two layers.
     private var floatingTopBar: some View {
-        ZStack {
-            Text(String(localized: "标记"))
-                .font(.headline)
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.45), radius: 4, y: 1)
-            HStack(spacing: 8) {
-                floatingButton(action: requestDismiss) {
-                    AppSymbol("xmark", size: 20)
-                }
-                .accessibilityLabel(String(localized: "关闭"))
-                Spacer(minLength: 8)
-                floatingButton(action: { canvasHandle.undo() }) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 17, weight: .medium))
-                }
-                .disabled(!canUndo)
-                .opacity(canUndo ? 1 : 0.45)
-                .accessibilityLabel(String(localized: "撤销"))
-                floatingButton(action: { canvasHandle.redo() }) {
-                    Image(systemName: "arrow.uturn.forward")
-                        .font(.system(size: 17, weight: .medium))
-                }
-                .disabled(!canRedo)
-                .opacity(canRedo ? 1 : 0.45)
-                .accessibilityLabel(String(localized: "重做"))
-                floatingButton(action: save) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 18, weight: .semibold))
-                }
-                .disabled(image == nil || isAnimated || isSaving)
-                .opacity((image == nil || isAnimated || isSaving) ? 0.45 : 1)
-                .accessibilityLabel(String(localized: "保存"))
+        HStack(spacing: 8) {
+            floatingButton(action: requestDismiss) {
+                AppSymbol("xmark", size: 20)
             }
+            .accessibilityLabel(String(localized: "关闭"))
+            Spacer(minLength: 8)
+            floatingButton(action: { canvasHandle.undo() }) {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 17, weight: .medium))
+            }
+            .disabled(!canUndo)
+            .opacity(canUndo ? 1 : 0.45)
+            .accessibilityLabel(String(localized: "撤销"))
+            floatingButton(action: { canvasHandle.redo() }) {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 17, weight: .medium))
+            }
+            .disabled(!canRedo)
+            .opacity(canRedo ? 1 : 0.45)
+            .accessibilityLabel(String(localized: "重做"))
+            floatingButton(action: save) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 18, weight: .semibold))
+            }
+            .disabled(image == nil || isAnimated || isSaving)
+            .opacity((image == nil || isAnimated || isSaving) ? 0.45 : 1)
+            .accessibilityLabel(String(localized: "保存"))
         }
     }
 

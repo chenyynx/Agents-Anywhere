@@ -67,16 +67,18 @@ enum ChatTypeScheme: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// `[measured]` AA's current values. Inline code was always a ratio of the
-    /// body (14.8pt against the 14pt reference); fenced code was a constant,
-    /// so it is pinned at its measured size rather than re-derived — deriving
-    /// it from the 13pt body would silently shrink it below what ships.
+    /// `[measured]` AA's current values. Inline code now tracks the official
+    /// Markdown theme's two presets — `Typography.monospaced` 15 against
+    /// `Typography.regular` 17 (0.88) — instead of the old 14.8/14 (1.06,
+    /// inline bigger than prose). The old ratio made the mono run fill the
+    /// chip, so the capsule looked tighter than the reference at any body
+    /// size. Fenced code stays pinned at its measured size.
     static let compactScale = ChatTypeScale(
         body: 13,
         lineSpacing: 8,
         paragraphSpacing: 20,
         headings: [18, 16, 14],
-        inlineCodeRatio: 14.8 / 14,
+        inlineCodeRatio: 15.0 / 17.0,
         // What turning「跟随正文」on produces at the shipped body size: the
         // same 12.3pt the pin holds, so the toggle never moves the text.
         codeBlockRatio: 12.3 / 13,

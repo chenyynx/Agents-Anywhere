@@ -69,6 +69,9 @@ final class ComposerEditorController {
 
 final class ComposerTextView: UITextView {
     var commandSend: (() -> Void)?
+    /// Long pasted logs leave the editor at paste time, not at send time: the
+    /// reply returns true when the text became an attachment instead.
+    var onLongPaste: ((String) -> Bool)?
 
     override var keyCommands: [UIKeyCommand]? {
         let send = UIKeyCommand(title: String(localized: "发送"), action: #selector(sendWithCommandReturn), input: "\r", modifierFlags: .command)
@@ -82,6 +85,18 @@ final class ComposerTextView: UITextView {
         guard markedTextRange == nil else { return }
         commandSend?()
     }
+
+    override func paste(_ sender: Any?) {
+        // Do not fight an active IME composition; if the pasted log qualifies,
+        // the host appends it as an attachment and the editor stays untouched.
+        if markedTextRange == nil,
+           let text = UIPasteboard.general.string,
+           !text.isEmpty,
+           onLongPaste?(text) == true {
+            return
+        }
+        super.paste(sender)
+    }
 }
 
 struct NativeComposerEditor: UIViewRepresentable {
@@ -91,6 +106,9 @@ struct NativeComposerEditor: UIViewRepresentable {
     let onCommandSend: () -> Void
     var expandAnimation: Animation? = nil
     var onTextChange: ((String, Bool) -> Void)? = nil
+    /// Called before a paste enters the editor. Returning true means the paste
+    /// was turned into an attachment and must not be inserted as text.
+    var onLongPaste: ((String) -> Bool)? = nil
 
     func makeUIView(context: Context) -> ComposerTextView {
         let view = ComposerTextView()
@@ -114,6 +132,7 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.accessibilityIdentifier = "chat.composer.editor"
         controller.textView = view; controller.draft = draft
         controller.expandAnimation = expandAnimation
+        view.onLongPaste = onLongPaste
         return view
     }
 
@@ -122,6 +141,7 @@ struct NativeComposerEditor: UIViewRepresentable {
         controller.textView = view; controller.draft = draft
         controller.expandAnimation = expandAnimation
         view.commandSend = onCommandSend
+        view.onLongPaste = onLongPaste
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
         if view.markedTextRange == nil, view.text != draft.text {
             let selection = view.selectedRange

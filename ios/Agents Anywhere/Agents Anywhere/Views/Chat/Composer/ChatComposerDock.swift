@@ -79,6 +79,7 @@ struct ChatComposerDock: View {
                 onCommands: { showsCommandMenu.toggle() },
                 contextUsage: contextUsage,
                 onDraftChange: onDraftChange,
+                onLongPaste: convertLongPastedText,
                 affordance: affordance, onQueueSend: send)
                 .contentShape(Rectangle())
                 // K2 (round 1.1): the composer band owns vertical drags across
@@ -179,6 +180,18 @@ struct ChatComposerDock: View {
     }
     private func pickerBinding(_ value: AttachmentPicker) -> Binding<Bool> {
         Binding(get: { picker == value }, set: { if $0 { picker = value } else if picker == value { picker = nil } })
+    }
+
+    /// A long paste becomes an ordinary `.txt` attachment at paste time, so the
+    /// editor never measures the log and its file card appears before send.
+    private func convertLongPastedText(_ text: String) -> Bool {
+        guard let attachment = LongMessageAttachmentPolicy.makeAttachment(
+            from: text,
+            existingAttachmentCount: draft.attachments.count,
+            canAttach: canAttach && importCount == 0) else { return false }
+        draft.attachments.append(attachment)
+        onDraftChange()
+        return true
     }
 
     private func appendCamera(_ image: UIImage) {

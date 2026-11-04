@@ -25,6 +25,9 @@ struct ChatComposer: View {
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
+    /// Converts a pasted log into an attachment before it reaches the editor.
+    /// Returns true when the paste was consumed as a file.
+    var onLongPaste: ((String) -> Bool)? = nil
     /// Which control the single trailing key shows and whether it is live,
     /// resolved by `ComposerQueueAffordance` at the dock: the one key stops a
     /// textless running turn, enqueues a running turn's typed message, and
@@ -79,7 +82,7 @@ struct ChatComposer: View {
                         }
                         NativeComposerEditor(draft: draft, controller: editor,
                             maximumHeight: maximumEditorHeight, onCommandSend: onSend,
-                            expandAnimation: expandAnimation)
+                            expandAnimation: expandAnimation, onLongPaste: onLongPaste)
                     }
 
                     Button {

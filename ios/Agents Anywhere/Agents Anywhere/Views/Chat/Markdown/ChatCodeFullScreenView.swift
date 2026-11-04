@@ -24,10 +24,16 @@ struct ChatCodeFullScreenView: View {
         NavigationStack {
             ChatCodeFullScreenText(code: code, language: language)
                 .background(cardBackground)
+                .toolbarBackground(cardBackground, for: .navigationBar)
                 .navigationTitle((language?.isEmpty == false ? language! : String(localized: "代码")).lowercased())
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    SheetCloseToolbar { dismiss() }
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { dismiss() } label: {
+                            AppSymbol("xmark", size: 15)
+                        }
+                        .accessibilityLabel(String(localized: "关闭"))
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             UIPasteboard.general.string = code

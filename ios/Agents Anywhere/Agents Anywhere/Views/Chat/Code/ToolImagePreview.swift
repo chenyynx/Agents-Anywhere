@@ -197,6 +197,7 @@ private struct ToolImageGallery: View {
             .toolbar {
                 SheetCloseToolbar { dismiss() }
             }
+            .toolbarBackground(.visible, for: .navigationBar)
             .navigationTitle(Text(verbatim: images.count > 1
                 ? "\(index + 1) / \(images.count)" : ""))
             .navigationBarTitleDisplayMode(.inline)

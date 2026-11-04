@@ -101,6 +101,9 @@ struct CodeToolGroupDetailView: View {
             }
             .navigationTitle(Text(verbatim: title))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(CodeToolDetailMetrics.pageBackground.resolved(for: colorScheme),
+                               for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 SheetCloseToolbar { dismiss() }
             }
@@ -337,6 +340,9 @@ struct CodeToolCallDetailView: View {
         }
         .navigationTitle(Text(verbatim: call.name))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(CodeToolDetailMetrics.pageBackground.resolved(for: colorScheme),
+                           for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
     }
 
     // MARK: - Sections (official order)

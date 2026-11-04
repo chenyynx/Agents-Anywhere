@@ -37,52 +37,24 @@ struct ComposerImageEditor: View {
     private static let maximumFlattenPixelSize: CGFloat = 4096
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                content.ignoresSafeArea()
-                if isSaving {
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
-                        .padding(24)
-                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
-                }
-            }
-            .navigationTitle(String(localized: "标记"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbarBackground(.black, for: .navigationBar)
-            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: requestDismiss) {
-                        AppSymbol("xmark", size: 16)
-                    }
-                    .accessibilityLabel(String(localized: "关闭"))
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { canvasHandle.undo() } label: {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 17))
-                    }
-                    .disabled(!canUndo)
-                    .accessibilityLabel(String(localized: "撤销"))
-                    Button { canvasHandle.redo() } label: {
-                        Image(systemName: "arrow.uturn.forward")
-                            .font(.system(size: 17))
-                    }
-                    .disabled(!canRedo)
-                    .accessibilityLabel(String(localized: "重做"))
-                    Button(action: save) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 17, weight: .semibold))
-                    }
-                    .disabled(image == nil || isAnimated || isSaving)
-                    .accessibilityLabel(String(localized: "保存"))
-                }
+        ZStack(alignment: .top) {
+            Color.black.ignoresSafeArea()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+            floatingTopBar
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            if isSaving {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                    .padding(24)
+                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .preferredColorScheme(.dark)
         .tint(.white)
         .task(id: attachment.id) { await load() }
         .confirmationDialog(String(localized: "放弃标记？"), isPresented: $showsDiscard,
@@ -95,6 +67,59 @@ struct ComposerImageEditor: View {
         } message: {
             Text(String(localized: "请重试。"))
         }
+    }
+
+    /// Floating controls over the image, with no navigation-bar band: the
+    /// official editor keeps the canvas edge-to-edge and the tools on glass.
+    private var floatingTopBar: some View {
+        ZStack {
+            Text(String(localized: "标记"))
+                .font(.headline)
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.45), radius: 4, y: 1)
+            HStack(spacing: 8) {
+                floatingButton(action: requestDismiss) {
+                    AppSymbol("xmark", size: 20)
+                }
+                .accessibilityLabel(String(localized: "关闭"))
+                Spacer(minLength: 8)
+                floatingButton(action: { canvasHandle.undo() }) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 17, weight: .medium))
+                }
+                .disabled(!canUndo)
+                .opacity(canUndo ? 1 : 0.45)
+                .accessibilityLabel(String(localized: "撤销"))
+                floatingButton(action: { canvasHandle.redo() }) {
+                    Image(systemName: "arrow.uturn.forward")
+                        .font(.system(size: 17, weight: .medium))
+                }
+                .disabled(!canRedo)
+                .opacity(canRedo ? 1 : 0.45)
+                .accessibilityLabel(String(localized: "重做"))
+                floatingButton(action: save) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 18, weight: .semibold))
+                }
+                .disabled(image == nil || isAnimated || isSaving)
+                .opacity((image == nil || isAnimated || isSaving) ? 0.45 : 1)
+                .accessibilityLabel(String(localized: "保存"))
+            }
+        }
+    }
+
+    private func floatingButton<Label: View>(
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
     }
 
     @ViewBuilder

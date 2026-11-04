@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Both New Session and existing sessions use the same persistent editor and
@@ -43,7 +44,10 @@ struct ChatComposerDock: View {
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
+    @State private var showsCamera = false
+    @State private var pendingCamera = false
     @Environment(\.displayScale) private var displayScale
+    @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
     private enum AttachmentPicker { case photos, files }
 
@@ -85,6 +89,13 @@ struct ChatComposerDock: View {
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
+        // The add-to-chat rows (permission/model) read from `settings`, which
+        // only the catalog load fills; load once when the composer appears.
+        .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
+        // Warm the photo strip as soon as a chat screen appears, so the first
+        // add-to-chat sheet opens on already-resolved assets. `preload` never
+        // asks for permission, so this cannot prompt outside the sheet.
+        .task { await recentPhotos?.preload() }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {
@@ -96,13 +107,30 @@ struct ChatComposerDock: View {
             }
         }
         .sheet(isPresented: $showsOptions, onDismiss: presentPicker) {
-            ComposerOptionsSheet(settings: settings,
+            AddToChatSheet(settings: settings,
                 onPhotos: { queue(.photos) }, onFiles: { queue(.files) },
+                onCamera: { pendingCamera = true; showsOptions = false },
+                onRecentPhotos: { payloads in
+                    Task {
+                        for data in payloads {
+                            await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
+                                         data: data, mediaType: "image/jpeg")
+                        }
+                    }
+                },
+                maxPhotoSelection: max(0, 5 - draft.attachments.count),
                 canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
-                canSelectModel: canSelectModel, canSelectPermission: canSelectPermission,
+                canSelectModel: canSelectModel,
+                canSelectPermission: canSelectPermission,
                 isLoading: isLoadingSettings, loadingError: settingsError,
                 onReload: onLoadSettings, onApply: onApplySettings, applyError: applyError, sessionChat: sessionChat)
                 .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
+        }
+        .fullScreenCover(isPresented: $showsCamera) {
+            CameraPicker { image in
+                appendCamera(image)
+            }
+            .ignoresSafeArea()
         }
         .onChange(of: photos) { _, items in importPhotos(items) }
         .onDisappear {
@@ -141,11 +169,24 @@ struct ChatComposerDock: View {
 
     private func queue(_ next: AttachmentPicker) { pendingPicker = next; showsOptions = false }
     private func presentPicker() {
+        if pendingCamera {
+            pendingCamera = false
+            showsCamera = true
+            return
+        }
         guard let next = pendingPicker else { return }
         pendingPicker = nil; picker = next
     }
     private func pickerBinding(_ value: AttachmentPicker) -> Binding<Bool> {
         Binding(get: { picker == value }, set: { if $0 { picker = value } else if picker == value { picker = nil } })
+    }
+
+    private func appendCamera(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        Task {
+            await append(name: "Photo-\(UUID().uuidString.prefix(8)).jpg",
+                         data: data, mediaType: "image/jpeg")
+        }
     }
 
     private func append(name: String, data: Data, mediaType: String) async {

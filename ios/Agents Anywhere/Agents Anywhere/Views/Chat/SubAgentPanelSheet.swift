@@ -36,7 +36,7 @@ struct SubAgentPanelSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
     @State private var selection: String?
     @State private var showsFullPrompt = false

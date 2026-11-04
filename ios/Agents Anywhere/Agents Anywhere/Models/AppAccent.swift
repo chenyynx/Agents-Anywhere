@@ -27,9 +27,12 @@ enum AppAccent: String, CaseIterable, Identifiable, Hashable {
     case pink
     case magenta
 
-    /// The `@AppStorage` key. The nine raw values together are the persisted
+    /// The `@AppStorage` key. The raw values together are the persisted
     /// contract: installs already carry them, so the strings never change.
     static let storageKey = "agentsAnywhere.accent"
+
+    /// The accent new installs start on: the shipped black-and-white look.
+    static let storageDefault: AppAccent = .default
 
     var id: String { rawValue }
 

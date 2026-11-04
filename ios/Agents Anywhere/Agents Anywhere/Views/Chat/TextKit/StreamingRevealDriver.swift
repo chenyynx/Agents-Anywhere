@@ -249,7 +249,7 @@ final class StreamingRevealDriver: NSObject {
     private func attachMaskPreservingRevealed() {
         guard let textView else { return }
         let container = AssistantMarkdownMaskRenderer.makeMaskContainer(for: textView)
-        textView.layer.mask = container
+        textView.assistantMarkdownMaskHost.layer.mask = container
         mask = container
         let length = localRevealedLength
         guard length > 0 else { return }
@@ -275,8 +275,9 @@ final class StreamingRevealDriver: NSObject {
     }
 
     private func detachMask() {
-        if let mask, textView?.layer.mask === mask {
-            textView?.layer.mask = nil
+        if let mask, let host = textView?.assistantMarkdownMaskHost,
+           host.layer.mask === mask {
+            host.layer.mask = nil
         }
         mask = nil
         seatedMaxY = nil

@@ -1230,7 +1230,67 @@ enum AssistantMarkdownDocumentParser {
             }
             output.append(NSAttributedString(string: text, attributes: attributes))
         }
+        padInlineCodeChips(output)
         return output
+    }
+
+    /// Adds real layout space around every inline-code chip.
+    ///
+    /// The chip fill only overhangs the run; the next glyph's advance still
+    /// starts at the run boundary, so its ink lands inside the fill (Chinese
+    /// punctuation looked swallowed by the capsule). A no-break space
+    /// (U+00A0) has a real word-space advance and never breaks a line, so the
+    /// neighbouring glyph physically moves away without a visible new
+    /// character. Whitespace already present in the source needs no extra
+    /// advance.
+    private static func padInlineCodeChips(_ output: NSMutableAttributedString) {
+        let string = output.string as NSString
+        let length = string.length
+        // Merge contiguous attribute runs first: one code span can arrive as
+        // several runs, and padding between them would cut the capsule into
+        // pieces (minX / - / 4 each getting its own chip).
+        var spans: [(start: Int, end: Int)] = []
+        output.enumerateAttribute(
+            .assistantInlineCodeChip,
+            in: NSRange(location: 0, length: length),
+            options: []) { value, range, _ in
+            guard (value as? NSNumber)?.boolValue == true else { return }
+            spans.append((range.location, range.location + range.length))
+        }
+        var merged: [(start: Int, end: Int)] = []
+        for span in spans {
+            if let last = merged.last, span.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, span.end)
+            } else {
+                merged.append(span)
+            }
+        }
+        var insertions: [Int] = []
+        for span in merged {
+            if span.start > 0 {
+                let prev = string.character(at: span.start - 1)
+                if let scalar = Unicode.Scalar(prev),
+                   !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    insertions.append(span.start)
+                }
+            }
+            if span.end < length {
+                let next = string.character(at: span.end)
+                if let scalar = Unicode.Scalar(next),
+                   !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    insertions.append(span.end)
+                }
+            }
+        }
+        guard !insertions.isEmpty else { return }
+        let font = output.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        for index in insertions.sorted(by: >) {
+            var attributes: [NSAttributedString.Key: Any] = [:]
+            if let font { attributes[.font] = font }
+            output.insert(
+                NSAttributedString(string: "\u{00A0}", attributes: attributes),
+                at: index)
+        }
     }
 
     /// Block boundaries already provide the spacing between structures; the

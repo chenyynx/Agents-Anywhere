@@ -35,7 +35,7 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
     @State private var sendFeedback = 0
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {
@@ -46,26 +46,28 @@ struct ChatComposer: View {
             VStack(spacing: 0) {
                 if !draft.attachments.isEmpty { attachmentTray }
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
-                    Button(action: onOptions) {
-                        AppSymbol("plus", size: controls.profile.plusSymbolSize)
-                            .frame(width: controls.touchTarget, height: controls.touchTarget)
-                            .background {
-                                if controls.profile.plusStyle == .circle {
-                                    // The official chrome is 36 pt of circle
-                                    // inside the 44 pt hit slot; drawing the
-                                    // fill at the slot size ran into the card's
-                                    // rounded corner.
-                                    Circle()
-                                        .fill(Color.primary.opacity(0.05))
-                                        .frame(width: controls.profile.plusCircleDiameter,
-                                               height: controls.profile.plusCircleDiameter)
+                    HStack(spacing: 8) {
+                        Button(action: onOptions) {
+                            AppSymbol("plus", size: controls.profile.plusSymbolSize)
+                                .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                                .frame(width: controls.touchTarget, height: controls.touchTarget)
+                                .background {
+                                    if controls.profile.plusStyle == .circle {
+                                        // Official chrome: 36 pt circle inside
+                                        // the 44 pt hit slot, #F0EFEC light /
+                                        // white 8% dark (round30 §3.3).
+                                        Circle()
+                                            .fill(AppTheme.composerControlFill(colorScheme))
+                                            .frame(width: controls.profile.plusCircleDiameter,
+                                                   height: controls.profile.plusCircleDiameter)
+                                    }
                                 }
-                            }
-                            .contentShape(Circle())
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(String(localized: "附件与对话选项"))
+                        .accessibilityIdentifier("chat.composer.options")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "附件与对话选项"))
-                    .accessibilityIdentifier("chat.composer.options")
 
                     ZStack(alignment: .topLeading) {
                         if !draft.hasContent {
@@ -90,9 +92,17 @@ struct ChatComposer: View {
                     } label: {
                         AppSymbol(accentSymbol, size: accentSymbolSize)
                             .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(AppTheme.accentForeground(accent, colorScheme))
+                            // Official stop key: neutral chrome (light #F0EFEC /
+                            // dark white 8%) with a black text100 square — only
+                            // the send key wears the accent fill.
+                            .foregroundStyle(isStopState
+                                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
+                                : AnyShapeStyle(sendGlyph))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background(AppTheme.accentBackground(accent, colorScheme).opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
+                            .background((isStopState
+                                ? AppTheme.composerControlFill(colorScheme)
+                                : sendFill)
+                                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
                     }
@@ -173,7 +183,23 @@ struct ChatComposer: View {
     }
 
     private var accentSymbolSize: CGFloat {
-        affordance.shape == .stop ? 13 : 18
+        // Official glyph ink: send arrow ~11×13 pt, stop square 12×12 pt.
+        // The Lucide assets fill 14/24 (arrow) and 18/24 (square) of their
+        // frame, so the frames are 20 and 16 to land on the official ink.
+        affordance.shape == .stop ? 18 : 20
+    }
+
+    private var isStopState: Bool { affordance.shape == .stop }
+
+    /// The send key keeps the official terracotta while the app accent stays
+    /// the shipped black-and-white default; choosing another accent still
+    /// recolors the key, so the accent feature is intact.
+    private var sendFill: Color {
+        accent == .default ? AppTheme.claudeTerracotta : AppTheme.accentBackground(accent, colorScheme)
+    }
+
+    private var sendGlyph: Color {
+        accent == .default ? .white : AppTheme.accentForeground(accent, colorScheme)
     }
 
     private var accentLabel: String {
@@ -186,7 +212,8 @@ struct ChatComposer: View {
 
     private var attachmentTray: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            // Official AttachmentBar: items 4 pt apart, 8 pt inside the card.
+            HStack(spacing: 4) {
                 ForEach(draft.attachments) { attachment in
                     ChatComposerAttachment(attachment: attachment) {
                         draft.attachments.removeAll { $0.id == attachment.id }
@@ -195,7 +222,8 @@ struct ChatComposer: View {
             }
         }
         .scrollIndicators(.hidden)
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 }

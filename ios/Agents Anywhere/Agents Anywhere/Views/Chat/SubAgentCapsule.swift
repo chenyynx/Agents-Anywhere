@@ -99,7 +99,7 @@ struct SubAgentStopControl: View {
     let action: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .footnote) private var diameter: CGFloat = 26
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.default.rawValue
+    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     var body: some View {

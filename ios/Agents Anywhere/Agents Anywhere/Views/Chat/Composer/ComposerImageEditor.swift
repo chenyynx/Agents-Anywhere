@@ -38,7 +38,7 @@ struct ComposerImageEditor: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+            Color(uiColor: .systemBackground).ignoresSafeArea()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
@@ -54,8 +54,6 @@ struct ComposerImageEditor: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .preferredColorScheme(.dark)
-        .tint(.white)
         .task(id: attachment.id) { await load() }
         .alert(String(localized: "放弃标记？"), isPresented: $showsDiscard) {
             Button(String(localized: "放弃"), role: .destructive) { dismiss() }
@@ -75,7 +73,7 @@ struct ComposerImageEditor: View {
     private var floatingTopBar: some View {
         HStack(spacing: 8) {
             floatingButton(action: requestDismiss) {
-                AppSymbol("xmark", size: 24)
+                AppSymbol("xmark", size: 26)
             }
             .accessibilityLabel(String(localized: "关闭"))
             Spacer(minLength: 8)
@@ -110,7 +108,7 @@ struct ComposerImageEditor: View {
     ) -> some View {
         Button(action: action) {
             label()
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .frame(width: size, height: size)
                 .contentShape(Circle())
         }
@@ -145,7 +143,7 @@ struct ComposerImageEditor: View {
         } else if failed {
             unavailable(String(localized: "无法打开这张图片"))
         } else {
-            ProgressView().tint(.white)
+            ProgressView().tint(.primary)
         }
     }
 
@@ -155,7 +153,7 @@ struct ComposerImageEditor: View {
                 .font(.system(size: 28))
             Text(message).font(.footnote)
         }
-        .foregroundStyle(.white.opacity(0.8))
+        .foregroundStyle(.secondary)
     }
 
     private func requestDismiss() {

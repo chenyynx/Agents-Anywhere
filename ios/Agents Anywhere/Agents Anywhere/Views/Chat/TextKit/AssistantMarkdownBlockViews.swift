@@ -82,8 +82,9 @@ final class AssistantMarkdownTextBlockView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         textView.frame = bounds
-        chipOverlay.frame = CGRect(x: -4, y: 0,
-                                   width: bounds.width + 8,
+        let room = CodePageTheme.inlineCodeChipHorizontalPadding
+        chipOverlay.frame = CGRect(x: -room, y: 0,
+                                   width: bounds.width + room * 2,
                                    height: bounds.height)
         chipOverlay.setNeedsDisplay()
     }
@@ -113,7 +114,7 @@ final class AssistantInlineCodeChipOverlayView: UIView {
         AssistantInlineCodeChipRenderer.drawChips(
             in: attributed,
             layoutManager: manager,
-            origin: CGPoint(x: 4, y: 0),
+            origin: CGPoint(x: CodePageTheme.inlineCodeChipHorizontalPadding, y: 0),
             traitCollection: traitCollection)
     }
 }
@@ -1056,8 +1057,6 @@ enum AssistantInlineCodeChipRenderer {
             // line fragment: `top = max(fragment.minY, baseline − ascent − 1)`,
             // `bottom = min(fragment.maxY, baseline + descent + 1)`
             // (EVIDENCE/round22/official-inline-chip.md §Q2).
-            let trailing = trailingPadding(for: range, in: attributed,
-                                           style: style)
             layoutManager.enumerateTextSegments(
                 in: textRange, type: .standard, options: []
             ) { _, frame, baseline, _ in
@@ -1068,8 +1067,7 @@ enum AssistantInlineCodeChipRenderer {
                 // the fragment origin to get the absolute baseline.
                 pieces.append(ChipPiece(
                     frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                    baseline: baseline + frame.minY, font: font, style: style,
-                    trailingPadding: trailing))
+                    baseline: baseline + frame.minY, font: font, style: style))
                 return true
             }
         }
@@ -1120,10 +1118,7 @@ enum AssistantInlineCodeChipRenderer {
                                                        in: container)
                 pieces.append(ChipPiece(
                     frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                    baseline: baseline + origin.y, font: font, style: style,
-                    trailingPadding: trailingPadding(for: range,
-                                                     in: attributed,
-                                                     style: style)))
+                    baseline: baseline + origin.y, font: font, style: style))
             }
         }
         drawPieces(pieces, lineWidth: lineWidth)
@@ -1166,24 +1161,6 @@ enum AssistantInlineCodeChipRenderer {
                                     fallback: CodePageTheme.inlineCodeChipVerticalPadding))
     }
 
-    /// Official trailing padding: 4 pt when the chip ends the line, 8 pt
-    /// when another glyph follows on the same line (`InlineCodeChips` draw:
-    /// left `minX − 4`, right `maxX + (4 or 8)`). With only 4 pt the next
-    /// glyph's advance starts inside the chip padding, so punctuation reads
-    /// as touching the capsule.
-    private static func trailingPadding(for range: NSRange,
-                                        in attributed: NSAttributedString,
-                                        style: ChipStyle) -> CGFloat {
-        let end = range.location + range.length
-        guard end < attributed.length else { return style.horizontalPadding }
-        let unit = (attributed.string as NSString).character(at: end)
-        guard let scalar = Unicode.Scalar(unit),
-              !CharacterSet.whitespacesAndNewlines.contains(scalar) else {
-            return style.horizontalPadding
-        }
-        return style.horizontalPadding * 2
-    }
-
     /// Maximal runs carrying the chip marker. Adjacent runs with different
     /// colours/weights merge, so a bold inline-code run does not show a seam.
     private static func chipRanges(in attributed: NSAttributedString) -> [NSRange] {
@@ -1208,10 +1185,6 @@ enum AssistantInlineCodeChipRenderer {
         let baseline: CGFloat
         let font: UIFont
         let style: ChipStyle
-        /// Right-side padding for this piece. The official renderer uses
-        /// 4 pt when the chip ends the line and 8 pt when another glyph
-        /// follows, so the next advance does not start inside the padding.
-        var trailingPadding: CGFloat
     }
 
     /// Merge adjacent pieces that share a baseline before drawing.
@@ -1234,13 +1207,11 @@ enum AssistantInlineCodeChipRenderer {
                abs(merged.baseline - piece.baseline) < 0.5,
                piece.frame.minX - merged.frame.maxX <= 0.5 {
                 merged.frame = merged.frame.union(piece.frame)
-                merged.trailingPadding = piece.trailingPadding
                 current = merged
             } else {
                 if let done = current {
                     drawChip(frame: done.frame, baseline: done.baseline,
                              font: done.font, style: done.style,
-                             trailingPadding: done.trailingPadding,
                              lineWidth: lineWidth)
                 }
                 current = piece
@@ -1249,7 +1220,6 @@ enum AssistantInlineCodeChipRenderer {
         if let done = current {
             drawChip(frame: done.frame, baseline: done.baseline,
                      font: done.font, style: done.style,
-                     trailingPadding: done.trailingPadding,
                      lineWidth: lineWidth)
         }
     }
@@ -1258,7 +1228,6 @@ enum AssistantInlineCodeChipRenderer {
                                  baseline: CGFloat,
                                  font: UIFont,
                                  style: ChipStyle,
-                                 trailingPadding: CGFloat,
                                  lineWidth: CGFloat) {
         guard frame.width > 0, frame.height > 0 else { return }
         // [E] R22 official-inline-chip.md §Q2 — baseline-anchored and clamped
@@ -1279,7 +1248,7 @@ enum AssistantInlineCodeChipRenderer {
         // rounded cap and padding (the official renderer does the same by
         // drawing outside the text layout).
         let x = frame.minX - style.horizontalPadding
-        let width = frame.width + style.horizontalPadding + trailingPadding
+        let width = frame.width + style.horizontalPadding * 2
         guard width > 0 else { return }
         let rect = CGRect(x: x, y: top, width: width, height: height)
         guard rect.width > 0, rect.height > 0 else { return }

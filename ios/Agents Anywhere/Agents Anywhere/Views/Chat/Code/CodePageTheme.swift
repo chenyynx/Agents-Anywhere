@@ -520,7 +520,12 @@ nonisolated enum CodePageTheme {
     /// [E] R19 `typography-inline.md` §3 — 6.4 pt radius, 4 pt horizontal
     /// padding per side, 1/displayScale stroke.
     static let inlineCodeChipCornerRadius: CGFloat = 6.4
-    static let inlineCodeChipHorizontalPadding: CGFloat = 4
+    /// The chip's fill extends past the run on each side. The official
+    /// renderer uses 4/8 (4 at line ends, 8 when text follows); inside
+    /// TextKit the run boundary is where the next glyph's advance starts,
+    /// so 4 put Chinese punctuation inside the chip's edge. 8 on both sides
+    /// gives the same visible separation the reference shows.
+    static let inlineCodeChipHorizontalPadding: CGFloat = 8
     /// UNKNOWN: the official vertical padding has no constant; the chip is
     /// drawn from the font's typographic bounds (`§3`, `§10` #4). 0 is the
     /// minimal symmetric value.

@@ -220,12 +220,6 @@ private struct SidebarDrawerInteractive<
     @State private var animationGeneration = 0
     @State private var isAnimating = false
     @State private var feedbackTrigger = 0
-#if AA_TIMELINE_PROBE
-    /// Visual variant for the drawer A/B run (see TimelineProbeStore). Set at
-    /// the start of each transition; the report averages the frame gaps per
-    /// variant so one sliding session attributes the per-frame cost.
-    @State private var probeVariant = 0
-#endif
     /// The last open/closed target this drawer committed. `isOpen` is
     /// published one main-queue turn after the spring lands, so a fast
     /// open→close leaves the binding stale and made the close gesture look
@@ -251,9 +245,6 @@ private struct SidebarDrawerInteractive<
     }
 
     var body: some View {
-#if AA_TIMELINE_PROBE
-        let _ = TimelineProbeStore.shared.noteDrawerBodyEval()
-#endif
         GeometryReader { fullScreenGeometry in
             let screenSize = fullScreenGeometry.size
             let revealWidth = max(
@@ -276,13 +267,11 @@ private struct SidebarDrawerInteractive<
                 )
                 .allowsHitTesting(interaction.acceptsSidebarTouches)
                 .accessibilityHidden(!interaction.acceptsSidebarTouches)
-                .modifier(SidebarDrawerSidebarShade(motion: motion,
-                                                    enabled: probeSidebarShadeEnabled))
+                .modifier(SidebarDrawerSidebarShade(motion: motion))
 
                 SidebarDrawerMainCard(
                     size: screenSize,
                     isFullyClosed: interaction.acceptsContentTouches,
-                    clipsContent: probeCardClipEnabled,
                     content: mainContent
                 )
                 .modifier(SidebarDrawerCardMotion(
@@ -320,8 +309,8 @@ private struct SidebarDrawerInteractive<
             // this full-screen clip supplies the display's own corners at
             // every offset (pp 2026-11-01). The frame above is the full
             // screen, so the clip cannot inset the drawer's content.
-            .modifier(SidebarDrawerScreenClip(radius: SidebarDrawerScreenCorner.radius,
-                                              enabled: probeContainerClipEnabled))
+            .clipShape(RoundedRectangle(cornerRadius: SidebarDrawerScreenCorner.radius,
+                                        style: .circular))
             .contentShape(Rectangle())
 #if canImport(UIKit)
             .gesture(
@@ -365,12 +354,8 @@ private struct SidebarDrawerInteractive<
         // report (pp 2026-10-31: drawer jank was not recorded).
         .onChange(of: isAnimating || dragStartProgress != nil
                   || motion.restingProgress != (isOpen ? 1 : 0), initial: true) { _, active in
-            if active {
-                probeVariant = TimelineProbeStore.shared.nextDrawerVariant()
-            }
             TimelineProbeStore.shared.noteDrawerTransition(active,
-                                                           opening: motion.progress < 0.5,
-                                                           variant: probeVariant)
+                                                           opening: motion.progress < 0.5)
         }
 #endif
         // [E] The official drawer uses the parameterless `.impact`; its
@@ -384,30 +369,6 @@ private struct SidebarDrawerInteractive<
 
     private var usesOpeningEdgeGestureRegion: Bool {
         motion.restingProgress == 0 || dragStartProgress.map { $0 <= 0.001 } == true
-    }
-
-    /// Probe A/B switches, one effect off per variant. Shipping builds keep
-    /// every effect (the `#else` arms).
-    private var probeContainerClipEnabled: Bool {
-#if AA_TIMELINE_PROBE
-        probeVariant != 1
-#else
-        true
-#endif
-    }
-    private var probeCardClipEnabled: Bool {
-#if AA_TIMELINE_PROBE
-        probeVariant != 2
-#else
-        true
-#endif
-    }
-    private var probeSidebarShadeEnabled: Bool {
-#if AA_TIMELINE_PROBE
-        probeVariant != 3
-#else
-        true
-#endif
     }
 
     private func beginDirectionalPan() {
@@ -823,9 +784,6 @@ private struct SidebarDrawerSidebar<Header: View, Content: View>: View {
 private struct SidebarDrawerMainCard<Content: View>: View {
     let size: CGSize
     let isFullyClosed: Bool
-    /// Probe A/B: shipping always clips; variant 2 removes the mask to
-    /// measure whether the full-screen clip is the per-frame render cost.
-    var clipsContent: Bool = true
     let content: Content
 
     var body: some View {
@@ -843,34 +801,8 @@ private struct SidebarDrawerMainCard<Content: View>: View {
             // what painted opaque status-bar/home-indicator strips.
             .frame(width: size.width, height: size.height)
             .background(drawerCardBackground, in: screenShape)
-            .modifier(SidebarDrawerCardClip(shape: screenShape, enabled: clipsContent))
+            .clipShape(screenShape)
             .contentShape(screenShape)
-    }
-}
-
-private struct SidebarDrawerCardClip: ViewModifier {
-    let shape: RoundedRectangle
-    let enabled: Bool
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.clipShape(shape)
-        } else {
-            content
-        }
-    }
-}
-
-private struct SidebarDrawerScreenClip: ViewModifier {
-    let radius: CGFloat
-    let enabled: Bool
-
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.clipShape(RoundedRectangle(cornerRadius: radius, style: .circular))
-        } else {
-            content
-        }
     }
 }
 
@@ -991,15 +923,7 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // the visible seam shadow comes from the drawer below.
                 // Opaque at every offset: fading the fill with progress made
                 // the card translucent while it moved (pp 2026-11-01).
-                //
-                // Shadow only the card shape, never the content. Before the
-                // sidebar visual remodel the shadow lived here, with a note
-                // that compositing the conversation into an animated shadow
-                // layer repaints its text every frame; the remodel moved it
-                // onto the translated card. b953's probe then measured the
-                // drawer at ~50ms/frame (p50 across every transition).
                 screenShape.fill(drawerCardBackground)
-                    .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 0)
                     .allowsHitTesting(false)
             }
             // No scrim on the card: both reference screenshots keep the
@@ -1019,6 +943,11 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // change paragraph wrapping. Keep the whole translation out of
             // layout, including every interpolated frame of the spring.
             .modifier(SidebarDrawerTranslation(x: revealWidth * progress).ignoredByLayout())
+            // The drawer-side attenuation follows the card's rounded outline;
+            // official drawerA measures ~10.7pt with ~5% at the edge. A band
+            // anchored to the straight seam left a vertical shadow strip in
+            // the corner regions, above and below the arcs (pp 2026-11-01).
+            .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 0)
     }
 }
 
@@ -1027,20 +956,14 @@ private struct SidebarDrawerCardMotion: ViewModifier {
 /// screenshots measure the sidebar at 243 (open) vs 203 (half open).
 private struct SidebarDrawerSidebarShade: ViewModifier {
     let motion: SidebarDrawerMotion
-    /// Probe A/B: shipping always shades (variant 3 removes it).
-    var enabled: Bool = true
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content
-                .overlay {
-                    Color.black
-                        .opacity(max(0, 1 - motion.progress) * 0.4)
-                        .allowsHitTesting(false)
-                }
-        } else {
-            content
-        }
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                Color.black
+                    .opacity(max(0, 1 - motion.progress) * 0.4)
+                    .allowsHitTesting(false)
+            }
     }
 }
 

@@ -167,7 +167,11 @@ nonisolated final class TimelineDatabase {
             ])
     }
 
-    func read(sessionID: String, limit: Int) throws -> (meta: TimelineMeta, rows: [TimelineRow])? {
+    /// `byteBudget` bounds the decoded payload, not just the row count: one
+    /// 1.2 MB tool output can outweigh hundreds of short messages. The newest
+    /// row is always kept.
+    func read(sessionID: String, limit: Int,
+              byteBudget: Int = .max) throws -> (meta: TimelineMeta, rows: [TimelineRow])? {
         try pool.read { db in
             guard let metaRow = try Row.fetchOne(db, sql: """
                 SELECT cursor, has_older, has_newer, excludes_agent_children,
@@ -182,7 +186,7 @@ nonisolated final class TimelineDatabase {
                 pinned: metaRow["pinned"],
                 lastAccess: metaRow["last_access"],
                 stateBlob: metaRow["state_blob"])
-            let rows = try Row.fetchAll(db, sql: """
+            let newestFirst = try Row.fetchAll(db, sql: """
                 SELECT item_id, order_seq, updated_seq, payload
                 FROM timeline_items
                 WHERE session_id = ?
@@ -193,8 +197,17 @@ nonisolated final class TimelineDatabase {
                                 orderSeq: row["order_seq"],
                                 updatedSeq: row["updated_seq"],
                                 payload: row["payload"])
-                }.reversed()
-            return (meta: meta, rows: Array(rows))
+                }
+            var kept: [TimelineRow] = []
+            var bytes = 0
+            kept.reserveCapacity(newestFirst.count)
+            for row in newestFirst {
+                if byteBudget < Int.max, !kept.isEmpty,
+                   bytes + row.payload.count > byteBudget { break }
+                bytes += row.payload.count
+                kept.append(row)
+            }
+            return (meta: meta, rows: Array(kept.reversed()))
         }
     }
 

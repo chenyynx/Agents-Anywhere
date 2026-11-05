@@ -195,6 +195,8 @@ nonisolated struct V2SessionRestore {
     let subAgentActivity: [String: [V2TimelineItem]]
     /// Whether the disk still holds rows older than `items`.
     let localHasOlderRows: Bool
+    /// Raw payload bytes read for `items` (the opening byte budget).
+    var payloadBytes: Int = 0
 }
 
 /// A page read from the local row store. `hasMore` means the store holds

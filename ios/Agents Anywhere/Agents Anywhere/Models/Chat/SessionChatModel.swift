@@ -30,6 +30,11 @@ final class SessionChatModel {
     static let subagentStopDeadline: Duration = .seconds(20)
     @ObservationIgnored private let subagentStopReleaseDelay: Duration
     @ObservationIgnored private var subagentStopReleases: [String: Task<Void, Never>] = [:]
+    /// The chat page reads `orbActivity` on every body evaluation, and the
+    /// drawer's motion re-runs that body continuously. Recomputing the
+    /// signals walks every timeline row and active card each time; cache
+    /// them against the inputs they are derived from.
+    @ObservationIgnored var orbSignalsCache: (key: Int, value: OrbActivitySignals)?
     private(set) var isLoadingSettings = false
     var error: String?
     /// Bumped on every refused send, so the toast can re-open even when the

@@ -161,7 +161,11 @@ struct DiagnosticsHUD: View {
                     .frame(width: 44, height: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     miniMetric("卡顿", "\(metrics.hitches)", color: metrics.hitches > 0 ? ClaudeUI.warning : ClaudeUI.muted)
-                    miniMetric("重排", "\(metrics.applyMax)ms", color: metrics.applyMax > 100 ? ClaudeUI.danger : ClaudeUI.muted)
+                    // The worst frame is the number the reader feels; the
+                    // apply cost lives in the deck.
+                    miniMetric("最大帧", "\(metrics.maxGap)ms",
+                               color: metrics.maxGap > 100 ? ClaudeUI.danger
+                                   : metrics.maxGap > 33 ? ClaudeUI.warning : ClaudeUI.muted)
                 }
                 Spacer(minLength: 0)
                 Button {
@@ -246,6 +250,8 @@ private struct DiagnosticsDeck: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     LiveMetricsView(store: store, context: context)
+                    hitchesBlock
+                    drawerRecentBlock
                     findingsBlock
                     marksBlock
                     rawBlock
@@ -309,6 +315,122 @@ private struct DiagnosticsDeck: View {
             .foregroundStyle(tint)
     }
 
+    // MARK: Recent hitches
+
+    /// The worst hitch alone cannot say whether the page stutters every swipe
+    /// or once. This lists the recent ring with the gesture that produced it.
+    private var hitchesBlock: some View {
+        let hitches = store.recentHitches(limit: 6)
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("最近掉帧", subtitle: hitches.isEmpty
+                         ? "还没有超过 33ms 的帧"
+                         : "最近 \(hitches.count) 次")
+            if hitches.isEmpty {
+                hint("上下滑历史或开合抽屉；超过 33ms 的帧会记在这里。")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(hitches.enumerated()), id: \.offset) { index, hitch in
+                        HStack(spacing: 10) {
+                            Text(hitch.phase)
+                                .font(ClaudeUI.sans(12, .medium))
+                                .foregroundStyle(ClaudeUI.ink)
+                                .frame(width: 40, alignment: .leading)
+                            Text("\(hitch.ms)ms")
+                                .font(ClaudeUI.mono(11, .medium))
+                                .foregroundStyle(hitch.ms > 100 ? ClaudeUI.danger : ClaudeUI.warning)
+                            Spacer(minLength: 0)
+                            Text("t=\(hitch.elapsed)")
+                                .font(ClaudeUI.mono(9))
+                                .foregroundStyle(ClaudeUI.muted)
+                        }
+                        .padding(.vertical, 9)
+                        if index < hitches.count - 1 {
+                            Rectangle().fill(ClaudeUI.hairline)
+                                .frame(height: 0.5)
+                                .padding(.leading, 50)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .background(ClaudeUI.surface,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
+                }
+            }
+        }
+    }
+
+    // MARK: Recent drawer transitions
+
+    /// Open vs close, drag vs button, and the three frames the reader feels
+    /// when the card lands (first gap, end gap, post gaps).
+    private var drawerRecentBlock: some View {
+        let transitions = store.recentDrawerTransitions(limit: 5)
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("抽屉最近", subtitle: transitions.isEmpty
+                         ? "开合侧栏后出现" : "最近 \(transitions.count) 次")
+            if transitions.isEmpty {
+                hint("开合侧栏 10–20 次；这里会比较开/关、拖动/按钮的耗时与掉帧。")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(transitions.enumerated()), id: \.offset) { index, transition in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(transition.opening ? "开" : "关")
+                                    .font(ClaudeUI.sans(12, .semibold))
+                                    .foregroundStyle(ClaudeUI.ink)
+                                Text(intentLabel(transition.intent))
+                                    .font(ClaudeUI.sans(11))
+                                    .foregroundStyle(ClaudeUI.muted)
+                                Spacer(minLength: 0)
+                                Text("\(transition.durationMs)ms")
+                                    .font(ClaudeUI.mono(11, .medium))
+                                    .foregroundStyle(ClaudeUI.ink)
+                                Text(">33ms \(transition.hitches)")
+                                    .font(ClaudeUI.mono(10, .medium))
+                                    .foregroundStyle(transition.hitches > 0 ? ClaudeUI.warning
+                                                     : ClaudeUI.success)
+                            }
+                            HStack(spacing: 10) {
+                                Text("首帧 \(transition.firstGapMs)ms")
+                                Text("落点 \(transition.endGapMs)ms")
+                                if !transition.postGaps.isEmpty {
+                                    Text("后 \(transition.postGaps.map { String($0) }.joined(separator: "/"))ms")
+                                }
+                                Text("max \(transition.maxGapMs)ms")
+                            }
+                            .font(ClaudeUI.mono(9))
+                            .foregroundStyle(ClaudeUI.muted)
+                        }
+                        .padding(.vertical, 9)
+                        if index < transitions.count - 1 {
+                            Rectangle().fill(ClaudeUI.hairline)
+                                .frame(height: 0.5)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .background(ClaudeUI.surface,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
+                }
+            }
+        }
+    }
+
+    private func intentLabel(_ intent: String) -> String {
+        switch intent {
+        case "drag": return "拖动"
+        case "tap": return "按钮"
+        case "scrim": return "点遮罩"
+        default: return intent
+        }
+    }
+
     // MARK: Findings
 
     private var findingsBlock: some View {
@@ -369,7 +491,12 @@ private struct DiagnosticsDeck: View {
         case "apply_spike": return "整页重排耗时"
         case "measure_spike": return "行高测量耗时"
         case "frame_hitch": return "滚动掉帧"
+        case "drawer_hitch": return "抽屉掉帧"
+        case "rekey_churn": return "行反复重配"
+        case "sidebar_rebuild": return "侧栏重建耗时"
         case "blank_frame": return "空白帧"
+        case "window_stale": return "窗口停滞"
+        case "stale_active_row": return "状态残留"
         default: return kind
         }
     }
@@ -595,11 +722,19 @@ private struct LiveMetrics {
     let fps: Int
     let maxGap: Int
     let hitches: Int
+    let dragHitches: Int
+    let coastHitches: Int
+    let drawerHitches: Int
+    let dragMaxMs: Int
+    let coastMaxMs: Int
+    let drawerMaxMs: Int
     let applyMax: Int
     let applyP95: Int
     let measureMax: Int
     let measureCount: Int
     let samples: Int
+    let sidebarRebuildCount: Int
+    let sidebarRebuildMaxMs: Int
     let gaps: [Double]
 
     init(store: TimelineProbeStore) {
@@ -611,11 +746,19 @@ private struct LiveMetrics {
         maxGap = Int((gaps.max() ?? 0).rounded())
         let stats = store.performanceStats()
         hitches = stats.hitches
+        dragHitches = stats.dragHitches
+        coastHitches = stats.coastHitches
+        drawerHitches = stats.drawerHitches
+        dragMaxMs = stats.dragMaxMs
+        coastMaxMs = stats.coastMaxMs
+        drawerMaxMs = stats.drawerMaxMs
         applyMax = stats.applyMaxMs
         applyP95 = stats.applyP95Ms
         measureMax = stats.measureMaxMs
         measureCount = stats.measureCount
         samples = stats.samples
+        sidebarRebuildCount = stats.sidebarRebuildCount
+        sidebarRebuildMaxMs = stats.sidebarRebuildMaxMs
     }
 }
 
@@ -658,6 +801,22 @@ private struct LiveMetricsView: View {
                         .font(ClaudeUI.sans(10))
                         .foregroundStyle(ClaudeUI.muted)
                 }
+                // A dropped frame under the finger, one while the list coasts
+                // and one during a drawer transition have different causes;
+                // the totals stay separate so a fix can be judged per gesture.
+                HStack(spacing: 10) {
+                    phaseTile("拖动掉帧", "\(metrics.dragHitches)", maxMs: metrics.dragMaxMs)
+                    phaseTile("惯性掉帧", "\(metrics.coastHitches)", maxMs: metrics.coastMaxMs)
+                    phaseTile("抽屉掉帧", "\(metrics.drawerHitches)", maxMs: metrics.drawerMaxMs)
+                }
+                if metrics.sidebarRebuildCount > 0 {
+                    Text("侧栏装配 最慢 \(metrics.sidebarRebuildMaxMs)ms"
+                        + "（\(metrics.sidebarRebuildCount) 次，会话越多越慢）")
+                        .font(ClaudeUI.mono(9))
+                        .foregroundStyle(metrics.sidebarRebuildMaxMs > 33 ? ClaudeUI.danger
+                                         : metrics.sidebarRebuildMaxMs > 16 ? ClaudeUI.warning
+                                         : ClaudeUI.muted)
+                }
                 ClaudeSparkline(values: metrics.gaps)
                     .frame(height: 52)
                     .padding(.horizontal, 2)
@@ -690,6 +849,36 @@ private struct LiveMetricsView: View {
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
+        }
+    }
+
+    /// Compact per-gesture counter: how many frames dropped and the worst one.
+    private func phaseTile(_ title: String, _ count: String, maxMs: Int) -> some View {
+        let tint = maxMs > 100 ? ClaudeUI.danger
+            : maxMs > 33 ? ClaudeUI.warning : ClaudeUI.muted
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(ClaudeUI.sans(10))
+                .foregroundStyle(ClaudeUI.muted)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(count)
+                    .font(ClaudeUI.serif(18, .semibold).monospacedDigit())
+                    .foregroundStyle(ClaudeUI.ink)
+                Text("次")
+                    .font(ClaudeUI.sans(9))
+                    .foregroundStyle(ClaudeUI.muted)
+            }
+            Text(maxMs > 0 ? "最大 \(maxMs)ms" : "无掉帧")
+                .font(ClaudeUI.mono(9))
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(ClaudeUI.surface,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
         }
     }

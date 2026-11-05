@@ -214,6 +214,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     @Published private(set) var revision = 0
     private(set) var counters: [String: Int] = [:]
+    /// When `shellSessionsMsMax` was set, so the finding can stay at the
+    /// moment the slow rebuild happened instead of drifting to "now".
+    private var sidebarRebuildMaxAt: TimeInterval = 0
     private(set) var changes: [HeightChange] = []
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
@@ -263,7 +266,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var measureDurations: [(at: TimeInterval, ms: Int)] = []
     /// Display-link gaps that counted as hitches while the reader was
     /// scrolling, so a finding can name when the worst frame happened.
-    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool)] = []
+    /// `drawer` and `tracking` split the counts the panel shows: a hitch
+    /// under the finger (drag), one while the list coasts, and one during a
+    /// sidebar transition are three different bugs.
+    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool, tracking: Bool)] = []
     /// User-pressed markers, newest last. Screenshots are memory-only; the
     /// export writes the newest three next to the report.
     private(set) var markers: [Mark] = []
@@ -483,9 +489,26 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             }
             let startArtifact = drawerFirstFrame && ms <= 100
             if ms > 33, !startArtifact {
+                let gapMs = Int(ms.rounded())
                 counters["frameRateHitches", default: 0] += 1
-                frameHitches.append((at: now, ms: Int(ms.rounded()),
-                                     drawer: drawerTransitioning))
+                // Per-phase totals so the panel can say which gesture the
+                // dropped frames belong to (drag vs coast vs drawer).
+                if drawerTransitioning {
+                    counters["drawerHitches", default: 0] += 1
+                    counters["drawerHitchMaxMs", default: 0] =
+                        max(counters["drawerHitchMaxMs"] ?? 0, gapMs)
+                } else if view.isTracking {
+                    counters["scrollHitchesDrag", default: 0] += 1
+                    counters["scrollDragMaxMs", default: 0] =
+                        max(counters["scrollDragMaxMs"] ?? 0, gapMs)
+                } else {
+                    counters["scrollHitchesCoast", default: 0] += 1
+                    counters["scrollCoastMaxMs", default: 0] =
+                        max(counters["scrollCoastMaxMs"] ?? 0, gapMs)
+                }
+                frameHitches.append((at: now, ms: gapMs,
+                                     drawer: drawerTransitioning,
+                                     tracking: view.isTracking))
                 if frameHitches.count > Self.maxHitches {
                     frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
                 }
@@ -626,6 +649,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let ms = Int((max(0, seconds) * 1000).rounded())
         counters["shellSessionsCount", default: 0] += 1
         counters["shellSessionsMsTotal", default: 0] += ms
+        if ms > (counters["shellSessionsMsMax"] ?? 0) {
+            sidebarRebuildMaxAt = CACurrentMediaTime()
+        }
         counters["shellSessionsMsMax", default: 0] =
             max(counters["shellSessionsMsMax"] ?? 0, ms)
     }
@@ -1314,12 +1340,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         //    moving. The drawer is not a scroll phase, so it has its own
         //    window in the sampler.
         if let worst = frameHitches.max(by: { $0.ms < $1.ms }) {
+            let dragCount = frameHitches.filter { !$0.drawer && $0.tracking }.count
+            let coastCount = frameHitches.filter { !$0.drawer && !$0.tracking }.count
             let drawerCount = frameHitches.filter { $0.drawer }.count
-            let scrollCount = frameHitches.count - drawerCount
             result.append(Finding(at: worst.at,
                                   severity: frameHitches.count >= 5 ? 2 : 1,
                                   kind: "frame_hitch",
-                                  detail: ">33ms \(frameHitches.count) 次（滚动 \(scrollCount) / 抽屉 \(drawerCount)），"
+                                  detail: ">33ms \(frameHitches.count) 次"
+                                      + "（拖动 \(dragCount) / 惯性 \(coastCount) / 抽屉 \(drawerCount)），"
                                       + "最大 \(worst.ms)ms @t=\(elapsed(worst.at))"))
         }
         if let transition = drawerTransitions.last, transition.hitches > 0 {
@@ -1361,11 +1389,74 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 detail: "\(activeRowSample.count) 行仍为进行中且回合空闲：\(list)"))
         }
 
+        // 9. One row re-keyed repeatedly inside a short window. The b788 long
+        //    message re-keyed 7 times in 8 s; every pass re-parsed its
+        //    markdown and reconfigured the cell, which is the 1.1 s apply.
+        var keyTimes: [String: [TimeInterval]] = [:]
+        for apply in applies {
+            for id in apply.changedKeySample {
+                keyTimes[id, default: []].append(apply.at)
+            }
+        }
+        for (id, times) in keyTimes where times.count >= 3 {
+            var start = 0
+            var worst = 0
+            var worstEnd = 0
+            for end in times.indices {
+                while times[end] - times[start] > 5 { start += 1 }
+                let count = end - start + 1
+                if count > worst {
+                    worst = count
+                    worstEnd = end
+                }
+            }
+            guard worst >= 3 else { continue }
+            let at = times[worstEnd]
+            let diff = applies.last {
+                $0.at <= at && $0.changedKeySample.contains(id)
+            }?.keyDiffSample.first ?? "-"
+            result.append(Finding(at: at, severity: worst >= 5 ? 2 : 1,
+                                  kind: "rekey_churn",
+                                  detail: "\(id) 5s 内重配 \(worst) 次，签名变化 \(diff)"))
+        }
+
+        // 10. The sidebar's session map+sort, rerun when the drawer's settled
+        //     `isOpen` write rebuilds the shell. Grows with the session count.
+        if let maxMs = counters["shellSessionsMsMax"], maxMs >= 16 {
+            result.append(Finding(at: sidebarRebuildMaxAt,
+                                  severity: maxMs >= 33 ? 2 : 1,
+                                  kind: "sidebar_rebuild",
+                                  detail: "侧栏装配最慢 \(maxMs)ms，共 \(counters["shellSessionsCount"] ?? 0) 次"))
+        }
+
         result.sort { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
             return lhs.at > rhs.at
         }
         return Array(result.prefix(10))
+    }
+
+    /// One dropped frame as the panel lists it: which gesture it belonged to
+    /// and where it sits in the measured window.
+    struct HitchSample {
+        let at: TimeInterval
+        let elapsed: String
+        let ms: Int
+        let phase: String
+    }
+
+    /// Newest first. The ring is bounded, so this is "recent", not "all".
+    func recentHitches(limit: Int = 8) -> [HitchSample] {
+        frameHitches.suffix(max(0, limit)).reversed().map { hitch in
+            HitchSample(at: hitch.at, elapsed: elapsed(hitch.at), ms: hitch.ms,
+                        phase: hitch.drawer ? "抽屉" : (hitch.tracking ? "拖动" : "惯性"))
+        }
+    }
+
+    /// Newest first. The panel compares open vs close without reading the
+    /// raw log.
+    func recentDrawerTransitions(limit: Int = 5) -> [DrawerTransition] {
+        Array(drawerTransitions.suffix(max(0, limit)).reversed())
     }
 
     /// Display-link intervals (ms), oldest first. The ring holds ~2 s.
@@ -1384,12 +1475,26 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let hitches: Int
         let maxGapMs: Int
         let slowFrames: Int
+        /// Hitches split by what the reader was doing. A frame dropped under
+        /// the finger is a different fix from one dropped during deceleration
+        /// or a sidebar transition.
+        let dragHitches: Int
+        let coastHitches: Int
+        let drawerHitches: Int
+        let dragMaxMs: Int
+        let coastMaxMs: Int
+        let drawerMaxMs: Int
         let applyCount: Int
         let applyMaxMs: Int
         let applyP95Ms: Int
         let measureCount: Int
         let measureMaxMs: Int
         let measureP95Ms: Int
+        /// `ChatShellView.sidebarSessions` map+sort, which grows with the
+        /// session count and reruns when the drawer's settled `isOpen` write
+        /// rebuilds the shell.
+        let sidebarRebuildCount: Int
+        let sidebarRebuildMaxMs: Int
     }
 
     func performanceStats() -> PerformanceStats {
@@ -1398,12 +1503,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             hitches: counters["frameRateHitches"] ?? 0,
             maxGapMs: counters["frameRateMaxGapMs"] ?? 0,
             slowFrames: counters["slowFrames"] ?? 0,
+            dragHitches: counters["scrollHitchesDrag"] ?? 0,
+            coastHitches: counters["scrollHitchesCoast"] ?? 0,
+            drawerHitches: counters["drawerHitches"] ?? 0,
+            dragMaxMs: counters["scrollDragMaxMs"] ?? 0,
+            coastMaxMs: counters["scrollCoastMaxMs"] ?? 0,
+            drawerMaxMs: counters["drawerHitchMaxMs"] ?? 0,
             applyCount: counters["applyCount"] ?? 0,
             applyMaxMs: counters["applyMsMax"] ?? 0,
             applyP95Ms: percentile(applyDurations.map { $0.ms }, 0.95),
             measureCount: counters["measureCount"] ?? 0,
             measureMaxMs: counters["measureMsMax"] ?? 0,
-            measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95))
+            measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95),
+            sidebarRebuildCount: counters["shellSessionsCount"] ?? 0,
+            sidebarRebuildMaxMs: counters["shellSessionsMsMax"] ?? 0)
     }
 
     private func percentile(_ values: [Int], _ fraction: Double) -> Int {

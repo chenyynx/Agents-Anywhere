@@ -843,13 +843,14 @@ private struct SidebarDrawerMainCard<Content: View>: View {
             // what painted opaque status-bar/home-indicator strips.
             .frame(width: size.width, height: size.height)
             .background(drawerCardBackground, in: screenShape)
-            .modifier(SidebarDrawerCardClip(shape: screenShape, enabled: clipsContent))
+            .modifier(SidebarDrawerCardClip(radius: SidebarDrawerScreenCorner.radius,
+                                            enabled: clipsContent))
             .contentShape(screenShape)
     }
 }
 
 private struct SidebarDrawerCardClip: ViewModifier {
-    let shape: RoundedRectangle
+    let radius: CGFloat
     let enabled: Bool
 
     // Structure stays fixed across variants; only the radius parameter
@@ -857,8 +858,8 @@ private struct SidebarDrawerCardClip: ViewModifier {
     // and its collection view) whenever the A/B variant switched, which is
     // what made the page vanish mid-swipe in b964.
     func body(content: Content) -> some View {
-        content.clipShape(RoundedRectangle(cornerRadius: enabled ? shape.cornerRadius : 0,
-                                           style: shape.style))
+        content.clipShape(RoundedRectangle(cornerRadius: enabled ? radius : 0,
+                                           style: .circular))
     }
 }
 

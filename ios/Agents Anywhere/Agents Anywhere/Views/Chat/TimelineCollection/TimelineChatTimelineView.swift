@@ -165,12 +165,14 @@ struct TimelineChatTimelineView: View {
             .onChange(of: reduceMotion, initial: true) { _, value in
                 bridge.setReduceMotion(value)
             }
-            // A pending/queued row needs no explicit return: its insertion is
-            // a content change, and a page waiting at `.end` lands on the new
-            // bottom inside that update (or through the inset spring when the
-            // composer collapses). Asking for an animated return here stacked
-            // a second 0.4 s spring on top of the composer's 0.24 s collapse,
-            // so the bubble was placed while the page still glided.
+            // A response needs no explicit return: the content change lands a
+            // page waiting at `.end` on the new bottom inside that update (or
+            // through the inset spring when the composer collapses). Asking
+            // for an animated return here stacked a second 0.4 s spring on
+            // top of the composer's 0.24 s collapse, so the bubble was placed
+            // while the page still glided. The pending/queued handlers below
+            // force a return only for a reader away from the bottom, where no
+            // follow exists at all.
             .onChange(of: model.responseRevision) { _, _ in
                 if model.isOpeningReady {
                     bridge.controller?.requestBottom(animated: true, forced: false)
@@ -188,7 +190,30 @@ struct TimelineChatTimelineView: View {
                           added.contains(pending.id)
                               && (pending.delivery == .sending || pending.delivery == .accepted)
                       }) else { return }
-                bridge.noteComposerSend()
+                if model.session.hasNewerItems {
+                    bridge.noteComposerSend()
+                } else if model.isOpeningReady, !hasInteractions,
+                          let controller = bridge.controller, controller.isViewLoaded,
+                          !controller.viewport.measuredAtBottom {
+                    // A send is an explicit intent to see the new bubble, but
+                    // the reader may be up in this window's history where the
+                    // follow gate refuses (`requestBottom(forced: false)`).
+                    // Only that case needs the forced return: at the bottom,
+                    // the pending row's insert already lands through the
+                    // content change, and a second spring on top of the
+                    // composer collapse is exactly what this path avoids.
+                    controller.requestBottom(animated: true, forced: true)
+                }
+            }
+            // A queued message is the same intent while a turn is running.
+            // The id list only changes on additions/removals; a removal must
+            // not yank the page.
+            .onChange(of: model.session.sendQueue.items.map(\.id)) { oldIDs, newIDs in
+                let added = Set(newIDs).subtracting(oldIDs)
+                guard !added.isEmpty, model.isOpeningReady, !hasInteractions,
+                      let controller = bridge.controller, controller.isViewLoaded,
+                      !controller.viewport.measuredAtBottom else { return }
+                controller.requestBottom(animated: true, forced: true)
             }
             .onChange(of: model.timeline.windowRevision) { _, _ in
                 bridge.reassertOpening()

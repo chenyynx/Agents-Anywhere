@@ -1155,13 +1155,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                 usesChatWorkingStyle: renderMode == .chat))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
-#if AA_TIMELINE_PROBE
-            // A/B for the scroll investigation: the row draws nothing while
-            // the layout keeps its measured frame (the cell's geometry report
-            // is suppressed in the same mode). A hitch that disappears here
-            // was the row's own first render.
-            if TimelineProbeStore.shared.minimalRows { return AnyView(Color.clear) }
-#endif
             // The chat profile's step-group row: one line that follows the
             // group's current step while it runs and settles into the counts
             // summary.

@@ -725,10 +725,6 @@ private struct DiagnosticsDeck: View {
                 .buttonStyle(.plain)
 
                 Menu {
-                    Button(store.minimalRows ? "行内容：空渲染（已开）" : "行内容：空渲染",
-                           systemImage: "rectangle.dashed") {
-                        store.minimalRows.toggle()
-                    }
                     Button("复制报告", systemImage: "doc.on.doc") { store.copyReport() }
                     Button("清空采样", systemImage: "eraser") {
                         store.reset()

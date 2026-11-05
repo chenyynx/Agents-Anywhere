@@ -1412,7 +1412,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// hands this to the projection so the in-memory window stays around the
     /// reader instead of one end.
     func orderSeq(forRowID rowID: String) -> Int? {
-        model.timeline.rows.first { $0.id == rowID }?.value.orderSeq
+        if let row = model.timeline.rows.first(where: { $0.id == rowID }) {
+            return row.value.orderSeq
+        }
+        // Code groups expose derived row ids (`steps:<span>`), not wire ids.
+        // The history anchor can land on one after a live re-pin; resolve it
+        // through the built groups so the durable order is still available.
+        for group in groupsByID.values {
+            if let row = group.rows.first(where: { $0.id == rowID }) {
+                return row.value.orderSeq
+            }
+        }
+        return nil
     }
 
     func interactionState() -> TimelineLayoutInteractionState {

@@ -37,15 +37,15 @@ STUB_VERSION = 2
 #: 2048 bytes holds every title field with room for a tail preview.
 STUB_MAX_BYTES = 2048
 
-#: Hard cap on the rows one deferred-activity window carries, activity rows
+#: Cap on the rows one deferred-activity window carries, activity rows
 #: included. The window is anchored on display rows (``limit`` of them) and
 #: grows over the activity rows between them; without a row cap a session that
 #: emitted hundreds of tool calls between two messages would still read them
 #: all. The oldest rows past the cap are dropped and reported through
 #: ``has_more`` so the client can page back through history.
-#: 300 matches the client's opening window
-#: (``V2SessionCachePolicy.defaultOpeningWindow``): a wider span only adds rows
-#: the page trims when it opens the session.
+#: A turn whose activity tail is longer than this cap extends the window up to
+#: ``DEFERRED_ANCHOR_SCAN_ROWS`` instead of dropping the conversation anchor
+#: (see ``list_deferred_window``); the API byte budget bounds that payload.
 DEFERRED_WINDOW_MAX_ROWS = 300
 #: A main-timeline tool activity row larger than this is served from
 #: ``stub_json`` (the writer's render-ready summary) instead of its full
@@ -780,8 +780,10 @@ class SqlTimelineStore:
            the subquery, and take the newest ``limit``. The smallest
            ``order_seq`` found is where the window starts. If the window's
            span cap would start above the newest display row (a very long
-           activity tail), the read declines (``applied=False``) instead of
-           returning a conversation-free page.
+           activity tail), the window is extended to the anchor-scan bound
+           instead of covering only activity rows: the first screen must keep
+           the conversation anchor. The API's byte budget bounds the resulting
+           payload by summarising the activity rows.
         2. **Window.** Every main row at or above the anchor — and, for a
            history read, strictly below ``before_order_seq`` — newest first,
            capped at ``span_rows``, returned ascending. The cursor bound is what
@@ -868,10 +870,14 @@ class SqlTimelineStore:
             newest_counted = max(anchored)
 
             # If the newest counted row is older than the oldest row the span
-            # keeps, the span holds only activity rows: the reader would come
-            # back with no conversational anchor at all. Report "not applied"
-            # so the API keeps its pre-existing bounded reader instead of
-            # serving a full-payload activity tail.
+            # keeps, the span would hold only activity rows — a heavy turn can
+            # add hundreds of tool/reasoning rows after the last message.
+            # Declining here handed the client a window with no conversation
+            # anchor at all, so the first screen showed only the collapsed
+            # activity tail. Extend the window to the anchor-scan bound
+            # instead: the anchor query already proved the row is reachable,
+            # and the API's byte budget still bounds the response by
+            # summarising the activity rows.
             boundary_filters = [
                 timeline_items.c.session_id == session_id,
                 timeline_items.c.parent_item_id.is_(None),
@@ -893,8 +899,12 @@ class SqlTimelineStore:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+            window_row_cap = span_rows
             if span_oldest is not None and newest_counted < span_oldest:
-                return [], False, False
+                # The newest display row sits past the normal span. The scan
+                # that found it is bounded by ``anchor_scan_rows``, so the
+                # window can never need more rows than that to reach it.
+                window_row_cap = max(span_rows, anchor_scan_rows)
 
             window_filters = [
                 timeline_items.c.session_id == session_id,
@@ -925,7 +935,7 @@ class SqlTimelineStore:
                     timeline_items.c.updated_seq.desc(),
                     timeline_items.c.id.desc(),
                 )
-                .limit(span_rows)
+                .limit(window_row_cap)
             )
             rows = (await conn.execute(window_statement)).mappings().all()
             if not rows:

@@ -1346,13 +1346,18 @@ jobs:
           # The pid simctl prints is the simulator-side pid; the app itself is
           # a host process, which is what xctrace attaches to.
           pgrep -fl "Agents Anywhere.app/Agents Anywhere" || true
-          PID=$(pgrep -f "Agents Anywhere.app/Agents Anywhere" | head -1 || true)
-          if [ -z "$PID" ]; then
-            PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
-          fi
-          echo "attach pid=$PID"
-          xcrun xctrace record --template 'Time Profiler' --no-prompt --attach "$PID" \
+          SIM_PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
+          echo "sim pid=$SIM_PID"
+          # A simulator app is recorded through its device, not by host pid.
+          xcrun xctrace record --template 'Time Profiler' --no-prompt \
+            --device "$UDID" --attach "$SIM_PID" \
             --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
+          if [ ! -e "$RUNNER_TEMP/scroll.trace" ]; then
+            echo "attach by device pid failed; recording all simulator processes"
+            xcrun xctrace record --template 'Time Profiler' --no-prompt \
+              --device "$UDID" --all-processes \
+              --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
+          fi
           ls -la "$RUNNER_TEMP/scroll.trace" || true
           xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" --toc \
             > "$RUNNER_TEMP/toc.xml" || true

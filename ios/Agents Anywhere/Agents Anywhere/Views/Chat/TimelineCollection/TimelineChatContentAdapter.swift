@@ -45,7 +45,23 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
     /// `contentSignature` call reads them without re-grouping.
+    ///
+    /// A SwiftUI update is not the same as a model change: the drawer's
+    /// per-frame motion re-evaluates the page every frame, and a full
+    /// `refresh()` costs 20–30 ms on a 354-row window (that was the drawer's
+    /// 50 ms frame in the b953/b966 probe). Only the observable inputs this
+    /// adapter consumes may start a rebuild.
     func prepareForUpdate() {
+        let fingerprint = updateFingerprint()
+        guard fingerprint != lastUpdateFingerprint else { return }
+        lastUpdateFingerprint = fingerprint
+        needsRefresh = true
+    }
+
+    /// Internal state changes (a reveal finishing, the working-status exit)
+    /// do not move any model input but still need a rebuild.
+    func forceRefresh() {
+        lastUpdateFingerprint = nil
         needsRefresh = true
     }
 
@@ -57,6 +73,44 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return generation
     }
     private var needsRefresh = true
+    private var lastUpdateFingerprint: Int?
+
+    /// Every observable input `refresh()` reads. The chat page's body reads
+    /// the same set, so a re-evaluation caused by one of them changes this
+    /// fingerprint; a re-evaluation caused by the drawer does not.
+    private func updateFingerprint() -> Int {
+        var hasher = Hasher()
+        hasher.combine(model.timeline.flushRevision)
+        hasher.combine(model.timeline.windowRevision)
+        hasher.combine(model.timeline.rows.count)
+        hasher.combine(model.responseRevision)
+        hasher.combine(model.disclosures.revision)
+        hasher.combine(model.isRunning)
+        hasher.combine(model.sendingPlaceholder)
+        hasher.combine(String(describing: model.orbActivity))
+        hasher.combine(model.session.canLoadOlder)
+        hasher.combine(model.session.hasNewerItems)
+        hasher.combine(model.session.hasOlderItems)
+        hasher.combine(model.session.localOlderAvailable)
+        hasher.combine(model.session.isLoadingHistory)
+        hasher.combine(model.session.metadata?.cwd)
+        hasher.combine(model.session.pendingMessages.count)
+        hasher.combine(model.timeline.pendingMessages.count)
+        hasher.combine(model.session.isSendQueuePaused)
+        for pending in model.timeline.pendingMessages {
+            hasher.combine(pending.id)
+            hasher.combine(String(describing: pending.delivery))
+        }
+        for item in model.session.sendQueue.items {
+            hasher.combine(item.id)
+            hasher.combine(String(describing: item.state))
+        }
+        for notice in model.session.notices.notices {
+            hasher.combine(notice.id)
+            hasher.combine(notice.notice.revision)
+        }
+        return hasher.finalize()
+    }
     private var generation = 0
     private var itemsValue: [TimelineListItem] = []
     private var itemsByID: [String: TimelineListItem] = [:]
@@ -944,7 +998,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
               let row = group.rows.first else { return }
         guard rendererRevealOwnership.finish(row.id) else { return }
         revealCaughtUpAt.removeValue(forKey: row.id)
-        prepareForUpdate()
+        forceRefresh()
     }
 
     // MARK: - Footer
@@ -1929,7 +1983,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         workingStatusIsExiting = false
         // The next working block anchors its own verb phase.
         workingStatusPhaseStart = nil
-        prepareForUpdate()
+        forceRefresh()
         controller?.reloadFromContent()
         // Do NOT flip `isRunning` back here: the deletion apply can be parked
         // behind an in-flight snapshot, and the still-mounted, fully faded

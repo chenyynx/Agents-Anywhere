@@ -11,7 +11,17 @@ nonisolated enum TimelineHistoryAnchorMode {
         if let value = UserDefaults.standard.object(forKey: defaultsKey) as? Bool {
             return value
         }
+#if AA_TIMELINE_PROBE
+        // Probe experiment (b970 follow-up): run the absolute first-row
+        // ("owed") prepend compensation instead of the driver's item-level
+        // anchor. A prepend can regroup the anchor row into another item, and
+        // keeping the old offsetIntoRow then shifts the viewport by the row's
+        // prefix inside the new item (46–152 pt in the b970 report); the two
+        // compensations also fought over the same offset.
+        return false
+#else
         return true
+#endif
     }
 }
 
@@ -2855,6 +2865,8 @@ final class TimelineCollectionController: UIViewController {
         }
         // Loading older is a browsing action. Stop any programmatic motion;
         // the reading placement then absorbs the prepend by construction.
+        probeHistory("request owed anchor=\(anchorRowID) n=\(newItems.count) "
+            + "first=\(newItems.first.flatMap { content?.rowIDs(in: $0).first } ?? "-")")
         stopBottomAnimation()
         // The projected anchor only needs the heights from the new top down
         // to the anchor. Measuring the entire window here made a 300-row

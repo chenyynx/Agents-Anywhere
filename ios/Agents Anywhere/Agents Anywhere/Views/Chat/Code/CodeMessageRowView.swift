@@ -114,6 +114,10 @@ struct CodeMessageRowView: View {
     }
 
     var body: some View {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        defer { TimelineProbeStore.shared.noteScrollSegment("row.body", since: probeStart) }
+#endif
         let rows = renderRows
         Group {
             if rows.isEmpty {

@@ -50,6 +50,10 @@ struct ChatMarkdownView: View {
     }
 
     var body: some View {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        defer { TimelineProbeStore.shared.noteScrollSegment("markdown.body", since: probeStart) }
+#endif
         VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id,
@@ -181,6 +185,10 @@ private struct MarkdownBlockView: View, Equatable {
     }
 
     var body: some View {
+#if AA_TIMELINE_PROBE
+        let probeBlockStart = CACurrentMediaTime()
+        defer { TimelineProbeStore.shared.noteScrollSegment("markdown.block", since: probeBlockStart) }
+#endif
         // Only changed blocks reach Textual's parser. The complete document was
         // parsed above, so cross-block references and nested structures survive.
         MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {

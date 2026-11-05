@@ -372,6 +372,7 @@ final class TimelineCollectionController: UIViewController {
             // inside UICollectionView; time it so a coast hitch can be blamed
             // on cell materialization instead of a background pass.
             let probeCell = CACurrentMediaTime()
+            TimelineProbeStore.shared.noteCellProvider()
             TimelineProbeStore.shared.enterSection("cellProvider")
             defer {
                 TimelineProbeStore.shared.noteScrollSegment("cellProvider", since: probeCell)

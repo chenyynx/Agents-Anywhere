@@ -262,6 +262,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func layoutAttributesForElements(in rect: CGRect) -> [UICollectionViewLayoutAttributes]? {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("layout.elements")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("layout.elements", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         guard !attributesByIndex.isEmpty else { return [] }
         // Attributes are sorted by y. Find the first whose bottom reaches the
         // rect, then walk until the top passes the rect's bottom.

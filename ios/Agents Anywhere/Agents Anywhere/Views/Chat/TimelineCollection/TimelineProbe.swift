@@ -396,7 +396,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private(set) var runLoopStalls: [StallRecord] = []
     private static let maxStalls = 40
     private var runLoopObserver: CFRunLoopObserver?
+    /// Second observer at the tail of the beforeWaiting phase. Core Animation
+    /// commits its transaction there, which is exactly the work the sources
+    /// stall cannot see: a dropped frame with no source stall is this phase.
+    private var commitObserver: CFRunLoopObserver?
+    private var beforeWaitingAt: TimeInterval = 0
     private var busyStartedAt: TimeInterval = 0
+    /// When the last cell was created; a stall right after it points at the
+    /// row's first render rather than a background pass.
+    private var lastCellProviderAt: TimeInterval = 0
+
+    func noteCellProvider() { lastCellProviderAt = CACurrentMediaTime() }
     /// Innermost section currently running on the main thread. Sections are
     /// entered/left by the scroll-path callbacks; a stall records whichever
     /// one was active when the run loop went idle.
@@ -417,11 +427,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 self.busyStartedAt = now
                 return
             }
+            self.beforeWaitingAt = now
             let ms = (now - self.busyStartedAt) * 1000
             guard ms >= 12 else { return }
+            let sinceCell = self.lastCellProviderAt > 0
+                ? Int(((now - self.lastCellProviderAt) * 1000).rounded()) : -1
             self.runLoopStalls.append(StallRecord(
                 at: now, ms: ms,
-                section: self.activeSection.isEmpty ? "idle" : self.activeSection))
+                section: (self.activeSection.isEmpty ? "idle" : self.activeSection)
+                    + (sinceCell >= 0 && sinceCell <= 200 ? " cell+\(sinceCell)ms" : "")))
             if self.runLoopStalls.count > Self.maxStalls {
                 self.runLoopStalls.removeFirst(
                     self.runLoopStalls.count - Self.maxStalls)
@@ -430,6 +444,29 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         guard let observer else { return }
         runLoopObserver = observer
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+
+        // Runs after Core Animation's own beforeWaiting observer (registered
+        // at order 2_000_000): the delta is what the commit phase spent after
+        // the sources phase finished.
+        let commit = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault, CFRunLoopActivity.beforeWaiting.rawValue,
+            true, 3_000_000
+        ) { [weak self] _, _ in
+            guard let self, self.beforeWaitingAt > 0 else { return }
+            let now = CACurrentMediaTime()
+            let ms = (now - self.beforeWaitingAt) * 1000
+            guard ms >= 8 else { return }
+            self.runLoopStalls.append(StallRecord(at: now, ms: ms,
+                                                  section: "ca.commit"))
+            if self.runLoopStalls.count > Self.maxStalls {
+                self.runLoopStalls.removeFirst(
+                    self.runLoopStalls.count - Self.maxStalls)
+            }
+        }
+        if let commit {
+            commitObserver = commit
+            CFRunLoopAddObserver(CFRunLoopGetMain(), commit, .commonModes)
+        }
     }
 
     /// Records one timed call. Sub-frame work stays silent; only segments that
@@ -516,6 +553,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         if let observer = runLoopObserver {
             CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
             runLoopObserver = nil
+        }
+        if let observer = commitObserver {
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+            commitObserver = nil
         }
         controller = nil
         adapter = nil
@@ -639,7 +680,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 // report names the code that owned the dropped frame instead
                 // of only its length and phase.
                 let stall = runLoopStalls.last { $0.at > now - Double(gapMs) / 1000 - 0.005 }
-                let owner = stall.map { "\($0.section) \(Int($0.ms.rounded()))ms" } ?? "-"
+                let stallLabel = stall.map { "\($0.section) \(Int($0.ms.rounded()))ms" }
+                // The nominal refresh the system was running at tells a real
+                // dropped frame (2+ periods) apart from a refresh-rate switch
+                // (one 33.3 ms frame on a 30 Hz stretch).
+                let periods = Double(gapMs) / max(link.duration * 1000, 1)
+                let owner = (stallLabel.map { $0 + " " } ?? "")
+                    + "period=\(Int((link.duration * 1000).rounded()))ms "
+                    + "x\(String(format: "%.1f", periods))"
                 frameHitches.append((at: now, ms: gapMs,
                                      drawer: drawerTransitioning,
                                      tracking: view.isTracking,

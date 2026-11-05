@@ -341,6 +341,31 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// probe's memory bounded (~300 KB each at 1x).
     private static let maxMarkers = 3
 
+    // MARK: - Session restore
+
+    /// Where one session open got its rows from. These records live outside
+    /// `beginRunWindow()`: a disk restore completes before the timeline view
+    /// attaches, so clearing on attach erased the only evidence of whether
+    /// switching back re-used local rows or re-read them from the network.
+    struct RestoreRecord {
+        let at: Date
+        let source: String
+        let rows: Int
+        let bytes: Int
+        let ms: Int
+    }
+
+    private(set) var recentRestores: [RestoreRecord] = []
+    private static let maxRestores = 8
+
+    func noteRestore(source: String, rows: Int, bytes: Int, ms: Int) {
+        recentRestores.append(RestoreRecord(at: Date(), source: source, rows: rows,
+                                            bytes: bytes, ms: ms))
+        if recentRestores.count > Self.maxRestores {
+            recentRestores.removeFirst(recentRestores.count - Self.maxRestores)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func attach(controller: TimelineCollectionController?,
@@ -1779,6 +1804,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "failed \(window.latestFailed)] last=\(window.lastLatest)")
         } else {
             lines.append("W not attached")
+        }
+
+        if !recentRestores.isEmpty {
+            lines.append("--- RESTORE (newest first) ---")
+            for record in recentRestores.reversed() {
+                lines.append("R \(Self.absolute(record.at)) CST source=\(record.source) "
+                    + "rows=\(record.rows) bytes=\(record.bytes / 1_048_576)MB ms=\(record.ms)")
+            }
         }
 
         lines.append("--- STATUS ---")

@@ -341,7 +341,17 @@ final class V2SessionRepository {
     func restoreCachedSession(id: String) async {
         guard let localStore else { return }
         let entry = entry(for: id)
-        guard entry.projection == nil, !entry.hasReadLocal else { return }
+        guard entry.projection == nil, !entry.hasReadLocal else {
+#if AA_TIMELINE_PROBE
+            // A session still resident keeps its rows across the switch; this is
+            // the cheap path the cache work targets, so name it in the report.
+            if let items = entry.projection?.data.items {
+                TimelineProbeStore.shared.noteRestore(source: "resident", rows: items.count,
+                                                      bytes: 0, ms: 0)
+            }
+#endif
+            return
+        }
         if entry.localReadTask == nil {
             entry.localReadTask = Task {
                 await localStore.restoreSession(id, window: policy.openingWindow,
@@ -355,10 +365,10 @@ final class V2SessionRepository {
 #endif
         let saved = await entry.localReadTask?.value
 #if AA_TIMELINE_PROBE
-        TimelineProbeStore.shared.noteHistory(
-            "local restore rows=\(saved?.items.count ?? 0) "
-            + "bytes=\((saved?.payloadBytes ?? 0) / 1_048_576)MB "
-            + "ms=\(Int(((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1000).rounded()))")
+        TimelineProbeStore.shared.noteRestore(
+            source: "disk", rows: saved?.items.count ?? 0,
+            bytes: saved?.payloadBytes ?? 0,
+            ms: Int(((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1000).rounded()))
 #endif
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil
@@ -1173,6 +1183,9 @@ final class V2SessionRepository {
         entry.latestRefreshTask?.cancel()
         entry.latestRefreshTask = nil
         let version = entry.readVersion
+#if AA_TIMELINE_PROBE
+        let hydrateStarted = ProcessInfo.processInfo.systemUptime
+#endif
         let task = Task { [self] in
             defer {
                 if entry.readVersion == version { entry.loadTask = nil }
@@ -1188,6 +1201,11 @@ final class V2SessionRepository {
             let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             entry.projection?.graftCompleteRows(completeRows)
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteRestore(
+                source: "network", rows: entry.projection?.data.items.count ?? 0, bytes: 0,
+                ms: Int(((ProcessInfo.processInfo.systemUptime - hydrateStarted) * 1000).rounded()))
+#endif
             // The snapshot is already a window read with `deferActivity`; its
             // echo settles whether a later open-time repair could ever help.
             entry.deferredWindowUnsupported = (snapshot.deferredActivity == nil)

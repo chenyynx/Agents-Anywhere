@@ -5,7 +5,11 @@ nonisolated struct V2SessionCachePolicy {
     /// returning to a session after a background or app switch is served from
     /// cache instead of the network. Disk use is bounded by the user's cache
     /// limit (`LocalCachePolicy`) and the row store's per-session cap.
-    var maximumSessions = 20
+    /// Warm sessions in memory. The official app's in-process reference is 10
+    /// (RE material; the audit lists the exact capacity as UNKNOWN), and ten
+    /// 3000-row windows already reach ~230 MB of payload for large sessions —
+    /// twenty was too much now that each window is capped at 3000 rows.
+    var maximumSessions = 10
     /// Kept rows per session. 3000 covers the measured multi-thousand-event
     /// sessions (`sess_qosxGz-dnnK4jw`: 2575 items / 23 MB payload) while the
     /// opening byte budget bounds the decoded memory.

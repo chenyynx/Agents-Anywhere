@@ -586,8 +586,14 @@ final class TimelineCollectionController: UIViewController {
             historyAnchorItemID = live.id
             historyAnchorOffsetIntoRow = live.offsetIntoRow
             if let rowID = content.rowIDs(in: liveItem).first {
-                historyAnchorRowID = rowID
-                historyAnchorOrderSeq = content.orderSeq(forRowID: rowID)
+                // Keep the request-time order when this row cannot resolve
+                // one (a Code group's derived row id can be gone by the time
+                // the page applies). Overwriting it with nil left the
+                // fallback with nothing durable to re-anchor to.
+                if let orderSeq = content.orderSeq(forRowID: rowID) {
+                    historyAnchorRowID = rowID
+                    historyAnchorOrderSeq = orderSeq
+                }
             }
             anchorDriver?.beginHistoryPaging(anchorID: live.id,
                                              offsetIntoRow: live.offsetIntoRow)
@@ -2240,7 +2246,8 @@ final class TimelineCollectionController: UIViewController {
         historyAnchorOffsetIntoRow = fallback.offsetIntoRow
         anchorDriver?.beginHistoryPaging(anchorID: fallbackItem.itemID,
                                          offsetIntoRow: fallback.offsetIntoRow)
-        probeHistory("reanchor viewport(\(reason)) row=\(lostRowID) old=\(old) "
+        probeHistory("reanchor viewport(\(reason)) row=\(lostRowID) "
+            + "seq=\(historyAnchorOrderSeq.map(String.init) ?? "nil") old=\(old) "
             + "new=\(fallbackItem.itemID) into=\(fallback.offsetIntoRow) "
             + "contentH=\(layout.contentHeight)")
     }

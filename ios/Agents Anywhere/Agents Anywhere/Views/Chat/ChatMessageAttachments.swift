@@ -356,7 +356,10 @@ struct ChatComposerAttachment: View {
             }
             Spacer(minLength: 4)
             Text(attachment.name)
-                .font(.system(size: 15))
+                // The name is secondary to the type badge; 15 pt wrapped a
+                // long name into two oversized lines inside the 80 pt tile
+                // (pp 2026-11-05).
+                .font(.system(size: 12))
                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 .lineLimit(2)
                 .truncationMode(.middle)

@@ -123,7 +123,18 @@ func event(_ type: String, seq: Int = 10, id: String? = nil, sessionID: String =
     func yield(_ event: V2SessionEvent) { streams.last?.yield(event) }
 }
 
-@MainActor func repository(transport: TestHTTPTransport, realtime: TestRealtimeAPI? = nil, policy: V2SessionCachePolicy = V2SessionCachePolicy(), localStore: V2LocalStore? = nil, now: @escaping () -> Date = Date.init) -> V2SessionRepository {
+/// Test repos pin a 300-row opening window: the local-store fixtures are sized
+/// against that window, and the paging mechanism is window-size agnostic. The
+/// product value is pinned separately by `productOpeningWindowMatchesResidentCap`.
+extension V2SessionCachePolicy {
+    static var testWindow300: V2SessionCachePolicy {
+        var policy = Self()
+        policy.openingWindow = 300
+        return policy
+    }
+}
+
+@MainActor func repository(transport: TestHTTPTransport, realtime: TestRealtimeAPI? = nil, policy: V2SessionCachePolicy = .testWindow300, localStore: V2LocalStore? = nil, now: @escaping () -> Date = Date.init) -> V2SessionRepository {
     let runtime = V2RuntimeAPI(transport: transport)
     return V2SessionRepository(
         scope: V2ClientScope(serverURL: URL(string: "https://example.test/api/v2")!, accountID: "account"),

@@ -39,9 +39,27 @@ extension SessionChatModel {
     /// disagree about what is running. Every item predicate reuses the
     /// presentation's own definitions; nothing is re-derived here.
     var orbActivitySignals: OrbActivitySignals {
+        // The page reads the orb on every body pass (the drawer's motion
+        // re-runs it continuously). Cache against the inputs the signals are
+        // derived from so a re-render does not walk every row and card.
+        var hasher = Hasher()
+        hasher.combine(timeline.flushRevision)
+        hasher.combine(session.runtime.isFresh)
+        hasher.combine(String(describing: session.runtime.state?.status))
+        hasher.combine(session.notices.notices.count)
+        for notice in session.notices.notices {
+            hasher.combine(notice.notice.revision)
+        }
+        for card in session.activeAgentCards {
+            hasher.combine(card)
+        }
+        let key = hasher.finalize()
+        if let cached = orbSignalsCache, cached.key == key {
+            return cached.value
+        }
         let fresh = session.runtime.isFresh
         let items = timeline.rows.map(\.value)
-        return OrbActivitySignals(
+        let value = OrbActivitySignals(
             status: fresh ? session.runtime.state?.status : nil,
             hasRespondableNotice: session.notices.visibleNotices.contains { $0.canRespond(fresh: fresh) },
             runningSubagentCount: SubAgentProgress.capsuleState(
@@ -54,6 +72,8 @@ extension SessionChatModel {
                 ($0.status == .pending || $0.status == .running) && $0.type == .message && $0.role == .assistant
             },
             hasActiveReasoningItem: items.contains { $0.isReasoning && $0.status.isActive })
+        orbSignalsCache = (key, value)
+        return value
     }
 
     var orbActivity: OrbActivity { OrbActivityResolver.resolve(orbActivitySignals) }

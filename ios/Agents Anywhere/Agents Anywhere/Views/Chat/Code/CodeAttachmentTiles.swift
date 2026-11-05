@@ -158,11 +158,23 @@ struct CodeAttachmentGrid<Content: View>: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(row) { placement in
-                        content(placement)
-                            // The wide tile occupies the two square columns, so
-                            // its row is 288 pt wide, not 288 + 140
-                            // (CLOSURE.md §1).
-                            .gridCellColumns(placement.size == .wide ? 2 : 1)
+                        if placement.isFiller {
+                            // The filler must own exactly the square slot. A
+                            // bare `Color.clear` is flexible, so the grid hands
+                            // it the row's spare width; that widens its column
+                            // and, with `.center` alignment, pushes the two
+                            // squares of the 2+1 row apart (device: 39 pt
+                            // horizontal gap against the 8 pt vertical one).
+                            Color.clear
+                                .frame(width: CodeAttachmentLayout.squareSide,
+                                       height: CodeAttachmentLayout.squareSide)
+                        } else {
+                            content(placement)
+                                // The wide tile occupies the two square
+                                // columns, so its row is 288 pt wide, not
+                                // 288 + 140 (CLOSURE.md §1).
+                                .gridCellColumns(placement.size == .wide ? 2 : 1)
+                        }
                     }
                 }
             }
@@ -183,9 +195,9 @@ struct CodeAttachmentTiles: View {
                                                wideFirst: isWide(files.first),
                                                wideLast: isWide(files.last))
         CodeAttachmentGrid(rows: rows) { placement in
-            if placement.isFiller {
-                Color.clear
-            } else if files.indices.contains(placement.index) {
+            // Fillers are drawn by the grid itself; this closure only sees real
+            // tiles.
+            if files.indices.contains(placement.index) {
                 CodeAttachmentImageTile(
                     file: files[placement.index],
                     placement: placement,

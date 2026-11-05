@@ -1346,9 +1346,21 @@ jobs:
           sleep 2
           xcrun xctrace record --template 'Time Profiler' --attach "$PID" \
             --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
-          xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" \
-            --xpath '/trace-toc/run/data/table[@schema="time-profile"]' \
-            > "$RUNNER_TEMP/profile.xml" || true
+          ls -la "$RUNNER_TEMP/scroll.trace" || true
+          xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" --toc \
+            > "$RUNNER_TEMP/toc.xml" || true
+          echo "--- TOC (first 60 lines) ---"
+          head -60 "$RUNNER_TEMP/toc.xml" || true
+          for SCHEMA in time-profile time-sample time-profile-sample core-profile; do
+            xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" \
+              --xpath "/trace-toc/run/data/table[@schema=\"$SCHEMA\"]" \
+              > "$RUNNER_TEMP/profile-$SCHEMA.xml" 2>/dev/null || true
+            SIZE=$(wc -c < "$RUNNER_TEMP/profile-$SCHEMA.xml" 2>/dev/null || echo 0)
+            echo "schema=$SCHEMA bytes=$SIZE"
+          done
+          BEST=$(ls -S "$RUNNER_TEMP"/profile-*.xml 2>/dev/null | head -1)
+          echo "using $BEST"
+          cp "$BEST" "$RUNNER_TEMP/profile.xml" || true
           python3 - "$RUNNER_TEMP/profile.xml" <<'PY'
           import sys, collections, xml.etree.ElementTree as ET
           try:

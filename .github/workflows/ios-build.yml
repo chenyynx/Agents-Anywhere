@@ -1345,7 +1345,7 @@ jobs:
           PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
           sleep 2
           xcrun xctrace record --template 'Time Profiler' --attach "$PID" \
-            --time-limit 25 --output "$RUNNER_TEMP/scroll.trace" || true
+            --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
           xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" \
             --xpath '/trace-toc/run/data/table[@schema="time-profile"]' \
             > "$RUNNER_TEMP/profile.xml" || true

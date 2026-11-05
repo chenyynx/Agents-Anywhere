@@ -71,12 +71,22 @@ import Testing
         #expect(restored.session(id: "session").draft == "Keep my draft")
         restored.reset(); first.reset(); await store.close(removing: true)
     }
+    /// The product opens a session with the same number of rows it is allowed
+    /// to keep resident; restoring less made a re-opened session look like it
+    /// had lost its loaded history (pp 2026-11-05).
+    @Test func productOpeningWindowMatchesTheResidentCap() {
+        let policy = V2SessionCachePolicy()
+        #expect(policy.openingWindow == policy.maximumTimelineItems)
+    }
+
     @Test func dbRestoreReadsTheOpeningWindowAndReportsLocalOlder() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
         let http = TestHTTPTransport()
         let first = repo(http, local: store)
-        let data = V2SessionData(snapshot: try snapshot(items: (1...500).map {
+        // One page older than the opening window, whatever that window is.
+        let seeded = V2SessionCachePolicy.defaultOpeningWindow + 200
+        let data = V2SessionData(snapshot: try snapshot(items: (1...seeded).map {
             try itemObject(id: "item-\($0)", order: $0)
         }))
         let session = first.session(id: "session")
@@ -89,7 +99,7 @@ import Testing
         let restored = repo(http, local: reopenedStore)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(201...500))
+        #expect(opening.items.map(\.orderSeq) == Array(201...seeded))
         #expect(opening.localOlderAvailable && opening.canLoadOlder)
         #expect(restored.session(id: "session").draft == "db draft")
         #expect(http.calls.isEmpty)
@@ -100,7 +110,8 @@ import Testing
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let store = V2LocalStore(directory: url, timelineDatabaseEnabled: false)
         let first = repo(TestHTTPTransport(), local: store)
-        let data = V2SessionData(snapshot: try snapshot(items: (1...400).map {
+        let seeded = V2SessionCachePolicy.defaultOpeningWindow + 100
+        let data = V2SessionData(snapshot: try snapshot(items: (1...seeded).map {
             try itemObject(id: "item-\($0)", order: $0)
         }))
         await store.saveSession(V2SessionArchive(data: data, model: first.session(id: "session")))
@@ -113,14 +124,14 @@ import Testing
         let restored = repo(http, local: reopened)
         restored.updateConnectivity(.init(availability: .offline))
         let opening = try await restored.open(sessionId: "session")
-        #expect(opening.items.map(\.orderSeq) == Array(101...400))
+        #expect(opening.items.map(\.orderSeq) == Array(101...seeded))
         #expect(opening.localOlderAvailable)
         #expect(http.calls.isEmpty)
         restored.reset(); await reopened.close(removing: false)
 
         let database = try TimelineDatabase(path: databasePath(url))
         defer { try? database.close() }
-        #expect(try database.rowCount(sessionID: "session") == 400)
+        #expect(try database.rowCount(sessionID: "session") == seeded)
     }
 
     @Test func newerJSONBeatsAStaleDatabaseRow() async throws {

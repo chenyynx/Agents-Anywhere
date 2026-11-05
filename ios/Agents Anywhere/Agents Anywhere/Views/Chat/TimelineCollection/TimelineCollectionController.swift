@@ -367,6 +367,15 @@ final class TimelineCollectionController: UIViewController {
         ])
         layout.host = self
         dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { [weak self] collectionView, indexPath, item in
+#if AA_TIMELINE_PROBE
+            // Hosting-cell creation is the one per-new-row cost a scroll pays
+            // inside UICollectionView; time it so a coast hitch can be blamed
+            // on cell materialization instead of a background pass.
+            let probeCell = CACurrentMediaTime()
+            defer {
+                TimelineProbeStore.shared.noteScrollSegment("cellProvider", since: probeCell)
+            }
+#endif
             if let self, let content = self.content {
                 if let streaming = content.assistantStreamingDocument(for: item),
                    self.documentHeights[item.itemID] != nil {
@@ -1403,6 +1412,8 @@ final class TimelineCollectionController: UIViewController {
                     "pending-measure end n=\(pending.count) measured=\(probeMeasured) "
                     + "skipped=\(probeSkipped) scrolled=\(probeScrolled) "
                     + "ms=\(Int(((CACurrentMediaTime() - probeStart) * 1000).rounded()))")
+                TimelineProbeStore.shared.noteScrollSegment("pendingMeasure.pass",
+                                                             since: probeStart)
             }
 #endif
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
@@ -1677,7 +1688,14 @@ final class TimelineCollectionController: UIViewController {
                     // This pass consumes the wake signal; a request that
                     // arrives during the pass stays pending for the next one.
                     self.visibleCellSettleNudged = false
-                    if !self.settleVisibleCellHeightsOnce() { return }
+#if AA_TIMELINE_PROBE
+                    let probeSettle = CACurrentMediaTime()
+#endif
+                    let settleResult = self.settleVisibleCellHeightsOnce()
+#if AA_TIMELINE_PROBE
+                    TimelineProbeStore.shared.noteScrollSegment("settle.pass", since: probeSettle)
+#endif
+                    if !settleResult { return }
                     if CACurrentMediaTime() >= slotEnd { break }
                 }
             }
@@ -1860,7 +1878,13 @@ final class TimelineCollectionController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.cellFrameSyncScheduled = false
+#if AA_TIMELINE_PROBE
+            let probeSync = CACurrentMediaTime()
+#endif
             self.syncVisibleCellFrames()
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteScrollSegment("frameSync.pass", since: probeSync)
+#endif
         }
     }
 
@@ -3180,16 +3204,32 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 #endif
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.scrollTick()
+        let probeStart = CACurrentMediaTime()
 #endif
         let current = viewport
         if phase.phase == .interacting { rearmVisiblePulls(at: current) }
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }
+#if AA_TIMELINE_PROBE
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.publish", since: probePublish)
+        let probeAnchor = CACurrentMediaTime()
+#endif
         anchorDriver?.scrolledWithoutAHand()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.anchor", since: probeAnchor)
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.total", since: probeStart)
+#endif
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        defer { TimelineProbeStore.shared.noteScrollSegment("endDragging.total", since: probeStart) }
+#endif
         // Official: the drag-end event applies only while `motion == dragging`
         // (part-ag §1.7). If a programmatic return is already animating (a
         // product event started it under the finger is deferred, see
@@ -3202,16 +3242,34 @@ extension TimelineCollectionController: UICollectionViewDelegate {
                 anchorDriver?.readerLifted(willCoast: decelerate)
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeLayout = CACurrentMediaTime()
+#endif
         layout.noteDragDidEnd(willDecelerate: decelerate)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.layout", since: probeLayout)
+        let probeSchedule = CACurrentMediaTime()
+#endif
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.schedule", since: probeSchedule)
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.publish", since: probePublish)
+#endif
         replayPendingGestureBottomRequest()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        defer { TimelineProbeStore.shared.noteScrollSegment("endDecel.total", since: probeStart) }
+#endif
         // Official: the deceleration-end event applies only while
         // `motion == coasting` (part-ag §1.7). A return that halted the coast
         // is `.animating` now; this callback must not set it idle or the
@@ -3226,12 +3284,26 @@ extension TimelineCollectionController: UICollectionViewDelegate {
                 anchorDriver?.coastingEnded()
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeLayout = CACurrentMediaTime()
+#endif
         layout.noteDecelerationDidEnd()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.layout", since: probeLayout)
+        let probeSchedule = CACurrentMediaTime()
+#endif
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
         scheduleVisibleCellSettle()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.schedule", since: probeSchedule)
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.publish", since: probePublish)
+#endif
         replayPendingGestureBottomRequest()
     }
 

@@ -114,6 +114,12 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func prepare() {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("layout.prepare", since: probeStart)
+        }
+#endif
         super.prepare()
         guard let collectionView, let host else {
             attributesByIndex = []

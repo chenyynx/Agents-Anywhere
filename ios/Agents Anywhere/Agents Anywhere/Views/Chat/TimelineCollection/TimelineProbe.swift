@@ -366,6 +366,34 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Slow scroll segments
+
+    /// One main-thread segment on the scroll path that took long enough to
+    /// drop a frame. A frame-gap alone says "a frame was missed"; these lines
+    /// say which call owned it, the same way the drawer work separated the
+    /// adapter refresh from the shadow.
+    struct ScrollSegment {
+        let at: TimeInterval
+        let label: String
+        let ms: Double
+    }
+
+    private(set) var slowScrollSegments: [ScrollSegment] = []
+    private static let maxScrollSegments = 60
+    private static let slowSegmentMs: Double = 6
+
+    /// Records one timed call. Sub-frame work stays silent; only segments that
+    /// can cost a frame (or a large slice of one) enter the ring.
+    func noteScrollSegment(_ label: String, since start: TimeInterval) {
+        let ms = (CACurrentMediaTime() - start) * 1000
+        guard ms >= Self.slowSegmentMs else { return }
+        slowScrollSegments.append(ScrollSegment(at: CACurrentMediaTime(),
+                                                label: label, ms: ms))
+        if slowScrollSegments.count > Self.maxScrollSegments {
+            slowScrollSegments.removeFirst(slowScrollSegments.count - Self.maxScrollSegments)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func attach(controller: TimelineCollectionController?,
@@ -410,6 +438,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastOffset = nil
         lastContentSamples.removeAll()
         recentTouches.removeAll()
+        slowScrollSegments.removeAll()
         frameTimestamps.removeAll()
         drawerTransitioning = false
         drawerTransitions.removeAll()
@@ -1961,6 +1990,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             for hitch in frameHitches.suffix(12).reversed() {
                 let phase = hitch.drawer ? "drawer" : (hitch.tracking ? "drag" : "coast")
                 lines.append("X t=\(elapsed(hitch.at)) \(hitch.ms)ms \(phase)")
+            }
+        }
+        if !slowScrollSegments.isEmpty {
+            lines.append("--- SLOW SCROLL (newest first) ---")
+            for segment in slowScrollSegments.suffix(30).reversed() {
+                lines.append("Y t=\(elapsed(segment.at)) \(f(segment.ms))ms \(segment.label)")
             }
         }
         lines.append("--- HISTORY (oldest first) ---")

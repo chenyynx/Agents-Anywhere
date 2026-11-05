@@ -1527,6 +1527,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// rebuilds the shell.
         let sidebarRebuildCount: Int
         let sidebarRebuildMaxMs: Int
+        /// SwiftUI body passes during drawer motion (probe A/B): tells a
+        /// per-frame view rebuild apart from a per-frame render cost.
+        let drawerBodyEvals: Int
+        let chatBodyEvals: Int
     }
 
     func performanceStats() -> PerformanceStats {
@@ -1548,7 +1552,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             measureMaxMs: counters["measureMsMax"] ?? 0,
             measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95),
             sidebarRebuildCount: counters["shellSessionsCount"] ?? 0,
-            sidebarRebuildMaxMs: counters["shellSessionsMsMax"] ?? 0)
+            sidebarRebuildMaxMs: counters["shellSessionsMsMax"] ?? 0,
+            drawerBodyEvals: counters["drawerBodyEvals"] ?? 0,
+            chatBodyEvals: counters["chatBodyEvals"] ?? 0)
     }
 
     private func percentile(_ values: [Int], _ fraction: Double) -> Int {

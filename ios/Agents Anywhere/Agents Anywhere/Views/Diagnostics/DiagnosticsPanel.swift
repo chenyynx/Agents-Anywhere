@@ -250,6 +250,7 @@ private struct DiagnosticsDeck: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     LiveMetricsView(store: store, context: context)
+                    drawerABBlock
                     hitchesBlock
                     drawerRecentBlock
                     findingsBlock
@@ -313,6 +314,73 @@ private struct DiagnosticsDeck: View {
             .padding(.vertical, 3)
             .background(ClaudeUI.ivory, in: Capsule())
             .foregroundStyle(tint)
+    }
+
+    // MARK: Drawer A/B
+
+    /// One sliding session already cycles the four visual variants. This
+    /// shows the verdict in the panel so no export is needed to read it.
+    private var drawerABBlock: some View {
+        let transitions = store.recentDrawerTransitions(limit: 40)
+        let stats = store.performanceStats()
+        let names = ["全部效果", "去整屏 clip", "去卡片 clip", "去侧栏遮罩"]
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("抽屉 A/B", subtitle: transitions.isEmpty
+                         ? "开合自动轮换，p50 最低的变体就是成本来源"
+                         : "p50 最低的变体就是成本来源")
+            if transitions.isEmpty {
+                hint("开合侧栏 16–20 次，这里会自动按变体汇总。")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(names.enumerated()), id: \.offset) { variant, name in
+                        let items = transitions.filter { $0.variant == variant }
+                        if !items.isEmpty {
+                            HStack(spacing: 8) {
+                                Text("v\(variant)")
+                                    .font(ClaudeUI.mono(10, .medium))
+                                    .foregroundStyle(ClaudeUI.muted)
+                                Text(name)
+                                    .font(ClaudeUI.sans(12))
+                                    .foregroundStyle(ClaudeUI.ink)
+                                Spacer(minLength: 0)
+                                Text("n=\(items.count)")
+                                    .font(ClaudeUI.mono(9))
+                                    .foregroundStyle(ClaudeUI.muted)
+                                let p50 = items.map(\.p50GapMs).reduce(0, +) / items.count
+                                Text("p50 \(p50)ms")
+                                    .font(ClaudeUI.mono(11, .medium))
+                                    .foregroundStyle(p50 > 33 ? ClaudeUI.warning : ClaudeUI.success)
+                                Text("掉帧 \(items.map(\.hitches).reduce(0, +))")
+                                    .font(ClaudeUI.mono(9))
+                                    .foregroundStyle(ClaudeUI.muted)
+                            }
+                            .padding(.vertical, 8)
+                            if variant < names.count - 1 {
+                                Rectangle().fill(ClaudeUI.hairline)
+                                    .frame(height: 0.5)
+                            }
+                        }
+                    }
+                    HStack(spacing: 10) {
+                        Text("过渡期 body 重建")
+                            .font(ClaudeUI.sans(10))
+                            .foregroundStyle(ClaudeUI.muted)
+                        Spacer(minLength: 0)
+                        Text("抽屉 \(stats.drawerBodyEvals) · 聊天页 \(stats.chatBodyEvals)")
+                            .font(ClaudeUI.mono(9))
+                            .foregroundStyle(ClaudeUI.muted)
+                    }
+                    .padding(.vertical, 8)
+                }
+                .padding(.horizontal, 14)
+                .background(ClaudeUI.surface,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(ClaudeUI.hairline, lineWidth: 0.5)
+                }
+            }
+        }
     }
 
     // MARK: Recent hitches

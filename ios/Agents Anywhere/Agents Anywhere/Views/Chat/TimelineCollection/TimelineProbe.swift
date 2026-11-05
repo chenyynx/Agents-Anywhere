@@ -186,6 +186,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// 16.7ms = 60Hz). The official drawer requests the screen maximum;
         /// this tells us whether AA's SwiftUI spring gets it.
         let periodMs: Double
+        /// Probe-only visual variant this transition ran with: 0 = all
+        /// effects, 1 = no full-screen container clip, 2 = no card clip,
+        /// 3 = no sidebar shade. One sliding session attributes the per-frame
+        /// cost without a build per hypothesis (same method as b800).
+        let variant: Int
         /// Dropped frames felt during the transition, including the end and
         /// post-end boundary frames recorded after the window closed.
         var hitches: Int
@@ -302,6 +307,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var drawerIntentToEnvMs = 0
     private var drawerEnvToTickMs = 0
     private var drawerFirstTickSeen = false
+    /// Probe-only visual variant for the next transition (0…3). The drawer
+    /// reads it while it builds the transition's view tree and the report
+    /// averages per variant, so one sliding session attributes the per-frame
+    /// render cost without a build per hypothesis (b800 did the same).
+    private(set) var drawerVariant = 0
+    static let drawerVariantCount = 4
+    /// The variant for this transition, then advance the cycle. The drawer
+    /// passes the returned value back on the transition's end record.
+    func nextDrawerVariant() -> Int {
+        let current = drawerVariant
+        drawerVariant = (drawerVariant + 1) % Self.drawerVariantCount
+        return current
+    }
     /// Sum of `CADisplayLink.duration` over the window's frames. Its average
     /// is the nominal refresh the system gave the display while the drawer
     /// moved (8.3ms on a 120Hz ProMotion screen, 16.7ms at 60Hz).
@@ -645,6 +663,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// animation, which invalidates the host view right after the transition;
     /// this is the piece of that body whose cost scales with the session
     /// count (probe 2026-10-31, drawer hand-feel report).
+    /// Counts a SwiftUI body pass that happened while the drawer was moving.
+    /// The drawer's own body and the chat page's body are recorded separately:
+    /// a per-frame re-evaluation of either is a different fix from a render
+    /// cost, and the previous rounds only had frame gaps to guess from.
+    func noteDrawerBodyEval() {
+        guard drawerTransitioning else { return }
+        counters["drawerBodyEvals", default: 0] += 1
+    }
+
+    func noteChatBodyEval() {
+        guard drawerTransitioning else { return }
+        counters["chatBodyEvals", default: 0] += 1
+    }
+
     func noteShellSessions(seconds: TimeInterval) {
         let ms = Int((max(0, seconds) * 1000).rounded())
         counters["shellSessionsCount", default: 0] += 1
@@ -1564,7 +1596,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The drawer publishes its motion window. The collection view is not
     /// scrolling during a drag, so without this signal the sidebar's dropped
     /// frames never reach the report (pp 2026-10-31).
-    func noteDrawerTransition(_ active: Bool, opening: Bool) {
+    func noteDrawerTransition(_ active: Bool, opening: Bool, variant: Int = 0) {
         guard active != drawerTransitioning else { return }
         let now = CACurrentMediaTime()
         drawerTransitioning = active
@@ -1596,6 +1628,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                               intentToEnvMs: drawerIntentToEnvMs,
                                               envToTickMs: drawerEnvToTickMs,
                                               periodMs: periodMs,
+                                              variant: variant,
                                               hitches: gaps.dropFirst().filter { $0 > 33 }.count
                                                   + ((drawerIntentToEnvMs + drawerEnvToTickMs) > 100 ? 1 : 0),
                                               maxGapMs: gaps.max() ?? 0,
@@ -1775,7 +1808,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("--- DRAWER (oldest first) ---")
             for transition in drawerTransitions {
                 lines.append("D t=\(elapsed(transition.startedAt)) dir=\(transition.opening ? "open" : "close") "
-                    + "intent=\(transition.intent) i2e=\(transition.intentToEnvMs)ms "
+                    + "intent=\(transition.intent) v=\(transition.variant) "
+                    + "i2e=\(transition.intentToEnvMs)ms "
                     + "e2t=\(transition.envToTickMs)ms "
                     + "period=\(String(format: "%.1f", transition.periodMs))ms "
                     + "dur=\(transition.durationMs)ms "
@@ -1809,6 +1843,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 lines.append("DD dir=\(direction ? "open" : "close") n=\(items.count) "
                     + "avgFirst=\(avgFirst)ms "
                     + "hitches=\(items.map(\.hitches).reduce(0, +))")
+            }
+            // Probe A/B: the per-frame cost by visual variant (0 baseline,
+            // 1 no container clip, 2 no card clip, 3 no sidebar shade).
+            for variant in 0..<Self.drawerVariantCount {
+                let items = drawerTransitions.filter { $0.variant == variant }
+                guard !items.isEmpty else { continue }
+                let p50 = items.map(\.p50GapMs).reduce(0, +) / items.count
+                let avg = items.map(\.avgGapMs).reduce(0, +) / items.count
+                let firsts = items.map(\.firstGapMs).reduce(0, +) / items.count
+                lines.append("DV v=\(variant) n=\(items.count) p50=\(p50)ms avg=\(avg)ms "
+                    + "avgFirst=\(firsts)ms "
+                    + "hitches=\(items.map(\.hitches).reduce(0, +)) "
+                    + "maxGap=\(items.map(\.maxGapMs).max() ?? 0)ms")
             }
         }
 

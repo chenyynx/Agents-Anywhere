@@ -73,6 +73,11 @@ struct TimelineChatTimelineView: View {
     }
 
     var body: some View {
+#if AA_TIMELINE_PROBE
+        // Count page rebuilds that happen while the drawer moves. A per-frame
+        // body pass here is a different fix from a render cost.
+        let _ = TimelineProbeStore.shared.noteChatBodyEval()
+#endif
         // The adapter rebuilds from these observable fields; reading them here
         // is what re-evaluates the representable when a stream flush changes
         // row text in place (the rows array identity does not move).

@@ -407,6 +407,17 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var lastCellProviderAt: TimeInterval = 0
 
     func noteCellProvider() { lastCellProviderAt = CACurrentMediaTime() }
+
+    /// A/B switch for the scroll investigation: message rows draw an empty
+    /// view and stop reporting their content height, so the layout keeps its
+    /// measured frames and only the row rendering disappears. If the hitches
+    /// go away with this on, the cost is the row's own SwiftUI render; if they
+    /// stay, it is cell creation/layout itself.
+    @Published var minimalRows = false {
+        // A diffable apply with identical items would not reconfigure a cell;
+        // reloadData re-asks the provider so the A/B takes effect at once.
+        didSet { controller?.collectionView?.reloadData() }
+    }
     /// Innermost section currently running on the main thread. Sections are
     /// entered/left by the scroll-path callbacks; a stall records whichever
     /// one was active when the run loop went idle.

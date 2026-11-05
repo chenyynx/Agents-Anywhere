@@ -463,6 +463,11 @@ final class TimelineCollectionController: UIViewController {
                     let reportKey = content.heightKey(for: item, width: self.columnWidth)
                     let reportSignature = content.contentSignature(for: item)
                     cell.onContentHeightReport = { [weak self] height in
+#if AA_TIMELINE_PROBE
+                        // The A/B empties the row's content; its geometry
+                        // report would collapse the measured row.
+                        if TimelineProbeStore.shared.minimalRows { return }
+#endif
                         self?.hostedContentHeightReported(
                             height, for: item,
                             reportedKey: reportKey, reportedSignature: reportSignature)

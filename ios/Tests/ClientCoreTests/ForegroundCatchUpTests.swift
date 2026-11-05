@@ -331,7 +331,11 @@ private func catchUpRepository(
     @Test func cacheWindowKeepsTheRecentWorkingSetResident() {
         let repo = repository(transport: TestHTTPTransport())
         defer { repo.reset() }
-        for index in 0..<12 { _ = repo.session(id: "session-\(index)") }
-        #expect(repo.cachedSessionIDs.count == 12)
+        // Two more sessions than the window: the newest ones stay resident and
+        // the excess is evicted. Reading the policy keeps this true when the
+        // window size changes.
+        let limit = V2SessionCachePolicy.testWindow300.maximumSessions
+        for index in 0..<(limit + 2) { _ = repo.session(id: "session-\(index)") }
+        #expect(repo.cachedSessionIDs.count == limit)
     }
 }

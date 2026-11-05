@@ -1870,6 +1870,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "keys=\(apply.changedKeyCount)[\(keys)]\(diffs)\(itemDelta)")
         }
 
+        if !frameHitches.isEmpty {
+            lines.append("--- HITCHES (newest first) ---")
+            for hitch in frameHitches.suffix(12).reversed() {
+                let phase = hitch.drawer ? "drawer" : (hitch.tracking ? "drag" : "coast")
+                lines.append("X t=\(elapsed(hitch.at)) \(hitch.ms)ms \(phase)")
+            }
+        }
         lines.append("--- HISTORY (oldest first) ---")
         for event in historyEvents {
             lines.append("H t=\(elapsed(event.at)) \(event.text)")

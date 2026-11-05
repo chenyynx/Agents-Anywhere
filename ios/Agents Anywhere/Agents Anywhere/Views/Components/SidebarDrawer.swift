@@ -923,7 +923,15 @@ private struct SidebarDrawerCardMotion: ViewModifier {
                 // the visible seam shadow comes from the drawer below.
                 // Opaque at every offset: fading the fill with progress made
                 // the card translucent while it moved (pp 2026-11-01).
+                //
+                // Shadow only the card shape, never the content. Before the
+                // sidebar visual remodel the shadow lived here, with a note
+                // that compositing the conversation into an animated shadow
+                // layer repaints its text every frame; the remodel moved it
+                // onto the translated card. b953's probe then measured the
+                // drawer at ~50ms/frame (p50 across every transition).
                 screenShape.fill(drawerCardBackground)
+                    .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 0)
                     .allowsHitTesting(false)
             }
             // No scrim on the card: both reference screenshots keep the
@@ -943,11 +951,6 @@ private struct SidebarDrawerCardMotion: ViewModifier {
             // change paragraph wrapping. Keep the whole translation out of
             // layout, including every interpolated frame of the spring.
             .modifier(SidebarDrawerTranslation(x: revealWidth * progress).ignoredByLayout())
-            // The drawer-side attenuation follows the card's rounded outline;
-            // official drawerA measures ~10.7pt with ~5% at the edge. A band
-            // anchored to the straight seam left a vertical shadow strip in
-            // the corner regions, above and below the arcs (pp 2026-11-01).
-            .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 0)
     }
 }
 

@@ -1347,16 +1347,19 @@ jobs:
           # a host process, which is what xctrace attaches to.
           pgrep -fl "Agents Anywhere.app/Agents Anywhere" || true
           SIM_PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
-          echo "sim pid=$SIM_PID"
-          # A simulator app is recorded through its device, not by host pid.
-          xcrun xctrace record --template 'Time Profiler' --no-prompt \
-            --device "$UDID" --attach "$SIM_PID" \
-            --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
-          if [ ! -e "$RUNNER_TEMP/scroll.trace" ]; then
-            echo "attach by device pid failed; recording all simulator processes"
-            xcrun xctrace record --template 'Time Profiler' --no-prompt \
-              --device "$UDID" --all-processes \
-              --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
+          HOST_PID=$(pgrep -f "Agents Anywhere.app/Agents Anywhere" | head -1 || true)
+          echo "sim pid=$SIM_PID host pid=$HOST_PID"
+          # xctrace cannot attach to a simulator app from a hosted runner
+          # (three invocation shapes failed); `sample` walks the host process
+          # that backs the simulator app and prints the same kind of stacks.
+          if [ -n "$HOST_PID" ]; then
+            sample "$HOST_PID" 10 2 -file "$RUNNER_TEMP/scroll-sample.txt" || true
+            echo "--- sample: heaviest stacks ---"
+            sed -n '/Sort by top of stack/,/Binary Images/p' "$RUNNER_TEMP/scroll-sample.txt" | head -40 || true
+            echo "--- sample: call graph head ---"
+            sed -n '1,80p' "$RUNNER_TEMP/scroll-sample.txt" || true
+          else
+            echo "host pid not found"
           fi
           ls -la "$RUNNER_TEMP/scroll.trace" || true
           xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" --toc \

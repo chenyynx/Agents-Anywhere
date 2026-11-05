@@ -56,6 +56,11 @@ final class TimelineCollectionController: UIViewController {
     /// which changes the anchor item's id even though its rows are still
     /// present; the row id is what survives that regrouping.
     private var historyAnchorRowID: String?
+    /// The anchor row's durable order. A prepend can regroup the rows and
+    /// rename or absorb the anchor row id, so the order is the fallback that
+    /// still identifies the reader's place (b953 t=15.49: the row id left
+    /// the window and the compensation was skipped).
+    private var historyAnchorOrderSeq: Int?
     private var historyAnchorOffsetIntoRow: CGFloat = 0
     /// The page's layout can keep correcting heights after the snapshot
     /// commits. During that short quiet window the reading anchor is still
@@ -582,6 +587,7 @@ final class TimelineCollectionController: UIViewController {
             historyAnchorOffsetIntoRow = live.offsetIntoRow
             if let rowID = content.rowIDs(in: liveItem).first {
                 historyAnchorRowID = rowID
+                historyAnchorOrderSeq = content.orderSeq(forRowID: rowID)
             }
             anchorDriver?.beginHistoryPaging(anchorID: live.id,
                                              offsetIntoRow: live.offsetIntoRow)
@@ -2081,6 +2087,7 @@ final class TimelineCollectionController: UIViewController {
         historyPageArriving = false
         historyAnchorItemID = nil
         historyAnchorRowID = anchorRowID
+        historyAnchorOrderSeq = anchorRowID.flatMap { content?.orderSeq(forRowID: $0) }
         historyAnchorOffsetIntoRow = 0
         historyInitialFirstRowID = currentItems.first.flatMap {
             content?.rowIDs(in: $0).first
@@ -2105,6 +2112,9 @@ final class TimelineCollectionController: UIViewController {
                          into: CGFloat) {
             historyAnchorItemID = item.itemID
             historyAnchorRowID = rowID ?? content?.rowIDs(in: item).first
+            historyAnchorOrderSeq = historyAnchorRowID.flatMap {
+                content?.orderSeq(forRowID: $0)
+            }
             historyAnchorOffsetIntoRow = into
             anchorDriver?.beginHistoryPaging(anchorID: item.itemID, offsetIntoRow: into)
             let attributes = layout.attributes(for: item.itemID)
@@ -2148,7 +2158,12 @@ final class TimelineCollectionController: UIViewController {
         guard historyPaging || historyAnchorSettling,
               let rowID = historyAnchorRowID, let content else { return }
         guard let item = content.item(containingRow: rowID) else {
-            probeHistory("reanchor row=\(rowID) not-in-window")
+            // A prepend can regroup the rows and rename or absorb the anchor
+            // row. Leaving the stale placement makes `enforceReadingPlacement`
+            // resolve nil, so the inserted height is never compensated (b953
+            // t=15.49: off -207 -> -113, d=94.3). Rebind to the row under the
+            // viewport top — what the reader is actually looking at.
+            rebindHistoryAnchor(reason: "lost-row", lostRowID: rowID)
             return
         }
         // The stored offset can itself be garbage when the request started
@@ -2187,6 +2202,62 @@ final class TimelineCollectionController: UIViewController {
                                          offsetIntoRow: historyAnchorOffsetIntoRow)
         probeHistory("reanchor row=\(rowID) old=\(old) new=\(item.itemID) "
             + "into=\(historyAnchorOffsetIntoRow) contentH=\(layout.contentHeight)")
+    }
+
+    /// The anchor row left the window (a prepend regrouped or renamed it, or
+    /// a trim dropped it). The row id is not durable across a regroup, but the
+    /// anchor's `orderSeq` is: rebind to the nearest surviving row at or after
+    /// it so the page's inserted height is still compensated. The old code
+    /// dropped the placement here, so the shift was never corrected (b953
+    /// t=15.49: off -207 -> -113, d=94.3). Last resort: the row under the
+    /// viewport top, which at least keeps further corrections anchored.
+    private func rebindHistoryAnchor(reason: String, lostRowID: String) {
+        guard let content else { return }
+        if let target = historyAnchorOrderSeq,
+           let item = nearestAnchorableItem(orderSeqAtLeast: target) {
+            let old = historyAnchorItemID ?? "-"
+            let into = historyAnchorOffsetIntoRow
+            historyAnchorItemID = item.itemID
+            historyAnchorRowID = content.rowIDs(in: item).first
+            historyAnchorOrderSeq = historyAnchorRowID.flatMap { content.orderSeq(forRowID: $0) }
+            anchorDriver?.beginHistoryPaging(anchorID: item.itemID, offsetIntoRow: into)
+            probeHistory("reanchor order(\(reason)) row=\(lostRowID) seq=\(target) "
+                + "old=\(old) new=\(item.itemID) into=\(into) "
+                + "contentH=\(layout.contentHeight)")
+            return
+        }
+        let rawTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        let top = min(max(rawTop, 0), max(0, layout.contentHeight))
+        guard let fallback = anchor(at: top - collectionView.adjustedContentInset.top),
+              let fallbackItem = currentItems.first(where: { $0.itemID == fallback.id }) else {
+            probeHistory("reanchor \(reason) row=\(lostRowID) no-fallback")
+            return
+        }
+        let old = historyAnchorItemID ?? "-"
+        historyAnchorItemID = fallbackItem.itemID
+        historyAnchorRowID = content.rowIDs(in: fallbackItem).first
+        historyAnchorOrderSeq = historyAnchorRowID.flatMap { content.orderSeq(forRowID: $0) }
+        historyAnchorOffsetIntoRow = fallback.offsetIntoRow
+        anchorDriver?.beginHistoryPaging(anchorID: fallbackItem.itemID,
+                                         offsetIntoRow: fallback.offsetIntoRow)
+        probeHistory("reanchor viewport(\(reason)) row=\(lostRowID) old=\(old) "
+            + "new=\(fallbackItem.itemID) into=\(fallback.offsetIntoRow) "
+            + "contentH=\(layout.contentHeight)")
+    }
+
+    /// The first anchorable item holding a row with `orderSeq >= target`.
+    private func nearestAnchorableItem(orderSeqAtLeast target: Int) -> TimelineListItem? {
+        guard let content else { return nil }
+        var best: (item: TimelineListItem, seq: Int)?
+        for item in currentItems where TimelineHistoryAnchorRows.isAnchorable(item) {
+            for rowID in content.rowIDs(in: item) {
+                guard let seq = content.orderSeq(forRowID: rowID) else { continue }
+                if seq == target { return item }
+                guard seq > target else { continue }
+                if best == nil || seq < best!.seq { best = (item, seq) }
+            }
+        }
+        return best?.item
     }
 
     func endHistoryPaging() {
@@ -2297,6 +2368,7 @@ final class TimelineCollectionController: UIViewController {
         historyAnchorSettling = false
         historyAnchorItemID = nil
         historyAnchorRowID = nil
+        historyAnchorOrderSeq = nil
         historyAnchorOffsetIntoRow = 0
     }
 

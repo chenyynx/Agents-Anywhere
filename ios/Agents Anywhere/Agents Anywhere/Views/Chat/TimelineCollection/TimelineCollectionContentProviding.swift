@@ -90,6 +90,9 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// anchor to the prompt at y=0 and scroll the loaded page to its top.
     func anchorRowIDs(in item: TimelineListItem) -> [String]
     func item(containingRow rowID: String) -> TimelineListItem?
+    /// Durable order of a row. The history anchor uses it when a prepend
+    /// regroups the rows and the anchor's row id no longer resolves.
+    func orderSeq(forRowID rowID: String) -> Int?
 
     func interactionState() -> TimelineLayoutInteractionState
 
@@ -105,6 +108,9 @@ extension TimelineCollectionContentProviding {
     /// Synthetic providers have no prompt alias; their row ids are their
     /// physical rows.
     func anchorRowIDs(in item: TimelineListItem) -> [String] { rowIDs(in: item) }
+
+    /// The C3 gate's synthetic rows have no durable order.
+    func orderSeq(forRowID rowID: String) -> Int? { nil }
 
     /// Marks the provider's item list stale before the representable reads
     /// `contentGeneration`. The C3 gate's synthetic model wants no work here.

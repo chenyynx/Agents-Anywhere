@@ -14,6 +14,11 @@ final class TimelineHostingCell: UICollectionViewCell {
     static let reuseIdentifier = "TimelineHostingCell"
 
 #if AA_TIMELINE_PROBE
+    /// Set by `configure`; the first layout after it closes the row's first
+    /// render window. This is the one number that answers "how long does a
+    /// newly visible message row cost before it can be drawn".
+    private var probeConfiguredAt: TimeInterval = 0
+
     /// SwiftUI hosting layout runs inside this call, off the scroll callback
     /// stack. Timing it is how the probe tells a UIKit/SwiftUI layout stall
     /// apart from a stall in the controller's own passes.
@@ -23,6 +28,11 @@ final class TimelineHostingCell: UICollectionViewCell {
         super.layoutSubviews()
         TimelineProbeStore.shared.noteScrollSegment("cell.hostingLayout", since: probeStart)
         TimelineProbeStore.shared.leaveSection()
+        if probeConfiguredAt > 0 {
+            TimelineProbeStore.shared.noteScrollSegment("row.firstRender",
+                                                        since: probeConfiguredAt)
+            probeConfiguredAt = 0
+        }
     }
 #endif
 
@@ -73,6 +83,9 @@ final class TimelineHostingCell: UICollectionViewCell {
     func configure(_ view: AnyView, itemID: String, policy: TimelineRowHeightPolicy,
                    isMeasured: Bool, reportsContentHeight: Bool,
                    seededHeight: CGFloat? = nil) {
+#if AA_TIMELINE_PROBE
+        probeConfiguredAt = CACurrentMediaTime()
+#endif
         self.itemID = itemID
         self.policy = policy
         self.isMeasured = isMeasured

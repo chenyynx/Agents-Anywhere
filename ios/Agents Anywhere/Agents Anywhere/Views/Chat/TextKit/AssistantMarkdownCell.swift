@@ -167,6 +167,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
 
     func configure(_ document: AssistantMarkdownDocument,
                    footer: AssistantFooterHost? = nil) {
+#if AA_TIMELINE_PROBE
+        probeConfiguredAt = CACurrentMediaTime()
+#endif
         self.document = document
         self.footer = footer
         self.streaming = nil
@@ -185,12 +188,19 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     /// cell reuse does not restart the cursor.
     func configure(streaming: AssistantStreamingDocument,
                    reveal: StreamingRevealState?) {
+#if AA_TIMELINE_PROBE
+        probeConfiguredAt = CACurrentMediaTime()
+#endif
         self.document = nil
         self.footer = nil
         self.streaming = streaming
         self.revealState = reveal
         rebuildStreamingIfPossible()
     }
+
+#if AA_TIMELINE_PROBE
+    private var probeConfiguredAt: TimeInterval = 0
+#endif
 
     override func layoutSubviews() {
 #if AA_TIMELINE_PROBE
@@ -199,6 +209,11 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         defer {
             TimelineProbeStore.shared.noteScrollSegment("cell.markdownLayout", since: probeStart)
             TimelineProbeStore.shared.leaveSection()
+            if probeConfiguredAt > 0 {
+                TimelineProbeStore.shared.noteScrollSegment("row.firstRender",
+                                                            since: probeConfiguredAt)
+                probeConfiguredAt = 0
+            }
         }
 #endif
         super.layoutSubviews()

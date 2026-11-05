@@ -274,7 +274,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// `drawer` and `tracking` split the counts the panel shows: a hitch
     /// under the finger (drag), one while the list coasts, and one during a
     /// sidebar transition are three different bugs.
-    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool, tracking: Bool)] = []
+    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool,
+                                tracking: Bool, owner: String)] = []
     /// User-pressed markers, newest last. Screenshots are memory-only; the
     /// export writes the newest three next to the report.
     private(set) var markers: [Mark] = []
@@ -382,6 +383,55 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private static let maxScrollSegments = 60
     private static let slowSegmentMs: Double = 6
 
+    /// One run-loop iteration that kept the main thread busy past a frame.
+    /// The frame-gap detector sees the dropped frame; this says whether the
+    /// main thread was actually working (and in which section) or the display
+    /// link simply did not fire.
+    struct StallRecord {
+        let at: TimeInterval
+        let ms: Double
+        let section: String
+    }
+
+    private(set) var runLoopStalls: [StallRecord] = []
+    private static let maxStalls = 40
+    private var runLoopObserver: CFRunLoopObserver?
+    private var busyStartedAt: TimeInterval = 0
+    /// Innermost section currently running on the main thread. Sections are
+    /// entered/left by the scroll-path callbacks; a stall records whichever
+    /// one was active when the run loop went idle.
+    private var activeSection: String = ""
+
+    func enterSection(_ name: String) { activeSection = name }
+    func leaveSection() { activeSection = "" }
+
+    private func startRunLoopObserver() {
+        guard runLoopObserver == nil else { return }
+        let activities: CFRunLoopActivity = [.afterWaiting, .beforeWaiting]
+        let observer = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault, activities.rawValue, true, 0
+        ) { [weak self] _, activity in
+            guard let self else { return }
+            let now = CACurrentMediaTime()
+            if activity == .afterWaiting {
+                self.busyStartedAt = now
+                return
+            }
+            let ms = (now - self.busyStartedAt) * 1000
+            guard ms >= 12 else { return }
+            self.runLoopStalls.append(StallRecord(
+                at: now, ms: ms,
+                section: self.activeSection.isEmpty ? "idle" : self.activeSection))
+            if self.runLoopStalls.count > Self.maxStalls {
+                self.runLoopStalls.removeFirst(
+                    self.runLoopStalls.count - Self.maxStalls)
+            }
+        }
+        guard let observer else { return }
+        runLoopObserver = observer
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+
     /// Records one timed call. Sub-frame work stays silent; only segments that
     /// can cost a frame (or a large slice of one) enter the ring.
     func noteScrollSegment(_ label: String, since start: TimeInterval) {
@@ -410,6 +460,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // relative to a different run start and used to surface as `t=0.00`
         // noise (and false findings) in the report.
         beginRunWindow()
+        startRunLoopObserver()
         if link == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)
@@ -439,6 +490,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastContentSamples.removeAll()
         recentTouches.removeAll()
         slowScrollSegments.removeAll()
+        runLoopStalls.removeAll()
+        activeSection = ""
         frameTimestamps.removeAll()
         drawerTransitioning = false
         drawerTransitions.removeAll()
@@ -460,6 +513,10 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     func detach() {
         link?.invalidate()
         link = nil
+        if let observer = runLoopObserver {
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+            runLoopObserver = nil
+        }
         controller = nil
         adapter = nil
         lastHeights.removeAll()
@@ -578,9 +635,15 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     counters["scrollCoastMaxMs", default: 0] =
                         max(counters["scrollCoastMaxMs"] ?? 0, gapMs)
                 }
+                // Attach the run-loop stall that ended inside this gap, so the
+                // report names the code that owned the dropped frame instead
+                // of only its length and phase.
+                let stall = runLoopStalls.last { $0.at > now - Double(gapMs) / 1000 - 0.005 }
+                let owner = stall.map { "\($0.section) \(Int($0.ms.rounded()))ms" } ?? "-"
                 frameHitches.append((at: now, ms: gapMs,
                                      drawer: drawerTransitioning,
-                                     tracking: view.isTracking))
+                                     tracking: view.isTracking,
+                                     owner: owner))
                 if frameHitches.count > Self.maxHitches {
                     frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
                 }
@@ -1989,7 +2052,13 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("--- HITCHES (newest first) ---")
             for hitch in frameHitches.suffix(12).reversed() {
                 let phase = hitch.drawer ? "drawer" : (hitch.tracking ? "drag" : "coast")
-                lines.append("X t=\(elapsed(hitch.at)) \(hitch.ms)ms \(phase)")
+                lines.append("X t=\(elapsed(hitch.at)) \(hitch.ms)ms \(phase) [\(hitch.owner)]")
+            }
+        }
+        if !runLoopStalls.isEmpty {
+            lines.append("--- RUN LOOP STALLS (newest first) ---")
+            for stall in runLoopStalls.suffix(25).reversed() {
+                lines.append("L t=\(elapsed(stall.at)) \(f(stall.ms))ms \(stall.section)")
             }
         }
         if !slowScrollSegments.isEmpty {

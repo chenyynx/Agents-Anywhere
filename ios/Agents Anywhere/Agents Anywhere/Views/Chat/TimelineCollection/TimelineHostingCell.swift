@@ -13,6 +13,19 @@ import UIKit
 final class TimelineHostingCell: UICollectionViewCell {
     static let reuseIdentifier = "TimelineHostingCell"
 
+#if AA_TIMELINE_PROBE
+    /// SwiftUI hosting layout runs inside this call, off the scroll callback
+    /// stack. Timing it is how the probe tells a UIKit/SwiftUI layout stall
+    /// apart from a stall in the controller's own passes.
+    override func layoutSubviews() {
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("cell.hostingLayout")
+        super.layoutSubviews()
+        TimelineProbeStore.shared.noteScrollSegment("cell.hostingLayout", since: probeStart)
+        TimelineProbeStore.shared.leaveSection()
+    }
+#endif
+
     /// The hosting content's laid-out height, in row coordinates, already
     /// rounded up. This **is** the measurement: the official row wraps its
     /// content in `_GeometryActionModifier(value: GeometryProxy.size)`

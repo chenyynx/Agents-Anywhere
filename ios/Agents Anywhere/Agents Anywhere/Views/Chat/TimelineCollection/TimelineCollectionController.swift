@@ -372,8 +372,10 @@ final class TimelineCollectionController: UIViewController {
             // inside UICollectionView; time it so a coast hitch can be blamed
             // on cell materialization instead of a background pass.
             let probeCell = CACurrentMediaTime()
+            TimelineProbeStore.shared.enterSection("cellProvider")
             defer {
                 TimelineProbeStore.shared.noteScrollSegment("cellProvider", since: probeCell)
+                TimelineProbeStore.shared.leaveSection()
             }
 #endif
             if let self, let content = self.content {
@@ -1403,6 +1405,7 @@ final class TimelineCollectionController: UIViewController {
         pendingMeasurementTask = Task { @MainActor [weak self] in
 #if AA_TIMELINE_PROBE
             let probeStart = CACurrentMediaTime()
+            TimelineProbeStore.shared.enterSection("pendingMeasure")
             var probeMeasured = 0
             var probeSkipped = 0
             var probeScrolled = 0
@@ -1414,6 +1417,7 @@ final class TimelineCollectionController: UIViewController {
                     + "ms=\(Int(((CACurrentMediaTime() - probeStart) * 1000).rounded()))")
                 TimelineProbeStore.shared.noteScrollSegment("pendingMeasure.pass",
                                                              since: probeStart)
+                TimelineProbeStore.shared.leaveSection()
             }
 #endif
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
@@ -1690,10 +1694,12 @@ final class TimelineCollectionController: UIViewController {
                     self.visibleCellSettleNudged = false
 #if AA_TIMELINE_PROBE
                     let probeSettle = CACurrentMediaTime()
+                    TimelineProbeStore.shared.enterSection("settle")
 #endif
                     let settleResult = self.settleVisibleCellHeightsOnce()
 #if AA_TIMELINE_PROBE
                     TimelineProbeStore.shared.noteScrollSegment("settle.pass", since: probeSettle)
+                    TimelineProbeStore.shared.leaveSection()
 #endif
                     if !settleResult { return }
                     if CACurrentMediaTime() >= slotEnd { break }
@@ -1880,10 +1886,12 @@ final class TimelineCollectionController: UIViewController {
             self.cellFrameSyncScheduled = false
 #if AA_TIMELINE_PROBE
             let probeSync = CACurrentMediaTime()
+            TimelineProbeStore.shared.enterSection("frameSync")
 #endif
             self.syncVisibleCellFrames()
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteScrollSegment("frameSync.pass", since: probeSync)
+            TimelineProbeStore.shared.leaveSection()
 #endif
         }
     }
@@ -3205,6 +3213,8 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.scrollTick()
         let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("didScroll")
+        defer { TimelineProbeStore.shared.leaveSection() }
 #endif
         let current = viewport
         if phase.phase == .interacting { rearmVisiblePulls(at: current) }
@@ -3228,7 +3238,11 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         guard !navigationSuspended else { return }
 #if AA_TIMELINE_PROBE
         let probeStart = CACurrentMediaTime()
-        defer { TimelineProbeStore.shared.noteScrollSegment("endDragging.total", since: probeStart) }
+        TimelineProbeStore.shared.enterSection("endDragging")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("endDragging.total", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
 #endif
         // Official: the drag-end event applies only while `motion == dragging`
         // (part-ag §1.7). If a programmatic return is already animating (a
@@ -3268,7 +3282,11 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         guard !navigationSuspended else { return }
 #if AA_TIMELINE_PROBE
         let probeStart = CACurrentMediaTime()
-        defer { TimelineProbeStore.shared.noteScrollSegment("endDecel.total", since: probeStart) }
+        TimelineProbeStore.shared.enterSection("endDecel")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("endDecel.total", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
 #endif
         // Official: the deceleration-end event applies only while
         // `motion == coasting` (part-ag §1.7). A return that halted the coast

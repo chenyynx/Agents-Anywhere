@@ -193,6 +193,14 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     }
 
     override func layoutSubviews() {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("cell.markdownLayout")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("cell.markdownLayout", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         super.layoutSubviews()
         let width = contentView.bounds.width
         if width > 0, abs(width - lastLayoutWidth) > 0.5 {

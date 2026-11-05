@@ -219,7 +219,7 @@ import Testing
         let chat = SessionChatModel(session: repo.session(id: "session"), repository: repo,
                                     attachments: V2AttachmentService(attachmentAPI: V2AttachmentAPI(transport: http)))
         await chat.prepareOpening()
-        #expect(chat.timeline.rows.count == V2SessionCachePolicy.defaultOpeningWindow)
+        #expect(chat.timeline.rows.count == min(1000, V2SessionCachePolicy.defaultOpeningWindow))
         #expect(chat.timeline.rows.last?.id == "item-1000")
         await store.close(removing: true)
     }

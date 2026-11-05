@@ -852,12 +852,13 @@ private struct SidebarDrawerCardClip: ViewModifier {
     let shape: RoundedRectangle
     let enabled: Bool
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.clipShape(shape)
-        } else {
-            content
-        }
+    // Structure stays fixed across variants; only the radius parameter
+    // changes. An `if` here replaced the whole card subtree (the chat page
+    // and its collection view) whenever the A/B variant switched, which is
+    // what made the page vanish mid-swipe in b964.
+    func body(content: Content) -> some View {
+        content.clipShape(RoundedRectangle(cornerRadius: enabled ? shape.cornerRadius : 0,
+                                           style: shape.style))
     }
 }
 
@@ -865,12 +866,9 @@ private struct SidebarDrawerScreenClip: ViewModifier {
     let radius: CGFloat
     let enabled: Bool
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content.clipShape(RoundedRectangle(cornerRadius: radius, style: .circular))
-        } else {
-            content
-        }
+    func body(content: Content) -> some View {
+        content.clipShape(RoundedRectangle(cornerRadius: enabled ? radius : 0,
+                                           style: .circular))
     }
 }
 
@@ -1030,17 +1028,15 @@ private struct SidebarDrawerSidebarShade: ViewModifier {
     /// Probe A/B: shipping always shades (variant 3 removes it).
     var enabled: Bool = true
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if enabled {
-            content
-                .overlay {
-                    Color.black
-                        .opacity(max(0, 1 - motion.progress) * 0.4)
-                        .allowsHitTesting(false)
-                }
-        } else {
-            content
-        }
+    // Same structural rule as the clips: keep the overlay mounted and only
+    // drive its opacity, so a variant switch never rebuilds the sidebar.
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                Color.black
+                    .opacity(enabled ? max(0, 1 - motion.progress) * 0.4 : 0)
+                    .allowsHitTesting(false)
+            }
     }
 }
 

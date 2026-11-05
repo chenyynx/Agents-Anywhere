@@ -32,13 +32,15 @@ actor V2LocalStore {
     /// activity cache is decoded here too, so restoring a few hundred child
     /// rows never blocks the main actor.
     func restoreSession(_ id: String,
-                        window: Int = V2SessionCachePolicy.defaultOpeningWindow) -> V2SessionRestore? {
+                        window: Int = V2SessionCachePolicy.defaultOpeningWindow,
+                        byteBudget: Int = .max) -> V2SessionRestore? {
         guard valid else { return nil }
         // P2 read path: the row store is the source when it holds this
         // session. A missing/malformed database row falls back to the JSON
         // archive, which also lazily imports that archive into the store.
         if let database = timelineStore(),
-           let stored = try? database.read(sessionID: id, limit: max(1, window)),
+           let stored = try? database.read(sessionID: id, limit: max(1, window),
+                                           byteBudget: byteBudget),
            let state = stored.meta.stateBlob,
            let decodedArchive = try? JSONDecoder().decode(V2SessionArchive.self, from: state) {
             // A failed database write must not beat a newer JSON archive:
@@ -66,7 +68,8 @@ actor V2LocalStore {
                 // An offline read must still refresh the LRU timestamp.
                 try? database.touch(sessionID: id, at: Date().timeIntervalSince1970)
                 return V2SessionRestore(archive: archive, items: items,
-                    subAgentActivity: activity, localHasOlderRows: localOlder)
+                    subAgentActivity: activity, localHasOlderRows: localOlder,
+                    payloadBytes: stored.rows.reduce(0) { $0 + $1.payload.count })
             }
         }
 

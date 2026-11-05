@@ -6,14 +6,21 @@ nonisolated struct V2SessionCachePolicy {
     /// cache instead of the network. Disk use is bounded by the user's cache
     /// limit (`LocalCachePolicy`) and the row store's per-session cap.
     var maximumSessions = 20
-    var maximumTimelineItems = 1000
+    /// Kept rows per session. 3000 covers the measured multi-thousand-event
+    /// sessions (`sess_qosxGz-dnnK4jw`: 2575 items / 23 MB payload) while the
+    /// opening byte budget bounds the decoded memory.
+    var maximumTimelineItems = 3000
     /// Restore the same window the app keeps resident. Reading only 300 of
-    /// the 1000 rows the session was holding made a re-opened session look
-    /// like it had lost its loaded history (pp 2026-11-05: switching away and
-    /// back re-loaded pages the disk already had).
-    static let defaultOpeningWindow = 1000
+    /// the rows the session was holding made a re-opened session look like it
+    /// had lost its loaded history (pp 2026-11-05: switching away and back
+    /// re-loaded pages the disk already had).
+    static let defaultOpeningWindow = 3000
     /// Rows read from the local store when a session opens.
     var openingWindow = Self.defaultOpeningWindow
+    /// Payload bytes restored at open. The local rows are raw item JSON;
+    /// 64 MB is <5% of a 6 GB device's jetsam budget and covers the measured
+    /// session above entirely.
+    var openingByteBudget = 64 * 1024 * 1024
     /// One history/latest page, aligned with the official Code events page.
     var networkPageSize = 200
     /// How long an accepted direct send waits before the page reads the newest
@@ -332,7 +339,10 @@ final class V2SessionRepository {
         let entry = entry(for: id)
         guard entry.projection == nil, !entry.hasReadLocal else { return }
         if entry.localReadTask == nil {
-            entry.localReadTask = Task { await localStore.restoreSession(id, window: policy.openingWindow) }
+            entry.localReadTask = Task {
+                await localStore.restoreSession(id, window: policy.openingWindow,
+                                                byteBudget: policy.openingByteBudget)
+            }
         }
         let signpost = PerfSignpost.begin("session.restore")
         defer { PerfSignpost.end("session.restore", signpost) }
@@ -343,6 +353,7 @@ final class V2SessionRepository {
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteHistory(
             "local restore rows=\(saved?.items.count ?? 0) "
+            + "bytes=\((saved?.payloadBytes ?? 0) / 1_048_576)MB "
             + "ms=\(Int(((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1000).rounded()))")
 #endif
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }

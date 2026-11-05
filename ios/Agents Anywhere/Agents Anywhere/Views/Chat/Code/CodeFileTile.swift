@@ -235,9 +235,9 @@ struct CodeFileTiles: View {
     var body: some View {
         let rows = CodeAttachmentGridPlan.rows(count: files.count)
         CodeAttachmentGrid(rows: rows) { placement in
-            if placement.isFiller {
-                Color.clear
-            } else if files.indices.contains(placement.index) {
+            // Fillers are drawn by the grid itself; this closure only sees real
+            // tiles.
+            if files.indices.contains(placement.index) {
                 CodeFileTile(
                     file: files[placement.index],
                     size: CodeAttachmentTileMetrics.square,

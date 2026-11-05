@@ -7,7 +7,11 @@ nonisolated struct V2SessionCachePolicy {
     /// limit (`LocalCachePolicy`) and the row store's per-session cap.
     var maximumSessions = 20
     var maximumTimelineItems = 1000
-    static let defaultOpeningWindow = 300
+    /// Restore the same window the app keeps resident. Reading only 300 of
+    /// the 1000 rows the session was holding made a re-opened session look
+    /// like it had lost its loaded history (pp 2026-11-05: switching away and
+    /// back re-loaded pages the disk already had).
+    static let defaultOpeningWindow = 1000
     /// Rows read from the local store when a session opens.
     var openingWindow = Self.defaultOpeningWindow
     /// One history/latest page, aligned with the official Code events page.
@@ -332,7 +336,15 @@ final class V2SessionRepository {
         }
         let signpost = PerfSignpost.begin("session.restore")
         defer { PerfSignpost.end("session.restore", signpost) }
+#if AA_TIMELINE_PROBE
+        let restoreStarted = ProcessInfo.processInfo.systemUptime
+#endif
         let saved = await entry.localReadTask?.value
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteHistory(
+            "local restore rows=\(saved?.items.count ?? 0) "
+            + "ms=\(Int(((ProcessInfo.processInfo.systemUptime - restoreStarted) * 1000).rounded()))")
+#endif
         guard isCurrent(entry), entry.projection == nil, !entry.hasReadLocal else { return }
         entry.hasReadLocal = true; entry.localReadTask = nil
         guard let saved, saved.archive.session.id == id else { return }

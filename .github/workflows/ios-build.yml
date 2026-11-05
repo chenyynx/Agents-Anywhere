@@ -1342,9 +1342,16 @@ jobs:
           xcrun simctl terminate "$UDID" com.agentsanywhere.app || true
           LAUNCH=$(xcrun simctl launch "$UDID" com.agentsanywhere.app aa-timeline-scroll-profile)
           echo "$LAUNCH"
-          PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
           sleep 2
-          xcrun xctrace record --template 'Time Profiler' --attach "$PID" \
+          # The pid simctl prints is the simulator-side pid; the app itself is
+          # a host process, which is what xctrace attaches to.
+          pgrep -fl "Agents Anywhere.app/Agents Anywhere" || true
+          PID=$(pgrep -f "Agents Anywhere.app/Agents Anywhere" | head -1 || true)
+          if [ -z "$PID" ]; then
+            PID=$(echo "$LAUNCH" | sed -E 's/.*: ([0-9]+)$/\1/')
+          fi
+          echo "attach pid=$PID"
+          xcrun xctrace record --template 'Time Profiler' --no-prompt --attach "$PID" \
             --time-limit 25s --output "$RUNNER_TEMP/scroll.trace" || true
           ls -la "$RUNNER_TEMP/scroll.trace" || true
           xcrun xctrace export --input "$RUNNER_TEMP/scroll.trace" --toc \

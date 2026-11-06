@@ -369,7 +369,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let now = CACurrentMediaTime()
             gaps.append((now - last) * 1000)
             last = now
+            if gaps.count % 30 == 0 { writeScrollProfile(gaps, completed: false) }
         }
+        writeScrollProfile(gaps, completed: true)
+    }
+
+    /// Persist the running scroll statistics: the CI job samples the process
+    /// while the loop is still running, so waiting for the final file alone
+    /// read a stale or missing report.
+    private func writeScrollProfile(_ gaps: [Double], completed: Bool) {
+        guard !gaps.isEmpty else { return }
         let sorted = gaps.sorted()
         report["scrollProfile"] = [
             "samples": gaps.count,
@@ -379,6 +388,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "hitches": gaps.filter { $0 > 33 }.count,
             "rows": entries.count,
         ]
+        persist(phase: completed ? "scrollProfile" : "scrollProfileProgress")
     }
 
     /// Representative message text: prose, a list and a code block, so a row

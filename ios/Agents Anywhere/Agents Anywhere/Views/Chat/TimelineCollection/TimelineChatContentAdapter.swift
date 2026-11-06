@@ -1131,6 +1131,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
+    /// Width-less entry kept for the protocol and the offscreen measurer.
+    func rowView(for item: TimelineListItem) -> AnyView {
+        rowView(for: item, width: 0)
+    }
+
     func rowView(for item: TimelineListItem, width: CGFloat) -> AnyView {
         switch item {
         case .olderPrompt:

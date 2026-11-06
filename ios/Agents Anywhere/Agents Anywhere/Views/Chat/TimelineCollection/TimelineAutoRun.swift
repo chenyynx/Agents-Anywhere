@@ -358,6 +358,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         MarkdownLayoutStats.reset()
 #endif
         var gaps: [Double] = []
+        var layoutDurations: [Double] = []
         var last = CACurrentMediaTime()
         let started = last
         var y: CGFloat = 0
@@ -366,8 +367,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             y += direction * 24
             if y <= 0 { y = 0; direction = 1 }
             if y >= maxOffset { y = maxOffset; direction = -1 }
+            let layoutStart = CACurrentMediaTime()
             view.setContentOffset(CGPoint(x: 0, y: y), animated: false)
             view.layoutIfNeeded()
+            layoutDurations.append((CACurrentMediaTime() - layoutStart) * 1000)
             await wait(16)
             let now = CACurrentMediaTime()
             gaps.append((now - last) * 1000)
@@ -375,6 +378,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             if gaps.count % 30 == 0 { writeScrollProfile(gaps, completed: false) }
         }
 #if DEBUG
+        let sortedLayout = layoutDurations.sorted()
+        if !sortedLayout.isEmpty {
+            report["layoutCost"] = [
+                "samples": sortedLayout.count,
+                "medianMs": sortedLayout[sortedLayout.count / 2],
+                "p95Ms": sortedLayout[min(sortedLayout.count - 1,
+                                          Int(Double(sortedLayout.count - 1) * 0.95))],
+                "maxMs": sortedLayout.last ?? 0,
+            ]
+        }
         report["markdownLayout"] = [
             "calls": MarkdownLayoutStats.calls,
             "measured": MarkdownLayoutStats.measured,

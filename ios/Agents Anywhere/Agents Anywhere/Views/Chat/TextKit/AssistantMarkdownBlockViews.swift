@@ -78,8 +78,14 @@ enum AssistantMarkdownBlockViewFactory {
                                             displayScale: displayScale,
                                             interactiveText: interactiveText), height)
         case .code(let code):
+            // The height above already laid the source out at unbounded width;
+            // hand that size to the card so its init does not repeat it.
+            let textSize = AssistantMarkdownTextLayout.cachedIntrinsicSize(
+                of: code.code, displayScale: displayScale, key: key,
+                digest: digest, typographyRevision: typographyRevision)
             return (AssistantCodeBlockView(codeBlock: code, width: width,
-                                           displayScale: displayScale), height)
+                                           displayScale: displayScale,
+                                           textSize: textSize), height)
         case .table(let table):
             return (AssistantTableBlockView(table: table, width: width,
                                             displayScale: displayScale), height)
@@ -504,10 +510,11 @@ final class AssistantCodeBlockView: UIView {
     private var highlightGeneration = 0
     private var copyResetWorkItem: DispatchWorkItem?
 
-    init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
+    init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat,
+         textSize: CGSize? = nil) {
         self.codeBlock = codeBlock
         self.displayScale = displayScale
-        self.textSize = AssistantMarkdownTextLayout.intrinsicSize(
+        self.textSize = textSize ?? AssistantMarkdownTextLayout.intrinsicSize(
             of: codeBlock.code, displayScale: displayScale)
         super.init(frame: .zero)
         backgroundColor = codeBlock.fillColor ?? ChatTextUIColors.codeCardFill

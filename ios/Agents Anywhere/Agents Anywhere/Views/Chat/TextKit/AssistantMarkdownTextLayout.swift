@@ -91,6 +91,47 @@ enum AssistantMarkdownTextLayout {
                       height: roundUp(used.height, scale: displayScale))
     }
 
+    /// Code text size, memoised by the same key + digest the height cache
+    /// uses. The height computation and the card's own init both need the
+    /// unbounded layout of the source; without this they laid the whole code
+    /// block out twice, and a long card was the single most expensive block on
+    /// the device probe (max 60 ms).
+    private struct IntrinsicKey: Hashable {
+        let key: String
+        let digest: Int
+        let displayScale: CGFloat
+        let typographyRevision: Int
+    }
+
+    private static var intrinsicSizes: [IntrinsicKey: CGSize] = [:]
+    private static var intrinsicOrder: [IntrinsicKey] = []
+    private static let intrinsicLimit = 256
+
+    static func cachedIntrinsicSize(of attributed: NSAttributedString,
+                                    displayScale: CGFloat,
+                                    key: String?,
+                                    digest: Int,
+                                    typographyRevision: Int) -> CGSize {
+        guard let key else {
+            return intrinsicSize(of: attributed, displayScale: displayScale)
+        }
+        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
+        let cacheKey = IntrinsicKey(
+            key: key, digest: digest,
+            displayScale: (scale * 100).rounded() / 100,
+            typographyRevision: typographyRevision)
+        if let hit = intrinsicSizes[cacheKey] { return hit }
+        let size = intrinsicSize(of: attributed, displayScale: displayScale)
+        intrinsicSizes[cacheKey] = size
+        intrinsicOrder.append(cacheKey)
+        if intrinsicOrder.count > intrinsicLimit {
+            let drop = intrinsicOrder.count - intrinsicLimit
+            for old in intrinsicOrder.prefix(drop) { intrinsicSizes[old] = nil }
+            intrinsicOrder.removeFirst(drop)
+        }
+        return size
+    }
+
     /// Height of any block, from the same measurements its view installs as
     /// explicit constraints.
     static func height(of block: AssistantMarkdownBlock,
@@ -297,6 +338,19 @@ enum AssistantMarkdownTextLayout {
                        cache: AssistantMarkdownBlockHeightCache?) -> CGFloat {
         guard let key, let cache else {
             return height(of: block, width: width, displayScale: displayScale)
+        }
+        if case .code(let code) = block {
+            // The intrinsic size is the whole cost of a code block's height;
+            // the arithmetic around it is free, and the card's init reads the
+            // same entry instead of laying the source out again.
+            let textSize = cachedIntrinsicSize(
+                of: code.code, displayScale: displayScale, key: key,
+                digest: digest, typographyRevision: typographyRevision)
+            let divider = displayScale > 0 && displayScale.isFinite
+                ? 1 / displayScale : 1
+            return roundUp(code.headerHeight + divider
+                           + code.contentPadding * 2 + textSize.height,
+                           scale: displayScale)
         }
         return cache.height(
             blockKey: key, digest: digest, width: width,

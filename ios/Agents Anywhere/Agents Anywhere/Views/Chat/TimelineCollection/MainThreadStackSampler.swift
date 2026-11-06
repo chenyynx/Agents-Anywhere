@@ -43,8 +43,12 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     private static let maxWindowSeconds: TimeInterval = 120
     private static let maxActiveSeconds: TimeInterval = 60
 
-    private static let reportedStacks = 15
+    private static let reportedStacks = 10
+    private static let reportedApps = 12
     private static let reportedFrames = 18
+    /// The app image name dladdr reports; our symbols keep their names in the
+    /// Release build because probe builds disable stripping.
+    private static let appImagePrefix = "Agents Anywhere`"
 
     // MARK: - Shared state (guarded by `lock`)
 
@@ -188,11 +192,23 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         }
         var lines: [String] = []
         lines.append("--- MAIN THREAD STACKS (2ms during scroll) ---")
+        let idleShare = Double(aggregate.idleSamples)
+            / Double(max(aggregate.sampleCount, 1)) * 100
         lines.append("MT window=\(Self.f(aggregate.windowSeconds))s "
             + "active=\(Self.f(aggregate.activeSeconds))s "
             + "samples=\(aggregate.sampleCount) frames=\(aggregate.frameCount) "
-            + "full=\(aggregate.full ? 1 : 0)")
+            + "idle=\(Self.f(idleShare))% full=\(aggregate.full ? 1 : 0)")
         var symbolCache: [UInt64: String] = [:]
+        // MA = which of our call paths led into the sampled system code
+        // (leaf). System frames are redacted in a Release app, so this is the
+        // half that survives symbolisation.
+        for (index, app) in aggregate.appLabels.enumerated() {
+            let share = Double(app.count) / Double(max(aggregate.sampleCount, 1)) * 100
+            let runMs = Double(app.maxRun) * Double(Self.intervalMicroseconds) / 1000
+            lines.append("MA #\(index + 1) \(Self.f(share))% "
+                + "\(app.count)/\(aggregate.sampleCount) "
+                + "maxRun=\(Self.f(runMs))ms \(Self.shortLabel(app.label))")
+        }
         for (index, stack) in aggregate.stacks.enumerated() {
             let share = Double(stack.count) / Double(max(aggregate.sampleCount, 1)) * 100
             let runMs = Double(stack.maxRun) * Double(Self.intervalMicroseconds) / 1000
@@ -202,8 +218,7 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
                 lines.append("  \(symbolize(pc, cache: &symbolCache))")
             }
         }
-        lines.append(contentsOf: hitchLines(aggregate, hitches: hitches,
-                                            cache: &symbolCache))
+        lines.append(contentsOf: hitchLines(aggregate, hitches: hitches))
         return lines
     }
 
@@ -382,13 +397,23 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         let pcs: [UInt64]
     }
 
+    private struct LabelCount {
+        let label: String
+        let count: Int
+        let maxRun: Int
+    }
+
     private struct Aggregate {
         let sampleCount: Int
         let frameCount: Int
         let full: Bool
         let windowSeconds: Double
         let activeSeconds: Double
+        let idleSamples: Int
         let stacks: [Stack]
+        let appLabels: [LabelCount]
+        let sampleAppLabels: [String]
+        let sampleLeafLabels: [String]
         let sampleHashes: [UInt64]
         let sampleTimes: [Double]
     }
@@ -436,8 +461,17 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         var counts: [UInt64: Int] = [:]
         var representative: [UInt64: Int] = [:]
         var maxRun: [UInt64: Int] = [:]
+        var idleHashes: Set<UInt64> = []
+        var appCounts: [String: Int] = [:]
+        var appMaxRun: [String: Int] = [:]
+        var sampleApp = [String](repeating: "", count: samples)
+        var sampleLeaf = [String](repeating: "", count: samples)
+        var symbolCache: [UInt64: String] = [:]
+        var idleSamples = 0
         var previous: UInt64 = 0
         var run = 0
+        var previousApp = ""
+        var appRun = 0
 
         for index in 0..<samples {
             let start = Int(sampleStarts[index])
@@ -457,10 +491,45 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
                 run = 1
                 previous = hash
             }
+
+            // Two attributions per sample. The leaf says what the CPU was
+            // doing; the app frame says which of our call paths led there.
+            // System symbols are `<redacted>` in a release app, so the app
+            // frame is the reliable half.
+            let leaf = label(frames[start], cache: &symbolCache)
+            sampleLeaf[index] = leaf
+            let app = appLabel(start: start, depth: depth, cache: &symbolCache)
+            if let app {
+                sampleApp[index] = app
+                appCounts[app, default: 0] += 1
+                if index > 0, app == previousApp {
+                    appRun += 1
+                } else {
+                    if index > 0, !previousApp.isEmpty {
+                        appMaxRun[previousApp] = max(appMaxRun[previousApp] ?? 0, appRun)
+                    }
+                    appRun = 1
+                    previousApp = app
+                }
+            } else {
+                if index > 0, !previousApp.isEmpty {
+                    appMaxRun[previousApp] = max(appMaxRun[previousApp] ?? 0, appRun)
+                }
+                previousApp = ""
+                appRun = 0
+                if Self.isWaitLeaf(leaf) {
+                    idleSamples += 1
+                    idleHashes.insert(hash)
+                }
+            }
         }
         if samples > 0 { maxRun[previous] = max(maxRun[previous] ?? 0, run) }
+        if !previousApp.isEmpty {
+            appMaxRun[previousApp] = max(appMaxRun[previousApp] ?? 0, appRun)
+        }
 
         let stacks = counts.sorted { $0.value > $1.value }
+            .filter { !idleHashes.contains($0.key) }
             .prefix(Self.reportedStacks)
             .compactMap { pair -> Stack? in
                 let hash = pair.key
@@ -473,50 +542,121 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
                              maxRun: maxRun[hash] ?? 0, pcs: pcs)
             }
 
+        let appLabels = appCounts.sorted { $0.value > $1.value }
+            .prefix(Self.reportedApps)
+            .map { LabelCount(label: $0.key, count: $0.value,
+                              maxRun: appMaxRun[$0.key] ?? 0) }
+
         return Aggregate(
             sampleCount: samples,
             frameCount: framesUsed,
             full: full,
             windowSeconds: max(end - start, 0),
             activeSeconds: Double(samples) * Double(Self.intervalMicroseconds) / 1_000_000,
+            idleSamples: idleSamples,
             stacks: stacks,
+            appLabels: appLabels,
+            sampleAppLabels: sampleApp,
+            sampleLeafLabels: sampleLeaf,
             sampleHashes: hashes,
             sampleTimes: times)
     }
 
-    /// Name the stack that owned each of the three worst hitches the probe
-    /// recorded. This is the line that turns a 46 ms gap into a function.
+    /// Name the call path that owned each recorded hitch. Because system
+    /// symbols are redacted in a Release app, this reports a pair: our frame
+    /// (reliable) and the leaf the CPU was in (framework-level detail).
     private func hitchLines(_ aggregate: Aggregate,
-                            hitches: [(at: TimeInterval, ms: Int)],
-                            cache: inout [UInt64: String]) -> [String] {
+                            hitches: [(at: TimeInterval, ms: Int)]) -> [String] {
         guard !hitches.isEmpty else { return [] }
         var lines: [String] = []
-        let worst = hitches.sorted { $0.ms > $1.ms }.prefix(3)
-        for hitch in worst {
+        for hitch in hitches.sorted(by: { $0.ms > $1.ms }).prefix(5) {
             let low = hitch.at - Double(hitch.ms) / 1000 - 0.003
             let high = hitch.at + 0.003
-            var local: [UInt64: Int] = [:]
+            var apps: [String: Int] = [:]
+            var leaves: [String: Int] = [:]
             var total = 0
+            var idle = 0
             for index in 0..<aggregate.sampleTimes.count {
                 let time = aggregate.sampleTimes[index]
                 guard time >= low, time <= high else { continue }
                 total += 1
-                local[aggregate.sampleHashes[index], default: 0] += 1
+                let app = aggregate.sampleAppLabels[index]
+                if !app.isEmpty {
+                    apps[app, default: 0] += 1
+                } else if Self.isWaitLeaf(aggregate.sampleLeafLabels[index]) {
+                    idle += 1
+                } else {
+                    leaves[aggregate.sampleLeafLabels[index], default: 0] += 1
+                }
             }
-            guard total > 0, let top = local.max(by: { $0.value < $1.value }) else {
-                continue
+            guard total > 0 else { continue }
+            let busy = total - idle
+            var line = "MH gap=\(hitch.ms)ms samples=\(total) idle=\(idle) busy=\(busy)"
+            if let top = apps.max(by: { $0.value < $1.value }) {
+                line += " app=\(top.value)/\(busy) \(Self.shortLabel(top.key))"
             }
-            let rank = aggregate.stacks.firstIndex { $0.hash == top.key }
-            let share = Double(top.value) / Double(total) * 100
-            var frame = "unknown"
-            if let index = rank, !aggregate.stacks[index].pcs.isEmpty {
-                frame = symbolize(aggregate.stacks[index].pcs[0], cache: &cache)
+            if let top = leaves.max(by: { $0.value < $1.value }) {
+                line += " leaf=\(top.value)/\(busy) \(Self.shortLabel(top.key))"
             }
-            lines.append("MH gap=\(hitch.ms)ms samples=\(total) "
-                + "top=\(rank.map { "#\($0 + 1)" } ?? "other") "
-                + "\(Self.f(share))% \(top.value)/\(total) \(frame)")
+            lines.append(line)
         }
         return lines
+    }
+
+    // MARK: - Labels
+
+    /// `Image`Function`, no offset: the atom the report groups by.
+    private func label(_ pc: UInt64, cache: inout [UInt64: String]) -> String {
+        if let hit = cache[pc] { return hit }
+        var result = String(format: "0x%llx", pc)
+        var info = Dl_info()
+        if pc != 0, let pointer = UnsafeRawPointer(bitPattern: UInt(pc)),
+           dladdr(pointer, &info) != 0 {
+            let image = info.dli_fname.map { String(cString: $0) }
+                .map { ($0 as NSString).lastPathComponent } ?? "?"
+            if let symbol = info.dli_sname {
+                result = "\(image)`\(Self.demangle(String(cString: symbol)))"
+            } else {
+                result = "\(image)`<redacted>"
+            }
+        }
+        cache[pc] = result
+        return result
+    }
+
+    /// Deepest frame that belongs to our image: the call path that drove the
+    /// system work. `nil` means the stack never returns into our code (a wait,
+    /// a system-only worker, or a truncated chain).
+    private func appLabel(start: Int, depth: Int,
+                          cache: inout [UInt64: String]) -> String? {
+        for offset in 0..<depth {
+            let text = label(frames[start + offset], cache: &cache)
+            if text.hasPrefix(Self.appImagePrefix) { return text }
+        }
+        return nil
+    }
+
+    private static func isWaitLeaf(_ label: String) -> Bool {
+        if label.hasPrefix(appImagePrefix) { return false }
+        let text = label.lowercased()
+        for marker in ["mach_msg", "kevent", "work_interval", "semaphore_wait",
+                       "semwait_signal", "__psynch_cvwait", "__ulock_wait",
+                       "_kernelrpc_mach_port"] where text.contains(marker) {
+            return true
+        }
+        return false
+    }
+
+    /// Report-friendly label: parameters dropped, length capped.
+    private static func shortLabel(_ label: String) -> String {
+        var text = label
+        if let paren = text.firstIndex(of: "(") {
+            text = String(text[..<paren])
+        }
+        if text.count > 96 {
+            text = String(text.prefix(96)) + "…"
+        }
+        return text
     }
 
     // MARK: - Symbolication

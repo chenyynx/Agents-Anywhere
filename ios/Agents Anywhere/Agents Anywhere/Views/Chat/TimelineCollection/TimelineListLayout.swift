@@ -779,7 +779,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         let decision = TimelinePreferredAttributesDecision.selfSizing(
             delta: delta,
             cellMinY: attributes.frame.minY,
-            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             viewportBottom: viewportBottom,
@@ -825,7 +824,6 @@ final class TimelineListLayout: UICollectionViewLayout {
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.selfSizing(
             delta: delta,
-            cellMinY: attributes.frame.minY,
             cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,

@@ -55,13 +55,7 @@ enum AssistantMarkdownBlockViewFactory {
             TimelineProbeStore.shared.noteStage(
                 "text.assign", seconds: CACurrentMediaTime() - assignStart)
             #endif
-            // Measure with the view that will draw this text: one TextKit
-            // layout per block, reused when the view draws. Measuring with a
-            // throwaway stack here laid every block out a second time (the
-            // official leaf measures the leaf itself).
-            let measured = view.textView.measuredHeight(
-                width: width, displayScale: displayScale)
-            return (view, measured > 0 ? measured : height)
+            return (view, height)
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
                                            displayScale: displayScale,

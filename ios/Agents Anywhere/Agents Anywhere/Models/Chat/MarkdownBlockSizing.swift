@@ -46,3 +46,37 @@ struct MarkdownMeasurementCache {
 
     mutating func invalidate() { measurements.removeAll(keepingCapacity: true) }
 }
+
+/// Process-wide block size cache.
+///
+/// Every cell configuration hands SwiftUI a brand-new view tree, so each
+/// `MarkdownBlockLayout` starts with an empty local cache and pays the full
+/// block layout again. Sizes are pure functions of (block text, width, scale,
+/// dynamic type, direction), so they are shared across instances and with the
+/// pre-measure pass that already laid the same block out.
+nonisolated final class MarkdownBlockSizeCache: @unchecked Sendable {
+    static let shared = MarkdownBlockSizeCache()
+    private let lock = NSLock()
+    private var storage: [String: CGSize] = [:]
+    private var order: [String] = []
+    private let limit = 4096
+
+    func size(for key: String) -> CGSize? {
+        lock.lock(); defer { lock.unlock() }
+        return storage[key]
+    }
+
+    func store(_ size: CGSize, for key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if storage[key] == nil {
+            order.append(key)
+            if order.count > limit {
+                for dropped in order.prefix(order.count - limit) {
+                    storage.removeValue(forKey: dropped)
+                }
+                order.removeFirst(order.count - limit)
+            }
+        }
+        storage[key] = size
+    }
+}

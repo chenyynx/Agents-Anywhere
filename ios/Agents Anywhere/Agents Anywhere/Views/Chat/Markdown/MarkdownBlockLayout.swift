@@ -6,6 +6,9 @@ struct MarkdownBlockLayout: Layout {
     let dynamicType: DynamicTypeSize
     let displayScale: CGFloat
     let direction: LayoutDirection
+    /// Content identity (block digest plus the font that draws it). `nil`
+    /// disables the shared cache — streaming blocks change every frame.
+    var cacheKey: String? = nil
 
     struct Cache {
         var dynamicType: DynamicTypeSize
@@ -34,10 +37,18 @@ struct MarkdownBlockLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         guard let content = subviews.first else { return .zero }
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil }
+        let sharedKey = cacheKey.map {
+            "\($0)|\(width ?? -1)|\(displayScale)|\(dynamicType)|\(direction)"
+        }
+        if let sharedKey, let cached = MarkdownBlockSizeCache.shared.size(for: sharedKey) {
+            return cached
+        }
         let natural = cache.measurements.size(proposedWidth: width) {
             content.sizeThatFits(.init(width: width, height: nil))
         }
-        return cache.sizing.size(proposedWidth: width, naturalSize: natural, displayScale: displayScale)
+        let size = cache.sizing.size(proposedWidth: width, naturalSize: natural, displayScale: displayScale)
+        if let sharedKey { MarkdownBlockSizeCache.shared.store(size, for: sharedKey) }
+        return size
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {

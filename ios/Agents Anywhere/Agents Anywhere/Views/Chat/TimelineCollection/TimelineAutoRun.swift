@@ -354,6 +354,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         view.layoutIfNeeded()
         let maxOffset = max(0, view.contentSize.height - view.bounds.height)
         guard maxOffset > 0 else { return }
+#if DEBUG
+        MarkdownLayoutStats.reset()
+#endif
         var gaps: [Double] = []
         var last = CACurrentMediaTime()
         let started = last
@@ -371,6 +374,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             last = now
             if gaps.count % 30 == 0 { writeScrollProfile(gaps, completed: false) }
         }
+#if DEBUG
+        report["markdownLayout"] = [
+            "calls": MarkdownLayoutStats.calls,
+            "measured": MarkdownLayoutStats.measured,
+        ]
+#endif
         writeScrollProfile(gaps, completed: true)
     }
 

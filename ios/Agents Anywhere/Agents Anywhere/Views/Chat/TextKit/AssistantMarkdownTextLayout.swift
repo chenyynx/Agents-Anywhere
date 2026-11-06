@@ -580,14 +580,26 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     /// layout and return the used height. Drawing consumes the same layout,
     /// so measuring here does not add a second layout pass — the official
     /// leaf's `sizeThatFits`/`measuredSizes` contract.
-    func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
-        guard width > 0, width.isFinite,
-              let attributedText, attributedText.length > 0 else { return 0 }
+    /// Give the container the row width without laying the text out.
+    ///
+    /// The block height comes from `AssistantMarkdownTextLayout.height`, which
+    /// already laid the text out at this width; calling `measuredHeight` here
+    /// would lay every text block out a second time (the 2026-11-06 device
+    /// probe's `block.height` + `block.make` double cost). The view lays out
+    /// once, when it first draws.
+    func prepareLayout(width: CGFloat) {
+        guard width > 0, width.isFinite else { return }
         // Re-assert the height on every call: UITextView may have clamped the
         // container to its current bounds, and a width-only check then keeps
         // the one-line height forever.
         let target = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         if ownContainer.size != target { ownContainer.size = target }
+    }
+
+    func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite,
+              let attributedText, attributedText.length > 0 else { return 0 }
+        prepareLayout(width: width)
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         let used = ownLayoutManager.usageBoundsForTextContainer.maxY
         guard used.isFinite, used > 0 else { return 0 }

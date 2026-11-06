@@ -60,12 +60,15 @@ enum AssistantMarkdownBlockViewFactory {
             // only, and `usageBoundsForTextContainer` collapses to a one-line
             // height (device 2026-11-07 01:30: every paragraph clipped after
             // its first line). The detached measurement above is
-            // width-explicit, so it is the height the row is built with; the
-            // call still hands the width to the view's container so it draws
-            // the same layout.
-            let measured = view.textView.measuredHeight(
-                width: width, displayScale: displayScale)
-            return (view, height > 0 ? height : measured)
+            // width-explicit, so it is the height the row is built with.
+            if height > 0 {
+                // Hand the width to the container only; laying the text out
+                // here as well would make every text block two layouts.
+                view.textView.prepareLayout(width: width)
+                return (view, height)
+            }
+            return (view, view.textView.measuredHeight(
+                width: width, displayScale: displayScale))
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
                                            displayScale: displayScale,

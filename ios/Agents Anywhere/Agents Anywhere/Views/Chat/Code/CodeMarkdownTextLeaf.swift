@@ -670,11 +670,16 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 // the height. The view's own `usageBounds` collapses to one
                 // line while the view has no bounds yet (device 2026-11-07
                 // 01:30), so it is only a fallback.
-                let measured = view.measuredHeight(
-                    width: width, displayScale: displayScale)
                 let structural = height(of: block, key: record.key,
                                         digest: digest, width: width)
-                let resolved = structural > 0 ? structural : measured
+                let resolved: CGFloat
+                if structural > 0 {
+                    view.prepareLayout(width: width)
+                    resolved = structural
+                } else {
+                    resolved = view.measuredHeight(
+                        width: width, displayScale: displayScale)
+                }
                 record.constraint.constant = resolved
                 records[index].height = resolved
             }

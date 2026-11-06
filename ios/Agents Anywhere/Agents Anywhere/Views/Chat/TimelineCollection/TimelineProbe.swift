@@ -144,6 +144,16 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let detail: String
     }
 
+    /// One timed stage (`noteStage`). Cumulative since the last clear, with a
+    /// peak: a stage that is cheap on average but blocks one scroll frame
+    /// shows up in `max` even when `total` looks harmless.
+    struct StageStat {
+        var count = 0
+        var totalMs = 0.0
+        var maxMs = 0.0
+        var lastMs = 0.0
+    }
+
     /// One 10 Hz viewport sample, kept only for offset findings.
     struct ViewSample {
         let at: TimeInterval
@@ -223,6 +233,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// moment the slow rebuild happened instead of drifting to "now".
     private var sidebarRebuildMaxAt: TimeInterval = 0
     private(set) var changes: [HeightChange] = []
+    /// `noteStage` accumulators, keyed by stage name.
+    private var stages: [String: StageStat] = [:]
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
     private(set) var historyEvents: [HistoryEvent] = []
@@ -547,6 +559,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerFirstTickSeen = false
         drawerPeriodTotal = 0
         postDrawerTicksRemaining = 0
+        stages.removeAll()
         stackSampler.clear()
         runStartedAt = CACurrentMediaTime()
     }
@@ -860,6 +873,20 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         }
         counters["shellSessionsMsMax", default: 0] =
             max(counters["shellSessionsMsMax"] ?? 0, ms)
+    }
+
+    /// Accumulate one timed stage. Unlike `noteScrollSegment`, this records
+    /// every call: the stage split is what the device report cannot get from
+    /// sampling (system frames are redacted), so the totals are the evidence.
+    func noteStage(_ name: String, seconds: TimeInterval) {
+        let ms = max(0, seconds) * 1000
+        guard ms.isFinite else { return }
+        var stat = stages[name] ?? StageStat()
+        stat.count += 1
+        stat.totalMs += ms
+        stat.lastMs = ms
+        stat.maxMs = max(stat.maxMs, ms)
+        stages[name] = stat
     }
 
     func noteMeasureDuration(_ seconds: TimeInterval) {
@@ -1940,6 +1967,16 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
         if let lastClearedAt {
             lines.append("cleared \(Self.absolute(lastClearedAt)) CST")
+        }
+
+        if !stages.isEmpty {
+            lines.append("--- STAGES (since clear) ---")
+            for (name, stat) in stages.sorted(by: { $0.value.totalMs > $1.value.totalMs }) {
+                let avg = stat.totalMs / Double(max(stat.count, 1))
+                lines.append("G \(name) n=\(stat.count) "
+                    + "total=\(f(stat.totalMs))ms avg=\(f(avg))ms "
+                    + "last=\(f(stat.lastMs))ms max=\(f(stat.maxMs))ms")
+            }
         }
 
         lines.append("--- WINDOW ---")

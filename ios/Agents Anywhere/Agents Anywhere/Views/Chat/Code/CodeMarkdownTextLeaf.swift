@@ -350,6 +350,13 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     /// only when the document's generation changed (a correction, a typography
     /// change, or a fallback document without block identities).
     private func applyDocument(width: CGFloat, widthChanged: Bool) {
+        #if AA_TIMELINE_PROBE
+        let buildStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "codeStack.build", seconds: CACurrentMediaTime() - buildStart)
+        }
+        #endif
         guard let document else {
             UIView.performWithoutAnimation { removeRecords(from: 0) }
             builtGeneration = generation
@@ -429,9 +436,21 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         // link/selection interaction. Fenced code owns its copy button and
         // horizontal scroll; tables keep their own link lift/menu, so
         // those subtrees stay inert.
+#if AA_TIMELINE_PROBE
+        let interactionStart = CACurrentMediaTime()
+#endif
         enableTextInteraction(in: made.view)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.interaction", seconds: CACurrentMediaTime() - interactionStart)
+        let constraintStart = CACurrentMediaTime()
+#endif
         let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
         constraint.isActive = true
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.constraints", seconds: CACurrentMediaTime() - constraintStart)
+#endif
         return Record(key: key, kind: block.kindName, digest: digest,
                       view: made.view, constraint: constraint)
     }
@@ -439,7 +458,14 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     private func appendRecord(block: AssistantMarkdownBlock, key: String,
                               digest: Int, width: CGFloat) {
         let record = makeRecord(block: block, key: key, digest: digest, width: width)
+#if AA_TIMELINE_PROBE
+        let addStart = CACurrentMediaTime()
+#endif
         stack.addArrangedSubview(record.view)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.addSubview", seconds: CACurrentMediaTime() - addStart)
+#endif
         records.append(record)
     }
 

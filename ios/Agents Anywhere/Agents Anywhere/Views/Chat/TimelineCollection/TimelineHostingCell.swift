@@ -26,6 +26,8 @@ final class TimelineHostingCell: UICollectionViewCell {
         let probeStart = CACurrentMediaTime()
         TimelineProbeStore.shared.enterSection("cell.hostingLayout")
         super.layoutSubviews()
+        TimelineProbeStore.shared.noteStage("cell.hostingLayout",
+                                           seconds: CACurrentMediaTime() - probeStart)
         TimelineProbeStore.shared.noteScrollSegment("cell.hostingLayout", since: probeStart)
         TimelineProbeStore.shared.leaveSection()
         if probeConfiguredAt > 0 {
@@ -85,6 +87,11 @@ final class TimelineHostingCell: UICollectionViewCell {
                    seededHeight: CGFloat? = nil) {
 #if AA_TIMELINE_PROBE
         probeConfiguredAt = CACurrentMediaTime()
+        let configureStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "cell.configure", seconds: CACurrentMediaTime() - configureStart)
+        }
 #endif
         self.itemID = itemID
         self.policy = policy
@@ -152,6 +159,13 @@ final class TimelineHostingCell: UICollectionViewCell {
     override func preferredLayoutAttributesFitting(
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
+#if AA_TIMELINE_PROBE
+        let fitStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "cell.fit", seconds: CACurrentMediaTime() - fitStart)
+        }
+#endif
         // The attributes the layout just handed over are the current truth;
         // the stored flag is the configuration-time snapshot. Either one
         // saying "measured" means the layout owns the height and the cell must

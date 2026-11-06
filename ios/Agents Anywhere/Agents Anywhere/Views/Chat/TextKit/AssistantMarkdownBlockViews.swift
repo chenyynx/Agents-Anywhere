@@ -19,6 +19,14 @@ enum AssistantMarkdownBlockViewFactory {
         #if DEBUG
         CodePageBuildStats.blockViewCreations += 1
         #endif
+        #if AA_TIMELINE_PROBE
+        let makeStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "block.make", seconds: CACurrentMediaTime() - makeStart)
+        }
+        let heightStart = CACurrentMediaTime()
+        #endif
         // `sizeThatFits` measured this document with the same per-block memo
         // immediately before the layout pass builds the views. The old call
         // here bypassed that memo and laid every block out a second time on
@@ -27,10 +35,26 @@ enum AssistantMarkdownBlockViewFactory {
             of: block, width: width, displayScale: displayScale,
             key: key, digest: digest,
             typographyRevision: typographyRevision, cache: cache)
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.height", seconds: CACurrentMediaTime() - heightStart)
+        #endif
         switch block {
         case .text(let text):
+            #if AA_TIMELINE_PROBE
+            let initStart = CACurrentMediaTime()
+            #endif
             let view = AssistantMarkdownTextBlockView(interactive: interactiveText)
+            #if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "textView.init", seconds: CACurrentMediaTime() - initStart)
+            let assignStart = CACurrentMediaTime()
+            #endif
             view.textView.attributedText = text.attributed
+            #if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "text.assign", seconds: CACurrentMediaTime() - assignStart)
+            #endif
             return (view, height)
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,

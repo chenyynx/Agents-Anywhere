@@ -24,15 +24,21 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     /// fallback keeps previews and gates honest when they build the row
     /// directly.
     var typography: TimelineTypographySnapshot?
+    /// The collection column width. When known, the stack can build its block
+    /// views while the cell is still offscreen (configured ahead of its first
+    /// layout) instead of in the frame that draws the row.
+    var columnWidth: CGFloat?
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
 
-    init(text: String, typography: TimelineTypographySnapshot?) {
+    init(text: String, typography: TimelineTypographySnapshot?,
+         columnWidth: CGFloat? = nil) {
         self.text = text
         self.typography = typography
+        self.columnWidth = columnWidth
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -202,7 +208,8 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
                        displayScale: max(displayScale, 1),
                        generation: coordinator.generation,
                        cache: coordinator.heightCache,
-                       typographyRevision: coordinator.builderRevision ?? 0)
+                       typographyRevision: coordinator.builderRevision ?? 0,
+                       width: columnWidth)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize,
@@ -291,19 +298,124 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The latest document. Building happens on the next layout pass, when the
-    /// representable has its real width.
+    /// A block build being spread across run-loop turns while the cell is
+    /// still offscreen. `layoutSubviews`/`prepareAndMeasure` finish it
+    /// synchronously if the row is asked to display first, so the fallback is
+    /// exactly the old synchronous build.
+    private struct PendingBuild {
+        let document: AssistantMarkdownDocument
+        let key: String
+        let width: CGFloat
+        let generation: Int
+        let keyed: Bool
+        var nextIndex: Int
+        let startedAt: CFTimeInterval
+    }
+
+    private var pendingBuild: PendingBuild?
+    private var chunkScheduled = false
+    private static let chunkSize = 3
+
+    /// The latest document. Building normally happens on the next layout pass,
+    /// when the representable has its real width. When the adapter already
+    /// knows the column width and the cell is offscreen (the list configures
+    /// hosting content well before its first layout), the build starts here
+    /// and runs in small chunks on successive run-loop turns.
     func install(document: AssistantMarkdownDocument?, key: String,
                  displayScale: CGFloat, generation: Int,
                  cache: AssistantMarkdownBlockHeightCache?,
-                 typographyRevision: Int) {
+                 typographyRevision: Int,
+                 width: CGFloat? = nil) {
         self.document = document
         self.documentKey = key
         self.displayScale = displayScale
         self.generation = generation
         self.cache = cache
         self.typographyRevision = typographyRevision
+        if let width, width > 0, width.isFinite,
+           window == nil,
+           let document,
+           document.blocks.count > Self.chunkSize * 2,
+           key != builtKey || abs(width - builtWidth) > 0.5 {
+            // The same content may arrive again while its chunks are running
+            // (SwiftUI re-runs the update); keep the in-flight build.
+            if let pending = pendingBuild, pending.key == key,
+               abs(pending.width - width) <= 0.5 {
+                return
+            }
+            pendingBuild = nil
+            removeRecords(from: 0)
+            builtKey = ""
+            builtWidth = -1
+            builtGeneration = -1
+            pendingBuild = PendingBuild(
+                document: document,
+                key: key,
+                width: width,
+                generation: generation,
+                keyed: document.blockKeys.count == document.blocks.count
+                    && document.blockDigests.count == document.blocks.count,
+                nextIndex: 0,
+                startedAt: CACurrentMediaTime())
+            scheduleNextChunk()
+        }
         setNeedsLayout()
+    }
+
+    private func scheduleNextChunk() {
+        guard !chunkScheduled else { return }
+        chunkScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.chunkScheduled = false
+            self.buildNextChunk()
+        }
+    }
+
+    private func buildNextChunk() {
+        guard var pending = pendingBuild else { return }
+        var built = 0
+        while pending.nextIndex < pending.document.blocks.count,
+              built < Self.chunkSize {
+            appendPendingRecord(&pending)
+            built += 1
+        }
+        pendingBuild = pending
+        if pending.nextIndex >= pending.document.blocks.count {
+            finishPendingBuild()
+        } else {
+            scheduleNextChunk()
+        }
+    }
+
+    private func appendPendingRecord(_ pending: inout PendingBuild) {
+        let index = pending.nextIndex
+        let block = pending.document.blocks[index]
+        let key = pending.keyed
+            ? pending.document.blockKeys[index]
+            : "unkeyed:\(index)"
+        let digest = pending.keyed ? pending.document.blockDigests[index] : 0
+        appendRecord(block: block, key: key, digest: digest, width: pending.width)
+        pending.nextIndex += 1
+    }
+
+    /// Finish any spread-out build now. Called before the synchronous paths so
+    /// a row that reaches the viewport early still displays completely.
+    private func finishPendingBuild() {
+        guard var pending = pendingBuild else { return }
+        while pending.nextIndex < pending.document.blocks.count {
+            appendPendingRecord(&pending)
+        }
+        pendingBuild = nil
+        builtWidth = pending.width
+        builtKey = pending.key
+        builtGeneration = pending.generation
+        updateSpacing(document: pending.document)
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "leaf.prebuildLead", seconds: CACurrentMediaTime() - pending.startedAt)
+        #endif
+        setNeedsDisplay()
     }
 
     /// Whether the given document identity is already installed. `sizeThatFits`
@@ -317,6 +429,7 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         super.layoutSubviews()
         let width = bounds.width
         guard width > 0 else { return }
+        finishPendingBuild()
         let widthChanged = abs(width - builtWidth) > 0.5
         guard widthChanged || documentKey != builtKey else { return }
         builtWidth = width
@@ -331,6 +444,7 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     /// contract). `layoutSubviews` then only places frames.
     func prepareAndMeasure(width: CGFloat) -> CGFloat {
         guard width > 0, width.isFinite else { return 0 }
+        finishPendingBuild()
         let widthChanged = abs(width - builtWidth) > 0.5
         if widthChanged || documentKey != builtKey {
             builtWidth = width

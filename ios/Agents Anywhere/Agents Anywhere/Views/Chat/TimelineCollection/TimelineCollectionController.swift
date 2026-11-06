@@ -470,7 +470,7 @@ final class TimelineCollectionController: UIViewController {
                 } else {
                     cell.onContentHeightReport = nil
                 }
-                cell.configure(content.rowView(for: item),
+                cell.configure(content.rowView(for: item, width: self.columnWidth),
                                itemID: item.itemID,
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,

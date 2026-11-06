@@ -51,6 +51,11 @@ struct CodeMessageRowView: View {
     /// with it; production passes it so the leaf and
     /// `CodeMessageHeightMeasurer` use identical metrics.
     var typography: TimelineTypographySnapshot?
+    /// The collection column width. The adapter supplies it so a text leaf
+    /// can start building its block views before the row reaches the
+    /// viewport (the hosting content is configured well before its first
+    /// layout). Nothing here prompts layout while the cell is offscreen.
+    var columnWidth: CGFloat?
     /// The turn's copy text when this message group ends a finished turn.
     /// Non-nil draws the official turn action bar after the message.
     var turnActionCopyText: String?
@@ -81,6 +86,7 @@ struct CodeMessageRowView: View {
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
          typography: TimelineTypographySnapshot? = nil,
+         columnWidth: CGFloat? = nil,
          turnActionCopyText: String? = nil,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
@@ -104,6 +110,7 @@ struct CodeMessageRowView: View {
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
         self.typography = typography
+        self.columnWidth = columnWidth
         self.turnActionCopyText = turnActionCopyText
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
@@ -241,7 +248,8 @@ struct CodeMessageRowView: View {
             // the real body and no settled row corrects itself. The Code page
             // has no reveal; the text is always the settled full snapshot.
             CodeMarkdownTextLeaf(text: displayedText(id: id, fallback: text),
-                                 typography: typography)
+                                 typography: typography,
+                                 columnWidth: columnWidth)
 
         case let .toolCalls(segments):
             // D10 (R28 §U 收口二 二-E): the official block is

@@ -249,7 +249,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         if let hostedMeasurer { return hostedMeasurer }
         let created = TimelineHostingHeightMeasurer { [weak self] itemID in
             guard let self, let item = self.item(forItemID: itemID) else { return AnyView(EmptyView()) }
-            return self.rowView(for: item)
+            return self.rowView(for: item, width: 0)
         }
         hostedMeasurer = created
         return created
@@ -1131,7 +1131,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
     }
 
-    func rowView(for item: TimelineListItem) -> AnyView {
+    func rowView(for item: TimelineListItem, width: CGFloat) -> AnyView {
         switch item {
         case .olderPrompt:
             return AnyView(TimelineCollectionOlderPromptRow(
@@ -1179,6 +1179,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 return AnyView(CodeMessageRowView(
                     group: group,
                     profile: codeProfile,
+                    columnWidth: width,
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
                     typography: codeTypography,

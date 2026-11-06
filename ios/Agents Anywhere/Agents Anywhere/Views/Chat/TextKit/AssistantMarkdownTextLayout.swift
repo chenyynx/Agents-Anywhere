@@ -390,6 +390,18 @@ final class AssistantMarkdownBlockHeightCache {
 /// `AssistantMarkdownTextLayout.height(of:)`.
 final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
                                            UIGestureRecognizerDelegate {
+    /// The TextKit 2 stack this view owns.
+    ///
+    /// Official `MarkdownUITextView` builds its own `NSTextContentStorage` +
+    /// `NSTextLayoutManager` + container and hands the container to
+    /// `UITextView` (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q1). Owning
+    /// the stack is what makes measurement and drawing read one layout:
+    /// `measuredHeight` lays the view's manager out at the row width and the
+    /// text view draws that same layout instead of a second private pass.
+    private let ownStorage: NSTextContentStorage
+    private let ownLayoutManager: NSTextLayoutManager
+    private let ownContainer: NSTextContainer
+
     private var lastMeasuredWidth: CGFloat = -1
     /// The Code page opts in; Chat's hosted cell leaves the text inert for now.
     private var textInteractionEnabled = false
@@ -402,7 +414,17 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     private var lastOpened: (url: URL, at: TimeInterval)?
 
     init(interactive: Bool = false) {
-        super.init(frame: .zero, textContainer: nil)
+        let storage = NSTextContentStorage()
+        let layout = NSTextLayoutManager()
+        let container = NSTextContainer(
+            size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.textContainer = container
+        storage.addTextLayoutManager(layout)
+        ownStorage = storage
+        ownLayoutManager = layout
+        ownContainer = container
+        super.init(frame: .zero, textContainer: container)
         #if DEBUG
         CodePageBuildStats.textViewCreations += 1
         #endif
@@ -415,7 +437,9 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         contentMode = .redraw
         textContainerInset = .zero
         textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = true
+        // The row width is imposed by the measurement; letting the text view
+        // re-track the container on every bounds change re-lays the text.
+        textContainer.widthTracksTextView = false
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -552,15 +576,30 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         }
     }
 
+    /// Lay the current text out at `width` with this view's own TextKit
+    /// layout and return the used height. Drawing consumes the same layout,
+    /// so measuring here does not add a second layout pass — the official
+    /// leaf's `sizeThatFits`/`measuredSizes` contract.
+    func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite,
+              let attributedText, attributedText.length > 0 else { return 0 }
+        if abs(ownContainer.size.width - width) > 0.5 {
+            ownContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        let used = ownLayoutManager.usageBoundsForTextContainer.maxY
+        guard used.isFinite, used > 0 else { return 0 }
+        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
+        return ceil(used * scale) / scale
+    }
+
     override var intrinsicContentSize: CGSize {
         guard bounds.width > 0, let attributedText, attributedText.length > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: 0)
         }
-        let height = AssistantMarkdownTextLayout.height(
-            of: attributedText,
-            width: bounds.width,
-            displayScale: traitCollection.displayScale)
-        return CGSize(width: UIView.noIntrinsicMetric, height: height)
+        return CGSize(width: UIView.noIntrinsicMetric,
+                      height: measuredHeight(width: bounds.width,
+                                             displayScale: traitCollection.displayScale))
     }
 
     override func layoutSubviews() {

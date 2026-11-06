@@ -30,15 +30,19 @@ nonisolated enum TimelineRowHeightPolicy: Equatable {
 /// the offset and is corrected on the next settled frame.
 ///
 /// Browsing: while the reader drags or decelerates, a cached row's **visible
-/// growth** is applied immediately without moving the offset. The height write
-/// has no proven finger gate and only the placement answer is withheld
+/// growth** is applied immediately — the height write has no proven finger
+/// gate and only the placement answer is withheld
 /// (`EVIDENCE/round19/streaming.md` §1.5; the `isFingerOnTheList` consumer is
-/// UNKNOWN), and deferring the growth is what clipped the streaming row. A
-/// growth entirely above the viewport would push everything the reader sees;
-/// it parks and lands with the drag-end correction, which is where the
-/// official placement is re-answered. A shrink is a correction the reader
-/// should not see move, so it is parked too. An uncached row may take its
-/// first measurement.
+/// UNKNOWN). A row that starts at or above the viewport top pushes the rows
+/// below it when it grows — the streaming thinking block above the answer
+/// while the reader scrolls the body (2026-11-07). That growth parks until
+/// the gesture ends; writing the offset back mid-gesture would fight
+/// UIScrollView's own tracking. Only a row that starts below the viewport top
+/// grows in place; it moves nothing the reader is looking at. A parked value
+/// lands with the drag-end correction, which is where the official placement
+/// is re-answered. A shrink is a correction the reader should not
+/// see move, so it is parked too. An uncached row may take its first
+/// measurement.
 nonisolated struct TimelinePreferredAttributesDecision: Equatable {
     enum Height: Equatable {
         case accept
@@ -70,6 +74,7 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
     /// Category A. `delta` is measured height minus the height the layout
     /// currently displays.
     static func pendingMeasurement(delta: CGFloat,
+                                   cellMinY: CGFloat,
                                    cellMaxY: CGFloat,
                                    viewportTop: CGFloat,
                                    isStreaming: Bool,
@@ -83,19 +88,24 @@ nonisolated struct TimelinePreferredAttributesDecision: Equatable {
         // `EVIDENCE/round19/streaming.md` §1.5: while dragging/coasting the
         // reducer produces no place, but the height is still written
         // (`rowMeasured` has no proven finger branch; the `isFingerOnTheList`
-        // consumer is UNKNOWN). A growth below the viewport top therefore
-        // lands without moving the offset — deferring it clipped the
-        // streaming row (`TimelineHostingCell.clipsToBounds`) until the
-        // scroll ended. A growth entirely above the viewport would shift
-        // everything the reader sees; it parks, and the drag-end correction
-        // (`heightChangeCorrection`) keeps the anchor, which is where the
-        // official placement is re-answered. A shrink stays parked so the
-        // reader never sees the row shorten under the gesture. A first
-        // measurement is a new row entering, not a change, and is never
-        // parked; parking it left the content height at the estimate and the
-        // bottom shortfall the gate measured at 728 pt.
+        // consumer is UNKNOWN). A shrink stays parked so the reader never
+        // sees the row shorten under the gesture. A first measurement is a
+        // new row entering, not a change, and is never parked; parking it
+        // left the content height at the estimate and the bottom shortfall
+        // the gate measured at 728 pt.
         if isBrowsing, hasCachedHeight {
-            return delta > 0 && cellMaxY > viewportTop ? .accept : .deferred
+            // A row that starts at or above the viewport top pushes every row
+            // below it when it grows — the streaming thinking block above the
+            // answer, while the reader scrolls the body. Applying that under
+            // the finger moves the text the reader is looking at, and writing
+            // the offset back mid-gesture fights UIScrollView's own tracking,
+            // so it parks until the gesture ends; the row's own bottom edge is
+            // clipped for that moment. A row below the top grows downward and
+            // moves nothing the reader is looking at, so it lands now.
+            guard delta > 0, cellMaxY > viewportTop, cellMinY >= viewportTop else {
+                return .deferred
+            }
+            return .accept
         }
         if isBrowsing || keyboardTransition || suppressContentOffsetAdjustment { return .accept }
         // The placement anchor is the row that contains the viewport top: a

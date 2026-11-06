@@ -554,6 +554,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
+            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: state.streamingItemIDs.contains(itemID),
@@ -778,6 +779,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let decision = TimelinePreferredAttributesDecision.selfSizing(
             delta: delta,
             cellMinY: attributes.frame.minY,
+            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             viewportBottom: viewportBottom,
@@ -823,6 +825,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.selfSizing(
             delta: delta,
+            cellMinY: attributes.frame.minY,
             cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
@@ -895,6 +898,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         // top is above the viewport moves the text the reader sees.
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
+            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: false,

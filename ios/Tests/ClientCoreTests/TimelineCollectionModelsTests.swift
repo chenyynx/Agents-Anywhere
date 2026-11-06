@@ -435,7 +435,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 @Suite struct TimelinePreferredAttributesDecisionTests {
     @Test func pendingMeasurementCompensatesPartiallyVisibleRows() {
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
-            delta: 118, cellMaxY: 580, viewportTop: 600,
+            delta: 118, cellMinY: 100, cellMaxY: 580, viewportTop: 600,
             isStreaming: false, isAutoScrollPinning: false,
             isTracking: false, isDecelerating: false,
             keyboardTransition: false, suppressContentOffsetAdjustment: false,
@@ -446,7 +446,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
     @Test func pendingMeasurementBelowTheViewportDoesNotMoveTheReader() {
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
-            delta: 118, cellMaxY: 900, viewportTop: 600,
+            delta: 118, cellMinY: 500, cellMaxY: 900, viewportTop: 600,
             isStreaming: false, isAutoScrollPinning: false,
             isTracking: false, isDecelerating: false,
             keyboardTransition: false, suppressContentOffsetAdjustment: false,
@@ -460,7 +460,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         // once a reply grew past one screen (2026-10-29), so the height lands
         // without moving the offset; the `.end` placement follows it.
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
-            delta: 40, cellMaxY: 900, viewportTop: 600,
+            delta: 40, cellMinY: 500, cellMaxY: 900, viewportTop: 600,
             isStreaming: true, isAutoScrollPinning: true,
             isTracking: false, isDecelerating: false,
             keyboardTransition: false, suppressContentOffsetAdjustment: false,
@@ -469,9 +469,10 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(decision.correction == nil)
     }
 
-    @Test func browsingParksEveryHeightChange() {
+    @Test func browsingParksCachedChangesAboveTheViewport() {
         func run(delta: CGFloat, cached: Bool = true) -> TimelinePreferredAttributesDecision {
-            .pendingMeasurement(delta: delta, cellMaxY: -100, viewportTop: 600,
+            .pendingMeasurement(delta: delta, cellMinY: -300, cellMaxY: -100,
+                                viewportTop: 600,
                 isStreaming: false, isAutoScrollPinning: false,
                 isTracking: true, isDecelerating: false,
                 keyboardTransition: false, suppressContentOffsetAdjustment: false,
@@ -486,16 +487,40 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(run(delta: -20, cached: false).height == .accept)
     }
 
+    @Test func browsingParksGrowthThatStartsAboveTheViewport() {
+        // The streaming thinking row sits above the answer while the reader
+        // scrolls the body. Its growth must not push the body down under the
+        // finger, and the offset must not be written back mid-gesture.
+        let straddling = TimelinePreferredAttributesDecision.pendingMeasurement(
+            delta: 24, cellMinY: 520, cellMaxY: 760, viewportTop: 600,
+            isStreaming: true, isAutoScrollPinning: false,
+            isTracking: true, isDecelerating: false,
+            keyboardTransition: false, suppressContentOffsetAdjustment: false,
+            hasCachedHeight: true)
+        #expect(straddling.height == .deferUntilSettled)
+        #expect(straddling.correction == nil)
+        // A row below the viewport top grows downward and moves nothing the
+        // reader is looking at, so it lands immediately.
+        let below = TimelinePreferredAttributesDecision.pendingMeasurement(
+            delta: 24, cellMinY: 700, cellMaxY: 900, viewportTop: 600,
+            isStreaming: true, isAutoScrollPinning: false,
+            isTracking: true, isDecelerating: false,
+            keyboardTransition: false, suppressContentOffsetAdjustment: false,
+            hasCachedHeight: true)
+        #expect(below.height == .accept)
+        #expect(below.correction == nil)
+    }
+
     @Test func keyboardTransitionAndSuppressionNeverMoveTheOffset() {
         let keyboard = TimelinePreferredAttributesDecision.pendingMeasurement(
-            delta: 40, cellMaxY: 0, viewportTop: 600,
+            delta: 40, cellMinY: -40, cellMaxY: 0, viewportTop: 600,
             isStreaming: false, isAutoScrollPinning: true,
             isTracking: false, isDecelerating: false,
             keyboardTransition: true, suppressContentOffsetAdjustment: false,
             hasCachedHeight: true)
         #expect(keyboard.height == .accept && keyboard.correction == nil)
         let suppressed = TimelinePreferredAttributesDecision.pendingMeasurement(
-            delta: 40, cellMaxY: 0, viewportTop: 600,
+            delta: 40, cellMinY: -40, cellMaxY: 0, viewportTop: 600,
             isStreaming: false, isAutoScrollPinning: false,
             isTracking: false, isDecelerating: false,
             keyboardTransition: false, suppressContentOffsetAdjustment: true,

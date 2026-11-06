@@ -44,7 +44,8 @@ enum AssistantMarkdownBlockViewFactory {
             #if AA_TIMELINE_PROBE
             let initStart = CACurrentMediaTime()
             #endif
-            let view = AssistantMarkdownTextBlockView(interactive: interactiveText)
+            let view = AssistantMarkdownTextBlockViewPool.dequeue(
+                interactive: interactiveText)
             #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage(
                 "textView.init", seconds: CACurrentMediaTime() - initStart)
@@ -98,8 +99,15 @@ enum AssistantMarkdownBlockViewFactory {
 final class AssistantMarkdownTextBlockView: UIView {
     let textView: AssistantMarkdownBlockTextView
     private let chipOverlay = AssistantInlineCodeChipOverlayView()
+    /// Which pool bucket this view belongs to. Text interaction is installed
+    /// at init and is not safe to toggle later, so the two kinds never mix.
+    let isInteractive: Bool
+    /// Guards against handing the same view to the pool twice (a superview
+    /// removal and a `dismantleUIView` can both see the same record).
+    fileprivate(set) var isPooled = false
 
     init(interactive: Bool) {
+        isInteractive = interactive
         textView = AssistantMarkdownBlockTextView(interactive: interactive)
         super.init(frame: .zero)
         backgroundColor = .clear
@@ -109,6 +117,14 @@ final class AssistantMarkdownTextBlockView: UIView {
         addSubview(chipOverlay)
         addSubview(textView)
         textView.chipOverlay = chipOverlay
+    }
+
+    /// Clear everything a previous block left behind before the pool hands
+    /// this view to the next one.
+    func prepareForReuse() {
+        isPooled = false
+        textView.resetForReuse()
+        chipOverlay.setNeedsDisplay()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -121,6 +137,40 @@ final class AssistantMarkdownTextBlockView: UIView {
                                    width: bounds.width + room * 2,
                                    height: bounds.height)
         chipOverlay.setNeedsDisplay()
+    }
+}
+
+/// Reuses body-text block views across row builds.
+///
+/// Device stage timings (probe b1013): one `UITextView` creation costs
+/// 0.63 ms and a row builds ~8.4 text blocks — 43% of the 12.4 ms a row
+/// spends being built, and that build lands in the scroll frame. Cells are
+/// recycled constantly while scrolling, so without this pool every row pays
+/// the same creation cost again. The stack view returns its text views when
+/// SwiftUI dismantles it or when a rebuild drops a block; the next build
+/// dequeues one and only sets the new attributed string.
+@MainActor
+enum AssistantMarkdownTextBlockViewPool {
+    private static let limitPerKind = 48
+    private static var available: [Bool: [AssistantMarkdownTextBlockView]] = [:]
+
+    static func dequeue(interactive: Bool) -> AssistantMarkdownTextBlockView {
+        if var list = available[interactive], let view = list.popLast() {
+            available[interactive] = list
+            view.prepareForReuse()
+            return view
+        }
+        return AssistantMarkdownTextBlockView(interactive: interactive)
+    }
+
+    static func recycle(_ view: AssistantMarkdownTextBlockView) {
+        guard view.superview == nil, !view.isPooled else { return }
+        view.prepareForReuse()
+        view.isPooled = true
+        var list = available[view.isInteractive] ?? []
+        guard list.count < limitPerKind else { return }
+        list.append(view)
+        available[view.isInteractive] = list
     }
 }
 

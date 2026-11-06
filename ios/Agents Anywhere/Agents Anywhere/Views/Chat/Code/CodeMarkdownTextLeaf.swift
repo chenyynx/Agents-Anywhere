@@ -194,6 +194,13 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         return view
     }
 
+    /// SwiftUI calls this when the hosted view leaves the hierarchy (cell
+    /// reuse). The stack's text views go back to the share pool here instead
+    /// of dying with the cell.
+    static func dismantleUIView(_ uiView: CodeMarkdownTextStackView, coordinator: Coordinator) {
+        uiView.recycleAllRecords()
+    }
+
     func updateUIView(_ uiView: CodeMarkdownTextStackView, context: Context) {
         let coordinator = context.coordinator
         let document = document(in: coordinator)
@@ -476,6 +483,7 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         old.constraint.isActive = false
         stack.removeArrangedSubview(old.view)
         old.view.removeFromSuperview()
+        recycleTextViews(in: old.view)
         stack.insertArrangedSubview(record.view, at: index)
         records[index] = record
     }
@@ -486,8 +494,39 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
             record.constraint.isActive = false
             stack.removeArrangedSubview(record.view)
             record.view.removeFromSuperview()
+            recycleTextViews(in: record.view)
         }
         records.removeSubrange(index...)
+    }
+
+    /// Hand every body-text block view under `view` back to the share pool.
+    /// List/quote containers create their child text views through the same
+    /// factory, so walking the removed tree collects them too.
+    private func recycleTextViews(in view: UIView) {
+        if let textBlock = view as? AssistantMarkdownTextBlockView {
+            textBlock.removeFromSuperview()
+            AssistantMarkdownTextBlockViewPool.recycle(textBlock)
+            return
+        }
+        for subview in view.subviews {
+            recycleTextViews(in: subview)
+        }
+    }
+
+    /// Called from `dismantleUIView`: the hosting cell is being torn down and
+    /// this stack goes with it. Returning the text views is what lets the next
+    /// row skip the 0.63 ms `UITextView` creation the stage timings measured.
+    func recycleAllRecords() {
+        for record in records {
+            record.constraint.isActive = false
+            stack.removeArrangedSubview(record.view)
+            record.view.removeFromSuperview()
+            recycleTextViews(in: record.view)
+        }
+        records.removeAll()
+        builtKey = ""
+        builtWidth = -1
+        builtGeneration = -1
     }
 
     /// Update one block whose identity survived. Text and code views update in

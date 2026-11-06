@@ -401,6 +401,16 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     private var linkTapRecognizer: UITapGestureRecognizer?
     private var lastOpened: (url: URL, at: TimeInterval)?
 
+    /// Clear the state a previous block left in this view before the pool
+    /// hands it to the next block. The text itself is assigned by the new
+    /// owner right after dequeue.
+    func resetForReuse() {
+        attributedText = NSAttributedString()
+        selectedRange = NSRange(location: 0, length: 0)
+        lastOpened = nil
+        lastMeasuredWidth = -1
+    }
+
     init(interactive: Bool = false) {
         super.init(frame: .zero, textContainer: nil)
         #if DEBUG

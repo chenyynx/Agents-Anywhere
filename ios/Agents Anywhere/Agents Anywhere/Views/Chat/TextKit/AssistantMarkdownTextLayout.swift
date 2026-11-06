@@ -61,7 +61,7 @@ enum AssistantMarkdownTextLayout {
         let manager = NSTextLayoutManager()
         storage.addTextLayoutManager(manager)
         let container = NSTextContainer(
-            size: CGSize(width: width, height: .greatestFiniteMagnitude))
+            size: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         manager.textContainer = container
         manager.ensureLayout(for: manager.documentRange)
@@ -417,7 +417,7 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         let storage = NSTextContentStorage()
         let layout = NSTextLayoutManager()
         let container = NSTextContainer(
-            size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+            size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         layout.textContainer = container
         storage.addTextLayoutManager(layout)
@@ -584,7 +584,7 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         guard width > 0, width.isFinite,
               let attributedText, attributedText.length > 0 else { return 0 }
         if abs(ownContainer.size.width - width) > 0.5 {
-            ownContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+            ownContainer.size = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         let used = ownLayoutManager.usageBoundsForTextContainer.maxY

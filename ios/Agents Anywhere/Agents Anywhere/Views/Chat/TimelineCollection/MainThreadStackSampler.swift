@@ -56,7 +56,13 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         static let clearing = 4
     }
 
-    private var lock = os_unfair_lock_s()
+    /// Heap-allocated lock, not a Swift stored property. Passing a class
+    /// property as `inout` (`os_unfair_lock_lock(&lock)`) makes Swift emit an
+    /// exclusivity check on that property; the sampler thread and the main
+    /// thread taking the same lock at once then trap in `swift_beginAccess`
+    /// ("Simultaneous accesses"). This crashed b1009 at launch. A pointer has
+    /// no exclusivity tracking.
+    private let lockPointer: UnsafeMutablePointer<os_unfair_lock>
     private var phase = Phase.idle
     private var windowStart: TimeInterval = 0
     private var finishedAt: TimeInterval = 0
@@ -92,13 +98,22 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         stateMemory = .allocate(byteCount: Self.stateWordCount * 8, alignment: 8)
         _ = stateMemory.bindMemory(to: natural_t.self,
                                    capacity: Self.stateWordCount * 2)
+        let lockMemory = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+        lockMemory.initialize(to: os_unfair_lock())
+        lockPointer = lockMemory
 
         // The singleton is only touched from the main actor (`TimelineProbeStore`
         // and the self-test), so `pthread_self()` here is the main thread.
         // `pthread_main_thread_np` is macOS-only and does not exist in the iOS
         // SDK; this avoids it entirely.
         mainThread = pthread_mach_thread_np(pthread_self())
+    }
 
+    /// Start the sampling thread on the first scroll, not at app launch: the
+    /// launch path already touches `clear()` from the main thread, and keeping
+    /// the worker off the startup path removes that interaction entirely.
+    private func startWorkerLocked() {
+        guard worker == nil else { return }
         let thread = Thread { [weak self] in self?.runLoop() }
         thread.name = "AA-MainThreadStackSampler"
         thread.qualityOfService = .userInteractive
@@ -115,10 +130,11 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     func noteActivity(scrolling: Bool) {
         guard scrolling else { return }
         let now = CACurrentMediaTime()
-        os_unfair_lock_lock(&lock)
+        os_unfair_lock_lock(lockPointer)
         switch phase {
         case Phase.idle:
             resetLocked()
+            startWorkerLocked()
             windowStart = now
             lastActiveAt = now
             phase = Phase.recording
@@ -126,6 +142,7 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             // A new scroll after the idle window started a new session: the
             // report always describes the scroll the reader just performed.
             resetLocked()
+            startWorkerLocked()
             windowStart = now
             lastActiveAt = now
             phase = Phase.recording
@@ -134,28 +151,28 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         default:
             break
         }
-        os_unfair_lock_unlock(&lock)
+        os_unfair_lock_unlock(lockPointer)
     }
 
     /// Ask the current session to close. The sampling thread performs the
     /// transition, so the buffers are never read while it is still writing.
     func endSession() {
-        os_unfair_lock_lock(&lock)
+        os_unfair_lock_lock(lockPointer)
         if phase == Phase.recording { phase = Phase.stopping }
-        os_unfair_lock_unlock(&lock)
+        os_unfair_lock_unlock(lockPointer)
     }
 
     /// Drop every sample. Safe during a session: the sampling thread zeroes
     /// the buffers once it reaches a safe point.
     func clear() {
-        os_unfair_lock_lock(&lock)
+        os_unfair_lock_lock(lockPointer)
         if phase == Phase.recording || phase == Phase.stopping {
             phase = Phase.clearing
         } else {
             resetLocked()
             phase = Phase.idle
         }
-        os_unfair_lock_unlock(&lock)
+        os_unfair_lock_unlock(lockPointer)
     }
 
     /// Report lines for `TimelineProbeStore.report()`. Closes an open session
@@ -224,24 +241,24 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
 
     private func runLoop() {
         while true {
-            os_unfair_lock_lock(&lock)
+            os_unfair_lock_lock(lockPointer)
             let current = phase
             let lastActive = lastActiveAt
             let start = windowStart
-            os_unfair_lock_unlock(&lock)
+            os_unfair_lock_unlock(lockPointer)
 
             switch current {
             case Phase.clearing:
-                os_unfair_lock_lock(&lock)
+                os_unfair_lock_lock(lockPointer)
                 resetLocked()
                 phase = Phase.idle
-                os_unfair_lock_unlock(&lock)
+                os_unfair_lock_unlock(lockPointer)
                 usleep(5_000)
             case Phase.stopping:
-                os_unfair_lock_lock(&lock)
+                os_unfair_lock_lock(lockPointer)
                 finishedAt = CACurrentMediaTime()
                 phase = Phase.finished
-                os_unfair_lock_unlock(&lock)
+                os_unfair_lock_unlock(lockPointer)
             case Phase.recording:
                 let now = CACurrentMediaTime()
                 if now - start >= Self.maxWindowSeconds
@@ -251,17 +268,17 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
                     || frameCount + Self.maxDepth >= Self.maxFrames {
                     bufferFull = sampleCount >= Self.maxSamples
                         || frameCount + Self.maxDepth >= Self.maxFrames
-                    os_unfair_lock_lock(&lock)
+                    os_unfair_lock_lock(lockPointer)
                     finishedAt = now
                     phase = Phase.finished
-                    os_unfair_lock_unlock(&lock)
+                    os_unfair_lock_unlock(lockPointer)
                     continue
                 }
                 if now - lastActive > Self.finishAfter {
-                    os_unfair_lock_lock(&lock)
+                    os_unfair_lock_lock(lockPointer)
                     finishedAt = now
                     phase = Phase.finished
-                    os_unfair_lock_unlock(&lock)
+                    os_unfair_lock_unlock(lockPointer)
                     continue
                 }
                 if now - lastActive > Self.pauseAfter {
@@ -377,17 +394,17 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     }
 
     private func needsFinish() -> Bool {
-        os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
+        os_unfair_lock_lock(lockPointer)
+        defer { os_unfair_lock_unlock(lockPointer) }
         return phase == Phase.recording || phase == Phase.stopping
     }
 
     private func waitForFinish(timeout: TimeInterval) {
         let deadline = CACurrentMediaTime() + timeout
         while CACurrentMediaTime() < deadline {
-            os_unfair_lock_lock(&lock)
+            os_unfair_lock_lock(lockPointer)
             let current = phase
-            os_unfair_lock_unlock(&lock)
+            os_unfair_lock_unlock(lockPointer)
             if current == Phase.finished { return }
             if current == Phase.recording { endSession() }
             // The sampling thread may suspend this (main) thread briefly; it
@@ -404,14 +421,14 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     }
 
     private func aggregateFinished() -> Aggregate? {
-        os_unfair_lock_lock(&lock)
+        os_unfair_lock_lock(lockPointer)
         let current = phase
         let samples = sampleCount
         let framesUsed = frameCount
         let full = bufferFull
         let start = windowStart
         let end = finishedAt
-        os_unfair_lock_unlock(&lock)
+        os_unfair_lock_unlock(lockPointer)
         guard current == Phase.finished, samples > 0 else { return nil }
 
         var hashes = [UInt64](repeating: 0, count: samples)

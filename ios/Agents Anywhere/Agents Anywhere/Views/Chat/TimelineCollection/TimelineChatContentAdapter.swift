@@ -1184,10 +1184,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 return AnyView(CodeMessageRowView(
                     group: group,
                     profile: codeProfile,
-                    columnWidth: width,
                     cwd: model.session.metadata?.cwd,
                     streaming: streamingText,
                     typography: codeTypography,
+                    columnWidth: width,
                     turnActionCopyText: actionBarCopyText(for: id),
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)

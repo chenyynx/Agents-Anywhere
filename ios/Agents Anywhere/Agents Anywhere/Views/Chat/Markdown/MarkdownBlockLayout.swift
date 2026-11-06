@@ -41,7 +41,7 @@ struct MarkdownBlockLayout: Layout {
 #if DEBUG
             MarkdownLayoutStats.measured += 1
 #endif
-            content.sizeThatFits(.init(width: width, height: nil))
+            return content.sizeThatFits(.init(width: width, height: nil))
         }
         return cache.sizing.size(proposedWidth: width, naturalSize: natural, displayScale: displayScale)
     }

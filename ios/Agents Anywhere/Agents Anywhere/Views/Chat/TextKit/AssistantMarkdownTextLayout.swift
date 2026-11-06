@@ -583,9 +583,11 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
         guard width > 0, width.isFinite,
               let attributedText, attributedText.length > 0 else { return 0 }
-        if abs(ownContainer.size.width - width) > 0.5 {
-            ownContainer.size = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-        }
+        // Re-assert the height on every call: UITextView may have clamped the
+        // container to its current bounds, and a width-only check then keeps
+        // the one-line height forever.
+        let target = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        if ownContainer.size != target { ownContainer.size = target }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         let used = ownLayoutManager.usageBoundsForTextContainer.maxY
         guard used.isFinite, used > 0 else { return 0 }

@@ -666,12 +666,15 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 view.attributedText = text.attributed
             }
             if record.digest != digest || widthChanged {
-                // Same rule as the factory: measure with the view that draws.
+                // Same rule as the factory: the width-explicit measurement is
+                // the height. The view's own `usageBounds` collapses to one
+                // line while the view has no bounds yet (device 2026-11-07
+                // 01:30), so it is only a fallback.
                 let measured = view.measuredHeight(
                     width: width, displayScale: displayScale)
-                let resolved = measured > 0
-                    ? measured
-                    : height(of: block, key: record.key, digest: digest, width: width)
+                let structural = height(of: block, key: record.key,
+                                        digest: digest, width: width)
+                let resolved = structural > 0 ? structural : measured
                 record.constraint.constant = resolved
                 records[index].height = resolved
             }

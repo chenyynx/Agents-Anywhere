@@ -11,12 +11,22 @@ enum AssistantMarkdownBlockViewFactory {
     static func make(_ block: AssistantMarkdownBlock,
                      width: CGFloat,
                      displayScale: CGFloat,
-                     interactiveText: Bool = false) -> (view: UIView, height: CGFloat) {
+                     interactiveText: Bool = false,
+                     key: String? = nil,
+                     digest: Int = 0,
+                     typographyRevision: Int = 0,
+                     cache: AssistantMarkdownBlockHeightCache? = nil) -> (view: UIView, height: CGFloat) {
         #if DEBUG
         CodePageBuildStats.blockViewCreations += 1
         #endif
+        // `sizeThatFits` measured this document with the same per-block memo
+        // immediately before the layout pass builds the views. The old call
+        // here bypassed that memo and laid every block out a second time on
+        // the scroll frame — the device probe's text-layout hitches.
         let height = AssistantMarkdownTextLayout.height(
-            of: block, width: width, displayScale: displayScale)
+            of: block, width: width, displayScale: displayScale,
+            key: key, digest: digest,
+            typographyRevision: typographyRevision, cache: cache)
         switch block {
         case .text(let text):
             let view = AssistantMarkdownTextBlockView(interactive: interactiveText)

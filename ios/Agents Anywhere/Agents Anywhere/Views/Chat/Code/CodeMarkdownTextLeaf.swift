@@ -422,7 +422,9 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                             digest: Int, width: CGFloat) -> Record {
         let made = AssistantMarkdownBlockViewFactory.make(
             block, width: width, displayScale: displayScale,
-            interactiveText: true)
+            interactiveText: true,
+            key: key, digest: digest,
+            typographyRevision: typographyRevision, cache: cache)
         // Body text (including list/quote paragraphs) gets system
         // link/selection interaction. Fenced code owns its copy button and
         // horizontal scroll; tables keep their own link lift/menu, so

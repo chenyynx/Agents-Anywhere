@@ -391,7 +391,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         report["markdownLayout"] = [
             "calls": MarkdownLayoutStats.calls,
             "measured": MarkdownLayoutStats.measured,
-            "cacheHits": MarkdownLayoutStats.cacheHits,
         ]
 #endif
         writeScrollProfile(gaps, completed: true)

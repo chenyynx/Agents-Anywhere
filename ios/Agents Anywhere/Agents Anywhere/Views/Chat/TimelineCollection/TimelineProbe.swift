@@ -405,6 +405,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// When the last cell was created; a stall right after it points at the
     /// row's first render rather than a background pass.
     private var lastCellProviderAt: TimeInterval = 0
+    /// 2 ms main-thread stack sampler (2026-11-06). Timing probes can only
+    /// exclude instrumented code; this one names the owner of the stall.
+    private let stackSampler = MainThreadStackSampler.shared
 
     func noteCellProvider() { lastCellProviderAt = CACurrentMediaTime() }
     /// Innermost section currently running on the main thread. Sections are
@@ -544,6 +547,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerFirstTickSeen = false
         drawerPeriodTotal = 0
         postDrawerTicksRemaining = 0
+        stackSampler.clear()
         runStartedAt = CACurrentMediaTime()
     }
 
@@ -633,6 +637,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // cannot do that: it sees a gap up to 100 ms after it happened, when
         // the drawer flag may already have flipped, which is how scroll
         // hitches ended up in drawer transitions (probe 17:54).
+        if let view = controller?.collectionView {
+            // Stacks are only meaningful while the reader is moving the list;
+            // the sampler pauses itself when ticks stop.
+            stackSampler.noteActivity(scrolling: view.isTracking || view.isDecelerating)
+        }
         if lastTickAt > 0, let view = controller?.collectionView,
            view.isTracking || view.isDecelerating || drawerTransitioning {
             let ms = (now - lastTickAt) * 1000
@@ -1974,6 +1983,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     + "\(finding.kind) \(finding.detail)")
             }
         }
+
+        // The only section that names code we never instrumented. Exporting
+        // closes an open scroll session first, so the last scroll is included.
+        lines.append(contentsOf: stackSampler.reportLines(
+            hitches: frameHitches.map { (at: $0.at, ms: $0.ms) }))
 
         if !markers.isEmpty {
             lines.append("--- MARKS (oldest first) ---")

@@ -25,6 +25,10 @@ struct AgentsAnywhereApp: App {
                     // C3 simulator gate / scroll profiling run; never reachable
                     // from the product UI.
                     TimelineAutoRunRootView()
+                } else if ProcessInfo.processInfo.arguments.contains(
+                    StackSamplerSelfTest.launchArgument) {
+                    // Main-thread stack sampler gate; probe builds only.
+                    StackSamplerSelfTestRootView()
                 } else if ProcessInfo.processInfo.arguments.contains(TextKitSpikeModel.launchArgument) {
                     // C5/M1 TextKit 2 measurement spike; never reachable from the product UI.
                     TextKitSpikeRootView()

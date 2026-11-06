@@ -74,8 +74,6 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     private let stateMemory: UnsafeMutableRawPointer
 
     private let mainThread: mach_port_t
-    private let stackLow: UInt64
-    private let stackHigh: UInt64
     private var worker: Thread?
 
     /// `arm_thread_state64_t.__pc/__fp/__lr/__sp` word offsets. The struct is
@@ -95,12 +93,11 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         _ = stateMemory.bindMemory(to: natural_t.self,
                                    capacity: Self.stateWordCount * 2)
 
-        let pthread = pthread_main_thread_np()
-        mainThread = pthread_mach_thread_np(pthread)
-        let top = UInt64(UInt(bitPattern: pthread_get_stackaddr_np(pthread)))
-        let size = UInt64(pthread_get_stacksize_np(pthread))
-        stackHigh = top
-        stackLow = top >= size ? top - size : 0
+        // The singleton is only touched from the main actor (`TimelineProbeStore`
+        // and the self-test), so `pthread_self()` here is the main thread.
+        // `pthread_main_thread_np` is macOS-only and does not exist in the iOS
+        // SDK; this avoids it entirely.
+        mainThread = pthread_mach_thread_np(pthread_self())
 
         let thread = Thread { [weak self] in self?.runLoop() }
         thread.name = "AA-MainThreadStackSampler"
@@ -307,9 +304,10 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             var cursor = fp
             var walked = 0
             while depth < Self.maxDepth, cursor != 0, walked < Self.maxDepth + 8 {
-                guard cursor % 8 == 0, cursor >= stackLow, cursor <= stackHigh else {
-                    break
-                }
+                // No stack-bounds check: iOS does not export
+                // `pthread_get_stackaddr_np`, and `vm_read_overwrite` already
+                // fails safely on an address that is not mapped.
+                guard cursor % 8 == 0 else { break }
                 var next: UInt64 = 0
                 var ret: UInt64 = 0
                 guard Self.readStackWords(at: cursor, nextFrame: &next, returnAddress: &ret)

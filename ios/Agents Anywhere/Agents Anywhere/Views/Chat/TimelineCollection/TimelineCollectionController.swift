@@ -470,7 +470,26 @@ final class TimelineCollectionController: UIViewController {
                 } else {
                     cell.onContentHeightReport = nil
                 }
-                cell.configure(content.rowView(for: item),
+                // A measured row already knows its size from the layout, so
+                // hand SwiftUI that size instead of letting it measure the
+                // whole subtree again: the profile of a scroll shows the
+                // hosting row's layout (`LayoutEngineBox.sizeThatFits` →
+                // `StackLayout.placeChildren`) dominating the frame. The
+                // frame is only applied to measured rows: an unmeasured row
+                // must keep flowing naturally so its one self-measure (and
+                // the geometry report that replaces it) still works.
+                let row = content.rowView(for: item)
+                let rowHeight = self.layout.attributes(for: item.itemID)?.frame.height ?? 0
+                let hostedRow: AnyView
+                if isMeasured, rowHeight > 1, self.columnWidth > 0 {
+                    hostedRow = AnyView(
+                        row.frame(width: self.columnWidth, height: rowHeight,
+                                  alignment: .topLeading)
+                            .clipped())
+                } else {
+                    hostedRow = row
+                }
+                cell.configure(hostedRow,
                                itemID: item.itemID,
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,

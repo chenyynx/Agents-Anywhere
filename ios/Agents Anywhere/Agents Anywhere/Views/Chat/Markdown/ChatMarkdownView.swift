@@ -191,7 +191,13 @@ private struct MarkdownBlockView: View, Equatable {
 #if AA_TIMELINE_PROBE
         let _ = TimelineProbeStore.shared.noteScrollSegment("markdown.block", since: probeBlockStart)
 #endif
-        MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {
+        // A settled block's size is a pure function of its text and the
+        // layout inputs, so it is shared across cells and with the pre-measure
+        // pass; a streaming block changes every frame and opts out.
+        MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction,
+                            cacheKey: isStreaming
+                                ? nil
+                                : "\(block.digest)|\(injectedFont == nil ? "sys" : "inj")") {
             structured
                 .textual.structuredTextStyle(ChatMarkdownStyle(headingLedger: headingLedger))
                 // Textual's own default is 0.25em, which sits *inside* the

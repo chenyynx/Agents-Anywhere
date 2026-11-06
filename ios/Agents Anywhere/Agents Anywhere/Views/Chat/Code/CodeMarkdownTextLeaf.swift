@@ -211,14 +211,19 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0, width.isFinite else { return nil }
         let coordinator = context.coordinator
-        guard let document = document(in: coordinator) else {
-            return CGSize(width: width, height: 0)
+        let document = document(in: coordinator)
+        // Mirror `updateUIView`: the size query may run before the update
+        // callback on the first pass.
+        if !uiView.matches(documentKey: coordinator.documentKey) {
+            uiView.install(document: document,
+                           key: coordinator.documentKey,
+                           displayScale: max(displayScale, 1),
+                           generation: coordinator.generation,
+                           cache: coordinator.heightCache,
+                           typographyRevision: coordinator.builderRevision ?? 0)
         }
-        let height = ceil(AssistantMarkdownTextLayout.measure(
-            document, width: width, displayScale: max(displayScale, 1),
-            cache: coordinator.heightCache,
-            typographyRevision: coordinator.builderRevision ?? 0))
-        return CGSize(width: width, height: height)
+        let height = uiView.prepareAndMeasure(width: width)
+        return CGSize(width: width, height: max(0, ceil(height)))
     }
 }
 
@@ -238,6 +243,8 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         var digest: Int
         let view: UIView
         let constraint: NSLayoutConstraint
+        /// The height this block was laid out at, in row coordinates.
+        var height: CGFloat
     }
 
     private var records: [Record] = []
@@ -299,6 +306,13 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         setNeedsLayout()
     }
 
+    /// Whether the given document identity is already installed. `sizeThatFits`
+    /// asks this before re-installing, so repeated size queries do not request
+    /// a layout pass on every call.
+    func matches(documentKey: String) -> Bool {
+        self.documentKey == documentKey
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = bounds.width
@@ -308,6 +322,31 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         builtWidth = width
         builtKey = documentKey
         applyDocument(width: width, widthChanged: widthChanged)
+    }
+
+    /// Build (or update) the block views at `width` and return their total
+    /// height. The representable calls this from `sizeThatFits`, so the row
+    /// height comes from the views that will draw — one TextKit layout per
+    /// block, reused by drawing (the official leaf's `measuredSizes`
+    /// contract). `layoutSubviews` then only places frames.
+    func prepareAndMeasure(width: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite else { return 0 }
+        let widthChanged = abs(width - builtWidth) > 0.5
+        if widthChanged || documentKey != builtKey {
+            builtWidth = width
+            builtKey = documentKey
+            applyDocument(width: width, widthChanged: widthChanged)
+        }
+        var total = records.reduce(0) { $0 + $1.height }
+        // `updateSpacing` places inter-block gaps; the document measurement
+        // includes them, so the sum must too.
+        if let document, records.count == document.blocks.count, records.count > 1 {
+            for index in 1..<records.count {
+                total += AssistantMarkdownTextLayout.topLevelSpacing(
+                    after: index - 1, in: document)
+            }
+        }
+        return total
     }
 
     @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
@@ -452,7 +491,8 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
             "block.constraints", seconds: CACurrentMediaTime() - constraintStart)
 #endif
         return Record(key: key, kind: block.kindName, digest: digest,
-                      view: made.view, constraint: constraint)
+                      view: made.view, constraint: constraint,
+                      height: made.height)
     }
 
     private func appendRecord(block: AssistantMarkdownBlock, key: String,
@@ -512,8 +552,14 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 view.attributedText = text.attributed
             }
             if record.digest != digest || widthChanged {
-                record.constraint.constant = height(
-                    of: block, key: record.key, digest: digest, width: width)
+                // Same rule as the factory: measure with the view that draws.
+                let measured = view.measuredHeight(
+                    width: width, displayScale: displayScale)
+                let resolved = measured > 0
+                    ? measured
+                    : height(of: block, key: record.key, digest: digest, width: width)
+                record.constraint.constant = resolved
+                records[index].height = resolved
             }
         case .code(let code):
             guard let view = record.view as? AssistantCodeBlockView else {
@@ -522,7 +568,9 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 return
             }
             if record.digest != digest {
-                record.constraint.constant = view.update(codeBlock: code)
+                let updated = view.update(codeBlock: code)
+                record.constraint.constant = updated
+                records[index].height = updated
             }
         case .divider:
             break

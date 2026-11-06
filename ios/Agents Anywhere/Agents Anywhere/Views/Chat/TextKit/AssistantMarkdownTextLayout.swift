@@ -552,6 +552,31 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         }
     }
 
+    /// Lay the current text out at `width` with this view's own TextKit
+    /// layout and return the used height. Drawing consumes the same layout,
+    /// so measuring here does not add a second layout pass — the official
+    /// leaf's `sizeThatFits`/`measuredSizes` contract.
+    func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite,
+              let attributedText, attributedText.length > 0 else { return 0 }
+        if abs(bounds.width - width) > 0.5 {
+            bounds.size.width = width
+        }
+        guard let manager = textLayoutManager else {
+            return AssistantMarkdownTextLayout.height(
+                of: attributedText, width: width, displayScale: displayScale)
+        }
+        if let container = manager.textContainer,
+           abs(container.size.width - width) > 0.5 {
+            container.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        }
+        manager.ensureLayout(for: manager.documentRange)
+        let used = manager.usageBoundsForTextContainer.maxY
+        guard used.isFinite, used > 0 else { return 0 }
+        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
+        return ceil(used * scale) / scale
+    }
+
     override var intrinsicContentSize: CGSize {
         guard bounds.width > 0, let attributedText, attributedText.length > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: 0)

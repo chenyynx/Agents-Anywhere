@@ -1,7 +1,7 @@
 # 交接：流式增量刷新（2026-11-08）
 
 > 读我：`docs/perf-streaming-incremental-task-sheet.md`（P1–P5 计划与验收线）+ 本文（现状、坑、数据）。
-> 分支 `feat/device-main-thread-sampler`，head `0279793f`。worktree：`/home/ubuntu/aa-wt-sampler`。
+> 分支 `feat/device-main-thread-sampler`，head `a1e019dd`（本文修订时；以 `git log -1` 为准）。worktree：`/home/ubuntu/aa-wt-sampler`。
 
 ## 1. 这条分支这两天做了什么
 
@@ -55,20 +55,12 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.githu
 
 ---
 
-## 6. 待修 bug：中断后用户气泡停在「发送中」（2026-11-08 真机）
+## 6. 已澄清并回滚：待发气泡用旧 Chat 样式（2026-11-08 真机）
 
-**症状**：点中断后，刚发出的用户消息气泡仍是待发样式（灰底 + 转圈），不回到普通气泡，也不出现重试/消失。
+**症状（pp 11-08 澄清；本条早前的「永停发送中」记录是误读，已删除）**：点停止/中断后，刚发出的用户消息气泡仍是旧 AA 的 Chat 气泡（accent 底色，`UserMessageBubble`）；发送成功、消息落库后跳回当前的 `CodeUserBubble`。旧记录里的「卡在发送中」pp 没有报告过。
 
-**代码定位**
-- 气泡渲染：`TimelineChatContentAdapter.swift:1233` `.pending(id)` → `PendingMessageRow`，样式由 `V2PendingMessage.delivery` 决定。
-- 待发记录只在「非 `.sending`」时才允许被移除：`V2SessionModel.swift:644`（`dismissPendingMessage` 的过滤条件）。
-- 回声看门狗只处理 `delivery == .accepted` 的情况（`V2SessionModel.swift:629`）。
-- 中断入口：`SessionChatModel.interrupt()`（`SessionChatModel.swift:757`），成功后不改 pending 状态。
+**根因**：b1054 构建自 `7cbf756`（「pending bubble uses the chat page's style」），该提交在 `renderMode == .chat` 时把待发气泡改成 `bubbleStyle: .chat`；落库行则一直走 `CodeMessageRowView.userRow` → `CodeUserBubble`（`ios/Agents Anywhere/Agents Anywhere/Views/Chat/Code/CodeMessageRowView.swift:220`）。两者不是同一个气泡，于是落库瞬间换样。
 
-**推断根因**：发送后 pending 停在 `.sending`（服务端回执/回声未到），用户随即中断；中断只结束回合，不会推进该 pending 的 delivery，于是它既不能被 dismiss（`.sending` 被过滤），也等不到 accepted 的看门狗 → 永久转圈。
+**处置**：`7cbf756` 已由 `381ca9c4` 回滚，待发固定 `bubbleStyle: .code`（`ios/Agents Anywhere/Agents Anywhere/Views/Chat/TimelineCollection/TimelineChatContentAdapter.swift:1242`），与 `CodeUserMessageRow` → `CodeUserBubble` 的落库样式一致。等新包真机确认。
 
-**修法方向（未实施，需先确认 Delivery 状态机）**
-1. 中断成功后，对 `delivery == .sending` 的 pending 做一次权威确认（复用 `loadLatest(authoritative: true)`）；确认存在则移除 pending（真实行已在时间线里），不存在则置为失败态给重试。
-2. 或者放宽 `dismissPendingMessage`：`.sending` 在回合结束后也允许移除（需要同时保证不会重发同内容时被 `unresolvedPending` 误挡——`blocksRepeatSend` 的判断要跟着改）。
-
-**风险**：这条链路直接关系「消息是否真的发出去了」，改错会导致重复发送或消息丢失；必须配单测（pending 状态机：sending → accepted → 移除；sending → 中断 → 失败/移除）。
+同日 `a5698195`（乐观气泡贴右边）也被回滚；其「pending 行比 cell 窄、气泡贴左」的前提尚未验证——如果新包上仍看到待发气泡靠左，再单独查这一条。

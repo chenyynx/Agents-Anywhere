@@ -1239,7 +1239,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     guard let self else { return }
                     Task { await self.model.retryPendingMessage(pending) }
                 },
-                bubbleStyle: .code)
+                // The optimistic row must use the same bubble the settled
+                // echo will get; hard-coding `.code` made a Chat-page pending
+                // message wear the Code page's bubble (grey capsule + spinner)
+                // until it resolved.
+                bubbleStyle: renderMode == .chat ? .chat : .code)
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,

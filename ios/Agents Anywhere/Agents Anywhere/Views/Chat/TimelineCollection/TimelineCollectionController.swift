@@ -501,6 +501,29 @@ final class TimelineCollectionController: UIViewController {
         scheduleVisibleCellFrameSync()
     }
 
+    /// UIKit does not promise `scrollViewDidEndDecelerating` when a
+    /// programmatic offset write interrupts the coast (see `requestBottom`),
+    /// so a parked snapshot gets a timed re-check instead of relying on that
+    /// callback alone.
+    private var pendingApplyCheck: DispatchWorkItem?
+
+    private func schedulePendingApplyCheck() {
+        guard pendingApplyCheck == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingApplyCheck = nil
+            guard self.pendingApply != nil else { return }
+            if let collectionView = self.collectionView,
+               collectionView.isDragging || collectionView.isDecelerating {
+                self.schedulePendingApplyCheck()
+            } else {
+                self.applyPendingIfNeeded()
+            }
+        }
+        pendingApplyCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
     private func applyPendingIfNeeded() {
         guard !navigationSuspended, let pending = pendingApply, columnWidth > 0 else { return }
         if let collectionView, collectionView.isDragging || collectionView.isDecelerating { return }
@@ -566,8 +589,13 @@ final class TimelineCollectionController: UIViewController {
         // plus synchronous measurement inside those frames is what turned a
         // swipe into dropped frames. Park the latest content and apply it the
         // moment the transition ends.
-        guard !navigationSuspended else {
+        // Only tail updates park: a history page changes the item count and
+        // its anchor compensation has to land on the frame it was computed
+        // for (a page parked past the 15 s paging timeout would apply as a
+        // plain snapshot and shift the reading position).
+        if navigationSuspended, items.count == currentItems.count {
             pendingApply = (items: items, animating: animating)
+            schedulePendingApplyCheck()
             return
         }
         // Same rule for the reader's own gesture: dragging or coasting is the
@@ -581,6 +609,7 @@ final class TimelineCollectionController: UIViewController {
         if let collectionView, collectionView.isDragging || collectionView.isDecelerating,
            items.count == currentItems.count {
             pendingApply = (items: items, animating: animating)
+            schedulePendingApplyCheck()
             return
         }
         pendingApply = nil
@@ -2983,6 +3012,9 @@ final class TimelineCollectionController: UIViewController {
                 let transition = phase.apply(.watchdogExpired)
                 onPhaseChanged?(transition)
             }
+            // Land parked content before the driver places the viewport
+            // against the new heights.
+            applyPendingIfNeeded()
             // The driver's navigationSuspendedChanged(false) performs the
             // placement itself.
             publishViewport()
@@ -2995,9 +3027,6 @@ final class TimelineCollectionController: UIViewController {
                 requestBottom(animated: request.animated, forced: request.forced)
             }
         }
-        // Content that changed while the transition owned the frame is
-        // applied here, before the returning gesture can start another.
-        applyPendingIfNeeded()
         // Suspension hides the return control without a viewport change;
         // resume re-measures through `publishViewport`, and the dedupe keeps
         // this second call free.

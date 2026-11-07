@@ -452,7 +452,15 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     /// The backing storage, shared with the layout manager. The code card's
     /// streaming highlight path edits it in place, so it is exposed as-is.
-    var textStorage: NSTextStorage { ownStorage.textStorage }
+    var textStorage: NSTextStorage {
+        // `NSTextContentStorage` materialises its backing storage lazily; the
+        // text is always assigned before any caller edits it.
+        guard let storage = ownStorage.textStorage else {
+            assertionFailure("NSTextContentStorage has no backing text storage")
+            return NSTextStorage()
+        }
+        return storage
+    }
 
     var attributedText: NSAttributedString? {
         get { ownStorage.attributedString }

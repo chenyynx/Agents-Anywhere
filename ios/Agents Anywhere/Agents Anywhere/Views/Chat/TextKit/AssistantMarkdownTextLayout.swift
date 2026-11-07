@@ -534,7 +534,11 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// Selection in UTF-16 offsets; `nil` when nothing is selected.
     private var selectionOffsets: (start: Int, end: Int)?
     private weak var textInputDelegateStorage: UITextInputDelegate?
-    private lazy var textTokenizer = UITextInputStringTokenizer(textInput: self)
+    private lazy var textTokenizer: UITextInputStringTokenizer = {
+        let tokenizer = SelectableMarkdownTextTokenizer(textInput: self)
+        tokenizer.surface = self
+        return tokenizer
+    }()
 
     init(interactive: Bool = false) {
         let storage = NSTextContentStorage()
@@ -824,15 +828,81 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     override func copy(_ sender: Any?) {
-        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start else { return }
-        let text = (sourceAttributed?.string ?? "") as NSString
-        UIPasteboard.general.string = text.substring(
-            with: NSRange(location: selectionOffsets.start,
-                          length: selectionOffsets.end - selectionOffsets.start))
+        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start,
+              let source = sourceAttributed else { return }
+        let range = NSRange(location: selectionOffsets.start,
+                            length: selectionOffsets.end - selectionOffsets.start)
+        // Official copy: the attributed substring when the rendered string
+        // matches the source, cleaned of attachment placeholders and word
+        // joiners; the clipboard carries both `public.html` and
+        // `public.utf8-plain-text` (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
+        // §Q6).
+        let plain = Self.cleanedPlainText(source.attributedSubstring(from: range))
+        let html = Self.htmlRepresentation(of: source, range: range)
+        UIPasteboard.general.items = [[
+            "public.html": "<meta charset=\"utf-8\">" + html,
+            "public.utf8-plain-text": plain,
+        ]]
         // A text view drops the selection once an edit action runs; the
         // interaction here does not, so do it ourselves (the official app
         // dismisses the selection after Copy too).
         endSelection()
+    }
+
+    private static func cleanedPlainText(_ text: NSAttributedString) -> String {
+        var plain = text.string
+        plain = plain.replacingOccurrences(of: "\u{FFFC}", with: "")
+        plain = plain.replacingOccurrences(of: "\u{2060}", with: "")
+        plain = plain.replacingOccurrences(of: "\u{00A0}", with: " ")
+        return plain
+    }
+
+    /// Minimal HTML for the clipboard: paragraphs by newline, then bold /
+    /// italic / inline code / links on the runs.
+    private static func htmlRepresentation(of source: NSAttributedString,
+                                           range: NSRange) -> String {
+        let ns = source.string as NSString
+        var html = ""
+        var cursor = range.location
+        let end = range.location + range.length
+        while cursor < end {
+            var lineEnd = cursor
+            while lineEnd < end, ns.character(at: lineEnd) != 10 { lineEnd += 1 }
+            let lineRange = NSRange(location: cursor, length: lineEnd - cursor)
+            if lineRange.length > 0 {
+                html += "<p>" + htmlInline(of: source, range: lineRange) + "</p>"
+            }
+            cursor = lineEnd + 1
+        }
+        return html
+    }
+
+    private static func htmlInline(of source: NSAttributedString, range: NSRange) -> String {
+        let ns = source.string as NSString
+        var out = ""
+        source.enumerateAttributes(in: range, options: []) { attributes, runRange, _ in
+            var piece = escapingHTML(ns.substring(with: runRange))
+            if let url = attributes[.link] as? URL {
+                piece = "<a href=\"\(url.absoluteString)\">\(piece)</a>"
+            }
+            if attributes[.assistantInlineCodeChip] != nil {
+                piece = "<code>\(piece)</code>"
+            }
+            if let font = attributes[.font] as? UIFont {
+                let traits = font.fontDescriptor.symbolicTraits
+                if traits.contains(.traitBold) { piece = "<strong>\(piece)</strong>" }
+                if traits.contains(.traitItalic) { piece = "<em>\(piece)</em>" }
+            }
+            out += piece
+        }
+        return out
+    }
+
+    private static func escapingHTML(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     // MARK: - Selection clipping
@@ -860,6 +930,34 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     private func restoreAncestorClipping() {
         for view in relaxedClippingViews { view.clipsToBounds = true }
         relaxedClippingViews.removeAll()
+    }
+
+    // MARK: - Tokenizer support
+
+    fileprivate var markdownTextLength: Int { renderedLength }
+
+    fileprivate func markdownCharacter(at offset: Int) -> unichar {
+        let text = (sourceAttributed?.string ?? "") as NSString
+        guard offset >= 0, offset < text.length else { return 0 }
+        return text.character(at: offset)
+    }
+
+    /// Character offsets where a laid-out line starts, from the same layout
+    /// the glyphs come from.
+    fileprivate func markdownLineStartOffsets() -> [Int] {
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var starts: [Int] = []
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            for line in fragment.textLineFragments {
+                let start = line.characterRange.location
+                if starts.last != start { starts.append(start) }
+            }
+            return true
+        }
+        return starts
     }
 
     // MARK: - Chip overlay
@@ -1154,6 +1252,122 @@ extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
     ) -> [NSAttributedString.Key: Any]? {
         [.foregroundColor: CodePageTheme.markdownTextUIColor,
          .underlineStyle: NSUnderlineStyle.single.rawValue]
+    }
+}
+
+
+/// Official tokenizer shape (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6):
+/// sentence and paragraph end at newlines, line boundaries come from the laid
+/// out fragments, word defers to the system tokenizer with a fallback, and
+/// character/document stay on the system implementation.
+final class SelectableMarkdownTextTokenizer: UITextInputStringTokenizer {
+    weak var surface: AssistantMarkdownBlockTextView?
+
+    private var textLength: Int { surface?.markdownTextLength ?? 0 }
+
+    private func isForward(_ direction: UITextDirection) -> Bool {
+        if direction == UITextDirection.storage(.backward) { return false }
+        if direction == UITextDirection.layout(.left) { return false }
+        if direction == UITextDirection.layout(.up) { return false }
+        return true
+    }
+
+    private func character(at offset: Int) -> unichar {
+        surface?.markdownCharacter(at: offset) ?? 0
+    }
+
+    private func isBreak(atEndOf offset: Int) -> Bool {
+        offset <= 0 ? true : character(at: offset - 1) == 10
+    }
+
+    private func paragraphBounds(around offset: Int) -> (start: Int, end: Int) {
+        let length = textLength
+        var start = min(max(offset, 0), length)
+        while start > 0, character(at: start - 1) != 10 { start -= 1 }
+        var end = min(max(offset, 0), length)
+        while end < length, character(at: end) != 10 { end += 1 }
+        return (start, end)
+    }
+
+    private func nextParagraphBoundary(after offset: Int) -> Int? {
+        let length = textLength
+        var position = max(offset, 0)
+        while position < length {
+            position += 1
+            if isBreak(atEndOf: position) { return position }
+        }
+        return length > offset ? length : nil
+    }
+
+    private func previousParagraphBoundary(before offset: Int) -> Int? {
+        var position = min(max(offset, 0), textLength)
+        while position > 0 {
+            if isBreak(atEndOf: position) { return position }
+            position -= 1
+        }
+        return offset > 0 ? 0 : nil
+    }
+
+    override func isPosition(_ position: UITextPosition,
+                             atBoundary granularity: UITextGranularity,
+                             inDirection direction: UITextDirection) -> Bool {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return false }
+        switch granularity {
+        case .sentence, .paragraph:
+            return isBreak(atEndOf: offset) || offset == textLength
+        case .line:
+            return surface?.markdownLineStartOffsets().contains(offset) ?? false
+        case .word:
+            return super.isPosition(position, atBoundary: granularity, inDirection: direction)
+        default:
+            return super.isPosition(position, atBoundary: granularity, inDirection: direction)
+        }
+    }
+
+    override func position(from position: UITextPosition,
+                           toBoundary granularity: UITextGranularity,
+                           inDirection direction: UITextDirection) -> UITextPosition? {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return nil }
+        switch granularity {
+        case .sentence, .paragraph:
+            let boundary = isForward(direction)
+                ? nextParagraphBoundary(after: offset)
+                : previousParagraphBoundary(before: offset)
+            return boundary.map(MarkdownTextOffsetPosition.init)
+        case .line:
+            let starts = surface?.markdownLineStartOffsets() ?? []
+            let candidate = isForward(direction)
+                ? starts.first(where: { $0 > offset })
+                : starts.last(where: { $0 < offset })
+            return candidate.map(MarkdownTextOffsetPosition.init)
+        case .word:
+            return super.position(from: position, toBoundary: granularity, inDirection: direction)
+                ?? MarkdownTextOffsetPosition(offset)
+        default:
+            return super.position(from: position, toBoundary: granularity, inDirection: direction)
+        }
+    }
+
+    override func rangeEnclosingPosition(_ position: UITextPosition,
+                                         with granularity: UITextGranularity,
+                                         inDirection direction: UITextDirection) -> UITextRange? {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return nil }
+        switch granularity {
+        case .sentence, .paragraph:
+            let bounds = paragraphBounds(around: offset)
+            return MarkdownTextOffsetRange(bounds.start, bounds.end)
+        case .line:
+            let starts = surface?.markdownLineStartOffsets() ?? []
+            guard let index = starts.lastIndex(where: { $0 <= offset }) else { return nil }
+            let start = starts[index]
+            let end = index + 1 < starts.count ? starts[index + 1] : textLength
+            return MarkdownTextOffsetRange(start, max(start, end))
+        case .word:
+            return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
+                ?? MarkdownTextOffsetRange(offset, min(offset + 1, textLength))
+        default:
+            return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
+        }
     }
 }
 

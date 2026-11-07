@@ -703,20 +703,47 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// Resolve a tap to a character index by walking the laid-out lines. The
     /// line fragment answers in its own coordinates, so the point is rebased
     /// twice: fragment origin, then the line's typographic origin.
+    ///
+    /// A point is not always inside a glyph's box: the trailing area after a
+    /// line's last glyph and the leading between two lines are both inside the
+    /// block. The old exact-hit test returned nil there, and the interaction's
+    /// fallback resolved that to the document start/end — so a tap beside a
+    /// line selected the block's first word or its last (pp 2026-11-08).
+    /// Clamp the point into the nearest line instead.
     private func characterIndex(at point: CGPoint) -> Int? {
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
-        guard let fragment = ownLayoutManager.textLayoutFragment(for: point) else { return nil }
-        for line in fragment.textLineFragments {
-            let origin = CGPoint(
-                x: fragment.layoutFragmentFrame.minX + line.typographicBounds.minX,
-                y: fragment.layoutFragmentFrame.minY + line.typographicBounds.minY)
-            let bounds = CGRect(origin: origin, size: line.typographicBounds.size)
-                .insetBy(dx: 0, dy: -2)
-            guard bounds.contains(point) else { continue }
-            let local = CGPoint(x: point.x - origin.x, y: point.y - origin.y)
-            return line.characterRange.location + line.characterIndex(for: local)
+        var best: (vertical: CGFloat, horizontal: CGFloat, index: Int)?
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            for line in fragment.textLineFragments {
+                let origin = CGPoint(
+                    x: fragment.layoutFragmentFrame.minX + line.typographicBounds.minX,
+                    y: fragment.layoutFragmentFrame.minY + line.typographicBounds.minY)
+                let box = CGRect(origin: origin, size: line.typographicBounds.size)
+                let verticalGap = max(box.minY - point.y, point.y - box.maxY, 0)
+                let horizontalGap = max(box.minX - point.x, point.x - box.maxX, 0)
+                let local = CGPoint(
+                    x: min(max(point.x, box.minX), box.maxX) - origin.x,
+                    y: min(max(point.y, box.minY), box.maxY) - origin.y)
+                let index = line.characterRange.location + line.characterIndex(for: local)
+                if let current = best {
+                    // The nearest line vertically wins; inside the line's own
+                    // band, the nearest horizontally decides between the end of
+                    // the previous line and the start of the next.
+                    if verticalGap < current.vertical - 0.5
+                        || (abs(verticalGap - current.vertical) <= 0.5
+                            && horizontalGap < current.horizontal) {
+                        best = (verticalGap, horizontalGap, index)
+                    }
+                } else {
+                    best = (verticalGap, horizontalGap, index)
+                }
+            }
+            return true
         }
-        return nil
+        return best?.index
     }
 
     /// Both the system link action and the fallback tap can fire for one tap;

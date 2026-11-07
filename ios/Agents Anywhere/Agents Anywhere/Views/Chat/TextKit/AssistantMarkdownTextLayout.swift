@@ -829,6 +829,10 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         UIPasteboard.general.string = text.substring(
             with: NSRange(location: selectionOffsets.start,
                           length: selectionOffsets.end - selectionOffsets.start))
+        // A text view drops the selection once an edit action runs; the
+        // interaction here does not, so do it ourselves (the official app
+        // dismisses the selection after Copy too).
+        endSelection()
     }
 
     // MARK: - Selection clipping

@@ -442,9 +442,15 @@ final class AssistantMarkdownBlockHeightCache {
 ///
 /// `UITextView` cost 0.8 ms to create and 0.3 ms to assign per block; a row
 /// carries six of them, which was most of the 7 ms `codeStack.build` measured
-/// on device (the 120 Hz frame budget is 8.3 ms). The official renderer is not
-/// a `UITextView` either: `MarkdownUITextView` is a plain view that owns the
-/// TextKit 2 stack and draws the laid-out line fragments. This is that shape.
+/// on device (the 120 Hz frame budget is 8.3 ms).
+///
+/// The official renderer has three leaves behind a remote flag
+/// (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4, §3 Q1): `MarkdownUITextView`
+/// (a `UITextView` subclass, the default), `MarkdownTextView` (a plain
+/// `UIView` that self-draws its layout fragments) and
+/// `SelectableMarkdownTextView` (the same self-drawn view plus
+/// `UITextInteraction` and its own `UITextInput`). This view is the second
+/// shape. The third is what the selection layer will need when it comes back.
 final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate {
     private let ownStorage: NSTextContentStorage
     private let ownLayoutManager: NSTextLayoutManager

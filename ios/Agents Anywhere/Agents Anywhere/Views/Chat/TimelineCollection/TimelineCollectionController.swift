@@ -575,10 +575,15 @@ final class TimelineCollectionController: UIViewController {
         // it every 0.2-1 s (a 16 ms rebuild plus a 19 ms snapshot apply on top
         // of the row being materialized). Park it; `applyPendingIfNeeded`
         // lands the latest content as soon as scrolling settles.
-        if let collectionView, collectionView.isDragging || collectionView.isDecelerating {
+        // Only tail updates park: a snapshot whose item count moved is a
+        // prepend/append (history paging), and its anchor correction must
+        // land on the frame it was computed for.
+        if let collectionView, collectionView.isDragging || collectionView.isDecelerating,
+           items.count == currentItems.count {
             pendingApply = (items: items, animating: animating)
             return
         }
+        pendingApply = nil
         isPerformingSnapshot = true
 #if AA_TIMELINE_PROBE
         let probeApplyStart = CACurrentMediaTime()

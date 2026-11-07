@@ -70,6 +70,31 @@ enum AssistantMarkdownTextLayout {
         return roundUp(used, scale: displayScale)
     }
 
+    /// TextKit's used size at the given wrap width. The user bubble hugs the
+    /// longest *wrapped* line; the unbounded `intrinsicSize` below instead
+    /// hands any text wider than the column the whole column, which left a
+    /// two-line URL with half a bubble of empty trailing space (pp
+    /// 2026-11-08).
+    static func wrappedSize(of attributed: NSAttributedString,
+                            width: CGFloat,
+                            displayScale: CGFloat) -> CGSize {
+        guard width > 0, width.isFinite, attributed.length > 0 else { return .zero }
+        let storage = NSTextContentStorage()
+        storage.attributedString = attributed
+        let manager = NSTextLayoutManager()
+        storage.addTextLayoutManager(manager)
+        let container = NSTextContainer(
+            size: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.textContainer = container
+        manager.ensureLayout(for: manager.documentRange)
+        let used = manager.usageBoundsForTextContainer
+        guard used.width.isFinite, used.width > 0,
+              used.maxY.isFinite, used.maxY > 0 else { return .zero }
+        return CGSize(width: min(width, roundUp(used.width, scale: displayScale)),
+                      height: roundUp(used.maxY, scale: displayScale))
+    }
+
     /// TextKit's used size for an attributed string laid out without wrapping.
     /// Code blocks scroll horizontally, so their intrinsic width is what sets
     /// the scroll content and their height must not depend on the column.

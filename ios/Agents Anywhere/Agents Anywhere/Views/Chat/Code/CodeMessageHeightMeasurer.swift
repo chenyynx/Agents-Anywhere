@@ -255,8 +255,12 @@ enum CodeMessageHeightMeasurer {
     /// horizontal padding; the vertical padding is part of the bubble.
     private static func userBubbleTextHeight(_ text: String, width: CGFloat,
                                              traits: UITraitCollection?) -> CGFloat {
+        // The bubble's HStack also spends `userBubbleSpacing` between the
+        // leading Spacer and the text column; measuring without it wrapped a
+        // borderline line one word later than the renderer.
         let available = max(1, width
             - CodePageTheme.userBubbleLeadingGutter
+            - CodePageTheme.userBubbleSpacing
             - 2 * CodePageTheme.userBubbleHorizontalPadding)
         // The renderer (`CodeUserBubbleText`) and this measurement share one
         // attributed-string builder and one TextKit call, so the bubble can

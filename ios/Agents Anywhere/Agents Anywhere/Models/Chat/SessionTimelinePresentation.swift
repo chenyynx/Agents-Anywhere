@@ -31,6 +31,9 @@ final class ChatTimelineRowModel: Identifiable {
         // Unchanged rows neither recompute their structure nor rescan their text.
         if hasFlushed && value == next && (animate || displaysFullText) { settle(now: now); return false }
         hasFlushed = true
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStreamFlush()
+#endif
 
         // Renderer-owned reveal: the TextKit cursor decides what is visible.
         // Publish the whole received text and never enter the legacy reveal

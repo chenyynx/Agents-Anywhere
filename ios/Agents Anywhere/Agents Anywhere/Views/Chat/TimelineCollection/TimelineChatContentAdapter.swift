@@ -1562,6 +1562,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if AA_TIMELINE_PROBE
         let probeRefreshStart = CACurrentMediaTime()
         let probeHadHistoryRequest = pendingHistoryRequest != nil
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "adapter.refresh", seconds: CACurrentMediaTime() - probeRefreshStart)
+        }
 #endif
 
         // Capture the prepend origin before any map is replaced. A history
@@ -1607,11 +1611,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // run of thinking/tool steps, one message row per body run. It
             // never merges across messages the way the Code planner does.
             codeGroups = []
+#if AA_TIMELINE_PROBE
+            let probeGroupStart = CACurrentMediaTime()
+#endif
             chatUnits = TimelineChatGrouping.units(
                 items: model.timeline.rows.map(\.value),
                 profile: profile,
                 interactionTargets: interactionTargets,
                 cwd: model.session.metadata?.cwd)
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "adapter.group", seconds: CACurrentMediaTime() - probeGroupStart)
+#endif
             var rowsByID: [String: ChatTimelineRowModel] = [:]
             for row in model.timeline.rows where rowsByID[row.id] == nil {
                 rowsByID[row.id] = row
@@ -1866,11 +1877,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var signatures: [TimelineListItem: TimelineContentSignature] = [:]
         var entries: [TimelineContentEntry] = []
         entries.reserveCapacity(identity.items.count)
+#if AA_TIMELINE_PROBE
+        let probeSignatureStart = CACurrentMediaTime()
+#endif
         for item in identity.items {
             let signature = makeSignature(for: item)
             signatures[item] = signature
             entries.append(TimelineContentEntry(item: item, signature: signature))
         }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.signature", seconds: CACurrentMediaTime() - probeSignatureStart)
+#endif
         itemsValue = identity.items
         signaturesByItem = signatures
         if estimateCache.count > 256 { estimateCache.removeAll(keepingCapacity: true) }
@@ -2225,8 +2243,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                     revision: hasher.revision,
                                                     updatedSeq: 0))
         }
+#if AA_TIMELINE_PROBE
+        let probeSummaryStart = CACurrentMediaTime()
+#endif
         let summary = TimelineStepSummarizer.summary(steps: group.steps,
                                                      cwd: model.session.metadata?.cwd)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.summary", seconds: CACurrentMediaTime() - probeSummaryStart)
+#endif
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
         settled.combine(group.hasFailure ? 1 : 0)

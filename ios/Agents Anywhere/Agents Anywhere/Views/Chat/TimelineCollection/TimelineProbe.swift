@@ -889,6 +889,24 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         stages[name] = stat
     }
 
+    /// Streaming flush cadence. `adapter.refresh` stages say what one rebuild
+    /// costs; this says how often the presentation layer asks for one during a
+    /// run, so a 20-30 ms refresh at 30 flushes/s is visible as such.
+    private var streamFlushWindowStart: CFTimeInterval = 0
+    private var streamFlushWindowCount = 0
+
+    func noteStreamFlush() {
+        let now = CACurrentMediaTime()
+        if now - streamFlushWindowStart >= 1 {
+            streamFlushWindowStart = now
+            streamFlushWindowCount = 0
+        }
+        streamFlushWindowCount += 1
+        counters["streamFlushes", default: 0] += 1
+        counters["streamFlushesMaxPerSec", default: 0] =
+            max(counters["streamFlushesMaxPerSec"] ?? 0, streamFlushWindowCount)
+    }
+
     func noteMeasureDuration(_ seconds: TimeInterval) {
         let ms = Int((max(0, seconds) * 1000).rounded())
         counters["measureCount", default: 0] += 1
@@ -1977,6 +1995,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                     + "total=\(f(stat.totalMs))ms avg=\(f(avg))ms "
                     + "last=\(f(stat.lastMs))ms max=\(f(stat.maxMs))ms")
             }
+        }
+
+        if let flushes = counters["streamFlushes"], flushes > 0 {
+            lines.append("G flush n=\(flushes) "
+                + "max/s=\(counters["streamFlushesMaxPerSec"] ?? 0)")
         }
 
         lines.append("--- WINDOW ---")

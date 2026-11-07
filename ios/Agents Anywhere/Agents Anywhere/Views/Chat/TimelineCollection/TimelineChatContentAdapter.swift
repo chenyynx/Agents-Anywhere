@@ -1240,11 +1240,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     Task { await self.model.retryPendingMessage(pending) }
                 },
                 bubbleStyle: .code)
-                // The settled user row fills the column and pushes its bubble
-                // to the trailing edge; the optimistic row is narrower than the
-                // cell, so without this it sat on the leading edge and read as
-                // an incoming message.
-                .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,

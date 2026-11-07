@@ -713,6 +713,15 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
             from: ownLayoutManager.documentRange.location,
             options: [.ensuresLayout]
         ) { fragment in
+            // `characterIndex(for:)` answers in the line fragment's own
+            // attributed string (the paragraph), so the line's start offset is
+            // already inside it; adding `line.characterRange.location` as well
+            // pushed every line after the first one forward by its own start
+            // offset — the selection landed on later text or clamped away
+            // (pp 2026-11-08). Convert with the fragment's document offset.
+            let fragmentStart = ownLayoutManager.offset(
+                from: ownLayoutManager.documentRange.location,
+                to: fragment.rangeInElement.location)
             for line in fragment.textLineFragments {
                 let origin = CGPoint(
                     x: fragment.layoutFragmentFrame.minX + line.typographicBounds.minX,
@@ -723,7 +732,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
                 let local = CGPoint(
                     x: min(max(point.x, box.minX), box.maxX) - origin.x,
                     y: min(max(point.y, box.minY), box.maxY) - origin.y)
-                let index = line.characterRange.location + line.characterIndex(for: local)
+                let index = fragmentStart + line.characterIndex(for: local)
                 if let current = best {
                     // The nearest line vertically wins; inside the line's own
                     // band, the nearest horizontally decides between the end of

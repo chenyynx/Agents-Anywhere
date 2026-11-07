@@ -643,7 +643,17 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
-        openLink(at: recognizer.location(in: self))
+        let point = recognizer.location(in: self)
+        if openLink(at: point) { return }
+        // A plain tap inside the block collapses the selection, the way a
+        // text view does; without this the highlight only went away on scroll.
+        if selectionOffsets != nil { endSelection() }
+    }
+
+    /// Dismiss the selection and give up first responder.
+    func endSelection() {
+        if selectionOffsets != nil { selectedTextRange = nil }
+        if isFirstResponder { resignFirstResponder() }
     }
 
     /// Resolve a tap to a character index by walking the laid-out lines. The
@@ -755,15 +765,54 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override var canBecomeFirstResponder: Bool { textInteractionEnabled }
 
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { installOutsideTapRecognizer() }
+        return became
+    }
+
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
+        selectionOffsets = nil
+        removeOutsideTapRecognizer()
         restoreAncestorClipping()
         return resigned
     }
 
+    /// While a block is first responder, a tap almost anywhere else should
+    /// collapse its selection — the message list has no other owner for that
+    /// gesture, so the catcher lives on the window and ignores touches that
+    /// land on this view.
+    private var outsideTapRecognizer: UITapGestureRecognizer?
+
+    private func installOutsideTapRecognizer() {
+        guard outsideTapRecognizer == nil, let window else { return }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleOutsideTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        window.addGestureRecognizer(tap)
+        outsideTapRecognizer = tap
+    }
+
+    private func removeOutsideTapRecognizer() {
+        if let outsideTapRecognizer {
+            outsideTapRecognizer.view?.removeGestureRecognizer(outsideTapRecognizer)
+        }
+        outsideTapRecognizer = nil
+    }
+
+    @objc private func handleOutsideTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: self)
+        guard !bounds.contains(point) else { return }
+        endSelection()
+    }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { restoreAncestorClipping() }
+        if window == nil {
+            removeOutsideTapRecognizer()
+            restoreAncestorClipping()
+        }
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {

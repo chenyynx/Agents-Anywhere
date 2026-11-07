@@ -77,6 +77,13 @@ nonisolated enum TimelineStep: Identifiable, Hashable {
 nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     let id: String
     let steps: [TimelineStep]
+    /// The settled row's counts, computed when the group is built.
+    ///
+    /// The row body used to call `TimelineStepSummarizer.summary` on every
+    /// evaluation — one `CodeToolLabelPlan` (including its diff-line scan) per
+    /// step, inside the frame that scrolls the row in. That was the per-entry
+    /// cost of a tool row. Same values, computed once at apply time.
+    var summary: TimelineStepSummary = TimelineStepSummary()
 
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
@@ -103,7 +110,7 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 /// The settled row's counts: 「思考 N 次 · 读取 X 个文件 · 运行 Y 个命令 ·
 /// 编辑 Z 个文件」 (pp 2026-10-29). File categories count distinct targets,
 /// the same rule `CodeToolLabelPlan` uses for its summary phrases.
-nonisolated struct TimelineStepSummary: Equatable {
+nonisolated struct TimelineStepSummary: Hashable {
     var thinkingCount = 0
     var readFiles = 0
     var ranCommands = 0
@@ -203,7 +210,8 @@ nonisolated enum TimelineChatUnit: Identifiable {
 nonisolated enum TimelineChatGrouping {
     static func units(items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
-                      interactionTargets: Set<String>) -> [TimelineChatUnit] {
+                      interactionTargets: Set<String>,
+                      cwd: String? = nil) -> [TimelineChatUnit] {
         var units: [TimelineChatUnit] = []
         var stepItems: [V2TimelineItem] = []
         var messageKey: String?
@@ -215,8 +223,11 @@ nonisolated enum TimelineChatGrouping {
             guard !stepItems.isEmpty else { return }
             let steps = stepItems.map { step(for: $0, profile: profile) }
             let firstID = stepItems.first.map(spanID) ?? steps.first?.id ?? "steps"
-            units.append(.stepGroup(TimelineStepGroup(id: "steps:\(firstID)", steps: steps),
-                                    rowIDs: stepItems.map(\.id)))
+            units.append(.stepGroup(
+                TimelineStepGroup(id: "steps:\(firstID)", steps: steps,
+                                  summary: TimelineStepSummarizer.summary(
+                                    steps: steps, cwd: cwd)),
+                rowIDs: stepItems.map(\.id)))
             stepItems.removeAll()
         }
 

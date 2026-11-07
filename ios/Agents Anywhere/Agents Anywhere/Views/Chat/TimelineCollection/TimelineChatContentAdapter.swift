@@ -1610,7 +1610,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             chatUnits = TimelineChatGrouping.units(
                 items: model.timeline.rows.map(\.value),
                 profile: profile,
-                interactionTargets: interactionTargets)
+                interactionTargets: interactionTargets,
+                cwd: model.session.metadata?.cwd)
             var rowsByID: [String: ChatTimelineRowModel] = [:]
             for row in model.timeline.rows where rowsByID[row.id] == nil {
                 rowsByID[row.id] = row

@@ -168,7 +168,6 @@ final class SessionTimelinePresentation {
             var updated: [ChatTimelineRowModel] = []
             updated.reserveCapacity(pending.count)
             var orderChanged = pending.count != rows.count
-            let didPublish = !pending.isEmpty
             for (index, value) in pending.enumerated() {
                 let existing = rowsByID[value.id]
                 let animate = animatePending && (existing != nil || value.orderSeq > previousTail)
@@ -181,14 +180,7 @@ final class SessionTimelinePresentation {
                 if !orderChanged, rows[index] !== row { orderChanged = true }
                 updated.append(row)
             }
-            if started {
-                nextBatchAt = now + ReplyPresentation.batchInterval
-            } else if didPublish {
-                // Renderer-owned rows published without starting a legacy
-                // reveal; hold the next publish for the official 0.1 s
-                // cadence instead of waking on every event.
-                nextBatchAt = now + ReplyPresentation.rendererBatchInterval
-            }
+            if started { nextBatchAt = now + ReplyPresentation.batchInterval }
             if orderChanged {
                 rows = updated
                 rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })

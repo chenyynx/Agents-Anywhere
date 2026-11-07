@@ -10,11 +10,6 @@ nonisolated enum ReplyPresentation {
     /// at most one batch animates and layout lands between animations.
     static let batchInterval: TimeInterval = revealSeconds + 1.0 / 60
 
-    /// Cadence for rows whose reveal belongs to the renderer (the TextKit
-    /// cursor decides what is visible). The official publisher emits at
-    /// 0.1 s; without a cadence these rows flush once per network event and
-    /// every flush rebuilds the whole timeline window.
-    static let rendererBatchInterval: TimeInterval = 0.1
     /// A published batch starts drawing after its Markdown parse and the next
     /// frame. Drawing clocks stay alive this much longer than the reveal.
     static let drawSlack: TimeInterval = 0.1

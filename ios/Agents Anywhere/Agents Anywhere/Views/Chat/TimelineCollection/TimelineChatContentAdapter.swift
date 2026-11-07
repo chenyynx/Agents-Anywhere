@@ -2243,15 +2243,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                     revision: hasher.revision,
                                                     updatedSeq: 0))
         }
-#if AA_TIMELINE_PROBE
-        let probeSummaryStart = CACurrentMediaTime()
-#endif
-        let summary = TimelineStepSummarizer.summary(steps: group.steps,
-                                                     cwd: model.session.metadata?.cwd)
-#if AA_TIMELINE_PROBE
-        TimelineProbeStore.shared.noteStage(
-            "adapter.summary", seconds: CACurrentMediaTime() - probeSummaryStart)
-#endif
+        // The group already carries the summary computed when it was built
+        // (same steps, same cwd). Recomputing it here ran one
+        // `CodeToolLabelPlan` per step on every refresh (35k calls in a
+        // 77 s probe window).
+        let summary = group.summary
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
         settled.combine(group.hasFailure ? 1 : 0)

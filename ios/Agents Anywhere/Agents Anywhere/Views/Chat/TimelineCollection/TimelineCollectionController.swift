@@ -495,13 +495,16 @@ final class TimelineCollectionController: UIViewController {
         if let hosted = measurer as? TimelineHostingHeightMeasurer {
             hosted.updateTraitOverrides(from: traitCollection)
         }
-        if let pending = pendingApply, columnWidth > 0 {
-            pendingApply = nil
-            apply(items: pending.items, animating: pending.animating)
-        }
+        applyPendingIfNeeded()
         handleContainerHeightChange()
         startAnchorDriverIfNeeded()
         scheduleVisibleCellFrameSync()
+    }
+
+    private func applyPendingIfNeeded() {
+        guard !navigationSuspended, let pending = pendingApply, columnWidth > 0 else { return }
+        pendingApply = nil
+        apply(items: pending.items, animating: pending.animating)
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -556,6 +559,14 @@ final class TimelineCollectionController: UIViewController {
         }
         guard !isPerformingSnapshot else {
             pendingSnapshotUpdate = .apply(items: items, animating: animating)
+            return
+        }
+        // The drawer transition runs its own display link; a snapshot apply
+        // plus synchronous measurement inside those frames is what turned a
+        // swipe into dropped frames. Park the latest content and apply it the
+        // moment the transition ends.
+        guard !navigationSuspended else {
+            pendingApply = (items: items, animating: animating)
             return
         }
         isPerformingSnapshot = true
@@ -2969,6 +2980,9 @@ final class TimelineCollectionController: UIViewController {
                 requestBottom(animated: request.animated, forced: request.forced)
             }
         }
+        // Content that changed while the transition owned the frame is
+        // applied here, before the returning gesture can start another.
+        applyPendingIfNeeded()
         // Suspension hides the return control without a viewport change;
         // resume re-measures through `publishViewport`, and the dedupe keeps
         // this second call free.

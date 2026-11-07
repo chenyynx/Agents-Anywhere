@@ -15,6 +15,9 @@ import UIKit
 struct CodeUserBubbleText: UIViewRepresentable {
     let text: String
     let color: Color
+    /// The chat bubbles keep selection on; a queued row owns a long-press
+    /// menu and must not start a text selection instead.
+    var isSelectable = true
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -31,7 +34,7 @@ struct CodeUserBubbleText: UIViewRepresentable {
         view.isOpaque = false
         view.isEditable = false
         view.isScrollEnabled = false
-        view.isSelectable = true
+        view.isSelectable = isSelectable
         view.isUserInteractionEnabled = true
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0

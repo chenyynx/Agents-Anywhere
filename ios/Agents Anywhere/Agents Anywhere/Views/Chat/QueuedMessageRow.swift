@@ -3,7 +3,8 @@ import UIKit
 
 /// One message the user queued while the agent was still running. It sits at
 /// the tail of the timeline, under the status line, right-aligned like a user
-/// bubble (same 24 pt corner radius, same 17/12 padding). It carries its own
+/// bubble and built from the same bubble tokens (`CodePageTheme`), so leaving
+/// the queue does not change its colour, face or height. It carries its own
 /// render for the three queue states:
 ///
 /// - `.queued` — a plain dashed outline: no glyph, no label; order alone says
@@ -21,8 +22,6 @@ struct QueuedMessageRow: View {
     let model: SessionChatModel
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
-    private var accent: AppAccent { AppAccent.resolve(accentValue) }
 
     /// The whole queue is paused: this row shows the paused outline and glyph,
     /// even while it is still only waiting its turn.
@@ -33,16 +32,18 @@ struct QueuedMessageRow: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Spacer(minLength: 48)
-            Text(item.content)
-                .font(.body)
-                .foregroundStyle(isOnWire
-                    ? AppTheme.accentTextColor(accent, colorScheme)
-                    : AppTheme.secondaryText(colorScheme))
-                // A long press belongs to the context menu, so this text is a
-                // plain Text with selection off (never ChatSelectableText).
-                .textSelection(.disabled)
-                .padding(.horizontal, 17)
-                .padding(.vertical, 12)
+            // The same text view, face and line metrics as the settled user
+            // bubble: the queue row used to draw with the app accent palette
+            // and the system face, so colour and height changed the moment the
+            // message left the queue. Selection stays off — the long press
+            // belongs to the queue menu.
+            CodeUserBubbleText(text: item.content,
+                color: isOnWire
+                    ? CodePageTheme.userBubbleText.resolved(for: colorScheme)
+                    : AppTheme.secondaryText(colorScheme),
+                isSelectable: false)
+                .padding(.horizontal, CodePageTheme.userBubbleHorizontalPadding)
+                .padding(.vertical, CodePageTheme.userBubbleVerticalPadding)
                 // Reserve the bottom-trailing glyph's lane only when a glyph is
                 // actually there (the pause mark or the spinner), so a plain
                 // waiting bubble hugs its text like the user bubble does. The
@@ -82,10 +83,10 @@ struct QueuedMessageRow: View {
     /// take as the user bubble, so the corner and metrics line up exactly.
     @ViewBuilder private var bubbleShape: some View {
         if isOnWire {
-            RoundedRectangle(cornerRadius: 24)
-                .fill(AppTheme.accentBubbleBackground(accent, colorScheme))
+            RoundedRectangle(cornerRadius: CodePageTheme.userBubbleCornerRadius)
+                .fill(CodePageTheme.userBubbleFill.resolved(for: colorScheme))
         } else {
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: CodePageTheme.userBubbleCornerRadius)
                 .strokeBorder(queuedStroke, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
         }
     }

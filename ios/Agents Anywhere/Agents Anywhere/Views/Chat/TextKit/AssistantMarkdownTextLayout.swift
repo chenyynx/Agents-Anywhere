@@ -478,6 +478,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         get { sourceAttributed }
         set {
             sourceAttributed = newValue
+            selectionOffsets = nil
             ownStorage.attributedString = Self.recolouringLinks(newValue ?? NSAttributedString())
             setNeedsDisplay()
         }
@@ -522,6 +523,11 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     private var lastMeasuredWidth: CGFloat = -1
     private var lastContainerSize: CGSize = .zero
 
+    /// Selection in UTF-16 offsets; `nil` when nothing is selected.
+    private var selectionOffsets: (start: Int, end: Int)?
+    private weak var textInputDelegateStorage: UITextInputDelegate?
+    private lazy var textTokenizer = UITextInputStringTokenizer(textInput: self)
+
     init(interactive: Bool = false) {
         let storage = NSTextContentStorage()
         let layout = NSTextLayoutManager()
@@ -549,8 +555,16 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     // MARK: - Drawing
 
     override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext(),
-              (attributedText?.length ?? 0) > 0 else { return }
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        // `UITextInteraction` drives the gestures and the handles; the
+        // highlight is ours, because the fragments here are drawn by hand.
+        if let (start, end) = selectionOffsets, end > start {
+            context.setFillColor(UIColor.tintColor.withAlphaComponent(0.28).cgColor)
+            for frame in selectionFrames(from: start, to: end) {
+                context.fill(frame)
+            }
+        }
+        guard (attributedText?.length ?? 0) > 0 else { return }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         ownLayoutManager.enumerateTextLayoutFragments(
             from: ownLayoutManager.documentRange.location,
@@ -569,8 +583,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     // MARK: - Interaction
 
-    /// Body text: links tap. Selection lived in the text view and is not
-    /// reproduced yet; the interaction layer is a separate piece of work.
+    /// Body text: links tap, long press selects, and the edit menu copies.
     func enableTextInteraction() {
         guard !textInteractionEnabled else { return }
         textInteractionEnabled = true
@@ -589,7 +602,18 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         tap.delegate = self
         addGestureRecognizer(tap)
         linkTapRecognizer = tap
+        // The official selectable leaf is this view plus
+        // `UITextInteraction` and its own `UITextInput`
+        // (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4); the interaction
+        // brings word selection, the loupe, the drag handles and the edit
+        // menu, and talks to the text through `UITextInput`.
+        let interaction = UITextInteraction(for: .nonEditable)
+        interaction.textInput = self
+        addInteraction(interaction)
+        textSelectionInteraction = interaction
     }
+
+    private var textSelectionInteraction: UITextInteraction?
 
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
@@ -642,6 +666,96 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+
+    // MARK: - Selection
+
+    private var textLength: Int { sourceAttributed?.length ?? 0 }
+
+    private func location(atOffset offset: Int) -> NSTextLocation? {
+        ownStorage.location(ownStorage.documentRange.location, offsetBy: offset)
+    }
+
+    private func offset(of location: NSTextLocation) -> Int {
+        ownStorage.offset(from: ownStorage.documentRange.location, to: location)
+    }
+
+    /// Segment rectangles for `[start, end)`, the same enumeration the reveal
+    /// mask uses.
+    func selectionFrames(from start: Int, to end: Int) -> [CGRect] {
+        guard end > start,
+              let a = location(atOffset: start),
+              let b = location(atOffset: end),
+              let range = NSTextRange(location: a, end: b) else { return [] }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var frames: [CGRect] = []
+        ownLayoutManager.enumerateTextSegments(in: range, type: .standard, options: []) {
+            _, frame, _, _ in
+            frames.append(frame)
+            return true
+        }
+        return frames
+    }
+
+    private func characterFrame(at offset: Int) -> CGRect? {
+        guard offset >= 0, offset < textLength,
+              let a = location(atOffset: offset),
+              let b = location(atOffset: offset + 1),
+              let range = NSTextRange(location: a, end: b) else { return nil }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var frame = CGRect.zero
+        ownLayoutManager.enumerateTextSegments(in: range, type: .standard, options: []) {
+            _, rect, _, _ in
+            frame = rect
+            return false
+        }
+        return frame.isEmpty ? nil : frame
+    }
+
+    private func caretFrame(at offset: Int) -> CGRect? {
+        let clamped = min(max(offset, 0), textLength)
+        if clamped < textLength, let rect = characterFrame(at: clamped) {
+            return CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+        }
+        if clamped > 0, let rect = characterFrame(at: clamped - 1) {
+            return CGRect(x: rect.maxX, y: rect.minY, width: 2, height: rect.height)
+        }
+        return nil
+    }
+
+    private func wordRange(at offset: Int) -> UITextRange? {
+        guard textLength > 0 else { return nil }
+        let clamped = min(max(offset, 0), textLength - 1)
+        let position = MarkdownTextOffsetPosition(clamped)
+        if let range = textTokenizer.rangeEnclosingPosition(
+            position, with: .word, inDirection: .storage(.forward)) as? MarkdownTextOffsetRange,
+           range.startOffset != range.endOffset {
+            return range
+        }
+        return MarkdownTextOffsetRange(clamped, min(clamped + 1, textLength))
+    }
+
+    private func notifySelectionChanged() {
+        textInputDelegateStorage?.selectionWillChange(self)
+        textInputDelegateStorage?.selectionDidChange(self)
+    }
+
+    override var canBecomeFirstResponder: Bool { textInteractionEnabled }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) {
+            guard let selectionOffsets else { return false }
+            return selectionOffsets.end > selectionOffsets.start
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start else { return }
+        let text = (sourceAttributed?.string ?? "") as NSString
+        UIPasteboard.general.string = text.substring(
+            with: NSRange(location: selectionOffsets.start,
+                          length: selectionOffsets.end - selectionOffsets.start))
     }
 
     // MARK: - Chip overlay
@@ -716,4 +830,186 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         }
     }
 }
+
+// MARK: - UITextInput
+
+extension AssistantMarkdownBlockTextView: UITextInput {
+    var selectedTextRange: UITextRange? {
+        get {
+            guard let selectionOffsets else { return nil }
+            return MarkdownTextOffsetRange(selectionOffsets.start, selectionOffsets.end)
+        }
+        set {
+            if let range = newValue as? MarkdownTextOffsetRange {
+                selectionOffsets = (range.startOffset, range.endOffset)
+            } else if newValue == nil {
+                selectionOffsets = nil
+            }
+            setNeedsDisplay()
+            notifySelectionChanged()
+        }
+    }
+
+    var markedTextRange: UITextRange? { nil }
+
+    var markedTextStyle: [NSAttributedString.Key: Any]? {
+        get { nil }
+        set {}
+    }
+
+    var inputDelegate: UITextInputDelegate? {
+        get { textInputDelegateStorage }
+        set { textInputDelegateStorage = newValue }
+    }
+
+    var tokenizer: UITextInputTokenizer { textTokenizer }
+
+    var beginningOfDocument: UITextPosition { MarkdownTextOffsetPosition(0) }
+
+    var endOfDocument: UITextPosition { MarkdownTextOffsetPosition(textLength) }
+
+    var textInputView: UIView { self }
+
+    var hasText: Bool { textLength > 0 }
+
+    func text(in range: UITextRange) -> String? {
+        guard let range = range as? MarkdownTextOffsetRange,
+              range.startOffset >= 0, range.endOffset <= textLength else { return nil }
+        return ((sourceAttributed?.string ?? "") as NSString).substring(
+            with: NSRange(location: range.startOffset,
+                          length: range.endOffset - range.startOffset))
+    }
+
+    // Read-only: the block never accepts edits, but the protocol requires the
+    // entry points.
+    func replace(_ range: UITextRange, withText text: String) {}
+
+    func insertText(_ text: String) {}
+
+    func deleteBackward() {}
+
+    func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        guard let p = position as? MarkdownTextOffsetPosition else { return nil }
+        return MarkdownTextOffsetPosition(min(max(p.offset + offset, 0), textLength))
+    }
+
+    func position(from position: UITextPosition, in direction: UITextLayoutDirection,
+                  offset: Int) -> UITextPosition? {
+        let backwards = direction == .left || direction == .up
+        return self.position(from: position, offset: backwards ? -offset : offset)
+    }
+
+    func offset(from: UITextPosition, to: UITextPosition) -> Int {
+        guard let a = from as? MarkdownTextOffsetPosition,
+              let b = to as? MarkdownTextOffsetPosition else { return 0 }
+        return b.offset - a.offset
+    }
+
+    func textRange(from: UITextPosition, to: UITextPosition) -> UITextRange? {
+        guard let a = from as? MarkdownTextOffsetPosition,
+              let b = to as? MarkdownTextOffsetPosition else { return nil }
+        return MarkdownTextOffsetRange(a.offset, b.offset)
+    }
+
+    func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        guard let a = position as? MarkdownTextOffsetPosition,
+              let b = other as? MarkdownTextOffsetPosition else { return .orderedSame }
+        if a.offset < b.offset { return .orderedAscending }
+        if a.offset > b.offset { return .orderedDescending }
+        return .orderedSame
+    }
+
+    func firstRect(for range: UITextRange) -> CGRect {
+        guard let range = range as? MarkdownTextOffsetRange else { return .zero }
+        if let first = selectionFrames(from: range.startOffset, to: range.endOffset).first {
+            return convert(first, to: nil)
+        }
+        if let caret = caretFrame(at: range.startOffset) {
+            return convert(caret, to: nil)
+        }
+        return .zero
+    }
+
+    func caretRect(for position: UITextPosition) -> CGRect {
+        guard let p = position as? MarkdownTextOffsetPosition,
+              let caret = caretFrame(at: p.offset) else { return .zero }
+        return caret
+    }
+
+    func closestPosition(to point: CGPoint) -> UITextPosition? {
+        if let index = characterIndex(at: point) {
+            return MarkdownTextOffsetPosition(min(max(index, 0), textLength))
+        }
+        return MarkdownTextOffsetPosition(point.y > bounds.height / 2 ? textLength : 0)
+    }
+
+    func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
+        guard let limit = range as? MarkdownTextOffsetRange,
+              let closest = closestPosition(to: point) as? MarkdownTextOffsetPosition else {
+            return closestPosition(to: point)
+        }
+        return MarkdownTextOffsetPosition(
+            min(max(closest.offset, limit.startOffset), limit.endOffset))
+    }
+
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+        guard let range = range as? MarkdownTextOffsetRange else { return [] }
+        let frames = selectionFrames(from: range.startOffset, to: range.endOffset)
+        return frames.enumerated().map { index, frame in
+            MarkdownTextSelectionRect(rect: frame,
+                                      containsStart: index == 0,
+                                      containsEnd: index == frames.count - 1)
+        }
+    }
+
+    func characterRange(at point: CGPoint) -> UITextRange? {
+        guard let index = characterIndex(at: point) else { return nil }
+        return wordRange(at: index)
+    }
+
+    func baseWritingDirection(for position: UITextPosition,
+                              in direction: UITextStorageDirection) -> UITextWritingDirection {
+        effectiveUserInterfaceLayoutDirection == .rightToLeft ? .rightToLeft : .leftToRight
+    }
+
+    func setBaseWritingDirection(_ writingDirection: UITextWritingDirection,
+                                 for range: UITextRange) {}
+}
+
+/// Positions are UTF-16 offsets into the block's string; the official
+/// `SelectableMarkdownTextView` wraps its offsets the same way (`OffsetPosition`
+/// / `OffsetRange`, `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4).
+final class MarkdownTextOffsetPosition: UITextPosition {
+    let offset: Int
+    init(_ offset: Int) { self.offset = offset }
+}
+
+final class MarkdownTextOffsetRange: UITextRange {
+    let startOffset: Int
+    let endOffset: Int
+    init(_ start: Int, _ end: Int) {
+        startOffset = min(start, end)
+        endOffset = max(start, end)
+    }
+    override var start: UITextPosition { MarkdownTextOffsetPosition(startOffset) }
+    override var end: UITextPosition { MarkdownTextOffsetPosition(endOffset) }
+    override var isEmpty: Bool { startOffset == endOffset }
+}
+
+final class MarkdownTextSelectionRect: UITextSelectionRect {
+    private let frame: CGRect
+    private let startsHere: Bool
+    private let endsHere: Bool
+    init(rect: CGRect, containsStart: Bool, containsEnd: Bool) {
+        frame = rect
+        startsHere = containsStart
+        endsHere = containsEnd
+    }
+    override var rect: CGRect { frame }
+    override var containsStart: Bool { startsHere }
+    override var containsEnd: Bool { endsHere }
+    override var writingDirection: UITextWritingDirection { .leftToRight }
+    override var isVertical: Bool { false }
+}
+
 #endif

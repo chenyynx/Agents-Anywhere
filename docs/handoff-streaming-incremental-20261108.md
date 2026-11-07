@@ -52,3 +52,23 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.githu
 
 按任务单 P1 → P2（同一批，一个包）→ P3 + P4（一批）→ P5 单独。
 硬约束：不改 publish 契约、不动历史分页锚点计算、每阶段配单测（P2 必须做「全量 vs 增量」对拍）、真机验过再进下一批。
+
+---
+
+## 6. 待修 bug：中断后用户气泡停在「发送中」（2026-11-08 真机）
+
+**症状**：点中断后，刚发出的用户消息气泡仍是待发样式（灰底 + 转圈），不回到普通气泡，也不出现重试/消失。
+
+**代码定位**
+- 气泡渲染：`TimelineChatContentAdapter.swift:1233` `.pending(id)` → `PendingMessageRow`，样式由 `V2PendingMessage.delivery` 决定。
+- 待发记录只在「非 `.sending`」时才允许被移除：`V2SessionModel.swift:644`（`dismissPendingMessage` 的过滤条件）。
+- 回声看门狗只处理 `delivery == .accepted` 的情况（`V2SessionModel.swift:629`）。
+- 中断入口：`SessionChatModel.interrupt()`（`SessionChatModel.swift:757`），成功后不改 pending 状态。
+
+**推断根因**：发送后 pending 停在 `.sending`（服务端回执/回声未到），用户随即中断；中断只结束回合，不会推进该 pending 的 delivery，于是它既不能被 dismiss（`.sending` 被过滤），也等不到 accepted 的看门狗 → 永久转圈。
+
+**修法方向（未实施，需先确认 Delivery 状态机）**
+1. 中断成功后，对 `delivery == .sending` 的 pending 做一次权威确认（复用 `loadLatest(authoritative: true)`）；确认存在则移除 pending（真实行已在时间线里），不存在则置为失败态给重试。
+2. 或者放宽 `dismissPendingMessage`：`.sending` 在回合结束后也允许移除（需要同时保证不会重发同内容时被 `unresolvedPending` 误挡——`blocksRepeatSend` 的判断要跟着改）。
+
+**风险**：这条链路直接关系「消息是否真的发出去了」，改错会导致重复发送或消息丢失；必须配单测（pending 状态机：sending → accepted → 移除；sending → 中断 → 失败/移除）。

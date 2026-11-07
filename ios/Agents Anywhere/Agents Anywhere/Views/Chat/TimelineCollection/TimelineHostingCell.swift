@@ -26,8 +26,14 @@ final class TimelineHostingCell: UICollectionViewCell {
         let probeStart = CACurrentMediaTime()
         TimelineProbeStore.shared.enterSection("cell.hostingLayout")
         super.layoutSubviews()
-        TimelineProbeStore.shared.noteStage("cell.hostingLayout",
-                                           seconds: CACurrentMediaTime() - probeStart)
+        let probeLayout = CACurrentMediaTime() - probeStart
+        TimelineProbeStore.shared.noteStage("cell.hostingLayout", seconds: probeLayout)
+        // Short rows are the tool/status rows the device reports as one drop
+        // per entry; split them out so the report can tell whether the cost is
+        // in the hosting layout of those rows.
+        if bounds.height > 0, bounds.height <= 240 {
+            TimelineProbeStore.shared.noteStage("cell.shortHosting", seconds: probeLayout)
+        }
         TimelineProbeStore.shared.noteScrollSegment("cell.hostingLayout", since: probeStart)
         TimelineProbeStore.shared.leaveSection()
         if probeConfiguredAt > 0 {

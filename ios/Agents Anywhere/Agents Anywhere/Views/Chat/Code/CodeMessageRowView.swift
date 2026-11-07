@@ -279,8 +279,20 @@ struct CodeMessageRowView: View {
     }
 
     private func toolRow(_ segment: CodeToolSegment) -> some View {
+#if AA_TIMELINE_PROBE
+        let probeCalls = CACurrentMediaTime()
+#endif
         let calls = CodeToolLabels.calls(in: segment)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "toolRow.calls", seconds: CACurrentMediaTime() - probeCalls)
+        let probeLabel = CACurrentMediaTime()
+#endif
         let label = CodeToolLabels.label(for: calls, cwd: cwd)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "toolRow.label", seconds: CACurrentMediaTime() - probeLabel)
+#endif
         let failed = calls.filter { $0.status == .failed }.count
         // Official row init (R28 §4.3, I-high): status/failureExtent are
         // carried as data; only the known `.failed`/`.partial` branch shapes

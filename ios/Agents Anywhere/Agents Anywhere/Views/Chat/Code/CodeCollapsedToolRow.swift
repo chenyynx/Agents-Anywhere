@@ -439,12 +439,30 @@ struct CodeCollapsedToolRow: View {
     }
 
     var body: some View {
+#if AA_TIMELINE_PROBE
+        let probeBody = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "toolRow.body", seconds: CACurrentMediaTime() - probeBody)
+        }
+        let probeRuns = CACurrentMediaTime()
+#endif
         let runs = CodeToolLabels.runs(
             for: label, differentiateWithoutColor: differentiateWithoutColor)
-        CodeCollapsedStepsRow(
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "toolRow.runs", seconds: CACurrentMediaTime() - probeRuns)
+        let probeStyled = CACurrentMediaTime()
+#endif
+        let text = CodeToolLabelRun.styledText(runs, scheme: colorScheme)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "toolRow.styled", seconds: CACurrentMediaTime() - probeStyled)
+#endif
+        return CodeCollapsedStepsRow(
             icon: icon,
             iconSize: iconSize,
-            text: CodeToolLabelRun.styledText(runs, scheme: colorScheme),
+            text: text,
             status: status,
             failureExtent: failureExtent,
             hasDetails: hasDetails,

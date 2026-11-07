@@ -628,9 +628,28 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         interaction.textInput = self
         addInteraction(interaction)
         textSelectionInteraction = interaction
+        orderLinkTapBehindWordSelection()
     }
 
     private var textSelectionInteraction: UITextInteraction?
+    /// True once the link tap waits for the interaction's double tap.
+    private var linkTapOrderedBehindWordSelection = false
+
+    /// The link tap is a plain one-tap recognizer; left on its own it
+    /// recognizes on the first tap of a double tap and cancels the
+    /// interaction's word-selection gesture (and its own action would collapse
+    /// the selection the double tap just made). The interaction brings no
+    /// public handle to its gestures, so pick the two-tap recognizer out of
+    /// the ones it installed on this view and make the link tap wait for it.
+    private func orderLinkTapBehindWordSelection() {
+        guard !linkTapOrderedBehindWordSelection,
+              let tap = linkTapRecognizer else { return }
+        let doubleTap = (gestureRecognizers ?? []).compactMap { $0 as? UITapGestureRecognizer }
+            .first { $0 !== tap && $0.numberOfTapsRequired == 2 }
+        guard let doubleTap else { return }
+        tap.require(toFail: doubleTap)
+        linkTapOrderedBehindWordSelection = true
+    }
 
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
@@ -693,6 +712,18 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        // The window-level catcher exists only to collapse a selection when a
+        // tap lands outside this block. Receiving in-block touches made it
+        // recognize on the first tap of a double tap and cancel the
+        // interaction's word-selection gesture, so it only takes outside ones.
+        if gestureRecognizer === outsideTapRecognizer {
+            return !bounds.contains(touch.location(in: self))
+        }
+        return true
     }
 
     // MARK: - Selection
@@ -771,7 +802,10 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
-        if became { installOutsideTapRecognizer() }
+        if became {
+            orderLinkTapBehindWordSelection()
+            installOutsideTapRecognizer()
+        }
         return became
     }
 
@@ -813,6 +847,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        orderLinkTapBehindWordSelection()
         if window == nil {
             removeOutsideTapRecognizer()
             restoreAncestorClipping()

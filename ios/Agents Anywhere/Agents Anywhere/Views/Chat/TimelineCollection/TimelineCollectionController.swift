@@ -601,11 +601,14 @@ final class TimelineCollectionController: UIViewController {
         // plus synchronous measurement inside those frames is what turned a
         // swipe into dropped frames. Park the latest content and apply it the
         // moment the transition ends.
-        // Only tail updates park: a history page changes the item count and
-        // its anchor compensation has to land on the frame it was computed
-        // for (a page parked past the 15 s paging timeout would apply as a
-        // plain snapshot and shift the reading position).
-        if navigationSuspended, items.count == currentItems.count {
+        // Only tail updates park: a history page carries an anchor
+        // compensation that has to land on the frame it was computed for (a
+        // page parked past the 15 s paging timeout would apply as a plain
+        // snapshot and shift the reading position). Item count is not a
+        // reliable discriminator — a streamed tail changes the row set too
+        // (a new step group appears, the message group splits), and those
+        // applies are exactly the ones that dropped frames mid-drag.
+        if navigationSuspended, !historyPaging {
             pendingApply = (items: items, animating: animating)
             schedulePendingApplyCheck()
             return
@@ -618,7 +621,7 @@ final class TimelineCollectionController: UIViewController {
         // Only tail updates park: a snapshot whose item count moved is a
         // prepend/append (history paging), and its anchor correction must
         // land on the frame it was computed for.
-        if isScrollMoving, items.count == currentItems.count {
+        if isScrollMoving, !historyPaging {
             pendingApply = (items: items, animating: animating)
             schedulePendingApplyCheck()
             return

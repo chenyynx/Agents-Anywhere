@@ -501,6 +501,19 @@ final class TimelineCollectionController: UIViewController {
         scheduleVisibleCellFrameSync()
     }
 
+    /// A finger resting on the list is still `isDragging == true`, but the
+    /// reader is not moving anything — parking then would freeze the stream
+    /// under a motionless finger. Only a recent offset change counts as the
+    /// reader owning the frame.
+    private var lastScrollMovementAt: CFTimeInterval = 0
+
+    private var isScrollMoving: Bool {
+        guard let collectionView else { return false }
+        if collectionView.isDecelerating { return true }
+        guard collectionView.isDragging else { return false }
+        return CACurrentMediaTime() - lastScrollMovementAt < 0.15
+    }
+
     /// UIKit does not promise `scrollViewDidEndDecelerating` when a
     /// programmatic offset write interrupts the coast (see `requestBottom`),
     /// so a parked snapshot gets a timed re-check instead of relying on that
@@ -513,8 +526,7 @@ final class TimelineCollectionController: UIViewController {
             guard let self else { return }
             self.pendingApplyCheck = nil
             guard self.pendingApply != nil else { return }
-            if let collectionView = self.collectionView,
-               collectionView.isDragging || collectionView.isDecelerating {
+            if self.isScrollMoving {
                 self.schedulePendingApplyCheck()
             } else {
                 self.applyPendingIfNeeded()
@@ -526,7 +538,7 @@ final class TimelineCollectionController: UIViewController {
 
     private func applyPendingIfNeeded() {
         guard !navigationSuspended, let pending = pendingApply, columnWidth > 0 else { return }
-        if let collectionView, collectionView.isDragging || collectionView.isDecelerating { return }
+        if isScrollMoving { return }
         pendingApply = nil
         apply(items: pending.items, animating: pending.animating)
     }
@@ -606,8 +618,7 @@ final class TimelineCollectionController: UIViewController {
         // Only tail updates park: a snapshot whose item count moved is a
         // prepend/append (history paging), and its anchor correction must
         // land on the frame it was computed for.
-        if let collectionView, collectionView.isDragging || collectionView.isDecelerating,
-           items.count == currentItems.count {
+        if isScrollMoving, items.count == currentItems.count {
             pendingApply = (items: items, animating: animating)
             schedulePendingApplyCheck()
             return
@@ -3264,6 +3275,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        lastScrollMovementAt = CACurrentMediaTime()
         guard !navigationSuspended else { return }
 #if DEBUG
         if testGestureState != nil {

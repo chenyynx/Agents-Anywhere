@@ -755,6 +755,17 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override var canBecomeFirstResponder: Bool { textInteractionEnabled }
 
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        restoreAncestorClipping()
+        return resigned
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { restoreAncestorClipping() }
+    }
+
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(copy(_:)) {
             guard let selectionOffsets else { return false }
@@ -769,6 +780,33 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         UIPasteboard.general.string = text.substring(
             with: NSRange(location: selectionOffsets.start,
                           length: selectionOffsets.end - selectionOffsets.start))
+    }
+
+    // MARK: - Selection clipping
+
+    /// Views whose `clipsToBounds` this view relaxed so the system's
+    /// selection handles can hang past the text column. The chat cell clips
+    /// its content view (needed while a streaming row is shorter than its
+    /// content), and that clip sits exactly on the text's left edge, so a
+    /// start-of-line handle was cut in half. Only relaxed while something is
+    /// selected and restored when the selection goes away.
+    private var relaxedClippingViews: [UIView] = []
+
+    private func relaxAncestorClipping() {
+        guard relaxedClippingViews.isEmpty else { return }
+        var current = superview
+        while let view = current {
+            if view.clipsToBounds {
+                view.clipsToBounds = false
+                relaxedClippingViews.append(view)
+            }
+            current = view.superview
+        }
+    }
+
+    private func restoreAncestorClipping() {
+        for view in relaxedClippingViews { view.clipsToBounds = true }
+        relaxedClippingViews.removeAll()
     }
 
     // MARK: - Chip overlay
@@ -857,6 +895,11 @@ extension AssistantMarkdownBlockTextView: UITextInput {
                 selectionOffsets = (range.startOffset, range.endOffset)
             } else if newValue == nil {
                 selectionOffsets = nil
+            }
+            if let selectionOffsets, selectionOffsets.end > selectionOffsets.start {
+                relaxAncestorClipping()
+            } else {
+                restoreAncestorClipping()
             }
             setNeedsDisplay()
             notifySelectionChanged()

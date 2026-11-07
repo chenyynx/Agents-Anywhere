@@ -239,7 +239,7 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 /// The heights are constraints, exactly like `AssistantMarkdownCell`, so the
 /// rendered layout and the value returned by `sizeThatFits` are the same
 /// arithmetic.
-final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
+final class CodeMarkdownTextStackView: UIView {
     private let stack = UIStackView()
 
     /// One installed block. `key` is the block's stable identity and `digest`
@@ -287,22 +287,10 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
             bottom,
         ])
 
-        // Ancestor fallback: the hosted list sometimes lets the text view's
-        // own link gesture lose arbitration. A tap recognizer on the stack
-        // still sees the touch; resolve it to the descendant text view.
-        let tap = LinkTapRecognizer(target: self, action: #selector(handleAncestorLinkTap(_:)))
-        tap.cancelsTouchesInView = false
-        tap.delegate = self
-        // Same double-tap wait as the text view's own link tap: without it
-        // the first tap of a double tap opened a link chip and left the page
-        // before the text interaction could select the word (pp 2026-11-08).
-        let doubleTapGate = UITapGestureRecognizer(target: nil, action: nil)
-        doubleTapGate.numberOfTapsRequired = 2
-        doubleTapGate.cancelsTouchesInView = false
-        doubleTapGate.delegate = self
-        addGestureRecognizer(doubleTapGate)
-        tap.require(toFail: doubleTapGate)
-        addGestureRecognizer(tap)
+        // Link taps belong to the text view's own recognizer, the way the
+        // official leaf does it (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
+        // §Q6). The old ancestor copy here fired on the first tap of a double
+        // tap and opened a link chip before the selection could run.
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -470,30 +458,6 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
             }
         }
         return total
-    }
-
-    @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
-        // A hold belongs to the selection interaction, not to the link.
-        if let link = recognizer as? LinkTapRecognizer, !link.isQuickTap { return }
-        _ = openLink(in: self, at: recognizer.location(in: self))
-    }
-
-    private func openLink(in view: UIView, at point: CGPoint) -> Bool {
-        if let textView = view as? AssistantMarkdownBlockTextView {
-            let local = textView.convert(point, from: self)
-            if textView.bounds.contains(local), textView.openLink(at: local) {
-                return true
-            }
-        }
-        for subview in view.subviews {
-            if openLink(in: subview, at: point) { return true }
-        }
-        return false
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
     }
 
     private func enableTextInteraction(in view: UIView) {

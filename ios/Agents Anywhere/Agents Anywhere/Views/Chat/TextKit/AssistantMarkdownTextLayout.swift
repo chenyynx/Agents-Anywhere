@@ -642,11 +642,9 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         let tap = LinkTapRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
-        // A single tap has to wait out the double tap. Left immediate, the
-        // first tap of every double tap opened a link (or collapsed the
-        // selection) before the interaction could select a word. The gate is
-        // ours so the ordering never depends on the interaction's private
-        // gesture class.
+        // UITextView semantics: a link tap waits until UIKit has ruled out a
+        // double tap. Without the wait, the first tap of a double tap opened a
+        // link chip before the interaction could select the word under it.
         let doubleTapGate = UITapGestureRecognizer(target: nil, action: nil)
         doubleTapGate.numberOfTapsRequired = 2
         doubleTapGate.cancelsTouchesInView = false
@@ -683,15 +681,13 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
-        // A long press ends with a touch-up that a tap recognizer still
-        // reports. Acting on it opened the link and collapsed the selection
-        // the interaction had just made, so holds stay with selection.
+        // The official tap recognizer only begins when the touch is a tap,
+        // not the touch-up that ends a long press (press < 0.5 s,
+        // `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6). Selection and its
+        // dismissal belong to `UITextInteraction`; this handler only opens
+        // links.
         if let link = recognizer as? LinkTapRecognizer, !link.isQuickTap { return }
-        let point = recognizer.location(in: self)
-        if openLink(at: point) { return }
-        // A plain tap inside the block collapses the selection, the way a
-        // text view does; without this the highlight only went away on scroll.
-        if selectionOffsets != nil { endSelection() }
+        _ = openLink(at: recognizer.location(in: self))
     }
 
     /// Dismiss the selection and give up first responder.
@@ -1452,16 +1448,17 @@ final class SelectableMarkdownTextTokenizer: UITextInputStringTokenizer {
     }
 }
 
-/// A one-tap recognizer that remembers how long its touch was held. A hold
-/// past the long-press window belongs to the selection interaction: acting on
-/// the touch-up that ends it opened a link and collapsed the selection the
-/// user had just made (pp 2026-11-08).
+/// A one-tap recognizer that remembers how long its touch was held. The
+/// official link tap begins only when the press is shorter than 0.5 s
+/// (`gestureRecognizerShouldBegin:` → `systemUptime − touchDownTime < 0.5`,
+/// `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6); a longer press belongs to
+/// the selection interaction.
 final class LinkTapRecognizer: UITapGestureRecognizer {
     private var touchDownAt: TimeInterval?
     private(set) var lastTouchDuration: TimeInterval = 0
 
     /// True for a plain quick tap, not the tail of a long press.
-    var isQuickTap: Bool { lastTouchDuration < 0.35 }
+    var isQuickTap: Bool { lastTouchDuration < 0.5 }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         if let timestamp = touches.first?.timestamp { touchDownAt = timestamp }

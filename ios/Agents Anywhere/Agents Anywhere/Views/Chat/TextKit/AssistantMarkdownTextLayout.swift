@@ -438,34 +438,41 @@ final class AssistantMarkdownBlockHeightCache {
     }
 }
 
-/// One TextKit 2 block. `UITextView` is the official renderer's base too
-/// (`MarkdownUITextView` holds a custom `NSTextLayoutManager`); the M2 cell
-/// only needs the default TextKit 2 stack and an intrinsic height that matches
-/// `AssistantMarkdownTextLayout.height(of:)`.
-final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
-                                           UIGestureRecognizerDelegate {
-    /// The TextKit 2 stack this view owns.
-    ///
-    /// Official `MarkdownUITextView` builds its own `NSTextContentStorage` +
-    /// `NSTextLayoutManager` + container and hands the container to
-    /// `UITextView` (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q1). Owning
-    /// the stack is what makes measurement and drawing read one layout:
-    /// `measuredHeight` lays the view's manager out at the row width and the
-    /// text view draws that same layout instead of a second private pass.
+/// One TextKit 2 block, drawn by this view itself.
+///
+/// `UITextView` cost 0.8 ms to create and 0.3 ms to assign per block; a row
+/// carries six of them, which was most of the 7 ms `codeStack.build` measured
+/// on device (the 120 Hz frame budget is 8.3 ms). The official renderer is not
+/// a `UITextView` either: `MarkdownUITextView` is a plain view that owns the
+/// TextKit 2 stack and draws the laid-out line fragments. This is that shape.
+final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate {
     private let ownStorage: NSTextContentStorage
     private let ownLayoutManager: NSTextLayoutManager
     private let ownContainer: NSTextContainer
 
-    private var lastMeasuredWidth: CGFloat = -1
-    /// The Code page opts in; Chat's hosted cell leaves the text inert for now.
-    private var textInteractionEnabled = false
+    /// The backing storage, shared with the layout manager. The code card's
+    /// streaming highlight path edits it in place, so it is exposed as-is.
+    var textStorage: NSTextStorage { ownStorage.textStorage }
+
+    var attributedText: NSAttributedString? {
+        get { ownStorage.attributedString }
+        set {
+            ownStorage.attributedString = newValue ?? NSAttributedString()
+            setNeedsDisplay()
+        }
+    }
+
+    var textLayoutManager: NSTextLayoutManager? { ownLayoutManager }
+    var textContainer: NSTextContainer { ownContainer }
+
     /// Set by the owner when it wants a non-default URL router.
     var openLink: ((URL) -> Void)?
-    /// Some hosting/scroll combinations swallow UITextView's own link tap;
-    /// the explicit tap recognizer is the fallback (the official custom
-    /// engine uses its own tapGestureRecognizer for the same reason).
+
+    private var textInteractionEnabled = false
     private var linkTapRecognizer: UITapGestureRecognizer?
     private var lastOpened: (url: URL, at: TimeInterval)?
+    private var lastMeasuredWidth: CGFloat = -1
+    private var lastContainerSize: CGSize = .zero
 
     init(interactive: Bool = false) {
         let storage = NSTextContentStorage()
@@ -478,41 +485,48 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         ownStorage = storage
         ownLayoutManager = layout
         ownContainer = container
-        super.init(frame: .zero, textContainer: container)
+        super.init(frame: .zero)
         #if DEBUG
         CodePageBuildStats.textViewCreations += 1
         #endif
-        isEditable = false
-        isScrollEnabled = false
-        isSelectable = interactive
         isUserInteractionEnabled = interactive
         backgroundColor = .clear
         isOpaque = false
         contentMode = .redraw
-        textContainerInset = .zero
-        textContainer.lineFragmentPadding = 0
-        // The row width is imposed by the measurement; letting the text view
-        // re-track the container on every bounds change re-lays the text.
-        textContainer.widthTracksTextView = false
+        container.widthTracksTextView = false
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The Code page's body text: links tap and long-press selection/copy
-    /// work. The official page uses the same system text view with a custom
-    /// link action (`part-aa-markdown-ui.md` §Q6); the composite cross-block
-    /// selection adapter is a later batch.
+    // MARK: - Drawing
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext(),
+              (attributedText?.length ?? 0) > 0 else { return }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            context.saveGState()
+            context.translateBy(x: fragment.layoutFragmentFrame.minX,
+                                y: fragment.layoutFragmentFrame.minY)
+            for line in fragment.textLineFragments {
+                line.draw(at: line.typographicBounds.origin, in: context)
+            }
+            context.restoreGState()
+            return true
+        }
+    }
+
+    // MARK: - Interaction
+
+    /// Body text: links tap. Selection lived in the text view and is not
+    /// reproduced yet; the interaction layer is a separate piece of work.
     func enableTextInteraction() {
         guard !textInteractionEnabled else { return }
         textInteractionEnabled = true
-        isSelectable = true
         isUserInteractionEnabled = true
-        // Links are body-coloured and underlined in the official page, not
-        // the system blue (`CANONICAL/06-visuals-assets.md`).
-        linkTextAttributes = [
-            .foregroundColor: CodePageTheme.markdownTextUIColor,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-        ]
         if openLink == nil {
             openLink = { url in
                 guard let scheme = url.scheme?.lowercased(),
@@ -522,7 +536,6 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
                 UIApplication.shared.open(url)
             }
         }
-        delegate = self
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
@@ -530,41 +543,41 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         linkTapRecognizer = tap
     }
 
-    /// Resolve and open a link at a point in this text view. The owner's
-    /// stack view also calls this (ancestor gesture) when the text view's own
-    /// gesture loses arbitration inside the hosted list.
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
         guard textInteractionEnabled,
               let index = characterIndex(at: point),
-              let attributedText,
-              attributedText.length > 0 else { return false }
-        let clamped = min(max(index, 0), attributedText.length - 1)
-        guard let url = attributedText.attribute(.link, at: clamped,
-                                                 effectiveRange: nil) as? URL
+              let attributed = attributedText,
+              attributed.length > 0 else { return false }
+        let clamped = min(max(index, 0), attributed.length - 1)
+        guard let url = attributed.attribute(.link, at: clamped,
+                                             effectiveRange: nil) as? URL
         else { return false }
         open(url)
         return true
     }
 
-    /// Fallback for hosting/scroll stacks that do not deliver the text view's
-    /// own link action. Resolve the tapped character and forward only when it
-    /// carries a `.link` attribute; non-link taps are ignored.
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
         openLink(at: recognizer.location(in: self))
     }
 
+    /// Resolve a tap to a character index by walking the laid-out lines. The
+    /// line fragment answers in its own coordinates, so the point is rebased
+    /// twice: fragment origin, then the line's typographic origin.
     private func characterIndex(at point: CGPoint) -> Int? {
-        if textLayoutManager != nil {
-            guard let position = closestPosition(to: point) else { return nil }
-            return offset(from: beginningOfDocument, to: position)
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        guard let fragment = ownLayoutManager.textLayoutFragment(for: point) else { return nil }
+        for line in fragment.textLineFragments {
+            let origin = CGPoint(
+                x: fragment.layoutFragmentFrame.minX + line.typographicBounds.minX,
+                y: fragment.layoutFragmentFrame.minY + line.typographicBounds.minY)
+            let bounds = CGRect(origin: origin, size: line.typographicBounds.size)
+                .insetBy(dx: 0, dy: -2)
+            guard bounds.contains(point) else { continue }
+            let local = CGPoint(x: point.x - origin.x, y: point.y - origin.y)
+            return line.characterRange.location + line.characterIndex(for: local)
         }
-        let local = CGPoint(x: point.x - textContainerInset.left,
-                            y: point.y - textContainerInset.top)
-        let index = layoutManager.characterIndex(
-            for: local, in: textContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil)
-        return index
+        return nil
     }
 
     /// Both the system link action and the fallback tap can fire for one tap;
@@ -583,34 +596,11 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         true
     }
 
-    // iOS 17+ link action. Returning a custom action keeps the official
-    // "invoke default action" path instead of the system menu's open button.
-    @available(iOS 17.0, *)
-    func textView(_ textView: UITextView,
-                  primaryActionFor textItem: UITextItem,
-                  defaultAction: UIAction) -> UIAction? {
-        guard case let .link(url) = textItem.content else { return defaultAction }
-        return UIAction(title: defaultAction.title, image: defaultAction.image) { [weak self] _ in
-            self?.open(url)
-        }
-    }
-
-    // iOS 16 fallback.
-    func textView(_ textView: UITextView,
-                  shouldInteractWith URL: URL,
-                  in characterRange: NSRange,
-                  interaction: UITextItemInteraction) -> Bool {
-        guard interaction == .invokeDefaultAction else { return true }
-        open(URL)
-        return false
-    }
+    // MARK: - Chip overlay
 
     /// The inline-code chip background is painted by the overlay in
-    /// `AssistantMarkdownTextBlockView`, not here: a text view's `draw(_:)`
-    /// is clipped to its bounds, which cut the 4 pt left padding (and the
-    /// rounded cap) off any chip that started a line. The overlay is a
-    /// sibling 4 pt wider on each side, so the chip keeps the geometry the
-    /// official `InlineCodeChips.Renderer` draws outside the text layout.
+    /// `AssistantMarkdownTextBlockView`, not here (`draw(_:)` is clipped to the
+    /// view's bounds, which cut the chip's 4 pt padding off a line start).
     weak var chipOverlay: AssistantInlineCodeChipOverlayView?
 
     override func setNeedsDisplay() {
@@ -630,29 +620,24 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         }
     }
 
-    /// Lay the current text out at `width` with this view's own TextKit
-    /// layout and return the used height. Drawing consumes the same layout,
-    /// so measuring here does not add a second layout pass — the official
-    /// leaf's `sizeThatFits`/`measuredSizes` contract.
-    /// Give the container the row width without laying the text out.
-    ///
-    /// The block height comes from `AssistantMarkdownTextLayout.height`, which
-    /// already laid the text out at this width; calling `measuredHeight` here
-    /// would lay every text block out a second time (the 2026-11-06 device
-    /// probe's `block.height` + `block.make` double cost). The view lays out
-    /// once, when it first draws.
+    // MARK: - Measurement
+
+    /// Give the container the row width without laying the text out. The block
+    /// height comes from `AssistantMarkdownTextLayout.height`, which already
+    /// laid the text out at this width; laying it out again here would price
+    /// every text block twice. The view lays out once, when it first draws.
     func prepareLayout(width: CGFloat) {
         guard width > 0, width.isFinite else { return }
-        // Re-assert the height on every call: UITextView may have clamped the
-        // container to its current bounds, and a width-only check then keeps
-        // the one-line height forever.
         let target = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-        if ownContainer.size != target { ownContainer.size = target }
+        if ownContainer.size != target {
+            ownContainer.size = target
+            lastContainerSize = target
+        }
     }
 
     func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
         guard width > 0, width.isFinite,
-              let attributedText, attributedText.length > 0 else { return 0 }
+              (attributedText?.length ?? 0) > 0 else { return 0 }
         prepareLayout(width: width)
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         let used = ownLayoutManager.usageBoundsForTextContainer.maxY
@@ -662,7 +647,7 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
     }
 
     override var intrinsicContentSize: CGSize {
-        guard bounds.width > 0, let attributedText, attributedText.length > 0 else {
+        guard bounds.width > 0, (attributedText?.length ?? 0) > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: 0)
         }
         return CGSize(width: UIView.noIntrinsicMetric,
@@ -675,6 +660,11 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         if abs(bounds.width - lastMeasuredWidth) > 0.5 {
             lastMeasuredWidth = bounds.width
             invalidateIntrinsicContentSize()
+        }
+        // The code card resizes the container directly; redraw when it moves.
+        if ownContainer.size != lastContainerSize {
+            lastContainerSize = ownContainer.size
+            setNeedsDisplay()
         }
     }
 }

@@ -12,7 +12,7 @@ import UIKit
 enum AssistantMarkdownMaskRenderer {
     /// Per-line rectangles for the given UTF-16 range, in the text view's
     /// coordinate space.
-    static func lineRects(for range: NSRange, in textView: UITextView) -> [CGRect] {
+    static func lineRects(for range: NSRange, in textView: AssistantMarkdownBlockTextView) -> [CGRect] {
         guard range.length > 0,
               let manager = textView.textLayoutManager,
               let content = manager.textContentManager,
@@ -28,8 +28,7 @@ enum AssistantMarkdownMaskRenderer {
         var rects: [CGRect] = []
         manager.enumerateTextSegments(in: textRange, type: .standard, options: []) {
             _, frame, _, _ in
-            rects.append(frame.offsetBy(dx: textView.textContainerInset.left,
-                                        dy: textView.textContainerInset.top))
+            rects.append(frame)
             return true
         }
         return rects
@@ -39,7 +38,7 @@ enum AssistantMarkdownMaskRenderer {
     /// view's existing mask container; the layer fades 0 → 1 over 0.6 s with
     /// ease-out and stays visible afterwards.
     static func makeRunLayer(rects: [CGRect],
-                             in textView: UITextView,
+                             in textView: AssistantMarkdownBlockTextView,
                              fadeDuration: CFTimeInterval = 0.6) -> CAShapeLayer? {
         guard !rects.isEmpty else { return nil }
         let shape = CAShapeLayer()
@@ -63,7 +62,7 @@ enum AssistantMarkdownMaskRenderer {
     /// Existing layers stay (official behavior: normal reveal only adds).
     @discardableResult
     static func appendRun(rects: [CGRect],
-                          to textView: UITextView,
+                          to textView: AssistantMarkdownBlockTextView,
                           mask: CALayer,
                           fadeDuration: CFTimeInterval = 0.6) -> CAShapeLayer? {
         guard let layer = makeRunLayer(rects: rects, in: textView,
@@ -77,7 +76,7 @@ enum AssistantMarkdownMaskRenderer {
         return layer
     }
 
-    static func makeMaskContainer(for textView: UITextView) -> CALayer {
+    static func makeMaskContainer(for textView: AssistantMarkdownBlockTextView) -> CALayer {
         let mask = CALayer()
         mask.frame = textView.bounds
         return mask

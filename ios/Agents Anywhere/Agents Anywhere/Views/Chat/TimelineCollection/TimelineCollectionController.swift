@@ -338,6 +338,15 @@ final class TimelineCollectionController: UIViewController {
         // reconfigure, so automatic invalidation would only add layout passes.
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
+        // With a prefetch data source UIKit materializes prepared cells for
+        // upcoming rows in the update cycle's idle phase
+        // (`_prefetchItemsForPrefetchingContext` → the provider). The row's
+        // first SwiftUI layout therefore runs before the frame that scrolls it
+        // in. The callback itself has nothing to build: the cells must come
+        // from `dequeueReusableCell`, and UIKit's prefetch machinery rejects a
+        // cell made by hand (b1029 SIGABRT in
+        // `_createPreparedCellForItemAtIndexPath`).
+        collectionView.prefetchDataSource = self
         anchorDriver = TimelineAnchorDriver(scrollView: collectionView, inputs: .init(
             contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
@@ -3344,4 +3353,21 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
 
+}
+
+// MARK: - Cell prefetching
+
+extension TimelineCollectionController: UICollectionViewDataSourcePrefetching {
+    /// Nothing to build here. Setting the prefetch data source is what makes
+    /// UIKit materialize prepared cells for the rows just outside the viewport
+    /// during the update cycle's idle phase; the provider already does the
+    /// work, one row off the scroll frame. The previous attempt warmed cells
+    /// by hand and returned them from the provider; UIKit's prefetch machinery
+    /// asserts on a cell that did not come from `dequeueReusableCell`
+    /// (b1029 SIGABRT), so the cells stay exclusively dequeued.
+    func collectionView(_ collectionView: UICollectionView,
+                        prefetchItemsAt indexPaths: [IndexPath]) {}
+
+    func collectionView(_ collectionView: UICollectionView,
+                        cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {}
 }

@@ -758,7 +758,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         return super.canPerformAction(action, withSender: sender)
     }
 
-    @objc func copy(_ sender: Any?) {
+    override func copy(_ sender: Any?) {
         guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start else { return }
         let text = (sourceAttributed?.string ?? "") as NSString
         UIPasteboard.general.string = text.substring(
@@ -895,6 +895,25 @@ extension AssistantMarkdownBlockTextView: UITextInput {
     func insertText(_ text: String) {}
 
     func deleteBackward() {}
+
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
+
+    func unmarkText() {}
+
+    func position(within range: UITextRange,
+                  farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        guard let range = range as? MarkdownTextOffsetRange else { return nil }
+        let forward = direction == .right || direction == .down
+        return MarkdownTextOffsetPosition(forward ? range.endOffset : range.startOffset)
+    }
+
+    func characterRange(byExtending position: UITextPosition,
+                        in direction: UITextLayoutDirection) -> UITextRange? {
+        guard let p = position as? MarkdownTextOffsetPosition else { return nil }
+        let forward = direction == .right || direction == .down
+        let other = min(max(p.offset + (forward ? 1 : -1), 0), textLength)
+        return MarkdownTextOffsetRange(p.offset, other)
+    }
 
     func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
         guard let p = position as? MarkdownTextOffsetPosition else { return nil }

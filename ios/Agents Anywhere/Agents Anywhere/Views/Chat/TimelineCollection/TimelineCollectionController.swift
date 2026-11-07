@@ -338,9 +338,6 @@ final class TimelineCollectionController: UIViewController {
         // reconfigure, so automatic invalidation would only add layout passes.
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
-        // Warm the rows UIKit is about to scroll in, one per runloop turn, so
-        // the first SwiftUI layout does not land in the frame that shows them.
-        collectionView.prefetchDataSource = self
         anchorDriver = TimelineAnchorDriver(scrollView: collectionView, inputs: .init(
             contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
@@ -416,208 +413,71 @@ final class TimelineCollectionController: UIViewController {
                     return cell
                 }
             }
-            if let self, self.content != nil, let warm = self.takeWarmHostingCell(for: item) {
-                return warm
-            }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
-            if let self {
-                self.configureHostingCell(cell, for: item)
+            if let self, let content = self.content {
+                // Official 0x101a3ff20: `isMeasured` is item-level and only a
+                // width change clears it. A same-width content revision keeps
+                // the row measured instead of reopening its one self-measure;
+                // the hosting geometry report supplies the new height.
+                let isMeasured = self.layout.heights.isMeasured(
+                    itemID: item.itemID, width: self.columnWidth)
+                // Seed an unmeasured cell-reported row's one self-measure.
+                // Official Part V §2.5: a placeholder row's height is the last
+                // measured value (`__height`/`__headerHeight` are
+                // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
+                // never-measured row only the estimate tier until the cell
+                // materializes. Code has no reveal and re-lays out as data
+                // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
+                // the provider's structural height is the real value when it
+                // exists. Without one (streaming or pre-layout content) the row
+                // keeps the height `prepare()` already recorded for it — the
+                // estimate for a never-shown row, the displayed height
+                // otherwise. Letting UIKit fit the pre-layout body instead
+                // collapsed a streaming row 44→18 (461 probe); the content's
+                // later geometry change supersedes the seed through the
+                // changed-only `onContentHeightReport` path.
+                let reportsContentHeight = content.usesCellReportedHeight(for: item)
+                let seed: CGFloat?
+                if !isMeasured, reportsContentHeight {
+                    if let structural = content.measuredCodeGroupHeight(
+                        for: item, width: self.columnWidth) {
+                        seed = structural
+                    } else if let displayed = self.layout.heights.displayedHeight(
+                        for: item.itemID), displayed > 1 {
+                        seed = displayed
+                    } else {
+                        seed = nil
+                    }
+                } else {
+                    seed = nil
+                }
+                // A hosted row's geometry value is its measurement (official
+                // `_GeometryActionModifier` → `rowMeasured`,
+                // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
+                // signature this configuration's content belongs to; a
+                // width/typography re-key of the same content (rotation does
+                // not reconfigure the cell) is still accepted. The Chat rows
+                // keep the controller polling path.
+                if reportsContentHeight {
+                    let reportKey = content.heightKey(for: item, width: self.columnWidth)
+                    let reportSignature = content.contentSignature(for: item)
+                    cell.onContentHeightReport = { [weak self] height in
+                        self?.hostedContentHeightReported(
+                            height, for: item,
+                            reportedKey: reportKey, reportedSignature: reportSignature)
+                    }
+                } else {
+                    cell.onContentHeightReport = nil
+                }
+                cell.configure(content.rowView(for: item, width: self.columnWidth),
+                               itemID: item.itemID,
+                               policy: content.heightPolicy(for: item),
+                               isMeasured: isMeasured,
+                               reportsContentHeight: reportsContentHeight,
+                               seededHeight: seed)
             }
             return cell
-        }
-    }
-
-    /// The one place a hosted row is fitted and configured. The cell provider
-    /// and the prefetch prewarm both go through it, so a warmed cell is
-    /// byte-for-byte what a dequeued one would have been.
-    private func configureHostingCell(_ cell: TimelineHostingCell,
-                                      for item: TimelineListItem) {
-        guard let content else { return }
-        // Official 0x101a3ff20: `isMeasured` is item-level and only a width
-        // change clears it. A same-width content revision keeps the row
-        // measured instead of reopening its one self-measure; the hosting
-        // geometry report supplies the new height.
-        let isMeasured = layout.heights.isMeasured(
-            itemID: item.itemID, width: columnWidth)
-        // Seed an unmeasured cell-reported row's one self-measure.
-        // Official Part V §2.5: a placeholder row's height is the last measured
-        // value (`__height`/`__headerHeight` are `LazyState<CGFloat>`), and
-        // 05-layout-scroll.md:93 gives a never-measured row only the estimate
-        // tier until the cell materializes. Code has no reveal and re-lays out
-        // as data arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
-        // the provider's structural height is the real value when it exists.
-        // Without one (streaming or pre-layout content) the row keeps the
-        // height `prepare()` already recorded for it — the estimate for a
-        // never-shown row, the displayed height otherwise. Letting UIKit fit
-        // the pre-layout body instead collapsed a streaming row 44→18 (461
-        // probe); the content's later geometry change supersedes the seed
-        // through the changed-only `onContentHeightReport` path.
-        let reportsContentHeight = content.usesCellReportedHeight(for: item)
-        let seed: CGFloat?
-        if !isMeasured, reportsContentHeight {
-            if let structural = content.measuredCodeGroupHeight(
-                for: item, width: columnWidth) {
-                seed = structural
-            } else if let displayed = layout.heights.displayedHeight(
-                for: item.itemID), displayed > 1 {
-                seed = displayed
-            } else {
-                seed = nil
-            }
-        } else {
-            seed = nil
-        }
-        // A hosted row's geometry value is its measurement (official
-        // `_GeometryActionModifier` → `rowMeasured`,
-        // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and signature
-        // this configuration's content belongs to; a width/typography re-key
-        // of the same content (rotation does not reconfigure the cell) is
-        // still accepted. The Chat rows keep the controller polling path.
-        if reportsContentHeight {
-            let reportKey = content.heightKey(for: item, width: columnWidth)
-            let reportSignature = content.contentSignature(for: item)
-            cell.onContentHeightReport = { [weak self] height in
-                self?.hostedContentHeightReported(
-                    height, for: item,
-                    reportedKey: reportKey, reportedSignature: reportSignature)
-            }
-        } else {
-            cell.onContentHeightReport = nil
-        }
-        cell.configure(content.rowView(for: item, width: columnWidth),
-                       itemID: item.itemID,
-                       policy: content.heightPolicy(for: item),
-                       isMeasured: isMeasured,
-                       reportsContentHeight: reportsContentHeight,
-                       seededHeight: seed)
-    }
-
-    // MARK: - Row prewarm
-
-    private struct WarmHostingCell {
-        let cell: TimelineHostingCell
-        let key: TimelineHeightKey
-        let signature: TimelineContentSignature
-    }
-
-    private var warmCells: [String: WarmHostingCell] = [:]
-    private var warmOrder: [String] = []
-    private var warmQueue: [TimelineListItem] = []
-    private var warmPumpScheduled = false
-    private static let warmCellLimit = 6
-    /// Rows taller than this are the message bodies; they are too expensive to
-    /// build on every frame and are left to the normal path.
-    private static let warmRowHeightLimit: CGFloat = 240
-
-    /// UIKit tells us which rows it is about to materialize. The first SwiftUI
-    /// layout of a row (the cell's hosting content) is the one per-row cost
-    /// that lands inside the frame that scrolls it in; building it one runloop
-    /// turn earlier spreads that cost over the frames before the row reaches
-    /// the viewport.
-    private func enqueueWarmCells(_ indexPaths: [IndexPath]) {
-        guard !navigationSuspended, columnWidth > 0, content != nil else { return }
-        for indexPath in indexPaths {
-            guard currentItems.indices.contains(indexPath.item) else { continue }
-            let item = currentItems[indexPath.item]
-            guard canPrewarm(item), warmCells[item.itemID] == nil,
-                  !warmQueue.contains(where: { $0.itemID == item.itemID })
-            else { continue }
-            warmQueue.append(item)
-        }
-        scheduleWarmPump()
-    }
-
-    /// Only rows the provider would build as a `TimelineHostingCell`. The
-    /// assistant-document rows use `AssistantMarkdownCell`; warming the wrong
-    /// class would return a cell the data source does not expect.
-    private func canPrewarm(_ item: TimelineListItem) -> Bool {
-        guard let content else { return false }
-        if content.assistantStreamingDocument(for: item) != nil,
-           documentHeights[item.itemID] != nil { return false }
-        if content.assistantMarkdown(for: item) != nil,
-           documentHeights[item.itemID] != nil { return false }
-        return true
-    }
-
-    private func scheduleWarmPump() {
-        guard !warmPumpScheduled, !warmQueue.isEmpty else { return }
-        warmPumpScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.warmPumpScheduled = false
-            self.pumpWarmCell()
-        }
-    }
-
-    /// One cell per runloop turn: six rows warming ahead is spread over six
-    /// turns instead of one long frame.
-    private func pumpWarmCell() {
-        guard !navigationSuspended, columnWidth > 0, !warmQueue.isEmpty else {
-            warmQueue.removeAll()
-            return
-        }
-        let item = warmQueue.removeFirst()
-        // The row may have been dequeued before its turn came; warming it then
-        // would build a second copy nobody adopts.
-        let onScreen = collectionView.indexPathsForVisibleItems.contains {
-            currentItems.indices.contains($0.item)
-                && currentItems[$0.item].itemID == item.itemID
-        }
-        // Only short rows. A one-line tool/status row is cheap to build, so
-        // spreading one per frame stays inside the budget; a tall message row
-        // costs milliseconds and warming one every frame would make every
-        // frame slow instead of one.
-        let rowHeight = layout.attributes(for: item.itemID)?.frame.height ?? 0
-        if !onScreen, rowHeight > 0, rowHeight <= Self.warmRowHeightLimit,
-           warmCells[item.itemID] == nil, canPrewarm(item), let content {
-            let cell = TimelineHostingCell(
-                frame: CGRect(x: 0, y: 0, width: columnWidth, height: 44))
-            // A detached cell starts from the default traits; the content must
-            // be built with the ones it will be displayed under or the warmed
-            // layout would be re-done (or worse, wrong) on attach.
-            cell.traitOverrides.preferredContentSizeCategory = traitCollection.preferredContentSizeCategory
-            cell.traitOverrides.layoutDirection = traitCollection.layoutDirection
-            cell.traitOverrides.legibilityWeight = traitCollection.legibilityWeight
-            cell.traitOverrides.userInterfaceStyle = traitCollection.userInterfaceStyle
-            cell.traitOverrides.displayScale = traitCollection.displayScale
-            configureHostingCell(cell, for: item)
-            cell.setNeedsLayout()
-            cell.layoutIfNeeded()
-            let key = content.heightKey(for: item, width: columnWidth)
-            let signature = content.contentSignature(for: item)
-            warmCells[item.itemID] = WarmHostingCell(cell: cell, key: key,
-                                                     signature: signature)
-            warmOrder.append(item.itemID)
-            while warmCells.count > Self.warmCellLimit, let oldest = warmOrder.first {
-                warmOrder.removeFirst()
-                warmCells[oldest] = nil
-            }
-        }
-        scheduleWarmPump()
-    }
-
-    private func takeWarmHostingCell(for item: TimelineListItem) -> TimelineHostingCell? {
-        guard let warm = warmCells.removeValue(forKey: item.itemID) else { return nil }
-        warmOrder.removeAll { $0 == item.itemID }
-        guard let content else { return nil }
-        if warm.key == content.heightKey(for: item, width: columnWidth),
-           warm.signature == content.contentSignature(for: item) {
-            return warm.cell
-        }
-        // The item moved under the warmed content: rebuild in place rather
-        // than showing a stale row.
-        configureHostingCell(warm.cell, for: item)
-        return warm.cell
-    }
-
-    private func dropWarmCells(_ itemIDs: [String]) {
-        guard !itemIDs.isEmpty else { return }
-        let set = Set(itemIDs)
-        warmQueue.removeAll { set.contains($0.itemID) }
-        for id in set {
-            warmCells[id] = nil
-            warmOrder.removeAll { $0 == id }
         }
     }
 
@@ -3484,26 +3344,4 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
 
-}
-
-// MARK: - Row prewarm
-
-extension TimelineCollectionController: UICollectionViewDataSourcePrefetching {
-    /// Rows UIKit is about to materialize. Building them ahead keeps the first
-    /// SwiftUI layout of a row out of the frame that scrolls it into view.
-    func collectionView(_ collectionView: UICollectionView,
-                        prefetchItemsAt indexPaths: [IndexPath]) {
-        enqueueWarmCells(indexPaths)
-    }
-
-    /// The index path left the prefetch window (scrolled the other way or
-    /// dropped): its warm cell is no longer worth the memory.
-    func collectionView(_ collectionView: UICollectionView,
-                        cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-        let ids = indexPaths.compactMap { indexPath -> String? in
-            guard currentItems.indices.contains(indexPath.item) else { return nil }
-            return currentItems[indexPath.item].itemID
-        }
-        dropWarmCells(ids)
-    }
 }

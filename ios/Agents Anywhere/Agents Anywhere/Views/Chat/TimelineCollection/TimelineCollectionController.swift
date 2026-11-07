@@ -503,6 +503,7 @@ final class TimelineCollectionController: UIViewController {
 
     private func applyPendingIfNeeded() {
         guard !navigationSuspended, let pending = pendingApply, columnWidth > 0 else { return }
+        if let collectionView, collectionView.isDragging || collectionView.isDecelerating { return }
         pendingApply = nil
         apply(items: pending.items, animating: pending.animating)
     }
@@ -566,6 +567,15 @@ final class TimelineCollectionController: UIViewController {
         // swipe into dropped frames. Park the latest content and apply it the
         // moment the transition ends.
         guard !navigationSuspended else {
+            pendingApply = (items: items, animating: animating)
+            return
+        }
+        // Same rule for the reader's own gesture: dragging or coasting is the
+        // frame the reader is looking at, and a streamed refresh landed inside
+        // it every 0.2-1 s (a 16 ms rebuild plus a 19 ms snapshot apply on top
+        // of the row being materialized). Park it; `applyPendingIfNeeded`
+        // lands the latest content as soon as scrolling settles.
+        if let collectionView, collectionView.isDragging || collectionView.isDecelerating {
             pendingApply = (items: items, animating: animating)
             return
         }
@@ -3259,6 +3269,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { applyPendingIfNeeded() }
         guard !navigationSuspended else { return }
 #if AA_TIMELINE_PROBE
         let probeStart = CACurrentMediaTime()
@@ -3303,6 +3314,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        applyPendingIfNeeded()
         guard !navigationSuspended else { return }
 #if AA_TIMELINE_PROBE
         let probeStart = CACurrentMediaTime()

@@ -600,7 +600,13 @@ final class AssistantCodeBlockView: UIView {
         let newString = codeBlock.code.string
         let newNSString = newString as NSString
         var appended = false
-        if newNSString.hasPrefix(previousString) {
+        // Appending only makes sense once this view holds exactly the old
+        // text. The first update starts from an empty block: it must assign,
+        // or the text never reaches the surface (the storage it would insert
+        // into is not the one being laid out).
+        if previousLength > 0,
+           previousLength <= codeView.textStorage.length,
+           newNSString.hasPrefix(previousString) {
             if codeBlock.code.length > 0,
                let baseAttributes = codeBlock.code.attributes(
                     at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] {

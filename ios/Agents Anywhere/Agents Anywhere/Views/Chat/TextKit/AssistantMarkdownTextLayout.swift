@@ -459,14 +459,16 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// The backing storage, shared with the layout manager. The code card's
     /// streaming highlight path edits it in place, so it is exposed as-is.
     var textStorage: NSTextStorage {
-        // `NSTextContentStorage` materialises its backing storage lazily; the
-        // text is always assigned before any caller edits it.
-        guard let storage = ownStorage.textStorage else {
-            assertionFailure("NSTextContentStorage has no backing text storage")
-            return NSTextStorage()
-        }
-        return storage
+        if let storage = ownStorage.textStorage { return storage }
+        ownStorage.attributedString = ownStorage.attributedString
+        if let storage = ownStorage.textStorage { return storage }
+        assertionFailure("NSTextContentStorage has no backing text storage")
+        return NSTextStorage()
     }
+
+    /// What is actually laid out — the storage, not `sourceAttributed`: the
+    /// code card appends to the storage without going through the setter.
+    private var renderedLength: Int { ownStorage.textStorage?.length ?? 0 }
 
     /// The string the owner assigned, unchanged. The storage holds a copy
     /// whose link runs are recoloured (see `recolouringLinks`), so the getter
@@ -536,6 +538,12 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         container.lineFragmentPadding = 0
         layout.textContainer = container
         storage.addTextLayoutManager(layout)
+        // Materialise the backing storage up front: `NSTextContentStorage`
+        // creates it lazily, and the code card edits it before any
+        // `attributedText` has been assigned. Without this the getter would
+        // hand out a detached copy (edits never reach the layout) and the
+        // next insert would throw an NSRangeException.
+        storage.attributedString = NSAttributedString()
         ownStorage = storage
         ownLayoutManager = layout
         ownContainer = container
@@ -564,7 +572,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
                 context.fill(frame)
             }
         }
-        guard (attributedText?.length ?? 0) > 0 else { return }
+        guard renderedLength > 0 else { return }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         ownLayoutManager.enumerateTextLayoutFragments(
             from: ownLayoutManager.documentRange.location,
@@ -799,7 +807,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
         guard width > 0, width.isFinite,
-              (attributedText?.length ?? 0) > 0 else { return 0 }
+              renderedLength > 0 else { return 0 }
         prepareLayout(width: width)
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         let used = ownLayoutManager.usageBoundsForTextContainer.maxY
@@ -809,7 +817,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     override var intrinsicContentSize: CGSize {
-        guard bounds.width > 0, (attributedText?.length ?? 0) > 0 else {
+        guard bounds.width > 0, renderedLength > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: 0)
         }
         return CGSize(width: UIView.noIntrinsicMetric,

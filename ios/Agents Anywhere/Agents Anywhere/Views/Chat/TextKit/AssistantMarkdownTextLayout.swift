@@ -554,6 +554,10 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         ownLayoutManager = layout
         ownContainer = container
         super.init(frame: .zero)
+        // Links are body-coloured and underlined, not the system blue: the
+        // official `MarkdownTextLayout` answers this same delegate method and
+        // nothing else (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.1/§1.2).
+        layout.delegate = self
         #if DEBUG
         CodePageBuildStats.textViewCreations += 1
         #endif
@@ -570,14 +574,9 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        // `UITextInteraction` drives the gestures and the handles; the
-        // highlight is ours, because the fragments here are drawn by hand.
-        if let (start, end) = selectionOffsets, end > start {
-            context.setFillColor(UIColor.tintColor.withAlphaComponent(0.28).cgColor)
-            for frame in selectionFrames(from: start, to: end) {
-                context.fill(frame)
-            }
-        }
+        // The selection highlight is not drawn here: `UITextInteraction`
+        // paints it (and the handles) from `selectionRects(for:)`. Filling the
+        // rects here too doubled the alpha and read as a black band.
         guard renderedLength > 0 else { return }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         ownLayoutManager.enumerateTextLayoutFragments(
@@ -1043,6 +1042,23 @@ final class MarkdownTextSelectionRect: UITextSelectionRect {
     override var containsEnd: Bool { endsHere }
     override var writingDirection: UITextWritingDirection { .leftToRight }
     override var isVertical: Bool { false }
+}
+
+
+// MARK: - NSTextLayoutManagerDelegate
+
+extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
+    /// The rendering pass asks for link attributes here. Without an answer it
+    /// draws links in the system link colour, whatever the string carries.
+    func textLayoutManager(
+        _ textLayoutManager: NSTextLayoutManager,
+        renderingAttributesForLink link: Any,
+        at location: NSTextLocation,
+        defaultAttributes renderingAttributes: [NSAttributedString.Key: Any] = [:]
+    ) -> [NSAttributedString.Key: Any]? {
+        [.foregroundColor: CodePageTheme.markdownTextUIColor,
+         .underlineStyle: NSUnderlineStyle.single.rawValue]
+    }
 }
 
 #endif

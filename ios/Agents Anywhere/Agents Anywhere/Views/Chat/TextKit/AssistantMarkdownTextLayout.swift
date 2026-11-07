@@ -551,7 +551,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     var openLink: ((URL) -> Void)?
 
     private var textInteractionEnabled = false
-    private var linkTapRecognizer: UITapGestureRecognizer?
+    private var linkTapRecognizer: LinkTapRecognizer?
     private var lastOpened: (url: URL, at: TimeInterval)?
     private var lastMeasuredWidth: CGFloat = -1
     private var lastContainerSize: CGSize = .zero
@@ -639,9 +639,20 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
                 UIApplication.shared.open(url)
             }
         }
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+        let tap = LinkTapRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
+        // A single tap has to wait out the double tap. Left immediate, the
+        // first tap of every double tap opened a link (or collapsed the
+        // selection) before the interaction could select a word. The gate is
+        // ours so the ordering never depends on the interaction's private
+        // gesture class.
+        let doubleTapGate = UITapGestureRecognizer(target: nil, action: nil)
+        doubleTapGate.numberOfTapsRequired = 2
+        doubleTapGate.cancelsTouchesInView = false
+        doubleTapGate.delegate = self
+        addGestureRecognizer(doubleTapGate)
+        tap.require(toFail: doubleTapGate)
         addGestureRecognizer(tap)
         linkTapRecognizer = tap
         // The official selectable leaf is this view plus
@@ -653,28 +664,9 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         interaction.textInput = self
         addInteraction(interaction)
         textSelectionInteraction = interaction
-        orderLinkTapBehindWordSelection()
     }
 
     private var textSelectionInteraction: UITextInteraction?
-    /// True once the link tap waits for the interaction's double tap.
-    private var linkTapOrderedBehindWordSelection = false
-
-    /// The link tap is a plain one-tap recognizer; left on its own it
-    /// recognizes on the first tap of a double tap and cancels the
-    /// interaction's word-selection gesture (and its own action would collapse
-    /// the selection the double tap just made). The interaction brings no
-    /// public handle to its gestures, so pick the two-tap recognizer out of
-    /// the ones it installed on this view and make the link tap wait for it.
-    private func orderLinkTapBehindWordSelection() {
-        guard !linkTapOrderedBehindWordSelection,
-              let tap = linkTapRecognizer else { return }
-        let doubleTap = (gestureRecognizers ?? []).compactMap { $0 as? UITapGestureRecognizer }
-            .first { $0 !== tap && $0.numberOfTapsRequired == 2 }
-        guard let doubleTap else { return }
-        tap.require(toFail: doubleTap)
-        linkTapOrderedBehindWordSelection = true
-    }
 
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
@@ -691,6 +683,10 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
+        // A long press ends with a touch-up that a tap recognizer still
+        // reports. Acting on it opened the link and collapsed the selection
+        // the interaction had just made, so holds stay with selection.
+        if let link = recognizer as? LinkTapRecognizer, !link.isQuickTap { return }
         let point = recognizer.location(in: self)
         if openLink(at: point) { return }
         // A plain tap inside the block collapses the selection, the way a
@@ -828,7 +824,6 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
         if became {
-            orderLinkTapBehindWordSelection()
             installOutsideTapRecognizer()
         }
         return became
@@ -872,7 +867,6 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        orderLinkTapBehindWordSelection()
         if window == nil {
             removeOutsideTapRecognizer()
             restoreAncestorClipping()
@@ -1428,6 +1422,36 @@ final class SelectableMarkdownTextTokenizer: UITextInputStringTokenizer {
         default:
             return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
         }
+    }
+}
+
+/// A one-tap recognizer that remembers how long its touch was held. A hold
+/// past the long-press window belongs to the selection interaction: acting on
+/// the touch-up that ends it opened a link and collapsed the selection the
+/// user had just made (pp 2026-11-08).
+final class LinkTapRecognizer: UITapGestureRecognizer {
+    private var touchDownAt: TimeInterval?
+    private(set) var lastTouchDuration: TimeInterval = 0
+
+    /// True for a plain quick tap, not the tail of a long press.
+    var isQuickTap: Bool { lastTouchDuration < 0.35 }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let timestamp = touches.first?.timestamp { touchDownAt = timestamp }
+        lastTouchDuration = 0
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let timestamp = touches.first?.timestamp, let down = touchDownAt {
+            lastTouchDuration = timestamp - down
+        }
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        touchDownAt = nil
+        super.touchesCancelled(touches, with: event)
     }
 }
 

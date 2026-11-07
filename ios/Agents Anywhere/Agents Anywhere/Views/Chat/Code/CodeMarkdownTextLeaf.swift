@@ -290,9 +290,18 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         // Ancestor fallback: the hosted list sometimes lets the text view's
         // own link gesture lose arbitration. A tap recognizer on the stack
         // still sees the touch; resolve it to the descendant text view.
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleAncestorLinkTap(_:)))
+        let tap = LinkTapRecognizer(target: self, action: #selector(handleAncestorLinkTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
+        // Same double-tap wait as the text view's own link tap: without it
+        // the first tap of a double tap opened a link chip and left the page
+        // before the text interaction could select the word (pp 2026-11-08).
+        let doubleTapGate = UITapGestureRecognizer(target: nil, action: nil)
+        doubleTapGate.numberOfTapsRequired = 2
+        doubleTapGate.cancelsTouchesInView = false
+        doubleTapGate.delegate = self
+        addGestureRecognizer(doubleTapGate)
+        tap.require(toFail: doubleTapGate)
         addGestureRecognizer(tap)
     }
 
@@ -464,6 +473,8 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     }
 
     @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
+        // A hold belongs to the selection interaction, not to the link.
+        if let link = recognizer as? LinkTapRecognizer, !link.isQuickTap { return }
         _ = openLink(in: self, at: recognizer.location(in: self))
     }
 

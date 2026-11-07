@@ -468,12 +468,46 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         return storage
     }
 
+    /// The string the owner assigned, unchanged. The storage holds a copy
+    /// whose link runs are recoloured (see `recolouringLinks`), so the getter
+    /// keeps answering what was set — callers diff it against the document to
+    /// decide whether a block needs updating.
+    private var sourceAttributed: NSAttributedString?
+
     var attributedText: NSAttributedString? {
-        get { ownStorage.attributedString }
+        get { sourceAttributed }
         set {
-            ownStorage.attributedString = newValue ?? NSAttributedString()
+            sourceAttributed = newValue
+            ownStorage.attributedString = Self.recolouringLinks(newValue ?? NSAttributedString())
             setNeedsDisplay()
         }
+    }
+
+    /// `UITextView` painted links with `linkTextAttributes` — body colour and
+    /// a single underline (`CANONICAL/06-visuals-assets.md`: links are not
+    /// blue) — overriding whatever colour the document builder put on the run.
+    /// A layout manager draws the run's own colour, so the override has to be
+    /// written into the string this view lays out.
+    private static func recolouringLinks(_ attributed: NSAttributedString) -> NSAttributedString {
+        let full = NSRange(location: 0, length: attributed.length)
+        guard attributed.length > 0 else { return attributed }
+        var hasLink = false
+        attributed.enumerateAttribute(.link, in: full) { value, _, stop in
+            if value != nil {
+                hasLink = true
+                stop.pointee = true
+            }
+        }
+        guard hasLink else { return attributed }
+        let copy = NSMutableAttributedString(attributedString: attributed)
+        copy.enumerateAttribute(.link, in: full) { value, range, _ in
+            guard value != nil else { return }
+            copy.addAttributes([
+                .foregroundColor: CodePageTheme.markdownTextUIColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ], range: range)
+        }
+        return copy
     }
 
     var textLayoutManager: NSTextLayoutManager? { ownLayoutManager }

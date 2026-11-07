@@ -468,7 +468,13 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     /// What is actually laid out — the storage, not `sourceAttributed`: the
     /// code card appends to the storage without going through the setter.
-    private var renderedLength: Int { ownStorage.textStorage?.length ?? 0 }
+    /// Go through the getter: `NSTextContentStorage.textStorage` is nil until
+    /// it is materialised, and a nil read here silently skipped every glyph
+    /// (only the chip overlay, which reads the layout manager, kept drawing).
+    private var renderedLength: Int {
+        ownStorage.offset(from: ownStorage.documentRange.location,
+                          to: ownStorage.documentRange.endLocation)
+    }
 
     /// The string the owner assigned, unchanged. The storage holds a copy
     /// whose link runs are recoloured (see `recolouringLinks`), so the getter

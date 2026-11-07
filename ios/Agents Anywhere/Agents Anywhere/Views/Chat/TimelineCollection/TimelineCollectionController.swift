@@ -518,6 +518,9 @@ final class TimelineCollectionController: UIViewController {
     /// programmatic offset write interrupts the coast (see `requestBottom`),
     /// so a parked snapshot gets a timed re-check instead of relying on that
     /// callback alone.
+    /// A reload requested while the list was moving; performed on settle.
+    private var reloadDeferred = false
+
     private var pendingApplyCheck: DispatchWorkItem?
 
     private func schedulePendingApplyCheck() {
@@ -525,7 +528,7 @@ final class TimelineCollectionController: UIViewController {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingApplyCheck = nil
-            guard self.pendingApply != nil else { return }
+            guard self.pendingApply != nil || self.reloadDeferred else { return }
             if self.isScrollMoving {
                 self.schedulePendingApplyCheck()
             } else {
@@ -537,8 +540,15 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func applyPendingIfNeeded() {
-        guard !navigationSuspended, let pending = pendingApply, columnWidth > 0 else { return }
+        guard !navigationSuspended, columnWidth > 0 else { return }
         if isScrollMoving { return }
+        if reloadDeferred {
+            // A deferred reload re-reads the adapter generation, so it also
+            // supersedes whatever snapshot was parked before.
+            reloadFromContent()
+            return
+        }
+        guard let pending = pendingApply else { return }
         pendingApply = nil
         apply(items: pending.items, animating: pending.animating)
     }
@@ -580,6 +590,17 @@ final class TimelineCollectionController: UIViewController {
 
     func reloadFromContent(animating: Bool = false) {
         guard let content else { return }
+        // Reading `contentGeneration` is what runs the adapter's refresh
+        // (grouping, signatures, diff) — 17 ms per flush. While the reader is
+        // dragging or coasting that work lands inside the scrolling frame and
+        // produced the stream-only hitches (the parked apply left the refresh
+        // untouched). Defer the whole reload; `applyPendingIfNeeded` performs
+        // it once the list settles.
+        if isScrollMoving || (navigationSuspended && !historyPaging) {
+            reloadDeferred = true
+            return
+        }
+        reloadDeferred = false
         guard content.contentGeneration != lastReloadGeneration else { return }
         lastReloadGeneration = content.contentGeneration
         let items = (0..<content.itemCount).map { content.item(at: $0) }

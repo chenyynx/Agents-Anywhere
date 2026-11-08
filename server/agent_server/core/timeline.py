@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,80 @@ class TimelineBatchWriteResult:
     items: tuple[TimelineItem, ...]
     changed: bool
     deleted: tuple[str, ...] = ()
+
+
+def chain_reorder_plan(
+    *,
+    stored_order: Sequence[tuple[str, int]],
+    batch_ids: Sequence[str],
+) -> dict[str, int] | None:
+    """``orderSeq`` for the rows a rebased batch moves, or ``None`` if none.
+
+    A rebased history sync covers the whole visible chain, so ``batch_ids`` is
+    in chain order and is authoritative for the rows it names. The stored rows
+    it does *not* name keep their position relative to the chain: each one is
+    anchored after the last covered row that precedes it in the stored order
+    (rows before the first covered row anchor to the front). That is what
+    keeps a row the rebuild cannot see — a pre-compaction message, or a
+    platform-owned row between two chain rows — in place instead of moving it
+    to an end.
+
+    ``stored_order`` is ``(id, orderSeq)`` already ordered by ``orderSeq``
+    (ties by id). The plan only renumbers the suffix that actually differs:
+    every row before the first mismatch keeps its stored number (so a session
+    with gaps is not compacted by a healthy rebuild), and the suffix is
+    numbered densely from the last kept number. That bounds the rewrite to the
+    rows at and after the first misordered row — an append-only rebuild writes
+    nothing here at all. ``None`` means the stored order already matches the
+    chain and nothing may move.
+
+    Why this exists: without a rebuild, a server-side insert can only append
+    (``max(orderSeq) + 1``), so a backfill that arrives after newer live rows
+    lands at the bottom of the timeline and the client renders old steps after
+    the newest message. The chain order is the truth the append rule cannot
+    express.
+    """
+
+    batch_position = {item_id: index for index, item_id in enumerate(batch_ids)}
+    keyed: list[tuple[tuple[int, int, int], str]] = []
+    stored_ids: set[str] = set()
+    last_covered = -1
+    anchor_run = 0
+    for item_id, _order_seq in stored_order:
+        stored_ids.add(item_id)
+        position = batch_position.get(item_id)
+        if position is not None:
+            last_covered = position
+            anchor_run = 0
+            keyed.append(((position, 0, 0), item_id))
+            continue
+        anchor_run += 1
+        keyed.append(((last_covered, 1, anchor_run), item_id))
+    for item_id in batch_ids:
+        if item_id not in stored_ids:
+            keyed.append(((batch_position[item_id], 0, 0), item_id))
+    keyed.sort(key=lambda entry: (entry[0], entry[1]))
+    planned_ids = [item_id for _, item_id in keyed]
+
+    stored_ids_in_order = [item_id for item_id, _ in stored_order]
+    shared = min(len(planned_ids), len(stored_ids_in_order))
+    first_difference = 0
+    while (
+        first_difference < shared
+        and planned_ids[first_difference] == stored_ids_in_order[first_difference]
+    ):
+        first_difference += 1
+    if first_difference == len(planned_ids) == len(stored_ids_in_order):
+        return None
+
+    # The prefix keeps its stored numbers untouched, so it is not in the plan:
+    # only the suffix (the first misordered row and everything after it) is
+    # rewritten.
+    plan: dict[str, int] = {}
+    base = stored_order[first_difference - 1][1] if first_difference else 0
+    for offset, item_id in enumerate(planned_ids[first_difference:], start=1):
+        plan[item_id] = base + offset
+    return plan
 
 
 def timeline_item_state_is_unchanged(

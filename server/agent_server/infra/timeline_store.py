@@ -511,6 +511,25 @@ class SqlTimelineStore:
             ).mappings().all()
         return [TimelineItem.model_validate_json(row["payload_json"]) for row in rows]
 
+    async def order_entries(self, session_id: str) -> dict[str, int]:
+        """Every row's ``id`` and stored ``orderSeq``, in stored order.
+
+        A rebased history rebuild renumbers the session by chain order, which
+        needs the order of *every* row but none of its payloads. Reading full
+        rows here would deserialize a long session's entire timeline just to
+        move a handful of backfilled ones.
+        """
+
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(timeline_items.c.id, timeline_items.c.order_seq)
+                    .where(timeline_items.c.session_id == session_id)
+                    .order_by(timeline_items.c.order_seq, timeline_items.c.id)
+                )
+            ).all()
+        return {row[0]: row[1] for row in rows}
+
     async def recovery_items(
         self, session_id: str, *, limit: int = 100,
     ) -> tuple[list[TimelineItem], bool]:

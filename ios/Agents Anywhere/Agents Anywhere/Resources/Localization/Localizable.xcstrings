@@ -3314,6 +3314,24 @@
         }
       }
     },
+    "Last activity": {
+      "comment": "Sidebar session long-press menu: the session's last activity time.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last activity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最后活动"
+          }
+        }
+      }
+    },
     "Lat-long grid": {
       "extractionState": "manual",
       "localizations": {

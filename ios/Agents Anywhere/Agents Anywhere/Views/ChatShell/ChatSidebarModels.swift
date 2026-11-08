@@ -25,6 +25,19 @@ struct ChatSidebarSession: Identifiable, Equatable {
     let archived: Bool
     let pinned: Bool
     let presentation: SessionSidebarPresentation
+    /// The sidebar's activity time, resolved in the same priority the list
+    /// sorts by: the wire's `sortAt` first, then `lastActivityAt`, then the
+    /// session's creation time. Raw ISO string; formatted where it is shown.
+    let lastActivityAt: String?
+
+    /// The long-press menu's one-line activity time, or nil while the session
+    /// carries no timestamp at all.
+    var activityTimeText: String? {
+        guard let lastActivityAt, let date = ChatTimestamp.parse(lastActivityAt) else {
+            return nil
+        }
+        return "\(String(localized: "Last activity")) \(ChatTimestamp.string(date))"
+    }
 
     init(session: V2SessionMeta) {
         id = session.id
@@ -39,6 +52,9 @@ struct ChatSidebarSession: Identifiable, Equatable {
         archived = session.archived
         pinned = session.pinned
         presentation = SessionSidebarPresentation(session)
+        lastActivityAt = [session.sortAt, session.lastActivityAt, session.createdAt]
+            .compactMap { $0 }
+            .first { !$0.isEmpty }
     }
 }
 

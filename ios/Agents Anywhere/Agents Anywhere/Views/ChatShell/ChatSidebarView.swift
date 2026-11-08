@@ -408,6 +408,13 @@ struct ChatSidebarSessionRow: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
+            // A read-only row at the top: the long-press answers "when was
+            // this session last active" before the actions do anything.
+            if let activityTimeText = session.activityTimeText {
+                Section {
+                    Text(verbatim: activityTimeText)
+                }
+            }
             Button(action: onOpen) {
                 Label(String(localized: "Open"), systemImage: "folder.fill")
             }

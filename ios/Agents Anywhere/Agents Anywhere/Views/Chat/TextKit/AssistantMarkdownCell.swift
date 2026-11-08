@@ -88,7 +88,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
     private var lastCursorBlockIndex = -1
     /// Revealed content never disappears. A tail re-parse can move the cursor
     /// block's boundary earlier; without this floor the row would shrink and
-    /// the bottom follow would step backwards. Reset on a full rebuild.
+    /// the bottom follow would step backwards. Reset only when the cell is
+    /// reused for another row: a full rebuild inside the same row keeps the
+    /// floor, or the re-parse it was built for would shrink the row.
     private var lastReportedRowHeight: CGFloat = 0
 
     /// The reveal driver per cell. It survives batch configurations so the
@@ -655,6 +657,10 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         revealCatchUpTask?.cancel()
         entrancedBlockIDs.removeAll()
         lastCursorBlockIndex = -1
+        // A full rebuild (a correction/recovery, or a new row through
+        // `prepareForReuse`) must drop the previous reveal's height floor;
+        // keeping it turns a correction into "stay tall until caught up".
+        lastReportedRowHeight = 0
         NSLayoutConstraint.deactivate(heightConstraints)
         NSLayoutConstraint.deactivate(Array(stableConstraints.values))
         NSLayoutConstraint.deactivate(Array(tailConstraints.values))
@@ -680,6 +686,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         streaming = nil
         revealState = nil
         lastLayoutWidth = -1
+        // A reused cell belongs to a different row; the previous row's reveal
+        // floor would pin this one to its height for the whole reveal.
+        lastReportedRowHeight = 0
         #if DEBUG
         debugStreamingRowHeight = nil
         #endif

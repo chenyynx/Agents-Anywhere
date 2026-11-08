@@ -85,7 +85,16 @@ final class StreamingRevealDriver: NSObject {
             rebuildMaskIfSeatedDrifted(in: textView)
         }
         if textComplete, (released ?? 0) >= total {
-            finishIfFaded(now: now)
+            // `finish` reports `onFrame(nil)`, which invalidates the row
+            // layout. Configure runs inside the data source's cell update, so
+            // defer it one turn exactly like `reset()` does; a reset or a new
+            // configure before the turn re-checks the same guards.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.textComplete, (self.released ?? 0) >= self.total else {
+                    return
+                }
+                self.finishIfFaded(now: ProcessInfo.processInfo.systemUptime)
+            }
         } else {
             startLinkIfNeeded()
         }

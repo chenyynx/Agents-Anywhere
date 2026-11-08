@@ -2055,10 +2055,12 @@ final class TimelineCollectionController: UIViewController {
               phase.phase != .animating, !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         var stale: [IndexPath] = []
-        var wrongContent: [IndexPath] = []
+        var wrongContent: [(indexPath: IndexPath, item: TimelineListItem)] = []
         for indexPath in collectionView.indexPathsForVisibleItems {
-            guard currentItems.indices.contains(indexPath.item) else { continue }
-            let item = currentItems[indexPath.item]
+            // The committed snapshot is the truth for what this index path
+            // should show; `currentItems` is only the last array handed to the
+            // data source and can be one update ahead of it.
+            guard let item = dataSource.itemIdentifier(for: indexPath) else { continue }
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
             var contentMismatch = false
@@ -2066,7 +2068,7 @@ final class TimelineCollectionController: UIViewController {
                hosting.itemID != item.itemID {
                 // A nil id is a visible cell whose configuration never ran;
                 // it draws nothing, which is exactly the blank this repairs.
-                wrongContent.append(indexPath)
+                wrongContent.append((indexPath, item))
                 contentMismatch = true
             }
             // Hosted-contract rows invalidate their own row and the rows below
@@ -2086,8 +2088,25 @@ final class TimelineCollectionController: UIViewController {
         }
 #endif
         if !wrongContent.isEmpty {
-            UIView.performWithoutAnimation {
-                collectionView.reconfigureItems(at: wrongContent)
+            // A diffable data source owns cell configuration: calling
+            // `collectionView.reconfigureItems(at:)` directly trips UIKit's
+            // assertion (the b1067/b1068 crash class; the simulator gate
+            // crashed here from `toolStorm`, run 42498517710). Reconfigure the
+            // same identities through the data source — the apply rebinds the
+            // cells on the next update cycle, still before the frame the
+            // reader would see.
+            // Every entry was read from the committed snapshot, so these
+            // identifiers are exactly what `snapshot()` holds.
+            let wrongItems = wrongContent.map(\.item)
+            if !wrongItems.isEmpty {
+                isPerformingSnapshot = true
+                var rebind = dataSource.snapshot()
+                rebind.reconfigureItems(wrongItems)
+                dataSource.apply(rebind, animatingDifferences: false) { [weak self] in
+                    guard let self else { return }
+                    self.isPerformingSnapshot = false
+                    self.performPendingSnapshotUpdate()
+                }
             }
         }
         guard !stale.isEmpty else {

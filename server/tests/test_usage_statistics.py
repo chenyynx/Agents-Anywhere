@@ -597,8 +597,23 @@ def test_usage_maintenance_snapshots_inventory_and_prunes_old_events(tmp_path):
     headers = auth_headers(client)
     admin_id = _user_id(client, headers)
     client.post("/connectors", headers=headers, json={"name": "mac"}).raise_for_status()
-    old = UsageEvent(EVENT_MESSAGE_SENT, "2026-01-01T00:00:00Z", user_id=admin_id, session_id="old")
-    recent = UsageEvent(EVENT_MESSAGE_SENT, "2026-10-09T00:00:00Z", user_id=admin_id, session_id="recent")
+    # Retention is measured from *now* (``now - retention_days``), so the
+    # fixtures are relative to it: a fixed "recent" date silently ages past the
+    # 30-day cutoff and the test starts failing on a calendar boundary
+    # (2026-10-09 aged out on 2026-11-08).
+    now = datetime.now(UTC)
+    old = UsageEvent(
+        EVENT_MESSAGE_SENT,
+        (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        user_id=admin_id,
+        session_id="old",
+    )
+    recent = UsageEvent(
+        EVENT_MESSAGE_SENT,
+        (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        user_id=admin_id,
+        session_id="recent",
+    )
     _insert(client, [old, recent])
 
     loop = UsageMaintenanceLoop(client.app.state.store, client.app.state.redis, retention_days=30)

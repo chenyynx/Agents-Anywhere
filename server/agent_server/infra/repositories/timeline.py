@@ -22,6 +22,7 @@ from agent_server.core.timeline import (
     latest_timeline_items_by_id,
     native_item_id_from_payload,
     next_timeline_item_revision,
+    stored_time_for_live_rewrite,
     timeline_item_content_hash,
     timeline_item_from_runtime_input,
     timeline_item_from_snapshot,
@@ -1729,12 +1730,12 @@ class TimelineRepositoryMixin:
                         existing=existing,
                         order_seq=order_seq,
                         revision=next_timeline_item_revision(item, existing),
-                        # A rewrite that declares no time keeps the row's stored
-                        # time. Live streaming updates keep their first-write
-                        # (message) time; maintenance writers that rewrite an
-                        # old row must not move it to the top of the sidebar.
-                        fallback_updated_at=(
-                            existing.updatedAt if existing is not None else None
+                        # A live frame declares no time, so this is where the
+                        # row's activity stamp comes from: an active row keeps
+                        # advancing it (the client times thinking/agent cards
+                        # with it), a settled rewrite keeps the stored one.
+                        fallback_updated_at=stored_time_for_live_rewrite(
+                            item, existing
                         ),
                     )
                     await self.timeline.upsert_one(conn, result)

@@ -18,6 +18,7 @@ from agent_server.core.timeline import (
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
     next_timeline_item_revision,
+    stored_time_for_live_rewrite,
     timeline_item_from_runtime_input,
     timeline_item_state_is_unchanged,
 )
@@ -446,13 +447,10 @@ class TimelineWriteBuffer:
                 existing=existing,
                 order_seq=order_seq,
                 revision=next_timeline_item_revision(item, existing),
-                # Same rule as the direct sync/upsert paths: a rewrite that
-                # declares no time keeps the row's stored time, so maintenance
-                # writers (card sweeps, janitor closures) can never pull a
-                # settled session to the top of the sidebar.
-                fallback_updated_at=(
-                    existing.updatedAt if existing is not None else None
-                ),
+                # Same rule as the direct writer: an active row is live
+                # activity and advances its stamp; a settled rewrite keeps the
+                # stored time and never pulls an old session to the top.
+                fallback_updated_at=stored_time_for_live_rewrite(item, existing),
             )
             probe.mark("normalize")
             raw_item = await self._store_pending(

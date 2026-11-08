@@ -313,7 +313,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
             "runtime": runtime,
             "runtimeId": _runtime_id_from_metadata(instance_metadata),
             "externalSessionId": external_session_id,
-            "items": [_timeline_item_payload(item) for item in server_items],
+            "items": _timeline_sync_item_payloads(server_items, instance_metadata),
             "complete": complete,
             "metadata": instance_metadata,
         }
@@ -454,6 +454,30 @@ class ConnectorRuntimeHost(RuntimeHostClient):
                 "sync state key must be runtime-namespaced, e.g. codex/history/cursor/{id}"
             )
         return runtime, self._connector_id, key
+
+
+def _timeline_sync_item_payloads(
+    items: tuple[RuntimeTimelineItem, ...],
+    metadata: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Sync items with the session's ordering time as a declared fallback.
+
+    A history rebuild hands its whole chain to ``timeline_sync`` and states the
+    session's ``orderingTime`` (the transcript's last-modified time) in the
+    metadata. ``_timeline_item_payload`` declares no per-row time, and the
+    Server stamps ``now`` on such a row — a backfilled old row would then pull
+    the whole session to the top of the sidebar. The periodic history path
+    already applies this fallback before sending; the direct path (the pre-turn
+    first sync) must do the same, or the fix only covers one of them.
+    """
+
+    payloads = [_timeline_item_payload(item) for item in items]
+    ordering_time = metadata.get("orderingTime")
+    if isinstance(ordering_time, str) and ordering_time:
+        for payload in payloads:
+            payload.setdefault("createdAt", ordering_time)
+            payload.setdefault("updatedAt", ordering_time)
+    return payloads
 
 
 def _timeline_item_payload(item: RuntimeTimelineItem) -> dict[str, Any]:

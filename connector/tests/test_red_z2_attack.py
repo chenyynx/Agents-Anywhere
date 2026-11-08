@@ -38,17 +38,16 @@ from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcri
 # ===========================================================================
 
 
-def test_Z2_DA_production_entry_orders_at_adoption_now_not_transcript_time(
+def test_Z2_DA_a_bare_entry_orders_at_the_transcript_time_not_now(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """ATTACK: a store entry created the production way already carries an
-    ordering_time of "now" (``ensure`` defaults it), so the enrich's
-    ``ordering_time=None if stored.ordering_time else ...`` never fires — the
-    settled history session keeps sorting at adoption time, the very page-1
-    pull-up the D-A comment and ``cache.py`` docstring claim to prevent.
+    """An adopted entry must not invent a sort time.
 
-    This is the exact shape the D-A comment names: a session that reached the
-    store through ``record_timeline_item``'s bare ``ensure(session_id)``.
+    ``ensure`` used to default it to "now"; that value won the merge against
+    the transcript's own last_modified (``_merge_session_meta`` takes the max)
+    and pulled a settled session to the top of page 1 on every connector
+    restart (2026-11-09). A caller that does not know the time leaves it None,
+    and the history enrich fills the real one.
     """
 
     config, project, raw = _layout(tmp_path)
@@ -61,10 +60,7 @@ def test_Z2_DA_production_entry_orders_at_adoption_now_not_transcript_time(
     # cwd, external id, nor a transcript-derived ordering_time.
     bare = store.ensure(session_id=SESSION_ID)
     assert bare.cwd is None and bare.external_session_id is None
-    # The default the attack is about: it is NOT None.
-    assert bare.ordering_time is not None, "ensure no longer defaults ordering_time"
-
-    before = bare.ordering_time
+    assert bare.ordering_time is None, "ensure must not invent a sort time"
 
     sdk = _FakeSdk([_sdk_dispatch(), _sdk_receipt()], raw, project)
     syncer = _syncer(
@@ -79,16 +75,21 @@ def test_Z2_DA_production_entry_orders_at_adoption_now_not_transcript_time(
     # cwd/external ARE enriched (D-A's main goal holds)...
     assert stored.cwd
     assert stored.external_session_id == EXTERNAL_SESSION_ID
-    # ...but the ordering_time is untouched: still the adoption "now", not the
-    # transcript's own last_modified. The session sorts to the top of page 1.
-    assert stored.ordering_time == before
+    # ...and the ordering_time is the transcript's own last_modified, so the
+    # session sorts where the library puts it.
+    history_ordering = _history_times(sdk, raw)
+    assert history_ordering is not None
+    assert stored.ordering_time == history_ordering
 
 
-def test_Z2_DA_the_transcript_ordering_time_never_reaches_a_bare_entry(
+def test_Z2_DA_the_transcript_ordering_time_reaches_a_bare_entry(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """ATTACK, isolated: the value the enrich *would* supply differs from the
-    stored one, proving the branch is skipped rather than agreeing by luck."""
+    """The value the enrich supplies is the one the store ends up with.
+
+    Same path as the test above, isolated: the entry starts undated and must
+    end at the transcript's time, not at an adoption "now".
+    """
 
     config, project, raw = _layout(tmp_path)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
@@ -98,6 +99,7 @@ def test_Z2_DA_the_transcript_ordering_time_never_reaches_a_bare_entry(
     store = runtime._session_store
     store.ensure(session_id=SESSION_ID)
     stored = store.get(SESSION_ID)
+    assert stored is not None and stored.ordering_time is None
 
     sdk = _FakeSdk([_sdk_dispatch(), _sdk_receipt()], raw, project)
     syncer = _syncer(
@@ -111,8 +113,7 @@ def test_Z2_DA_the_transcript_ordering_time_never_reaches_a_bare_entry(
     # What the history read believes the ordering time is.
     history_ordering = _history_times(sdk, raw)
     assert history_ordering is not None
-    # The stored value is unchanged and differs from it.
-    assert stored.ordering_time != history_ordering
+    assert stored.ordering_time == history_ordering
 
 
 def test_Z2_DA_control_enrich_still_fills_cwd_and_external(

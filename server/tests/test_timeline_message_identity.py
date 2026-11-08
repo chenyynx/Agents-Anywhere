@@ -295,6 +295,50 @@ async def test_sync_heals_preexisting_duplicate_rows(tmp_path) -> None:
         await store.close()
 
 
+@pytest.mark.anyio
+async def test_rebased_reorder_does_not_resurrect_a_healed_twin(tmp_path) -> None:
+    """A row the heal deletes must stay out of the reorder plan.
+
+    The plan is built from the stored order, which still names the twin. A
+    rebased batch that inserts before that twin renumbers it and writes it back
+    from its stored payload — after the delete, which re-inserts it and renders
+    the message twice.
+    """
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "live_1", native_item_id="X", order_seq=1),
+            order_seq=1,
+            updated_seq=1,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(session.id, "hist_1", native_item_id="X", order_seq=2),
+            order_seq=2,
+            updated_seq=2,
+        )
+
+        # The rebuild backfills a row older than everything stored, so the
+        # whole stored chain is the renumbered suffix — including the twin.
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                message_input(session.id, "old_1", native_item_id=None, order_seq=1),
+                message_input(session.id, "live_1", native_item_id="X", order_seq=2),
+            ],
+            reorder_from_batch=True,
+        )
+
+        assert await _ids_with_native(store, session.id, "X") == ["live_1"]
+        assert set(await _rows_by_id(store, session.id)) == {"old_1", "live_1"}
+    finally:
+        await store.close()
+
+
 # ---------------------------------------------------------------------------
 # D4 — no collateral: distinct messages / no-native-id rows are never merged.
 # ---------------------------------------------------------------------------

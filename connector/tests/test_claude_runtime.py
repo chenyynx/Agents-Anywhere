@@ -1543,6 +1543,9 @@ async def _test_claude_runtime_paged_window_excludes_the_local_overlay() -> None
         external_session_id="claude_local_live",
         title="Local live",
         cwd="/repo",
+        # A live session's sort time comes from its transcript; the store no
+        # longer invents one for adopted entries.
+        ordering_time="2026-11-09T00:00:00Z",
     )
 
     first_page = await runtime.list_sessions(limit=10)

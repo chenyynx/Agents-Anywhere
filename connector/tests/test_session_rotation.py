@@ -824,6 +824,9 @@ async def _exercise_rotation_reaches_displaced_sessions(monkeypatch) -> None:
             f"local_only_{index}",
             cwd="/repo",
             title=f"Local {index}",
+            # The store no longer invents a sort time; a caller that knows it
+            # passes it. These locals are meant to sort ahead of the history.
+            ordering_time="2026-11-09T00:00:00Z",
         )
 
     async def no_catalogs(_runtime_: Any) -> None:

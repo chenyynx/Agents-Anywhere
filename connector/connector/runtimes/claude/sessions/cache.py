@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from connector.runtime_protocol import RuntimeTimelineItem, RuntimeTimelineSnapshot
 from connector.runtime_protocol.models import SessionMeta
 from connector.runtimes.claude.domain.session import ClaudeSession
@@ -41,7 +39,13 @@ class ClaudeSessionStore:
                 external_session_id=external_session_id,
                 cwd=cwd,
                 title=title,
-                ordering_time=ordering_time or _now_iso(),
+                # Never invent a sort key. A caller that does not know the
+                # transcript's time leaves it None (the session sorts last);
+                # stamping "now" made every adopted session — scheduled
+                # wake-ups, the persisted open-card index — look freshly
+                # active on each connector restart and pushed old sessions to
+                # the top of the sidebar (2026-11-09).
+                ordering_time=ordering_time,
             )
             self._sessions[session_id] = session
             return session
@@ -51,8 +55,8 @@ class ClaudeSessionStore:
             session.cwd = cwd
         if title:
             session.title = title
-        if session.ordering_time is None:
-            session.ordering_time = ordering_time or _now_iso()
+        if session.ordering_time is None and ordering_time:
+            session.ordering_time = ordering_time
         return session
 
     def update_meta(
@@ -65,8 +69,6 @@ class ClaudeSessionStore:
             session.title = title
         if cwd is not None:
             session.cwd = cwd
-        if session.ordering_time is None:
-            session.ordering_time = _now_iso()
 
     def update_external_session_id(
         self,
@@ -177,7 +179,3 @@ class ClaudeSessionStore:
             if session.external_session_id == external_session_id:
                 return session
         return None
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()

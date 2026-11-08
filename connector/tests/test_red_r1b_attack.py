@@ -181,7 +181,12 @@ def test_R1b_P0_the_seam_survives_the_wrapper() -> None:
     native = _runtime(host=host, sdk=sdk)
     for index in range(3):
         native._session_reader.session_store.ensure(
-            f"local_only_{index}", cwd="/repo", title=f"Local {index}"
+            f"local_only_{index}",
+            cwd="/repo",
+            title=f"Local {index}",
+            # Local entries sort ahead of the history only when they carry a
+            # real sort time; the store no longer invents one.
+            ordering_time="2026-11-09T00:00:00Z",
         )
     bound = RuntimeInstance(instance=_spec(), native_runtime=native)
 

@@ -212,6 +212,31 @@ def timeline_item_from_runtime_input(
     return TimelineItem.model_validate(data)
 
 
+#: Statuses that mean the row is still being written live. A live writer may
+#: advance ``updatedAt`` for these rows: the client derives the "thought for
+#: N s" label and an agent card's running clock from ``createdAt``/``updatedAt``
+#: because the wire declares no per-row times. Everything else is settled.
+LIVE_TIMELINE_STATUSES = frozenset({"pending", "running", "waiting_approval"})
+
+
+def stored_time_for_live_rewrite(
+    item: TimelineItemIn,
+    existing: TimelineItem | None,
+) -> str | None:
+    """``fallback_updated_at`` for the live single-item writer.
+
+    A live frame carries no timestamps, so the Server stamps ``now`` — that
+    stamp is what a client times a thinking block with. A settled row that is
+    rewritten (the card evidence sweep closing a stranded card, a startup
+    reconcile) is not activity: it must keep its stored time, or the whole
+    session jumps to the top of the sidebar (2026-11-09, twice).
+    """
+
+    if existing is None or item.status in LIVE_TIMELINE_STATUSES:
+        return None
+    return existing.updatedAt
+
+
 def latest_timeline_items_by_id(
     items: list[TimelineItemIn],
 ) -> dict[str, TimelineItemIn]:

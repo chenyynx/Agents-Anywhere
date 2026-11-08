@@ -201,3 +201,37 @@ def test_publish_falls_back_to_the_snapshot_ordering_time() -> None:
     payload = notification["params"]["items"][0]
     assert payload["createdAt"] == "2026-11-05T05:30:52.874000Z"
     assert payload["updatedAt"] == "2026-11-05T05:30:52.874000Z"
+
+
+def test_direct_sync_payload_declares_the_snapshot_ordering_time() -> None:
+    """The pre-turn first sync goes straight through the runtime host.
+
+    It never passes ``_timeline_sync_notification``, so without the same
+    fallback here the Server stamps every backfilled row with ``now`` and the
+    old session climbs to the top of the sidebar — the fix would cover only
+    the periodic path.
+    """
+
+    from connector.runtime_protocol import RuntimeTimelineItem
+    from connector.server.runtime_host import _timeline_sync_item_payloads
+
+    item = RuntimeTimelineItem(
+        id="claude_history_msg_x",
+        session_id=SESSION_ID,
+        type="message",
+        status="done",
+        order_seq=1,
+        content_hash="sha256:x",
+    )
+
+    payloads = _timeline_sync_item_payloads(
+        (item,), {"orderingTime": "2026-11-05T05:30:52.874000Z"}
+    )
+    assert payloads[0]["createdAt"] == "2026-11-05T05:30:52.874000Z"
+    assert payloads[0]["updatedAt"] == "2026-11-05T05:30:52.874000Z"
+
+    # No declared ordering time (and a live snapshot): the host must not
+    # fabricate one; the Server decides what an undated row means.
+    plain = _timeline_sync_item_payloads((item,), {})
+    assert "createdAt" not in plain[0]
+    assert "updatedAt" not in plain[0]

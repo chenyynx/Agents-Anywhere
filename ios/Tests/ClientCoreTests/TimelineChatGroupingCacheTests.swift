@@ -16,7 +16,7 @@ struct TimelineChatGroupingCacheTests {
             var targets: Set<String> = []
             var cwd: String? = Bool.random(using: &rng) ? "/tmp/work" : nil
 
-            for _ in 0..<20 {
+            for iteration in 0..<20 {
                 let items = try specs.map(makeItem)
                 let incremental = cache.units(items: items,
                                               profile: .generic,
@@ -26,6 +26,9 @@ struct TimelineChatGroupingCacheTests {
                                                       profile: .generic,
                                                       interactionTargets: targets,
                                                       cwd: cwd)
+                if incremental != full, let divergence = firstDivergence(incremental, full) {
+                    Issue.record("round \(iteration) rows=\(items.count): \(divergence)")
+                }
                 #expect(incremental == full)
                 mutate(&specs, targets: &targets, rng: &rng)
             }
@@ -45,6 +48,29 @@ struct TimelineChatGroupingCacheTests {
         }
         #expect(first == TimelineChatGrouping.units(items: items, profile: .generic,
                                                     interactionTargets: [], cwd: nil))
+    }
+
+    private func firstDivergence(_ lhs: [TimelineChatUnit],
+                                 _ rhs: [TimelineChatUnit]) -> String? {
+        for index in 0..<max(lhs.count, rhs.count) {
+            let left = index < lhs.count ? describe(lhs[index]) : "<missing>"
+            let right = index < rhs.count ? describe(rhs[index]) : "<missing>"
+            if left != right {
+                return "unit \(index): incremental=\(left) full=\(right)"
+            }
+        }
+        return nil
+    }
+
+    private func describe(_ unit: TimelineChatUnit) -> String {
+        switch unit {
+        case let .stepGroup(group, rowIDs):
+            return "steps(\(group.id)) rows=\(rowIDs)"
+        case let .message(key, rowIDs):
+            return "msg(\(key)) rows=\(rowIDs)"
+        case let .standalone(rowID):
+            return "single(\(rowID))"
+        }
     }
 
     // MARK: - Specs

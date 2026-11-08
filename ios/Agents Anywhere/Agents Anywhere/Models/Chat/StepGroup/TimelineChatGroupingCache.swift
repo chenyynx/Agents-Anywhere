@@ -110,11 +110,19 @@ nonisolated struct TimelineChatGroupingCache {
             return rebuild(sorted, fingerprints: fingerprints,
                            profile: profile, interactionTargets: interactionTargets, cwd: cwd)
         }
+        // The grouping pass carries the declared turn across rows and flushes
+        // on a change; a suffix pass cannot rediscover the turns that were
+        // declared before `start`, so seed the cursor. Without it the first
+        // turn declaration inside the tail looks like the initial one and the
+        // step/message it should close stays merged (the differential test
+        // caught exactly that: `msg(m4)` gained the next turn's rows).
         let tailUnits = TimelineChatGrouping.units(
             items: Array(sorted[start...]),
             profile: profile,
             interactionTargets: interactionTargets,
-            cwd: cwd)
+            cwd: cwd,
+            startingTurnID: TimelineChatGrouping.turnContext(
+                before: start, in: sorted, interactionTargets: interactionTargets))
         let merged = Array(units[0..<unitIndex]) + tailUnits
         self.rows = sorted
         self.fingerprints = fingerprints

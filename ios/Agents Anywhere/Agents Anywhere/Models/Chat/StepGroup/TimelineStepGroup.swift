@@ -217,16 +217,22 @@ nonisolated enum TimelineChatUnit: Identifiable, Equatable {
 /// - an interaction target keeps its own standalone row;
 /// - sub-agent child rows stay out of the main timeline (L2.1).
 nonisolated enum TimelineChatGrouping {
+    /// - Parameter startingTurnID: the declared turn in effect before the
+    ///   first item. The pass carries that cursor across rows, so a caller
+    ///   grouping a suffix of a longer timeline must seed it: otherwise the
+    ///   first `turnId` in the suffix looks like no change and a step group or
+    ///   message that the full pass would close at that row stays merged.
     static func units(items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
                       interactionTargets: Set<String>,
-                      cwd: String? = nil) -> [TimelineChatUnit] {
+                      cwd: String? = nil,
+                      startingTurnID: V2TurnID? = nil) -> [TimelineChatUnit] {
         var units: [TimelineChatUnit] = []
         var stepItems: [V2TimelineItem] = []
         var messageKey: String?
         var messageRows: [V2TimelineItem] = []
         var consumed: Set<String> = []
-        var currentTurnID: V2TurnID?
+        var currentTurnID: V2TurnID? = startingTurnID
 
         func flushSteps() {
             guard !stepItems.isEmpty else { return }
@@ -325,6 +331,27 @@ nonisolated enum TimelineChatGrouping {
 
     private static func isSubAgentChild(_ item: V2TimelineItem) -> Bool {
         TimelineText.first(item.raw["content"]?["parentItemId"]) != nil
+    }
+
+    /// The `currentTurnID` the pass carries into `sortedItems[index]`.
+    ///
+    /// Mirrors the pass's skip order exactly: sub-agent children and
+    /// interaction targets `continue` before the turn block, so their
+    /// `turnId` never updates the cursor. Callers must guarantee unique ids
+    /// (the cache rebuilds on duplicates), otherwise the skipped duplicate
+    /// would need the same treatment as `consumed`.
+    static func turnContext(before index: Int,
+                            in sortedItems: [V2TimelineItem],
+                            interactionTargets: Set<String>) -> V2TurnID? {
+        var probe = index - 1
+        while probe >= 0 {
+            let item = sortedItems[probe]
+            probe -= 1
+            if isSubAgentChild(item) { continue }
+            if interactionTargets.contains(item.id) { continue }
+            if let declared = item.turnId { return declared }
+        }
+        return nil
     }
 
     static func wireOrder(_ lhs: V2TimelineItem, _ rhs: V2TimelineItem) -> Bool {

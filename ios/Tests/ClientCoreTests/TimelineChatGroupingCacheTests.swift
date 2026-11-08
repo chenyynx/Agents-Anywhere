@@ -29,11 +29,14 @@ struct TimelineChatGroupingCacheTests {
                                                       interactionTargets: targets,
                                                       cwd: cwd)
                 if incremental != full, let divergence = firstDivergence(incremental, full) {
+                    // sourceItemID is part of the dump: appended rows carry a
+                    // "tail<order>" item id that reorders rewrite, and without
+                    // it an offline replay cannot rebuild the message key.
                     let specsText = specs.map {
-                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.revision)"
+                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.sourceItemID ?? "-")|\($0.revision)"
                     }.joined(separator: ";")
                     let previousText = previousSpecs.map {
-                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.revision)"
+                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.sourceItemID ?? "-")|\($0.revision)"
                     }.joined(separator: ";")
                     let incrementalText = incremental.map(describe).joined(separator: " || ")
                     let fullText = full.map(describe).joined(separator: " || ")
@@ -44,6 +47,45 @@ struct TimelineChatGroupingCacheTests {
                 mutate(&specs, targets: &targets, rng: &rng)
             }
         }
+    }
+
+    /// The cache re-groups only the suffix that starts at the first changed
+    /// unit, but the full pass carries the declared turn from every earlier
+    /// row. A suffix pass that starts from "no turn" misses the turn change at
+    /// the first declaring row in the suffix and keeps a message/step group
+    /// merged that the full pass splits. CI caught this as `msg(m4)` gaining
+    /// the next turn's rows in the incremental result.
+    @Test func suffixGroupingInheritsTheDeclaredTurn() throws {
+        func message(_ id: String, order: Int, turn: String?) -> RowSpec {
+            RowSpec(id: id, order: order, kind: .assistantMessage, text: "line \(order)",
+                    turn: turn, status: "running", revision: 1, updatedSeq: order,
+                    parentItemID: nil, nativeMessageID: "m1", sourceItemID: "src\(order)")
+        }
+        func reasoning(_ id: String, order: Int, turn: String?) -> RowSpec {
+            RowSpec(id: id, order: order, kind: .reasoning, text: "line \(order)",
+                    turn: turn, status: "running", revision: 1, updatedSeq: order,
+                    parentItemID: nil, nativeMessageID: nil, sourceItemID: "src\(order)")
+        }
+        // `a` declares t1; `b` carries no turn and starts the unit the cache
+        // will re-group; `c` declares t2 and must split the message there.
+        let a = reasoning("a", order: 0, turn: "t1")
+        let b = message("b", order: 1, turn: nil)
+        let c = message("c", order: 2, turn: "t2")
+        let d = message("d", order: 3, turn: nil)
+
+        var cache = TimelineChatGroupingCache()
+        _ = cache.units(items: try [a, b].map(makeItem), profile: .generic,
+                        interactionTargets: [], cwd: nil)
+
+        let grown = try [a, b, c, d].map(makeItem)
+        let incremental = cache.units(items: grown, profile: .generic,
+                                      interactionTargets: [], cwd: nil)
+        let full = TimelineChatGrouping.units(items: grown, profile: .generic,
+                                              interactionTargets: [], cwd: nil)
+        #expect(incremental == full)
+        // The same input again must not drift either.
+        #expect(cache.units(items: grown, profile: .generic,
+                            interactionTargets: [], cwd: nil) == full)
     }
 
     @Test func repeatedIdenticalInputsKeepTheUnits() throws {
@@ -168,7 +210,10 @@ struct TimelineChatGroupingCacheTests {
             role = nil
             content["kind"] = .string("reasoning")
         case .fileChange:
-            type = "fileChange"
+            // The wire enum's raw value is snake_case; "fileChange" decodes
+            // to `.unknown`, which silently ran these fixtures as standalone
+            // rows and left the real `.fileChange` branch untested.
+            type = "file_change"
             role = nil
         case .marker:
             type = "marker"

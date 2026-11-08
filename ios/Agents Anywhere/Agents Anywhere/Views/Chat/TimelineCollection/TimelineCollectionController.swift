@@ -716,11 +716,18 @@ final class TimelineCollectionController: UIViewController {
         if windowReplaced { layout.discardParkedHeights() }
         let resolveWindowBottom = windowReplaced && windowReplacementReturn
             && insertionProjection == nil
+#if AA_TIMELINE_PROBE
+        let probeEntriesStart = CACurrentMediaTime()
+#endif
         let entries: [TimelineContentEntry] = items.map { item in
             TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
         }
         let change = signatures.update(entries)
         let changed = Set(change.changed)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.entries", seconds: CACurrentMediaTime() - probeEntriesStart)
+#endif
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteApply(items: items, changedCount: change.changed.count,
                                             animating: animating,
@@ -763,6 +770,9 @@ final class TimelineCollectionController: UIViewController {
         let measurementTop = viewport.offsetY + viewport.topInset
         let measurementSkipAbove = measurementTop
             - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+#if AA_TIMELINE_PROBE
+        let probeHeightKeyStart = CACurrentMediaTime()
+#endif
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
@@ -785,6 +795,8 @@ final class TimelineCollectionController: UIViewController {
             }
         }
 #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.heightKey", seconds: CACurrentMediaTime() - probeHeightKeyStart)
         let probeMeasureStart = CACurrentMediaTime()
 #endif
         if !applyingHistoryPage {
@@ -795,6 +807,8 @@ final class TimelineCollectionController: UIViewController {
             measureSynchronously(toMeasure, width: columnWidth)
         }
 #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.measure", seconds: CACurrentMediaTime() - probeMeasureStart)
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
         TimelineProbeStore.shared.noteHistory(
             "apply-measure skipped=\(applyingHistoryPage ? 1 : 0) n=\(toMeasure.count) "
@@ -834,6 +848,9 @@ final class TimelineCollectionController: UIViewController {
             }
         }
 
+#if AA_TIMELINE_PROBE
+        let probeSnapshotStart = CACurrentMediaTime()
+#endif
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
         snapshot.appendItems(items)
@@ -929,6 +946,12 @@ final class TimelineCollectionController: UIViewController {
             }
             self.performPendingSnapshotUpdate()
         }
+#if AA_TIMELINE_PROBE
+        // Only the synchronous part of `dataSource.apply` is measured here;
+        // the completion above runs after UIKit commits the snapshot.
+        TimelineProbeStore.shared.noteStage(
+            "apply.snapshot", seconds: CACurrentMediaTime() - probeSnapshotStart)
+#endif
     }
 
     /// Run the newest snapshot request once the in-flight one has finished.

@@ -72,8 +72,9 @@ def _message(
     session_id: str,
     order_seq: int,
     text: str,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "id": item_id,
         "sessionId": session_id,
         "type": "message",
@@ -88,8 +89,11 @@ def _message(
         },
         "orderSeq": order_seq,
         "revision": 1,
-        "contentHash": f"sha256:{item_id}",
+        "contentHash": f"sha256:{item_id}:{text}",
     }
+    if created_at is not None:
+        payload["createdAt"] = created_at
+    return payload
 
 
 def _post_sync(
@@ -278,3 +282,52 @@ def test_plain_merge_backfill_still_appends(tmp_path) -> None:
         "msg_new_1",
         "msg_old_1",
     ]
+
+
+def test_rebased_rewrite_without_timestamps_keeps_the_stored_item_time(
+    tmp_path,
+) -> None:
+    """A history rebuild must not move an old row's ``item_time`` to now.
+
+    The sidebar sorts by ``max(latest item_time, last_activity_at)``. When a
+    rebased sync rewrites an old row and the Runtime declares no timestamps,
+    the Server used to stamp ``updatedAt = now``; ``item_time`` (the max of
+    createdAt/completedAt/updatedAt) then jumped to now and the session climbed
+    to the top of the list on every connector restart (2026-11-09).
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message(
+                "msg_a",
+                session_id=session_id,
+                order_seq=1,
+                text="a",
+                created_at="2026-11-01T10:00:00Z",
+            )
+        ],
+    )
+    before = _ordered_items(client, session_id, headers)[0]
+    assert before["createdAt"] == "2026-11-01T10:00:00Z"
+    assert before["updatedAt"] == "2026-11-01T10:00:00Z"
+
+    # Same row, changed content (a rebuild rewrites it), no timestamps.
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message("msg_a", session_id=session_id, order_seq=1, text="a v2")],
+        metadata=REBASED,
+    )
+
+    after = _ordered_items(client, session_id, headers)[0]
+    assert after["createdAt"] == "2026-11-01T10:00:00Z"
+    assert after["updatedAt"] == "2026-11-01T10:00:00Z"

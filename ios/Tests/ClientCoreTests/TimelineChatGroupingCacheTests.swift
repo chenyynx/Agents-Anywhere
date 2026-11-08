@@ -27,7 +27,12 @@ struct TimelineChatGroupingCacheTests {
                                                       interactionTargets: targets,
                                                       cwd: cwd)
                 if incremental != full, let divergence = firstDivergence(incremental, full) {
-                    Issue.record("round \(iteration) rows=\(items.count): \(divergence)")
+                    let specsText = specs.map {
+                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.revision)"
+                    }.joined(separator: ";")
+                    let incrementalText = incremental.map(describe).joined(separator: " || ")
+                    let fullText = full.map(describe).joined(separator: " || ")
+                    Issue.record("DIVERGENCE round \(iteration) rows=\(items.count) targets=\(targets.sorted()) cwd=\(cwd ?? "-") specs=\(specsText) incremental=\(incrementalText) full=\(fullText) first=\(divergence)")
                 }
                 #expect(incremental == full)
                 mutate(&specs, targets: &targets, rng: &rng)

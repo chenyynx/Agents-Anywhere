@@ -28,6 +28,7 @@ from connector.runtimes.claude.domain.permissions import (
     permission_mode_from_selection_id,
 )
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
+from connector.runtimes.claude.history.syncer import ClaudeHistorySyncer
 from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
@@ -508,6 +509,10 @@ class ClaudeTurnRunner:
     #: reconciliation reads it so a card stranded by a previous process is
     #: judged even in a session this connector never touches again.
     open_cards: ClaudeOpenAgentCards | None = None
+    #: The history syncer, so a resumed scheduled session — which can wake
+    #: before any user turn in this process — backfills its history before its
+    #: first live row. Same gate as the user path, same best-effort contract.
+    history_syncer: ClaudeHistorySyncer | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
     # Cron* bookkeeping handed over by a transport that was retired before its
     # replacement was built. `close()` drops the retired connection from
@@ -665,6 +670,16 @@ class ClaudeTurnRunner:
             )
             if session.execution is not None or session_id in self.connections:
                 continue
+            # A resumed session can fire a scheduled wake turn before any user
+            # turn in this process. Backfill its history now, while no live row
+            # exists: the Server's merge can only append a hole it learns about
+            # later, which is the 2026-11-09 misorder. Best-effort — a failed
+            # sync must not stop the session from resuming.
+            if self.history_syncer is not None:
+                await self.history_syncer.ensure_first_sync(
+                    session.session_id,
+                    session.external_session_id,
+                )
             session.selections = dict(saved["selections"])
             try:
                 connection = await self.connection_for(

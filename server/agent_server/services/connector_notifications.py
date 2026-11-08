@@ -788,6 +788,19 @@ def _history_rebuild_prunes_orphan_agent_calls(params: Mapping[str, Any]) -> boo
     return isinstance(metadata, Mapping) and metadata.get("rebased") is True
 
 
+def _history_rebuild_reorders(params: Mapping[str, Any]) -> bool:
+    """Whether this sync may renumber the session by its own chain order.
+
+    Only a rebased merge-style rebuild qualifies: it covers the whole visible
+    chain, so its item order IS the chain order and every row it backfills can
+    be placed instead of appended. An incremental batch speaks for a suffix
+    only, and a complete snapshot already replaces every row it does not cover
+    — neither may renumber a session it does not fully describe.
+    """
+
+    return _history_rebuild_prunes_orphan_agent_calls(params)
+
+
 class TimelineNotificationHandler:
     METHODS: ClassVar[set[str]] = {"timeline.sync", "timeline.itemUpsert"}
 
@@ -838,6 +851,7 @@ class TimelineNotificationHandler:
         items = [_timeline_item_for_session(item, session_id) for item in items]
         replace_snapshot = params.get("complete") is True
         prune_orphan_agent_calls = _history_rebuild_prunes_orphan_agent_calls(params)
+        reorder_from_batch = _history_rebuild_reorders(params)
         try:
             if self._timeline_write_buffer is None:
                 if replace_snapshot:
@@ -854,6 +868,7 @@ class TimelineNotificationHandler:
                         items=items,
                         mark_read_on_change=True,
                         prune_orphan_agent_calls=prune_orphan_agent_calls,
+                        reorder_from_batch=reorder_from_batch,
                     )
             else:
                 async with self._timeline_write_buffer.session_fence(session_id):
@@ -871,6 +886,7 @@ class TimelineNotificationHandler:
                             items=items,
                             mark_read_on_change=True,
                             prune_orphan_agent_calls=prune_orphan_agent_calls,
+                            reorder_from_batch=reorder_from_batch,
                         )
         finally:
             if self._timeline_write_buffer is not None:

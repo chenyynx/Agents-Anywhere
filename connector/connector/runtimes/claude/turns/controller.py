@@ -80,6 +80,10 @@ class ClaudeTurnController:
             client_factory=self.client_factory,
             oracle=self.oracle,
             open_cards=self.open_cards,
+            # A scheduled wake turn never passes through
+            # ``ClaudeRuntime.start_turn``, so the runner needs the same
+            # pre-first-row history gate the user path uses.
+            history_syncer=self.history_syncer,
         )
         # The runner owns the connection table, so it supplies the in-process
         # selection seam (model-switch-in-process-tasks.md §3.1): a selection

@@ -18,6 +18,7 @@ from agent_server.core.protocol import PROTOCOL_MAX_REVISION
 from agent_server.core.timeline import (
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
+    chain_reorder_plan,
     latest_timeline_items_by_id,
     native_item_id_from_payload,
     next_timeline_item_revision,
@@ -878,6 +879,7 @@ class TimelineRepositoryMixin:
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
         prune_orphan_agent_calls: bool = False,
+        reorder_from_batch: bool = False,
     ) -> TimelineBatchWriteResult:
         """Apply a Runtime-owned incremental timeline batch by stable item ID.
 
@@ -889,6 +891,11 @@ class TimelineRepositoryMixin:
           rows the batch does not cover, when every task they name is covered
           by the batch itself (a full-history rebuild superseding older
           projection generations; see ``_prune_orphan_agent_call_rows``)
+        - ``reorder_from_batch`` treats the batch as the authoritative chain
+          order and renumbers the whole session, so rows the batch backfills
+          land where the chain says instead of at the end. Only a rebased
+          history rebuild may set it: an incremental batch speaks for a
+          suffix, not for the session (see ``chain_reorder_plan``).
         """
 
         async with self._timeline_lock(session_id):
@@ -908,13 +915,37 @@ class TimelineRepositoryMixin:
                 set(incoming_by_id),
             )
             current_by_id = {item.id: item for item in current_items}
+            reorder: dict[str, int] = {}
+            order_changed: set[str] = set()
+            moved_existing_ids: list[str] = []
+            if reorder_from_batch:
+                stored_order = await self.timeline.order_entries(session_id)
+                reorder = chain_reorder_plan(
+                    stored_order=list(stored_order.items()),
+                    batch_ids=list(incoming_by_id),
+                ) or {}
+                order_changed = {
+                    item_id
+                    for item_id, order_seq in reorder.items()
+                    if stored_order.get(item_id) is not None
+                    and stored_order[item_id] != order_seq
+                }
+                # Rows the batch does not cover can still move when the chain
+                # inserts before them; they are written from their stored row
+                # with nothing but the position changed.
+                moved_existing_ids = [
+                    item_id
+                    for item_id in order_changed
+                    if item_id not in incoming_by_id
+                ]
             changed_inputs = [
                 item
                 for item_id, item in incoming_by_id.items()
-                if (existing := current_by_id.get(item_id)) is None
+                if item_id in order_changed
+                or (existing := current_by_id.get(item_id)) is None
                 or not timeline_item_state_is_unchanged(existing, item)
             ]
-            if not changed_inputs:
+            if not changed_inputs and not moved_existing_ids:
                 # The batch carries no item change, but it may still have healed
                 # a live/history twin (a duplicate row removed with no item write
                 # of its own), or pruned orphan cards, or refreshed the source
@@ -960,6 +991,20 @@ class TimelineRepositoryMixin:
                     deleted=tuple(sorted(converged_deletions)),
                 )
 
+            if order_changed:
+                logger.info(
+                    "timeline reordered by chain rebuild session_id={} "
+                    "changed_rows={} uncovered_moved={} batch_items={}",
+                    session_id,
+                    len(order_changed),
+                    len(moved_existing_ids),
+                    len(incoming_by_id),
+                )
+            moved_rows = (
+                await self.timeline.read_many(session_id, set(moved_existing_ids))
+                if moved_existing_ids
+                else []
+            )
             now = utc_now()
             changed_items: list[TimelineItem] = []
             async with self._engine.begin() as conn:
@@ -979,12 +1024,15 @@ class TimelineRepositoryMixin:
                 first_updated_seq = await self._reserve_session_revisions(
                     conn,
                     session_id,
-                    count=len(changed_inputs),
+                    count=len(changed_inputs) + len(moved_rows),
                     mark_read=mark_read_on_change,
                 )
                 for index, item in enumerate(changed_inputs):
                     existing = current_by_id.get(item.id)
-                    if existing is not None:
+                    planned_order = reorder.get(item.id)
+                    if planned_order is not None:
+                        order_seq = planned_order
+                    elif existing is not None:
                         order_seq = existing.orderSeq
                     elif item.orderSeq > max_order_seq:
                         order_seq = item.orderSeq
@@ -1000,6 +1048,20 @@ class TimelineRepositoryMixin:
                         revision=next_timeline_item_revision(item, existing),
                     )
                     changed_items.append(normalized)
+                # Uncovered rows a chain rebuild pushes forward keep their
+                # payload and gain only a new position and revision — a client
+                # that streams changes must learn the new order too.
+                for offset, row in enumerate(moved_rows):
+                    changed_items.append(
+                        row.model_copy(
+                            update={
+                                "orderSeq": reorder[row.id],
+                                "updatedSeq": first_updated_seq
+                                + len(changed_inputs)
+                                + offset,
+                            }
+                        )
+                    )
                 # A message's reasoning rows and its body row can arrive in one
                 # batch; enforce the intra-message order across the batch after
                 # every order_seq is known. In-batch rows are corrected in

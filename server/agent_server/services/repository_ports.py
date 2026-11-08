@@ -372,6 +372,7 @@ class ConnectorNotificationRepository(
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
         prune_orphan_agent_calls: bool = False,
+        reorder_from_batch: bool = False,
     ) -> TimelineBatchWriteResult: ...
 
     async def resolve_connector_session_id(

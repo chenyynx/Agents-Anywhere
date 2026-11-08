@@ -449,6 +449,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(300)
+        // Spacing is not part of the content signature, so the reload applies
+        // the same identities and UIKit keeps the layout's previous pass. The
+        // gate is about `TimelineListLayout` consuming `itemSpacing(after:)`
+        // (in the product spacing is stable per identity), so invalidate the
+        // layout explicitly to exercise that read.
+        controller.collectionView.collectionViewLayout.invalidateLayout()
         controller.collectionView.layoutIfNeeded()
         let zeroGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
             - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)
@@ -457,6 +463,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(300)
+        controller.collectionView.collectionViewLayout.invalidateLayout()
         controller.collectionView.layoutIfNeeded()
         let defaultGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
             - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)

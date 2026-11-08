@@ -18,7 +18,8 @@ nonisolated struct TimelineChatGroupingCache {
     /// Every `V2TimelineItem` field the grouping and a step unit's payload
     /// read. `raw` is deliberately not compared: the wire tree is large and
     /// `contentHash`/`revision`/`updatedSeq` already move whenever the payload
-    /// does.
+    /// does — with one protocol exception, the deferred summary row, which is
+    /// why `contentDeferred` is in the fingerprint.
     private nonisolated struct RowFingerprint: Hashable {
         let id: String
         let orderSeq: Int
@@ -34,6 +35,15 @@ nonisolated struct TimelineChatGroupingCache {
         let parentItemID: String?
         let nativeMessageID: String?
         let sourceItemID: String?
+        /// The deferred window's summary rows keep the complete row's
+        /// `revision`/`updatedSeq`/`contentHash` on purpose
+        /// (`server/…/timeline_store.py` `build_stub_content`), so they are
+        /// the one wire shape where the payload changes while every other
+        /// fingerprinted field stays equal. Without this flag the full row
+        /// that replaces a stub after a tap looks like "same input" and the
+        /// cached step payload (Write verb, Edit diff stat, truncated
+        /// command) stays stale forever.
+        let contentDeferred: Bool
 
         init(_ item: V2TimelineItem) {
             id = item.id
@@ -50,6 +60,7 @@ nonisolated struct TimelineChatGroupingCache {
             parentItemID = TimelineText.first(item.raw["content"]?["parentItemId"])
             nativeMessageID = TimelineText.first(item.source["nativeMessageId"])
             sourceItemID = TimelineText.first(item.source["itemId"])
+            contentDeferred = item.isDeferred
         }
     }
 

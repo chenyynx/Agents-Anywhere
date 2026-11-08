@@ -11,13 +11,17 @@ struct TimelineChatGroupingCacheTests {
         var rng = SeededGenerator(seed: 0x5EED_1234)
         var cache = TimelineChatGroupingCache()
 
+        // The cache survives a round, so the model of "the previous returned
+        // array" must survive too: a round's first call can legitimately reuse
+        // a prefix from the previous round's last call, and comparing that
+        // against an empty array would fail without a product bug.
+        var previousReturned: [TimelineChatUnit] = []
         for _ in 0..<25 {
             var specs = randomSpecs(count: Int.random(in: 0...30, using: &rng), rng: &rng)
             var targets: Set<String> = []
             var cwd: String? = Bool.random(using: &rng) ? "/tmp/work" : nil
 
             var previousSpecs: [RowSpec] = []
-            var previousReturned: [TimelineChatUnit] = []
             for iteration in 0..<20 {
                 let specsForThisCall = specs
                 let items = try specs.map(makeItem)
@@ -99,6 +103,51 @@ struct TimelineChatGroupingCacheTests {
         #expect(cache.units(items: grown, profile: .generic,
                             interactionTargets: [], cwd: nil) == full)
         #expect(cache.reusableUnitCount == full.count)
+    }
+
+    /// A deferred summary row and the complete row it stands for share
+    /// `revision`/`updatedSeq`/`contentHash` by protocol (server
+    /// `build_stub_content`), so every other fingerprinted field is equal even
+    /// though `raw` differs. Tapping a step swaps the stub for the complete
+    /// row in place; if the fingerprint cannot tell them apart the cache
+    /// returns the stub's step payload and the detail row keeps the truncated
+    /// command / missing diff forever.
+    @Test func deferredSummaryAndItsCompleteRowAreNotTheSameInput() throws {
+        func tool(deferred: Bool, complete: Bool) throws -> V2TimelineItem {
+            var content: [String: JSONValue] = [
+                "kind": .string("tool"),
+                "name": .string("Bash"),
+                "input": .object(["command": .string("npm run build")]),
+            ]
+            if complete { content["output"] = .string("build finished") }
+            if deferred {
+                content["deferred"] = .bool(true)
+                content["deferredBytes"] = .number(4096)
+            }
+            return try V2TimelineItem(json: .object([
+                "id": .string("t1"),
+                "sessionId": .string("s"),
+                "type": .string("tool"),
+                "status": .string("done"),
+                "content": .object(content),
+                "source": .object([
+                    "itemId": .string("src1"),
+                    "nativeMessageId": .string("m1"),
+                ]),
+                "orderSeq": .number(1),
+                "revision": .number(3),
+                "updatedSeq": .number(3),
+                "contentHash": .string("sha256:same"),
+            ]))
+        }
+        var cache = TimelineChatGroupingCache()
+        _ = cache.units(items: [try tool(deferred: true, complete: false)],
+                        profile: .generic, interactionTargets: [], cwd: nil)
+        let incremental = cache.units(items: [try tool(deferred: false, complete: true)],
+                                      profile: .generic, interactionTargets: [], cwd: nil)
+        let full = TimelineChatGrouping.units(items: [try tool(deferred: false, complete: true)],
+                                              profile: .generic, interactionTargets: [], cwd: nil)
+        #expect(incremental == full)
     }
 
     /// A rebuild (first call, changed grouping inputs, duplicates) advertises
@@ -278,7 +327,7 @@ struct TimelineChatGroupingCacheTests {
     private func mutate(_ specs: inout [RowSpec],
                         targets: inout Set<String>,
                         rng: inout SeededGenerator) {
-        switch Int.random(in: 0..<6, using: &rng) {
+        switch Int.random(in: 0..<7, using: &rng) {
         case 0:
             let order = (specs.map(\.order).max() ?? -1) + 1
             specs.append(RowSpec(
@@ -323,6 +372,27 @@ struct TimelineChatGroupingCacheTests {
             let secondOrder = specs[second].order
             specs[first].order = secondOrder
             specs[second].order = firstOrder
+        case 5:
+            // Identity/grouping inputs change in place. The text-only
+            // mutations above cannot reach them, so a fingerprint that drops
+            // one of these fields would stay invisible to this test.
+            guard let index = specs.indices.randomElement(using: &rng) else { return }
+            switch Int.random(in: 0..<5, using: &rng) {
+            case 0:
+                specs[index].turn = Bool.random(using: &rng)
+                    ? "t\(Int.random(in: 0..<4, using: &rng))" : nil
+            case 1:
+                specs[index].nativeMessageID = Bool.random(using: &rng)
+                    ? "m\(Int.random(in: 0..<4, using: &rng))" : nil
+            case 2:
+                specs[index].parentItemID = Bool.random(using: &rng)
+                    ? "p\(Int.random(in: 0..<4, using: &rng))" : nil
+            case 3:
+                specs[index].sourceItemID = "src\(Int.random(in: 0..<1_000, using: &rng))"
+            default:
+                specs[index].kind = RowKind.allCases.randomElement(using: &rng)
+                    ?? specs[index].kind
+            }
         default:
             guard let spec = specs.randomElement(using: &rng) else { return }
             if targets.contains(spec.id) {

@@ -17,6 +17,7 @@ struct TimelineChatGroupingCacheTests {
             var cwd: String? = Bool.random(using: &rng) ? "/tmp/work" : nil
 
             var previousSpecs: [RowSpec] = []
+            var previousReturned: [TimelineChatUnit] = []
             for iteration in 0..<20 {
                 let specsForThisCall = specs
                 let items = try specs.map(makeItem)
@@ -24,6 +25,13 @@ struct TimelineChatGroupingCacheTests {
                                               profile: .generic,
                                               interactionTargets: targets,
                                               cwd: cwd)
+                // The adapter reuses what it built from the previous result,
+                // so the cache's advertised prefix must be that exact prefix.
+                if cache.reusableUnitCount > 0 {
+                    #expect(cache.reusableUnitCount <= incremental.count)
+                    #expect(Array(incremental.prefix(cache.reusableUnitCount))
+                            == Array(previousReturned.prefix(cache.reusableUnitCount)))
+                }
                 let full = TimelineChatGrouping.units(items: items,
                                                       profile: .generic,
                                                       interactionTargets: targets,
@@ -43,6 +51,7 @@ struct TimelineChatGroupingCacheTests {
                     Issue.record("DIVERGENCE round \(iteration) rows=\(items.count) targets=\(targets.sorted()) cwd=\(cwd ?? "-") previous=\(previousText) specs=\(specsText) incremental=\(incrementalText) full=\(fullText) first=\(divergence)")
                 }
                 #expect(incremental == full)
+                previousReturned = incremental
                 previousSpecs = specsForThisCall
                 mutate(&specs, targets: &targets, rng: &rng)
             }
@@ -83,9 +92,32 @@ struct TimelineChatGroupingCacheTests {
         let full = TimelineChatGrouping.units(items: grown, profile: .generic,
                                               interactionTargets: [], cwd: nil)
         #expect(incremental == full)
+        // Only the step group before the first change is carried over; the
+        // adapter may reuse its built values and must rebuild the rest.
+        #expect(cache.reusableUnitCount == 1)
         // The same input again must not drift either.
         #expect(cache.units(items: grown, profile: .generic,
                             interactionTargets: [], cwd: nil) == full)
+        #expect(cache.reusableUnitCount == full.count)
+    }
+
+    /// A rebuild (first call, changed grouping inputs, duplicates) advertises
+    /// nothing as reusable; an identical input advertises every unit.
+    @Test func reusablePrefixFollowsTheCachePath() throws {
+        var rng = SeededGenerator(seed: 11)
+        var cache = TimelineChatGroupingCache()
+        let items = try randomSpecs(count: 30, rng: &rng).map(makeItem)
+
+        let rebuilt = cache.units(items: items, profile: .generic,
+                                  interactionTargets: [], cwd: nil)
+        #expect(cache.reusableUnitCount == 0)
+        #expect(cache.units(items: items, profile: .generic,
+                            interactionTargets: [], cwd: nil) == rebuilt)
+        #expect(cache.reusableUnitCount == rebuilt.count)
+
+        // A changed profile is a rebuild, not a reused prefix.
+        _ = cache.units(items: items, profile: .claudeCode, interactionTargets: [], cwd: nil)
+        #expect(cache.reusableUnitCount == 0)
     }
 
     @Test func repeatedIdenticalInputsKeepTheUnits() throws {

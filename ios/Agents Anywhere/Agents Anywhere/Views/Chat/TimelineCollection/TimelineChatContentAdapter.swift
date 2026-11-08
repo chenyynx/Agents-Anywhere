@@ -195,6 +195,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var lastWidth: CGFloat = 0
     /// Reuses the chat profile's units across stream ticks.
     private var chatGroupingCache = TimelineChatGroupingCache()
+    /// What the last chat refresh built for each unit, aligned by index.
+    /// The grouping cache proves the leading units unchanged; their built
+    /// groups are still exact, so the refresh rebuilds only the tail — the
+    /// per-message `CodeMessageBuilder.rows` projection was the remaining
+    /// per-tick cost after incremental grouping (b1078 probe: refresh 7.1 ms,
+    /// group 2.4, signature 0.5).
+    private struct ChatUnitBuild {
+        /// The group appended for this unit, nil when the unit rendered
+        /// nothing (a missing row or a message with no blocks).
+        var group: ChatTimelineGroup? = nil
+        /// A message unit's block projection, reused verbatim.
+        var messageRows: [CodeMessageRow]? = nil
+    }
+    private var lastChatUnits: [TimelineChatUnit] = []
+    private var lastChatBuilds: [ChatUnitBuild] = []
     private var estimateCache: [String: CGFloat] = [:]
 
     // C4 renders the history prompts but leaves their pull/load state to C5;
@@ -1699,31 +1714,82 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
             var lastStepGroupID: String?
-            for unit in chatUnits {
+            // Units the cache carried over unchanged are rebuilt from last
+            // refresh's values instead of re-projecting their rows. The three
+            // arrays all come from the same cache call; the min is only a
+            // bounds guard so no future path can index past either.
+            let reusableUnits = min(chatGroupingCache.reusableUnitCount,
+                                    lastChatUnits.count,
+                                    lastChatBuilds.count,
+                                    chatUnits.count)
+            var builds: [ChatUnitBuild] = []
+            builds.reserveCapacity(chatUnits.count)
+#if AA_TIMELINE_PROBE
+            let probeBuildGroupsStart = CACurrentMediaTime()
+#endif
+            for (index, unit) in chatUnits.enumerated() {
+                if index < reusableUnits {
+                    let build = lastChatBuilds[index]
+                    switch unit {
+                    case let .stepGroup(stepGroup, _):
+                        if let group = build.group {
+                            stepGroupsByID[stepGroup.id] = stepGroup
+                            if let first = group.rows.first,
+                               first.value.orderSeq > chatLastUserOrder {
+                                lastStepGroupID = stepGroup.id
+                            }
+                            groups.append(group)
+                        }
+                    case let .message(key, _):
+                        if let rowsBuilt = build.messageRows {
+                            codeRowsByGroupID[key] = rowsBuilt
+                        }
+                        if let group = build.group { groups.append(group) }
+                    case .standalone:
+                        if let group = build.group { groups.append(group) }
+                    }
+                    builds.append(build)
+                    continue
+                }
+                var build = ChatUnitBuild()
                 switch unit {
                 case let .stepGroup(stepGroup, rowIDs):
                     let rows = rowIDs.compactMap { rowsByID[$0] }
-                    guard !rows.isEmpty else { continue }
+                    guard !rows.isEmpty else { builds.append(build); continue }
                     stepGroupsByID[stepGroup.id] = stepGroup
                     if let first = rows.first, first.value.orderSeq > chatLastUserOrder {
                         lastStepGroupID = stepGroup.id
                     }
-                    groups.append(ChatTimelineGroup(kind: .tools, rows: rows,
-                                                    explicitID: stepGroup.id))
+                    let group = ChatTimelineGroup(kind: .tools, rows: rows,
+                                                  explicitID: stepGroup.id)
+                    groups.append(group)
+                    build.group = group
                 case let .message(key, rowIDs):
                     let rows = rowIDs.compactMap { rowsByID[$0] }
-                    guard !rows.isEmpty else { continue }
+                    guard !rows.isEmpty else { builds.append(build); continue }
                     let rowsBuilt = CodeMessageBuilder.rows(for: rows.map(\.value),
                                                             profile: profile)
-                    guard !rowsBuilt.isEmpty else { continue }
+                    guard !rowsBuilt.isEmpty else { builds.append(build); continue }
                     codeRowsByGroupID[key] = rowsBuilt
-                    groups.append(ChatTimelineGroup(kind: .single, rows: rows,
-                                                    explicitID: key))
+                    let group = ChatTimelineGroup(kind: .single, rows: rows,
+                                                  explicitID: key)
+                    groups.append(group)
+                    build.group = group
+                    build.messageRows = rowsBuilt
                 case let .standalone(rowID):
-                    guard let row = rowsByID[rowID] else { continue }
-                    groups.append(ChatTimelineGroup(kind: .single, rows: [row]))
+                    guard let row = rowsByID[rowID] else { builds.append(build); continue }
+                    let group = ChatTimelineGroup(kind: .single, rows: [row])
+                    groups.append(group)
+                    build.group = group
                 }
+                builds.append(build)
             }
+            lastChatUnits = chatUnits
+            lastChatBuilds = builds
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "adapter.buildGroups", seconds: CACurrentMediaTime() - probeBuildGroupsStart)
+#endif
             // The dots stay on the trailing group for the whole live turn
             // (pp's device observation) — but only while that group is the
             // turn's last unit: once body text or anything else follows it,
@@ -1773,6 +1839,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 groups.append(group)
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeIndexStart = CACurrentMediaTime()
+#endif
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
                                                           timelineRowIDs: timelineRowIDs)
@@ -1877,6 +1946,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var itemsByID: [String: TimelineListItem] = [:]
         for item in identity.items { itemsByID[item.itemID] = item }
         self.itemsByID = itemsByID
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index", seconds: CACurrentMediaTime() - probeIndexStart)
+#endif
 
         var signatures: [TimelineListItem: TimelineContentSignature] = [:]
         var entries: [TimelineContentEntry] = []

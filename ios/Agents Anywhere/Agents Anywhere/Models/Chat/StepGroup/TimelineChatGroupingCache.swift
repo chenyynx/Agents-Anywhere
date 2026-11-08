@@ -63,6 +63,14 @@ nonisolated struct TimelineChatGroupingCache {
     /// loser of a duplicate id are absent, exactly as in the grouping pass.
     private var rowUnitIndex: [String: Int] = [:]
     private var hasInput = false
+    /// How many leading units of the last returned array were carried over
+    /// unchanged from the previous call: `unitIndex` on an incremental merge,
+    /// the whole array when the input was identical, `0` after a rebuild.
+    ///
+    /// The prefix is literally the previous array's prefix, so a caller that
+    /// built per-unit values last time may reuse them — this is what lets the
+    /// adapter skip `CodeMessageBuilder.rows` for unchanged messages.
+    private(set) var reusableUnitCount = 0
 
     mutating func units(items: [V2TimelineItem],
                         profile: CodeRuntimeProfile,
@@ -96,6 +104,7 @@ nonisolated struct TimelineChatGroupingCache {
         if firstDiff == old.count, firstDiff == fingerprints.count {
             // Same input, new array: keep the units, refresh the stored copy.
             self.rows = sorted
+            reusableUnitCount = units.count
             return self.units
         }
         // The changed row can merge into the unit before it (a new tool row
@@ -127,6 +136,7 @@ nonisolated struct TimelineChatGroupingCache {
         self.rows = sorted
         self.fingerprints = fingerprints
         self.units = merged
+        reusableUnitCount = unitIndex
         rebuildRowUnitIndex()
         return merged
     }
@@ -158,6 +168,7 @@ nonisolated struct TimelineChatGroupingCache {
         self.fingerprints = fingerprints
         self.units = rebuilt
         self.hasInput = true
+        self.reusableUnitCount = 0
         rebuildRowUnitIndex()
         return rebuilt
     }

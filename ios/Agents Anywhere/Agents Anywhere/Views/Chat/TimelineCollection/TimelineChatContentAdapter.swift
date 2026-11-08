@@ -193,6 +193,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// after it in the layout's prepare loop, so this is the column the
     /// estimate must use without threading a width through the provider.
     private var lastWidth: CGFloat = 0
+    /// Reuses the chat profile's units across stream ticks.
+    private var chatGroupingCache = TimelineChatGroupingCache()
     private var estimateCache: [String: CGFloat] = [:]
 
     // C4 renders the history prompts but leaves their pull/load state to C5;
@@ -1614,7 +1616,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if AA_TIMELINE_PROBE
             let probeGroupStart = CACurrentMediaTime()
 #endif
-            chatUnits = TimelineChatGrouping.units(
+            // Incremental: a stream tick replaces the tail, so the units
+            // before the change are reused (see TimelineChatGroupingCache).
+            chatUnits = chatGroupingCache.units(
                 items: model.timeline.rows.map(\.value),
                 profile: profile,
                 interactionTargets: interactionTargets,

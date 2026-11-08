@@ -183,7 +183,7 @@ nonisolated enum TimelineStepSummaryText {
 }
 
 /// One ordered element the chat profile's timeline renders as a top-level row.
-nonisolated enum TimelineChatUnit: Identifiable {
+nonisolated enum TimelineChatUnit: Identifiable, Equatable {
     case stepGroup(TimelineStepGroup, rowIDs: [String])
     case message(key: String, rowIDs: [String])
     case standalone(rowID: String)
@@ -193,6 +193,15 @@ nonisolated enum TimelineChatUnit: Identifiable {
         case let .stepGroup(group, _): return group.id
         case let .message(key, _): return key
         case let .standalone(rowID): return rowID
+        }
+    }
+
+    /// The wire rows this unit renders, in wire order.
+    var rowIDs: [String] {
+        switch self {
+        case let .stepGroup(_, rowIDs): return rowIDs
+        case let .message(_, rowIDs): return rowIDs
+        case let .standalone(rowID): return [rowID]
         }
     }
 }
@@ -318,7 +327,7 @@ nonisolated enum TimelineChatGrouping {
         TimelineText.first(item.raw["content"]?["parentItemId"]) != nil
     }
 
-    private static func wireOrder(_ lhs: V2TimelineItem, _ rhs: V2TimelineItem) -> Bool {
+    static func wireOrder(_ lhs: V2TimelineItem, _ rhs: V2TimelineItem) -> Bool {
         lhs.orderSeq == rhs.orderSeq ? lhs.id < rhs.id : lhs.orderSeq < rhs.orderSeq
     }
 }

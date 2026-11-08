@@ -1291,7 +1291,6 @@ class TimelineRepositoryMixin:
         row changed.
         """
 
-        now = utc_now()
         closed: list[TimelineItem] = []
         async with self._timeline_lock(session_id), self._engine.begin() as conn:
             session_row = (
@@ -1362,7 +1361,6 @@ class TimelineRepositoryMixin:
                 session_id=session_id,
                 doomed=doomed,
                 closed_by_evidence=closed_by_evidence,
-                now=now,
             )
         if closed:
             logger.info(
@@ -1379,7 +1377,6 @@ class TimelineRepositoryMixin:
         session_id: str,
         doomed: list[TimelineItem],
         closed_by_evidence: str,
-        now: datetime,
     ) -> list[TimelineItem]:
         """Rewrite already-vetted ``running`` tool rows to ``interrupted``.
 
@@ -1416,7 +1413,12 @@ class TimelineRepositoryMixin:
                         ),
                         "revision": existing.revision + 1,
                         "updatedSeq": first_seq + index,
-                        "updatedAt": now,
+                        # The row keeps its own time. A maintenance closure is
+                        # not activity: stamping ``now`` moved ``item_time``
+                        # forward and pulled a settled session to the top of
+                        # the sidebar on every janitor tick (2026-11-09). The
+                        # status change still reaches clients through
+                        # ``updated_seq``.
                     }
                 )
             )
@@ -1452,7 +1454,6 @@ class TimelineRepositoryMixin:
         ``touch_updated_at=False`` and ``mark_read=False``.
         """
 
-        now = utc_now()
         closed: list[TimelineItem] = []
         async with self._timeline_lock(session_id), self._engine.begin() as conn:
             session_row = (
@@ -1499,7 +1500,6 @@ class TimelineRepositoryMixin:
                 session_id=session_id,
                 doomed=doomed,
                 closed_by_evidence=closed_by_evidence,
-                now=now,
             )
         if closed:
             logger.info(
@@ -1729,6 +1729,13 @@ class TimelineRepositoryMixin:
                         existing=existing,
                         order_seq=order_seq,
                         revision=next_timeline_item_revision(item, existing),
+                        # A rewrite that declares no time keeps the row's stored
+                        # time. Live streaming updates keep their first-write
+                        # (message) time; maintenance writers that rewrite an
+                        # old row must not move it to the top of the sidebar.
+                        fallback_updated_at=(
+                            existing.updatedAt if existing is not None else None
+                        ),
                     )
                     await self.timeline.upsert_one(conn, result)
         return TimelineItemWriteResult(

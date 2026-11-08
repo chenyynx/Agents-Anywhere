@@ -163,6 +163,30 @@ async def test_closes_age_bounded_running_tool_row(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_closure_keeps_the_rows_own_item_time(tmp_path) -> None:
+    """A maintenance closure must not move an old row (or its session) forward.
+
+    ``item_time`` is ``max(createdAt, completedAt, updatedAt)`` and the sidebar
+    sorts by it. Stamping ``updatedAt = now`` on a janitor closure pulled a
+    settled session to the top of the list on every tick (2026-11-09).
+    """
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        row = tool_row("tool_old", session_id=session.id, order_seq=1, age_hours=50)
+        await store.sync_timeline_items(session_id=session.id, items=[row])
+        await _age_session(store, session.id, updated_at_hours=50)
+
+        assert await _janitor(store).run_once() == ["tool_old"]
+        (item,) = await store.timeline.read_many(session.id, {"tool_old"})
+        assert item.status == "interrupted"
+        assert item.createdAt == row.createdAt
+        assert item.updatedAt == row.updatedAt
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
 async def test_leaves_row_inside_the_age_bound(tmp_path) -> None:
     store, session = await _store_with_session(tmp_path)
     try:

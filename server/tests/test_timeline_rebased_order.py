@@ -331,3 +331,69 @@ def test_rebased_rewrite_without_timestamps_keeps_the_stored_item_time(
     after = _ordered_items(client, session_id, headers)[0]
     assert after["createdAt"] == "2026-11-01T10:00:00Z"
     assert after["updatedAt"] == "2026-11-01T10:00:00Z"
+
+
+def _post_upsert(
+    client: Any,
+    access_token: str,
+    session_id: str,
+    item: dict[str, Any],
+) -> None:
+    response = client.post(
+        "/connector/ingest",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "notifications": [
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "runtime": "claude",
+                        "item": item,
+                    },
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_single_upsert_rewrite_without_timestamps_keeps_the_stored_item_time(
+    tmp_path,
+) -> None:
+    """The live/maintenance single-item path follows the same rule.
+
+    A card sweep or janitor rewrites an old row through ``timeline.itemUpsert``
+    without declaring a time; stamping ``updatedAt = now`` there moved the row
+    (and its session) to the top of the sidebar.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message(
+                "msg_a",
+                session_id=session_id,
+                order_seq=1,
+                text="a",
+                created_at="2026-11-01T10:00:00Z",
+            )
+        ],
+    )
+    _post_upsert(
+        client,
+        access_token,
+        session_id,
+        _message("msg_a", session_id=session_id, order_seq=1, text="a v2"),
+    )
+
+    after = _ordered_items(client, session_id, headers)[0]
+    assert after["createdAt"] == "2026-11-01T10:00:00Z"
+    assert after["updatedAt"] == "2026-11-01T10:00:00Z"

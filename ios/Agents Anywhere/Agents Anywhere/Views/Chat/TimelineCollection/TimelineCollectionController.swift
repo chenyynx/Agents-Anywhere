@@ -1023,7 +1023,15 @@ final class TimelineCollectionController: UIViewController {
                                      applyingHistoryPage: Bool,
                                      windowReplaced: Bool,
                                      resolveWindowBottom: Bool) -> Bool {
-        guard let content else { return false }
+        guard let content, let dataSource else { return false }
+        // `reconfigureItems` is only valid against the snapshot the collection
+        // view is currently showing. `currentItems` can be ahead of it (a
+        // provider swap, or the first apply after configure), and a diffable
+        // update can still be uncommitted; both raise NSInternalInconsistency
+        // (b1067 crash: reconfigureItemsAtIndexPaths from configure →
+        // reloadFromContent → apply).
+        guard dataSource.snapshot().itemIdentifiers == items,
+              !collectionView.hasUncommittedUpdates else { return false }
         guard !applyingHistoryPage, !windowReplaced, !resolveWindowBottom,
               items == oldItems else { return false }
         for item in reconfigure {

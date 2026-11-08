@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import asyncer
 
@@ -47,6 +48,13 @@ from connector.runtimes.claude.sessions.sync_state import (
     ClaudeSessionSyncStateStore,
 )
 
+# The first sync of a session in a process reads the SDK's full transcript
+# (parsed in a worker thread). A normal session is well under a second; the cap
+# bounds a pathologically large file so the pre-turn gate can never hold a
+# user's message indefinitely. A timed-out attempt publishes nothing and marks
+# nothing, so the turn-end sync retries the same rebase later.
+FIRST_SYNC_TIMEOUT_SECONDS = 15.0
+
 
 @dataclass(slots=True)
 class ClaudeHistorySyncer:
@@ -61,6 +69,56 @@ class ClaudeHistorySyncer:
     #: Tasks the live transport vouches for, per session (F2). See
     #: ``ClaudeSessionReader.live_task_ids``.
     live_task_ids: Callable[[ClaudeSession], frozenset[str]] | None = None
+    #: Sessions this process has synced at least once. The first sync of a
+    #: session in a process is always a full-chain rebase (see
+    #: ``prepare_session_timeline_sync``), so a row the Server never received —
+    #: a stuck turn's tail, a crash mid-turn — is backfilled *before* this
+    #: process publishes a live row, while the Server still has nothing newer
+    #: to append it after. Membership also answers "may the pre-turn gate skip
+    #: the sync?".
+    synced_sessions: set[str] = field(default_factory=set)
+
+    def has_synced(self, external_session_id: str | None) -> bool:
+        """Whether this process already ran a history sync for the session."""
+
+        return (
+            external_session_id is not None
+            and external_session_id in self.synced_sessions
+        )
+
+    async def ensure_first_sync(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        *,
+        timeout: float | None = FIRST_SYNC_TIMEOUT_SECONDS,
+    ) -> None:
+        """Run the one full-chain sync this process owes the session, if due.
+
+        Called on the path that is about to publish the session's first live
+        row in this process (a user turn, a scheduled wake turn). The pass is a
+        rebase by construction, so any hole a previous process left behind is
+        backfilled before the Server has a newer row to append it after.
+
+        Best-effort by contract: a failure or timeout is logged and swallowed —
+        the live path must never be blocked by history upkeep, and the turn-end
+        sync retries the same pass.
+        """
+
+        if external_session_id is None or self.has_synced(external_session_id):
+            return
+        try:
+            await asyncio.wait_for(
+                self.sync_session_timeline(session_id, external_session_id),
+                timeout=timeout,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude first history sync failed session_id={} "
+                "external_session_id={}",
+                session_id,
+                external_session_id,
+            )
 
     async def sync_session_timeline(
         self,
@@ -141,7 +199,17 @@ class ClaudeHistorySyncer:
 
         cursor = cursor_for(info, messages)
         previous_cursor = await self.cursor_store.read(external_session_id)
-        if previous_cursor == cursor:
+        # The first sync of a session in this process is a full-chain rebase
+        # even when the stored cursor still matches. A cursor only proves where
+        # a previous process stopped reading, not that the Server received
+        # every row before it: a stuck turn or a crash mid-turn leaves a hole
+        # behind a perfectly valid cursor, and the Server can only *append* a
+        # hole it learns about later (2026-11-09 incident). The rebase is what
+        # lets the Server place those rows by chain order instead.
+        forced_rebase = external_session_id not in self.synced_sessions
+        if forced_rebase:
+            previous_cursor = None
+        elif previous_cursor == cursor:
             return PreparedSessionTimelineSync(
                 snapshot=None,
                 commit=self.session_sync_commit(pending_session_sync),
@@ -271,6 +339,9 @@ class ClaudeHistorySyncer:
             if pending_session_sync is not None:
                 await self.sync_states.commit(pending_session_sync)
             self.session_store.mark_synced(session_id, external_session_id)
+            # Only a published pass counts as this process's sync: a failed
+            # history read must leave the next attempt a rebase.
+            self.synced_sessions.add(external_session_id)
 
         return PreparedSessionTimelineSync(snapshot=snapshot, commit=commit)
 

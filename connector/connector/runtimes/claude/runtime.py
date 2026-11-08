@@ -433,6 +433,7 @@ class ClaudeRuntime(AgentRuntime):
         client_message_id: str | None = None,
         cwd: str | None = None,
     ) -> RuntimeOperationResult:
+        await self._ensure_first_history_sync(session_id, external_session_id)
         return await self._turns.start_turn(
             session_id=session_id,
             external_session_id=external_session_id,
@@ -441,6 +442,30 @@ class ClaudeRuntime(AgentRuntime):
             attachments=attachments,
             client_message_id=client_message_id,
             cwd=cwd,
+        )
+
+    async def _ensure_first_history_sync(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+    ) -> None:
+        """Backfill a session's history before its first live turn here.
+
+        The process that publishes the first live row after a restart has no
+        idea what the Server is missing: a stuck turn, an interrupted publish
+        or a crash mid-turn leaves a hole behind a perfectly valid history
+        cursor. Publishing the new turn first would make that hole older than
+        every new row, and the Server's merge can only append — the visible
+        symptom is old steps rendered after the newest message (2026-11-09).
+
+        The syncer owns the rule (first pass per process = full-chain rebase)
+        and the best-effort contract; this is only the turn path's entry point.
+        The scheduled wake-turn path uses the same call (``ClaudeTurnRunner``).
+        """
+
+        await self._history_syncer.ensure_first_sync(
+            session_id,
+            external_session_id,
         )
 
     async def list_commands(

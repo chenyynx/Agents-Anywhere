@@ -1,0 +1,162 @@
+"""The first history sync of a session in a process is a full-chain rebase.
+
+The Server can only append a row it learns about after newer rows exist, so a
+hole left behind by a previous process — a stuck turn, a crash mid-turn — must
+be backfilled *before* this process publishes a live row. The pre-turn gate
+does that by forcing one history sync, and this syncer makes that first pass a
+rebase regardless of the stored cursor: a matching cursor proves where the
+previous process stopped reading, not that the Server received every row.
+
+These tests pin the classification (first pass rebases, later passes go back to
+incremental) and the pre-turn gate (one sync per session per process).
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from test_claude_history_compact import _CompactHistorySdk, _SyncStateHost, _syncer
+from test_claude_task_notification_fold import (
+    EXTERNAL_SESSION_ID,
+    SESSION_ID,
+    _assistant_message,
+    _user_message,
+)
+
+from connector.runtimes.claude.runtime import ClaudeRuntime
+
+
+def _messages() -> list[object]:
+    return [
+        _user_message("first-user", "在？"),
+        _assistant_message("first-assistant", "在。"),
+        _user_message("second-user", "继续"),
+        _assistant_message("second-assistant", "好。"),
+    ]
+
+
+def test_first_sync_rebases_and_the_next_pass_is_incremental() -> None:
+    host = _SyncStateHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    first = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert first is not None
+    assert first.snapshot is not None
+    assert first.snapshot.metadata["rebased"] is True
+    assert len(first.snapshot.items) >= 4
+    asyncio.run(first.commit())
+
+    # Nothing changed on disk: the second pass has nothing to publish and must
+    # not rebase again (the process has synced this session).
+    second = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert second is not None
+    assert second.snapshot is None
+
+
+def test_a_restarted_process_rebases_even_with_a_matching_cursor() -> None:
+    host = _SyncStateHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+    prepared = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert prepared is not None and prepared.snapshot is not None
+    asyncio.run(prepared.commit())
+
+    # A new syncer is a new process: the durable cursor matches the transcript,
+    # but the Server may still be missing rows the old process never published.
+    restarted = _syncer(host=host, sdk=sdk)
+    again = asyncio.run(
+        restarted.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert again is not None
+    assert again.snapshot is not None
+    assert again.snapshot.metadata["rebased"] is True
+
+
+def test_a_failed_pass_does_not_mark_the_session_synced() -> None:
+    host = _SyncStateHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    # Prepared but never published: the next attempt must still be a rebase.
+    assert syncer.has_synced(EXTERNAL_SESSION_ID) is False
+    retry = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert retry is not None and retry.snapshot is not None
+    assert retry.snapshot.metadata["rebased"] is True
+
+
+class _RecordingSyncHost(_SyncStateHost):
+    """A host that records published timeline snapshots."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeline_syncs: list[dict[str, object]] = []
+        self.timeline_sync_attempts = 0
+
+    async def timeline_sync(self, **params: object) -> None:
+        self.timeline_sync_attempts += 1
+        self.timeline_syncs.append(params)
+
+
+def test_ensure_first_sync_publishes_once_per_process() -> None:
+    host = _RecordingSyncHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    asyncio.run(syncer.ensure_first_sync(SESSION_ID, EXTERNAL_SESSION_ID))
+    assert syncer.has_synced(EXTERNAL_SESSION_ID) is True
+    assert len(host.timeline_syncs) == 1
+    assert host.timeline_syncs[0]["metadata"]["rebased"] is True
+
+    asyncio.run(syncer.ensure_first_sync(SESSION_ID, EXTERNAL_SESSION_ID))
+    assert len(host.timeline_syncs) == 1
+
+
+def test_ensure_first_sync_retries_after_a_failed_publish() -> None:
+    class _FailingHost(_SyncStateHost):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        async def timeline_sync(self, **params: object) -> None:
+            self.attempts += 1
+            raise RuntimeError("host down")
+
+    host = _FailingHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    asyncio.run(syncer.ensure_first_sync(SESSION_ID, EXTERNAL_SESSION_ID))
+    assert syncer.has_synced(EXTERNAL_SESSION_ID) is False
+    asyncio.run(syncer.ensure_first_sync(SESSION_ID, EXTERNAL_SESSION_ID))
+    assert host.attempts == 2
+
+
+def test_the_turn_path_delegates_to_the_syncer_gate() -> None:
+    class _FakeSyncer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str | None]] = []
+
+        async def ensure_first_sync(
+            self, session_id: str, external_session_id: str | None
+        ) -> None:
+            self.calls.append((session_id, external_session_id))
+
+    runtime = object.__new__(ClaudeRuntime)
+    fake = _FakeSyncer()
+    runtime._history_syncer = fake  # type: ignore[attr-defined]
+
+    asyncio.run(runtime._ensure_first_history_sync(SESSION_ID, EXTERNAL_SESSION_ID))
+
+    assert fake.calls == [(SESSION_ID, EXTERNAL_SESSION_ID)]

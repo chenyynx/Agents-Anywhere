@@ -543,18 +543,11 @@ def test_claude_runtime_binds_replayed_uuid_when_not_adopted() -> None:
 async def _test_claude_runtime_binds_replayed_uuid_when_not_adopted() -> None:
     host = _RecordingHost()
     external_session_id = "claude_not_adopted"
-    sdk = _HistorySdk(
-        messages={
-            external_session_id: [
-                SimpleNamespace(
-                    type="user",
-                    uuid="cli_replayed_uuid",
-                    session_id=external_session_id,
-                    message={"role": "user", "content": "hello replay"},
-                )
-            ]
-        }
-    )
+    # The runtime syncs a session's history *before* its first turn, so the
+    # transcript starts empty here: the CLI writes the replayed user row while
+    # the turn runs (below). The pending-message binding is what later
+    # converges that row's uuid onto the live item id.
+    sdk = _HistorySdk(messages={})
     client = _FakeClaudeClient(
         messages=[
             UserMessage(content="hello replay", uuid="cli_replayed_uuid"),
@@ -573,6 +566,16 @@ async def _test_claude_runtime_binds_replayed_uuid_when_not_adopted() -> None:
     assert result.ok is True
     assert task is not None
     await task
+    sdk.messages = {
+        external_session_id: [
+            SimpleNamespace(
+                type="user",
+                uuid="cli_replayed_uuid",
+                session_id=external_session_id,
+                message={"role": "user", "content": "hello replay"},
+            )
+        ]
+    }
 
     live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
     assert len(live_users) == 1
@@ -605,18 +608,9 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
         content=b"bridge attachment",
     )
     external_session_id = "claude_bridged"
-    sdk = _HistorySdk(
-        messages={
-            external_session_id: [
-                SimpleNamespace(
-                    type="user",
-                    uuid="cli_bridged_uuid",
-                    session_id=external_session_id,
-                    message={"role": "user", "content": "hello bridge"},
-                )
-            ]
-        }
-    )
+    # Same timing as the replay test above: the pre-turn history sync runs
+    # before the transcript contains this turn's user row.
+    sdk = _HistorySdk(messages={})
     client = _FakeClaudeClient(
         messages=[
             UserMessage(content="hello bridge", uuid="cli_bridged_uuid"),
@@ -642,6 +636,16 @@ async def _test_claude_runtime_bridges_replayed_uuid_without_client_message_id()
     assert result.ok is True
     assert task is not None
     await task
+    sdk.messages = {
+        external_session_id: [
+            SimpleNamespace(
+                type="user",
+                uuid="cli_bridged_uuid",
+                session_id=external_session_id,
+                message={"role": "user", "content": "hello bridge"},
+            )
+        ]
+    }
 
     live_users = [item for item in host.timeline_item_upserts if item.role == "user"]
     assert len(live_users) == 1

@@ -76,7 +76,12 @@ enum AssistantMarkdownMaskRenderer {
         return layer
     }
 
-    static func makeMaskContainer(for textView: AssistantMarkdownBlockTextView) -> CALayer {
+    /// Any view can own a mask: the container only takes its bounds. The
+    /// mask spike drives a plain `UITextView(usingTextLayoutManager:)`, and
+    /// the narrower type kept that DEBUG-only file from compiling, which took
+    /// down every simulator gate that builds Debug (`code-profile`,
+    /// `timeline-autorun`).
+    static func makeMaskContainer(for textView: UIView) -> CALayer {
         let mask = CALayer()
         mask.frame = textView.bounds
         return mask

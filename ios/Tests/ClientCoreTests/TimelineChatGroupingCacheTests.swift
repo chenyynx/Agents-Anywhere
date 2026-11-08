@@ -16,7 +16,9 @@ struct TimelineChatGroupingCacheTests {
             var targets: Set<String> = []
             var cwd: String? = Bool.random(using: &rng) ? "/tmp/work" : nil
 
+            var previousSpecs: [RowSpec] = []
             for iteration in 0..<20 {
+                let specsForThisCall = specs
                 let items = try specs.map(makeItem)
                 let incremental = cache.units(items: items,
                                               profile: .generic,
@@ -30,11 +32,15 @@ struct TimelineChatGroupingCacheTests {
                     let specsText = specs.map {
                         "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.revision)"
                     }.joined(separator: ";")
+                    let previousText = previousSpecs.map {
+                        "\($0.id)|\($0.order)|\(String(describing: $0.kind))|\($0.turn ?? "-")|\($0.status)|\($0.nativeMessageID ?? "-")|\($0.parentItemID ?? "-")|\($0.revision)"
+                    }.joined(separator: ";")
                     let incrementalText = incremental.map(describe).joined(separator: " || ")
                     let fullText = full.map(describe).joined(separator: " || ")
-                    Issue.record("DIVERGENCE round \(iteration) rows=\(items.count) targets=\(targets.sorted()) cwd=\(cwd ?? "-") specs=\(specsText) incremental=\(incrementalText) full=\(fullText) first=\(divergence)")
+                    Issue.record("DIVERGENCE round \(iteration) rows=\(items.count) targets=\(targets.sorted()) cwd=\(cwd ?? "-") previous=\(previousText) specs=\(specsText) incremental=\(incrementalText) full=\(fullText) first=\(divergence)")
                 }
                 #expect(incremental == full)
+                previousSpecs = specsForThisCall
                 mutate(&specs, targets: &targets, rng: &rng)
             }
         }

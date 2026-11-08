@@ -718,6 +718,8 @@ final class TimelineCollectionController: UIViewController {
             && insertionProjection == nil
 #if AA_TIMELINE_PROBE
         let probeEntriesStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.noteStage(
+            "apply.prep", seconds: probeEntriesStart - probeApplyStart)
 #endif
         let entries: [TimelineContentEntry] = items.map { item in
             TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
@@ -810,6 +812,7 @@ final class TimelineCollectionController: UIViewController {
         TimelineProbeStore.shared.noteStage(
             "apply.measure", seconds: CACurrentMediaTime() - probeMeasureStart)
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
+        let probePostMeasureStart = CACurrentMediaTime()
         TimelineProbeStore.shared.noteHistory(
             "apply-measure skipped=\(applyingHistoryPage ? 1 : 0) n=\(toMeasure.count) "
             + "ms=\(Int(((CACurrentMediaTime() - probeMeasureStart) * 1000).rounded()))")
@@ -850,6 +853,8 @@ final class TimelineCollectionController: UIViewController {
 
 #if AA_TIMELINE_PROBE
         let probeSnapshotStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.noteStage(
+            "apply.postMeasure", seconds: probeSnapshotStart - probePostMeasureStart)
 #endif
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
@@ -863,11 +868,21 @@ final class TimelineCollectionController: UIViewController {
         for item in existingChanges where changed.contains(item) {
             if let height = beforeHeights[item.itemID] { staleFits[item.itemID] = height }
         }
+#if AA_TIMELINE_PROBE
+        var probeApplyReturnedAt: CFTimeInterval = 0
+#endif
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
+            // The completion can run after UIKit commits and lays the snapshot
+            // out; this separates that wait from the synchronous apply.
+            if probeApplyReturnedAt > 0 {
+                TimelineProbeStore.shared.noteStage(
+                    "apply.commitWait",
+                    seconds: CACurrentMediaTime() - probeApplyReturnedAt)
+            }
 #endif
             self.isPerformingSnapshot = false
 #if AA_TIMELINE_PROBE
@@ -949,8 +964,9 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
         // Only the synchronous part of `dataSource.apply` is measured here;
         // the completion above runs after UIKit commits the snapshot.
+        probeApplyReturnedAt = CACurrentMediaTime()
         TimelineProbeStore.shared.noteStage(
-            "apply.snapshot", seconds: CACurrentMediaTime() - probeSnapshotStart)
+            "apply.snapshot", seconds: probeApplyReturnedAt - probeSnapshotStart)
 #endif
     }
 

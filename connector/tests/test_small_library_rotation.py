@@ -171,13 +171,22 @@ def test_the_seam_zero_ladder_reaches_the_sessions_page_one_displaced(
     store = runtime._session_reader.session_store
     for index in range(100):
         store.ensure(
-            f"local_only_{index:03d}", cwd="/repo", title=f"Local {index}"
+            f"local_only_{index:03d}",
+            cwd="/repo",
+            title=f"Local {index}",
+            # Displacement requires a real sort time; the store no longer
+            # invents one for adopted entries.
+            ordering_time="2026-11-09T00:00:00Z",
         )
     store.ensure(
         "local_dup_00",
         external_session_id="claude_small_000",
         cwd="/repo",
         title="Dup 000",
+        # The displaced library row must survive on page 1 under its local
+        # identity; give it the newest time (ties would sort it below the 100
+        # locals and the sweep would never activate).
+        ordering_time="2026-11-10T00:00:00Z",
     )
     runner, notifications = _runner(runtime, host)
     _no_catalogs(monkeypatch, runner)
@@ -244,7 +253,10 @@ def test_the_reader_does_not_report_coverage_one_displaced_row_was_left_behind()
     store = runtime._session_reader.session_store
     for index in range(10):
         store.ensure(
-            f"local_only_{index:03d}", cwd="/repo", title=f"Local {index}"
+            f"local_only_{index:03d}",
+            cwd="/repo",
+            title=f"Local {index}",
+            ordering_time="2026-11-09T00:00:00Z",
         )
 
     page = asyncio.run(runtime.list_sessions(limit=100))

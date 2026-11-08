@@ -195,7 +195,12 @@ struct TimelineChatGroupingCacheTests {
                   let first = specs.indices.randomElement(using: &rng),
                   let second = specs.indices.randomElement(using: &rng),
                   first != second else { return }
-            swap(&specs[first].order, &specs[second].order)
+            // Copy through locals: two inout accesses into the same array
+            // trip the exclusivity checker.
+            let firstOrder = specs[first].order
+            let secondOrder = specs[second].order
+            specs[first].order = secondOrder
+            specs[second].order = firstOrder
         default:
             guard let spec = specs.randomElement(using: &rng) else { return }
             if targets.contains(spec.id) {

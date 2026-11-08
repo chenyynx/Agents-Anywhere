@@ -920,7 +920,17 @@ class TimelineRepositoryMixin:
             order_changed: set[str] = set()
             moved_existing_ids: list[str] = []
             if reorder_from_batch:
-                stored_order = await self.timeline.order_entries(session_id)
+                # Doomed twins take no part in the plan: they are deleted in
+                # this same transaction, and a moved row is rewritten from its
+                # stored payload — renumbering a twin would resurrect it right
+                # after the delete.
+                stored_order = {
+                    item_id: order_seq
+                    for item_id, order_seq in (
+                        await self.timeline.order_entries(session_id)
+                    ).items()
+                    if item_id not in converged_deletions
+                }
                 reorder = chain_reorder_plan(
                     stored_order=list(stored_order.items()),
                     batch_ids=list(incoming_by_id),

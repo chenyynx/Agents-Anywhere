@@ -1046,6 +1046,14 @@ class TimelineRepositoryMixin:
                         existing=existing,
                         order_seq=order_seq,
                         revision=next_timeline_item_revision(item, existing),
+                        # Sync batches are history rebuilds: a rewrite that
+                        # declares no time keeps the stored one instead of
+                        # jumping to now (which would move the session to the
+                        # top of the sidebar). The live single-item path above
+                        # still advances its time on every write.
+                        fallback_updated_at=(
+                            existing.updatedAt if existing is not None else None
+                        ),
                     )
                     changed_items.append(normalized)
                 # Uncovered rows a chain rebuild pushes forward keep their

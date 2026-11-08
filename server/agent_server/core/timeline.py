@@ -185,6 +185,7 @@ def timeline_item_from_runtime_input(
     existing: TimelineItem | None = None,
     order_seq: int | None = None,
     revision: int | None = None,
+    fallback_updated_at: str | None = None,
 ) -> TimelineItem:
     # ``dict(item)`` is a shallow field copy, so the (potentially large)
     # ``content`` payload is carried by reference.  ``model_dump()`` deep-copies
@@ -200,9 +201,14 @@ def timeline_item_from_runtime_input(
     # A history rebuild carries the source ``createdAt`` but no ``updatedAt``.
     # Stamping ``now`` would rewrite an old row's time, and ``item_time`` is
     # derived from these fields, so the session would jump to the top of the
-    # dashboard. The source creation time is the truthful fallback; only a row
-    # with neither timestamp is genuinely "now".
-    data["updatedAt"] = item.updatedAt or item.createdAt or now
+    # dashboard. The source creation time is the truthful fallback; then the
+    # row's own stored time — a history rewrite that carries nothing must not
+    # move an old row forward (2026-11-09: every connector restart re-projects
+    # agent cards, rewrote them, and scrambled the sidebar); only a row with
+    # neither timestamp is genuinely "now".
+    data["updatedAt"] = (
+        item.updatedAt or item.createdAt or fallback_updated_at or now
+    )
     return TimelineItem.model_validate(data)
 
 
@@ -246,6 +252,9 @@ def timeline_item_from_snapshot(
         now=now,
         existing=existing,
         revision=next_timeline_item_revision(item, existing),
+        # A complete rebuild that rewrites a row without declaring a time must
+        # keep the stored time too, for the same reason as the sync path.
+        fallback_updated_at=(existing.updatedAt if existing is not None else None),
     )
 
 

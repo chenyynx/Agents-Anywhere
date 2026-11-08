@@ -160,3 +160,44 @@ def test_the_turn_path_delegates_to_the_syncer_gate() -> None:
     asyncio.run(runtime._ensure_first_history_sync(SESSION_ID, EXTERNAL_SESSION_ID))
 
     assert fake.calls == [(SESSION_ID, EXTERNAL_SESSION_ID)]
+
+
+def test_snapshot_carries_the_rebuild_ordering_time() -> None:
+    host = _RecordingSyncHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    prepared = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert prepared is not None and prepared.snapshot is not None
+    ordering_time = prepared.snapshot.metadata["orderingTime"]
+    assert isinstance(ordering_time, str) and ordering_time
+
+
+def test_publish_falls_back_to_the_snapshot_ordering_time() -> None:
+    from connector.runtime_protocol import RuntimeTimelineItem, RuntimeTimelineSnapshot
+    from connector.server.runtime_sync import _timeline_sync_notification
+
+    item = RuntimeTimelineItem(
+        id="claude_tool_x",
+        session_id=SESSION_ID,
+        type="tool",
+        status="done",
+        order_seq=1,
+        content_hash="sha256:x",
+    )
+    snapshot = RuntimeTimelineSnapshot(
+        session_id=SESSION_ID,
+        runtime="claude",
+        external_session_id=EXTERNAL_SESSION_ID,
+        items=(item,),
+        metadata={"orderingTime": "2026-11-05T05:30:52.874000Z"},
+    )
+
+    # The discovered session carried no ordering time; the snapshot's own
+    # value must fill the backfilled row's timestamps, not "now".
+    notification = _timeline_sync_notification(snapshot, fallback_item_time=None)
+    payload = notification["params"]["items"][0]
+    assert payload["createdAt"] == "2026-11-05T05:30:52.874000Z"
+    assert payload["updatedAt"] == "2026-11-05T05:30:52.874000Z"

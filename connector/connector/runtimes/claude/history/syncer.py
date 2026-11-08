@@ -328,6 +328,11 @@ class ClaudeHistorySyncer:
                 "messageCount": len(messages),
                 "syncedMessageCount": len(sync_messages),
                 "rebased": rebased,
+                # The rebuild's own ordering time (the transcript's last
+                # modification). The publisher prefers the discovered
+                # session's value and falls back to this, so a backfilled old
+                # row always carries a real time instead of ``now``.
+                "orderingTime": session.ordering_time,
                 "sdk": _sdk_session_metadata(info),
             },
         )

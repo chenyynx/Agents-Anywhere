@@ -1885,6 +1885,14 @@ def _timeline_sync_notification(
     snapshot: RuntimeTimelineSnapshot,
     fallback_item_time: str | None = None,
 ) -> dict[str, Any]:
+    if fallback_item_time is None:
+        # A session discovered through the runtime's list can arrive without
+        # ``orderingTime``; the history snapshot carries the session's own
+        # value, so a backfilled old row still gets its real time instead of
+        # ``now`` (which would push the session to the top of the sidebar).
+        ordering_time = snapshot.metadata.get("orderingTime")
+        if isinstance(ordering_time, str) and ordering_time:
+            fallback_item_time = ordering_time
     server_items = tuple(
         item for item in snapshot.items if item.type not in {"turn.start", "turn.end"}
     )

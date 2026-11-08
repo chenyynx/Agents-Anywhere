@@ -775,9 +775,14 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
         let probeHeightKeyStart = CACurrentMediaTime()
 #endif
+        // The key each changed row had before this apply; the content-only
+        // fast path compares the resolved height under both keys.
+        var oldHeightKeys: [String: TimelineHeightKey] = [:]
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
-            if layout.heights.currentKey(for: item.itemID) != key {
+            let previousKey = layout.heights.currentKey(for: item.itemID)
+            if previousKey != key {
+                if let previousKey { oldHeightKeys[item.itemID] = previousKey }
                 // Install the key before the snapshot applies. A hosted cell
                 // can report its new content height during the update, and
                 // that report must land on the key this apply established,
@@ -856,11 +861,7 @@ final class TimelineCollectionController: UIViewController {
         TimelineProbeStore.shared.noteStage(
             "apply.postMeasure", seconds: probeSnapshotStart - probePostMeasureStart)
 #endif
-        var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
-        snapshot.appendSections([.main])
-        snapshot.appendItems(items)
         let existingChanges = items.filter { oldIDs.contains($0) && reconfigure.contains($0) }
-        if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
         // The height a row displayed under the content this apply replaces. A
         // cell fit equal to it is the previous content, not the new height:
         // the hosting body updates on a later layout pass.
@@ -871,8 +872,9 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
         var probeApplyReturnedAt: CFTimeInterval = 0
 #endif
-        currentItems = items
-        dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
+        // Completion work, shared by the diffable apply and the content-only
+        // fast path below.
+        let finishApply: () -> Void = { [weak self] in
             guard let self else { return }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
@@ -961,6 +963,45 @@ final class TimelineCollectionController: UIViewController {
             }
             self.performPendingSnapshotUpdate()
         }
+
+        currentItems = items
+        if isContentOnlyUpdate(items: items, oldItems: oldItems,
+                               reconfigure: reconfigure,
+                               oldHeightKeys: oldHeightKeys,
+                               applyingHistoryPage: applyingHistoryPage,
+                               windowReplaced: windowReplaced,
+                               resolveWindowBottom: resolveWindowBottom) {
+#if AA_TIMELINE_PROBE
+            let probeReconfigureStart = CACurrentMediaTime()
+#endif
+            // Same identities and same resolved heights: re-render only the
+            // changed rows that are on screen. Every other row reads the new
+            // content from the provider when it next configures.
+            let visibleChanges = collectionView.indexPathsForVisibleItems.filter { indexPath in
+                indexPath.section == 0
+                    && items.indices.contains(indexPath.item)
+                    && reconfigure.contains(items[indexPath.item])
+            }
+            if !visibleChanges.isEmpty {
+                collectionView.reconfigureItems(at: visibleChanges)
+            }
+#if AA_TIMELINE_PROBE
+            probeApplyReturnedAt = CACurrentMediaTime()
+            TimelineProbeStore.shared.noteStage(
+                "apply.reconfigureOnly",
+                seconds: probeApplyReturnedAt - probeReconfigureStart)
+#endif
+            finishApply()
+            return
+        }
+
+        var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
+        snapshot.appendSections([.main])
+        snapshot.appendItems(items)
+        if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        dataSource.apply(snapshot, animatingDifferences: animating) {
+            finishApply()
+        }
 #if AA_TIMELINE_PROBE
         // Only the synchronous part of `dataSource.apply` is measured here;
         // the completion above runs after UIKit commits the snapshot.
@@ -968,6 +1009,36 @@ final class TimelineCollectionController: UIViewController {
         TimelineProbeStore.shared.noteStage(
             "apply.snapshot", seconds: probeApplyReturnedAt - probeSnapshotStart)
 #endif
+    }
+
+    /// A pure content update keeps every item identity and every resolved
+    /// height, so a diffable snapshot apply would only re-commit the same
+    /// rows: on device it paid UIKit's commit/layout wait (8.7 ms) plus the
+    /// snapshot diff (3.3 ms) while our own stages cost ~1 ms (probe
+    /// 2026-11-08). The changed visible cells re-render in place instead.
+    private func isContentOnlyUpdate(items: [TimelineListItem],
+                                     oldItems: [TimelineListItem],
+                                     reconfigure: Set<TimelineListItem>,
+                                     oldHeightKeys: [String: TimelineHeightKey],
+                                     applyingHistoryPage: Bool,
+                                     windowReplaced: Bool,
+                                     resolveWindowBottom: Bool) -> Bool {
+        guard let content else { return false }
+        guard !applyingHistoryPage, !windowReplaced, !resolveWindowBottom,
+              items == oldItems else { return false }
+        for item in reconfigure {
+            guard let oldKey = oldHeightKeys[item.itemID],
+                  let newKey = layout.heights.currentKey(for: item.itemID) else {
+                return false
+            }
+            let fallback = content.estimateKind(for: item)
+            let oldHeight = layout.heights.resolvedHeight(
+                for: oldKey, itemID: item.itemID, fallback: fallback)
+            let newHeight = layout.heights.resolvedHeight(
+                for: newKey, itemID: item.itemID, fallback: fallback)
+            if abs(oldHeight - newHeight) > 0.5 { return false }
+        }
+        return true
     }
 
     /// Run the newest snapshot request once the in-flight one has finished.

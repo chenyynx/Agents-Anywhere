@@ -65,7 +65,15 @@ struct TimelineChatGroupingCacheTests {
     private func describe(_ unit: TimelineChatUnit) -> String {
         switch unit {
         case let .stepGroup(group, rowIDs):
-            return "steps(\(group.id)) rows=\(rowIDs)"
+            let steps = group.steps.map { step -> String in
+                switch step {
+                case let .thinking(id, text, status):
+                    return "T:\(id):\(status.rawValue):\(text)"
+                case let .tool(call):
+                    return "C:\(call.id):\(call.status):\(call.name)"
+                }
+            }.joined(separator: ",")
+            return "steps(\(group.id)) rows=\(rowIDs) [\(steps)] sum=\(group.summary)"
         case let .message(key, rowIDs):
             return "msg(\(key)) rows=\(rowIDs)"
         case let .standalone(rowID):

@@ -11,17 +11,64 @@ enum AssistantMarkdownBlockViewFactory {
     static func make(_ block: AssistantMarkdownBlock,
                      width: CGFloat,
                      displayScale: CGFloat,
-                     interactiveText: Bool = false) -> (view: UIView, height: CGFloat) {
+                     interactiveText: Bool = false,
+                     key: String? = nil,
+                     digest: Int = 0,
+                     typographyRevision: Int = 0,
+                     cache: AssistantMarkdownBlockHeightCache? = nil) -> (view: UIView, height: CGFloat) {
         #if DEBUG
         CodePageBuildStats.blockViewCreations += 1
         #endif
+        #if AA_TIMELINE_PROBE
+        let makeStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "block.make", seconds: CACurrentMediaTime() - makeStart)
+        }
+        let heightStart = CACurrentMediaTime()
+        #endif
+        // `sizeThatFits` measured this document with the same per-block memo
+        // immediately before the layout pass builds the views. The old call
+        // here bypassed that memo and laid every block out a second time on
+        // the scroll frame — the device probe's text-layout hitches.
         let height = AssistantMarkdownTextLayout.height(
-            of: block, width: width, displayScale: displayScale)
+            of: block, width: width, displayScale: displayScale,
+            key: key, digest: digest,
+            typographyRevision: typographyRevision, cache: cache)
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.height", seconds: CACurrentMediaTime() - heightStart)
+        #endif
         switch block {
         case .text(let text):
+            #if AA_TIMELINE_PROBE
+            let initStart = CACurrentMediaTime()
+            #endif
             let view = AssistantMarkdownTextBlockView(interactive: interactiveText)
+            #if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "textView.init", seconds: CACurrentMediaTime() - initStart)
+            let assignStart = CACurrentMediaTime()
+            #endif
             view.textView.attributedText = text.attributed
-            return (view, height)
+            #if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage(
+                "text.assign", seconds: CACurrentMediaTime() - assignStart)
+            #endif
+            // The view's own layout is only trustworthy once its bounds match
+            // the row width. Before that TextKit lays out the visible line
+            // only, and `usageBoundsForTextContainer` collapses to a one-line
+            // height (device 2026-11-07 01:30: every paragraph clipped after
+            // its first line). The detached measurement above is
+            // width-explicit, so it is the height the row is built with.
+            if height > 0 {
+                // Hand the width to the container only; laying the text out
+                // here as well would make every text block two layouts.
+                view.textView.prepareLayout(width: width)
+                return (view, height)
+            }
+            return (view, view.textView.measuredHeight(
+                width: width, displayScale: displayScale))
         case .list(let list):
             return (AssistantListBlockView(list: list, width: width,
                                            displayScale: displayScale,
@@ -31,8 +78,14 @@ enum AssistantMarkdownBlockViewFactory {
                                             displayScale: displayScale,
                                             interactiveText: interactiveText), height)
         case .code(let code):
+            // The height above already laid the source out at unbounded width;
+            // hand that size to the card so its init does not repeat it.
+            let textSize = AssistantMarkdownTextLayout.cachedIntrinsicSize(
+                of: code.code, displayScale: displayScale, key: key,
+                digest: digest, typographyRevision: typographyRevision)
             return (AssistantCodeBlockView(codeBlock: code, width: width,
-                                           displayScale: displayScale), height)
+                                           displayScale: displayScale,
+                                           textSize: textSize), height)
         case .table(let table):
             return (AssistantTableBlockView(table: table, width: width,
                                             displayScale: displayScale), height)
@@ -457,10 +510,11 @@ final class AssistantCodeBlockView: UIView {
     private var highlightGeneration = 0
     private var copyResetWorkItem: DispatchWorkItem?
 
-    init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat) {
+    init(codeBlock: AssistantCodeBlock, width: CGFloat, displayScale: CGFloat,
+         textSize: CGSize? = nil) {
         self.codeBlock = codeBlock
         self.displayScale = displayScale
-        self.textSize = AssistantMarkdownTextLayout.intrinsicSize(
+        self.textSize = textSize ?? AssistantMarkdownTextLayout.intrinsicSize(
             of: codeBlock.code, displayScale: displayScale)
         super.init(frame: .zero)
         backgroundColor = codeBlock.fillColor ?? ChatTextUIColors.codeCardFill
@@ -546,7 +600,14 @@ final class AssistantCodeBlockView: UIView {
         let newString = codeBlock.code.string
         let newNSString = newString as NSString
         var appended = false
-        if newNSString.hasPrefix(previousString) {
+        // Appending only makes sense once this view holds exactly the old
+        // text. The first update starts from an empty block: it must assign,
+        // or the text never reaches the surface (the storage it would insert
+        // into is not the one being laid out).
+        if previousLength > 0,
+           codeView.hasTextStorage,
+           previousLength <= codeView.textStorage.length,
+           newNSString.hasPrefix(previousString) {
             if codeBlock.code.length > 0,
                let baseAttributes = codeBlock.code.attributes(
                     at: 0, effectiveRange: nil) as? [NSAttributedString.Key: Any] {
@@ -610,7 +671,8 @@ final class AssistantCodeBlockView: UIView {
             // No language: the card shows the plain attributed code. The
             // prefix-append path already left exactly these characters in the
             // text view, so reloading would throw away the layout for nothing.
-            if codeView.textStorage.string != codeBlock.code.string {
+            if !codeView.hasTextStorage
+                || codeView.textStorage.string != codeBlock.code.string {
                 codeView.attributedText = codeBlock.code
             }
             appliedTokens = []
@@ -660,10 +722,15 @@ final class AssistantCodeBlockView: UIView {
         var common = 0
         let limit = min(tokens.count, appliedTokens.count)
         while common < limit, tokens[common] == appliedTokens[common] { common += 1 }
+        // The backing storage may not exist yet on a card that has never laid
+        // out (simulator gate 42538286526); fall back to a whole-string
+        // assignment in that case instead of materialising it from here.
+        let storage = codeView.hasTextStorage ? codeView.textStorage : nil
         let canAppend = !appliedTokens.isEmpty
             && common == appliedTokens.count
-            && appliedTokenLength <= codeView.textStorage.length
-        if canAppend {
+            && storage != nil
+            && appliedTokenLength <= storage!.length
+        if canAppend, let storage {
             let tail = NSMutableAttributedString()
             for token in tokens[common...] {
                 var attributes = baseAttributes
@@ -675,8 +742,8 @@ final class AssistantCodeBlockView: UIView {
             }
             let remaining = NSRange(
                 location: appliedTokenLength,
-                length: codeView.textStorage.length - appliedTokenLength)
-            codeView.textStorage.replaceCharacters(in: remaining, with: tail)
+                length: storage.length - appliedTokenLength)
+            storage.replaceCharacters(in: remaining, with: tail)
             #if DEBUG
             CodePageBuildStats.highlightIncrementalApplies += 1
             #endif
@@ -684,7 +751,7 @@ final class AssistantCodeBlockView: UIView {
             codeView.attributedText = Self.highlighted(tokens: tokens, base: base)
         }
         appliedTokens = tokens
-        appliedTokenLength = codeView.textStorage.length
+        appliedTokenLength = storage?.length ?? base.length
         highlightedSource = base.string
         #if DEBUG
         CodePageBuildStats.highlightApplies += 1
@@ -884,7 +951,11 @@ final class AssistantCodeBlockView: UIView {
     /// Gate probes: the streaming path must reuse this text view and see the
     /// appended body without recreating the card.
     var debugCodeView: AssistantMarkdownBlockTextView { codeView }
-    var debugCodeText: String { codeView.textStorage.string }
+    var debugCodeText: String {
+        codeView.hasTextStorage
+            ? codeView.textStorage.string
+            : (codeView.attributedText?.string ?? "")
+    }
     #endif
 
     override func layoutSubviews() {

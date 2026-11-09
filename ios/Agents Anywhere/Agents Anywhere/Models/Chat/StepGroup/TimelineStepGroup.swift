@@ -77,6 +77,13 @@ nonisolated enum TimelineStep: Identifiable, Hashable {
 nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     let id: String
     let steps: [TimelineStep]
+    /// The settled row's counts, computed when the group is built.
+    ///
+    /// The row body used to call `TimelineStepSummarizer.summary` on every
+    /// evaluation — one `CodeToolLabelPlan` (including its diff-line scan) per
+    /// step, inside the frame that scrolls the row in. That was the per-entry
+    /// cost of a tool row. Same values, computed once at apply time.
+    var summary: TimelineStepSummary = TimelineStepSummary()
 
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
@@ -103,7 +110,7 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 /// The settled row's counts: 「思考 N 次 · 读取 X 个文件 · 运行 Y 个命令 ·
 /// 编辑 Z 个文件」 (pp 2026-10-29). File categories count distinct targets,
 /// the same rule `CodeToolLabelPlan` uses for its summary phrases.
-nonisolated struct TimelineStepSummary: Equatable {
+nonisolated struct TimelineStepSummary: Hashable {
     var thinkingCount = 0
     var readFiles = 0
     var ranCommands = 0
@@ -176,7 +183,7 @@ nonisolated enum TimelineStepSummaryText {
 }
 
 /// One ordered element the chat profile's timeline renders as a top-level row.
-nonisolated enum TimelineChatUnit: Identifiable {
+nonisolated enum TimelineChatUnit: Identifiable, Equatable {
     case stepGroup(TimelineStepGroup, rowIDs: [String])
     case message(key: String, rowIDs: [String])
     case standalone(rowID: String)
@@ -186,6 +193,15 @@ nonisolated enum TimelineChatUnit: Identifiable {
         case let .stepGroup(group, _): return group.id
         case let .message(key, _): return key
         case let .standalone(rowID): return rowID
+        }
+    }
+
+    /// The wire rows this unit renders, in wire order.
+    var rowIDs: [String] {
+        switch self {
+        case let .stepGroup(_, rowIDs): return rowIDs
+        case let .message(_, rowIDs): return rowIDs
+        case let .standalone(rowID): return [rowID]
         }
     }
 }
@@ -201,22 +217,32 @@ nonisolated enum TimelineChatUnit: Identifiable {
 /// - an interaction target keeps its own standalone row;
 /// - sub-agent child rows stay out of the main timeline (L2.1).
 nonisolated enum TimelineChatGrouping {
+    /// - Parameter startingTurnID: the declared turn in effect before the
+    ///   first item. The pass carries that cursor across rows, so a caller
+    ///   grouping a suffix of a longer timeline must seed it: otherwise the
+    ///   first `turnId` in the suffix looks like no change and a step group or
+    ///   message that the full pass would close at that row stays merged.
     static func units(items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
-                      interactionTargets: Set<String>) -> [TimelineChatUnit] {
+                      interactionTargets: Set<String>,
+                      cwd: String? = nil,
+                      startingTurnID: V2TurnID? = nil) -> [TimelineChatUnit] {
         var units: [TimelineChatUnit] = []
         var stepItems: [V2TimelineItem] = []
         var messageKey: String?
         var messageRows: [V2TimelineItem] = []
         var consumed: Set<String> = []
-        var currentTurnID: V2TurnID?
+        var currentTurnID: V2TurnID? = startingTurnID
 
         func flushSteps() {
             guard !stepItems.isEmpty else { return }
             let steps = stepItems.map { step(for: $0, profile: profile) }
             let firstID = stepItems.first.map(spanID) ?? steps.first?.id ?? "steps"
-            units.append(.stepGroup(TimelineStepGroup(id: "steps:\(firstID)", steps: steps),
-                                    rowIDs: stepItems.map(\.id)))
+            units.append(.stepGroup(
+                TimelineStepGroup(id: "steps:\(firstID)", steps: steps,
+                                  summary: TimelineStepSummarizer.summary(
+                                    steps: steps, cwd: cwd)),
+                rowIDs: stepItems.map(\.id)))
             stepItems.removeAll()
         }
 
@@ -307,7 +333,28 @@ nonisolated enum TimelineChatGrouping {
         TimelineText.first(item.raw["content"]?["parentItemId"]) != nil
     }
 
-    private static func wireOrder(_ lhs: V2TimelineItem, _ rhs: V2TimelineItem) -> Bool {
+    /// The `currentTurnID` the pass carries into `sortedItems[index]`.
+    ///
+    /// Mirrors the pass's skip order exactly: sub-agent children and
+    /// interaction targets `continue` before the turn block, so their
+    /// `turnId` never updates the cursor. Callers must guarantee unique ids
+    /// (the cache rebuilds on duplicates), otherwise the skipped duplicate
+    /// would need the same treatment as `consumed`.
+    static func turnContext(before index: Int,
+                            in sortedItems: [V2TimelineItem],
+                            interactionTargets: Set<String>) -> V2TurnID? {
+        var probe = index - 1
+        while probe >= 0 {
+            let item = sortedItems[probe]
+            probe -= 1
+            if isSubAgentChild(item) { continue }
+            if interactionTargets.contains(item.id) { continue }
+            if let declared = item.turnId { return declared }
+        }
+        return nil
+    }
+
+    static func wireOrder(_ lhs: V2TimelineItem, _ rhs: V2TimelineItem) -> Bool {
         lhs.orderSeq == rhs.orderSeq ? lhs.id < rhs.id : lhs.orderSeq < rhs.orderSeq
     }
 }

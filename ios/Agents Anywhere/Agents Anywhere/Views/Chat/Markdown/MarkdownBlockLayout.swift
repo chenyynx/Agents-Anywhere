@@ -34,8 +34,14 @@ struct MarkdownBlockLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         guard let content = subviews.first else { return .zero }
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil }
+#if DEBUG
+        MarkdownLayoutStats.calls += 1
+#endif
         let natural = cache.measurements.size(proposedWidth: width) {
-            content.sizeThatFits(.init(width: width, height: nil))
+#if DEBUG
+            MarkdownLayoutStats.measured += 1
+#endif
+            return content.sizeThatFits(.init(width: width, height: nil))
         }
         return cache.sizing.size(proposedWidth: width, naturalSize: natural, displayScale: displayScale)
     }
@@ -45,3 +51,14 @@ struct MarkdownBlockLayout: Layout {
             proposal: .init(width: bounds.width, height: nil))
     }
 }
+
+#if DEBUG
+/// Per-layout-pass counters for the scroll benchmark: how often a block is
+/// asked for its size, and how often the instance-local cache actually saved
+/// the text layout. Reported by the simulator scroll run; never ships.
+nonisolated(unsafe) enum MarkdownLayoutStats {
+    static var calls = 0
+    static var measured = 0
+    static func reset() { calls = 0; measured = 0 }
+}
+#endif

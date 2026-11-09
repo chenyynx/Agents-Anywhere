@@ -25,7 +25,7 @@ final class StreamingRevealDriver: NSObject {
     private var textComplete = false
     private var blockStart = 0
     private var blockLength = 0
-    private weak var textView: UITextView?
+    private weak var textView: AssistantMarkdownBlockTextView?
     private var mask: CALayer?
     private var link: CADisplayLink?
 
@@ -56,7 +56,7 @@ final class StreamingRevealDriver: NSObject {
     func configure(state: StreamingRevealState,
                    blockStart: Int,
                    blockLength: Int,
-                   textView: UITextView?) {
+                   textView: AssistantMarkdownBlockTextView?) {
         let now = ProcessInfo.processInfo.systemUptime
         timeline = state.timeline
         total = state.total
@@ -85,7 +85,16 @@ final class StreamingRevealDriver: NSObject {
             rebuildMaskIfSeatedDrifted(in: textView)
         }
         if textComplete, (released ?? 0) >= total {
-            finishIfFaded(now: now)
+            // `finish` reports `onFrame(nil)`, which invalidates the row
+            // layout. Configure runs inside the data source's cell update, so
+            // defer it one turn exactly like `reset()` does; a reset or a new
+            // configure before the turn re-checks the same guards.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.textComplete, (self.released ?? 0) >= self.total else {
+                    return
+                }
+                self.finishIfFaded(now: ProcessInfo.processInfo.systemUptime)
+            }
         } else {
             startLinkIfNeeded()
         }
@@ -288,7 +297,7 @@ final class StreamingRevealDriver: NSObject {
     /// the restored mask could not be built. Rebuild it once the view has a
     /// width; without this the already-released text stays hidden until the
     /// next run repaints it.
-    private func restoreMaskIfNeeded(in textView: UITextView) {
+    private func restoreMaskIfNeeded(in textView: AssistantMarkdownBlockTextView) {
         let length = localRevealedLength
         guard seatedMaxY == nil, length > 0, textView.bounds.width > 0,
               let mask else { return }
@@ -311,7 +320,7 @@ final class StreamingRevealDriver: NSObject {
 
     /// A content update can move the lines the mask already covers. Official
     /// rebuilds the covered range when its seated bottom drifts by 0.5 pt.
-    private func rebuildMaskIfSeatedDrifted(in textView: UITextView) {
+    private func rebuildMaskIfSeatedDrifted(in textView: AssistantMarkdownBlockTextView) {
         let length = localRevealedLength
         guard length > 0, let mask, let knownMaxY = seatedMaxY else { return }
         let rects = AssistantMarkdownMaskRenderer.lineRects(

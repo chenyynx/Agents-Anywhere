@@ -183,8 +183,16 @@ private struct MarkdownBlockView: View, Equatable {
     var body: some View {
         // Only changed blocks reach Textual's parser. The complete document was
         // parsed above, so cross-block references and nested structures survive.
+#if AA_TIMELINE_PROBE
+        let probeBlockStart = CACurrentMediaTime()
+#endif
+        let structured = StructuredText(String(block.digest),
+                                        parser: ParsedMarkdownText(content: Self.styled(block.content)))
+#if AA_TIMELINE_PROBE
+        let _ = TimelineProbeStore.shared.noteScrollSegment("markdown.block", since: probeBlockStart)
+#endif
         MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {
-            StructuredText(String(block.digest), parser: ParsedMarkdownText(content: Self.styled(block.content)))
+            structured
                 .textual.structuredTextStyle(ChatMarkdownStyle(headingLedger: headingLedger))
                 // Textual's own default is 0.25em, which sits *inside* the
                 // line's leading and makes a wrapped line look like a new

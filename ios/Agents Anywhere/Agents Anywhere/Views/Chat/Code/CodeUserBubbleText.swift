@@ -15,6 +15,9 @@ import UIKit
 struct CodeUserBubbleText: UIViewRepresentable {
     let text: String
     let color: Color
+    /// The chat bubbles keep selection on; a queued row owns a long-press
+    /// menu and must not start a text selection instead.
+    var isSelectable = true
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -31,7 +34,7 @@ struct CodeUserBubbleText: UIViewRepresentable {
         view.isOpaque = false
         view.isEditable = false
         view.isScrollEnabled = false
-        view.isSelectable = true
+        view.isSelectable = isSelectable
         view.isUserInteractionEnabled = true
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
@@ -59,17 +62,16 @@ struct CodeUserBubbleText: UIViewRepresentable {
                       context: Context) -> CGSize? {
         let available = proposal.width ?? uiView.bounds.width
         guard available > 0, available.isFinite else { return nil }
-        // A short bubble hugs its text (the official bubble adds 2×16 pt to
-        // the content width); returning the proposal width made every bubble
-        // span the whole column.
+        // A bubble hugs the longest *wrapped* line (the official bubble adds
+        // 2×16 pt to the content width). Using the unbounded intrinsic width
+        // capped at the proposal made every long message span the whole
+        // column, even when its lines only used half of it (pp 2026-11-08).
         let scale = max(displayScale, 1)
-        let intrinsic = AssistantMarkdownTextLayout.intrinsicSize(
+        let size = AssistantMarkdownTextLayout.wrappedSize(
             of: CodeUserBubbleTextMetrics.attributed(text, traits: traits),
-            displayScale: scale).width
-        let width = min(available, max(1, intrinsic))
-        let height = CodeUserBubbleTextMetrics.height(
-            text: text, width: width, displayScale: scale, traits: traits)
-        return CGSize(width: width, height: height)
+            width: available,
+            displayScale: scale)
+        return CGSize(width: max(1, size.width), height: size.height)
     }
 }
 

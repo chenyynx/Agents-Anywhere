@@ -144,6 +144,16 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let detail: String
     }
 
+    /// One timed stage (`noteStage`). Cumulative since the last clear, with a
+    /// peak: a stage that is cheap on average but blocks one scroll frame
+    /// shows up in `max` even when `total` looks harmless.
+    struct StageStat {
+        var count = 0
+        var totalMs = 0.0
+        var maxMs = 0.0
+        var lastMs = 0.0
+    }
+
     /// One 10 Hz viewport sample, kept only for offset findings.
     struct ViewSample {
         let at: TimeInterval
@@ -186,6 +196,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         /// 16.7ms = 60Hz). The official drawer requests the screen maximum;
         /// this tells us whether AA's SwiftUI spring gets it.
         let periodMs: Double
+        /// Probe-only visual variant this transition ran with: 0 = all
+        /// effects, 1 = no full-screen container clip, 2 = no card clip,
+        /// 3 = no sidebar shade. One sliding session attributes the per-frame
+        /// cost without a build per hypothesis (same method as b800).
+        let variant: Int
         /// Dropped frames felt during the transition, including the end and
         /// post-end boundary frames recorded after the window closed.
         var hitches: Int
@@ -214,7 +229,12 @@ final class TimelineProbeStore: NSObject, ObservableObject {
 
     @Published private(set) var revision = 0
     private(set) var counters: [String: Int] = [:]
+    /// When `shellSessionsMsMax` was set, so the finding can stay at the
+    /// moment the slow rebuild happened instead of drifting to "now".
+    private var sidebarRebuildMaxAt: TimeInterval = 0
     private(set) var changes: [HeightChange] = []
+    /// `noteStage` accumulators, keyed by stage name.
+    private var stages: [String: StageStat] = [:]
     private(set) var issues: [Issue] = []
     private(set) var applies: [ApplyRecord] = []
     private(set) var historyEvents: [HistoryEvent] = []
@@ -263,7 +283,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var measureDurations: [(at: TimeInterval, ms: Int)] = []
     /// Display-link gaps that counted as hitches while the reader was
     /// scrolling, so a finding can name when the worst frame happened.
-    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool)] = []
+    /// `drawer` and `tracking` split the counts the panel shows: a hitch
+    /// under the finger (drag), one while the list coasts, and one during a
+    /// sidebar transition are three different bugs.
+    private var frameHitches: [(at: TimeInterval, ms: Int, drawer: Bool,
+                                tracking: Bool, owner: String)] = []
     /// User-pressed markers, newest last. Screenshots are memory-only; the
     /// export writes the newest three next to the report.
     private(set) var markers: [Mark] = []
@@ -296,6 +320,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     private var drawerIntentToEnvMs = 0
     private var drawerEnvToTickMs = 0
     private var drawerFirstTickSeen = false
+    /// Probe-only visual variant for the next transition (0…3). The drawer
+    /// reads it while it builds the transition's view tree and the report
+    /// averages per variant, so one sliding session attributes the per-frame
+    /// render cost without a build per hypothesis (b800 did the same).
+    private(set) var drawerVariant = 0
+    static let drawerVariantCount = 4
+    /// The variant for this transition, then advance the cycle. The drawer
+    /// passes the returned value back on the transition's end record.
+    func nextDrawerVariant() -> Int {
+        let current = drawerVariant
+        drawerVariant = (drawerVariant + 1) % Self.drawerVariantCount
+        return current
+    }
     /// Sum of `CADisplayLink.duration` over the window's frames. Its average
     /// is the nominal refresh the system gave the display while the drawer
     /// moved (8.3ms on a 120Hz ProMotion screen, 16.7ms at 60Hz).
@@ -317,6 +354,148 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// probe's memory bounded (~300 KB each at 1x).
     private static let maxMarkers = 3
 
+    // MARK: - Session restore
+
+    /// Where one session open got its rows from. These records live outside
+    /// `beginRunWindow()`: a disk restore completes before the timeline view
+    /// attaches, so clearing on attach erased the only evidence of whether
+    /// switching back re-used local rows or re-read them from the network.
+    struct RestoreRecord {
+        let at: Date
+        let source: String
+        let rows: Int
+        let bytes: Int
+        let ms: Int
+    }
+
+    private(set) var recentRestores: [RestoreRecord] = []
+    private static let maxRestores = 8
+
+    func noteRestore(source: String, rows: Int, bytes: Int, ms: Int) {
+        recentRestores.append(RestoreRecord(at: Date(), source: source, rows: rows,
+                                            bytes: bytes, ms: ms))
+        if recentRestores.count > Self.maxRestores {
+            recentRestores.removeFirst(recentRestores.count - Self.maxRestores)
+        }
+    }
+
+    // MARK: - Slow scroll segments
+
+    /// One main-thread segment on the scroll path that took long enough to
+    /// drop a frame. A frame-gap alone says "a frame was missed"; these lines
+    /// say which call owned it, the same way the drawer work separated the
+    /// adapter refresh from the shadow.
+    struct ScrollSegment {
+        let at: TimeInterval
+        let label: String
+        let ms: Double
+    }
+
+    private(set) var slowScrollSegments: [ScrollSegment] = []
+    private static let maxScrollSegments = 60
+    private static let slowSegmentMs: Double = 6
+
+    /// One run-loop iteration that kept the main thread busy past a frame.
+    /// The frame-gap detector sees the dropped frame; this says whether the
+    /// main thread was actually working (and in which section) or the display
+    /// link simply did not fire.
+    struct StallRecord {
+        let at: TimeInterval
+        let ms: Double
+        let section: String
+    }
+
+    private(set) var runLoopStalls: [StallRecord] = []
+    private static let maxStalls = 40
+    private var runLoopObserver: CFRunLoopObserver?
+    /// Second observer at the tail of the beforeWaiting phase. Core Animation
+    /// commits its transaction there, which is exactly the work the sources
+    /// stall cannot see: a dropped frame with no source stall is this phase.
+    private var commitObserver: CFRunLoopObserver?
+    private var beforeWaitingAt: TimeInterval = 0
+    private var busyStartedAt: TimeInterval = 0
+    /// When the last cell was created; a stall right after it points at the
+    /// row's first render rather than a background pass.
+    private var lastCellProviderAt: TimeInterval = 0
+    /// 2 ms main-thread stack sampler (2026-11-06). Timing probes can only
+    /// exclude instrumented code; this one names the owner of the stall.
+    private let stackSampler = MainThreadStackSampler.shared
+
+    func noteCellProvider() { lastCellProviderAt = CACurrentMediaTime() }
+    /// Innermost section currently running on the main thread. Sections are
+    /// entered/left by the scroll-path callbacks; a stall records whichever
+    /// one was active when the run loop went idle.
+    private var activeSection: String = ""
+
+    func enterSection(_ name: String) { activeSection = name }
+    func leaveSection() { activeSection = "" }
+
+    private func startRunLoopObserver() {
+        guard runLoopObserver == nil else { return }
+        let activities: CFRunLoopActivity = [.afterWaiting, .beforeWaiting]
+        let observer = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault, activities.rawValue, true, 0
+        ) { [weak self] _, activity in
+            guard let self else { return }
+            let now = CACurrentMediaTime()
+            if activity == .afterWaiting {
+                self.busyStartedAt = now
+                return
+            }
+            self.beforeWaitingAt = now
+            let ms = (now - self.busyStartedAt) * 1000
+            guard ms >= 12 else { return }
+            let sinceCell = self.lastCellProviderAt > 0
+                ? Int(((now - self.lastCellProviderAt) * 1000).rounded()) : -1
+            self.runLoopStalls.append(StallRecord(
+                at: now, ms: ms,
+                section: (self.activeSection.isEmpty ? "idle" : self.activeSection)
+                    + (sinceCell >= 0 && sinceCell <= 200 ? " cell+\(sinceCell)ms" : "")))
+            if self.runLoopStalls.count > Self.maxStalls {
+                self.runLoopStalls.removeFirst(
+                    self.runLoopStalls.count - Self.maxStalls)
+            }
+        }
+        guard let observer else { return }
+        runLoopObserver = observer
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+
+        // Runs after Core Animation's own beforeWaiting observer (registered
+        // at order 2_000_000): the delta is what the commit phase spent after
+        // the sources phase finished.
+        let commit = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault, CFRunLoopActivity.beforeWaiting.rawValue,
+            true, 3_000_000
+        ) { [weak self] _, _ in
+            guard let self, self.beforeWaitingAt > 0 else { return }
+            let now = CACurrentMediaTime()
+            let ms = (now - self.beforeWaitingAt) * 1000
+            guard ms >= 8 else { return }
+            self.runLoopStalls.append(StallRecord(at: now, ms: ms,
+                                                  section: "ca.commit"))
+            if self.runLoopStalls.count > Self.maxStalls {
+                self.runLoopStalls.removeFirst(
+                    self.runLoopStalls.count - Self.maxStalls)
+            }
+        }
+        if let commit {
+            commitObserver = commit
+            CFRunLoopAddObserver(CFRunLoopGetMain(), commit, .commonModes)
+        }
+    }
+
+    /// Records one timed call. Sub-frame work stays silent; only segments that
+    /// can cost a frame (or a large slice of one) enter the ring.
+    func noteScrollSegment(_ label: String, since start: TimeInterval) {
+        let ms = (CACurrentMediaTime() - start) * 1000
+        guard ms >= Self.slowSegmentMs else { return }
+        slowScrollSegments.append(ScrollSegment(at: CACurrentMediaTime(),
+                                                label: label, ms: ms))
+        if slowScrollSegments.count > Self.maxScrollSegments {
+            slowScrollSegments.removeFirst(slowScrollSegments.count - Self.maxScrollSegments)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func attach(controller: TimelineCollectionController?,
@@ -333,6 +512,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // relative to a different run start and used to surface as `t=0.00`
         // noise (and false findings) in the report.
         beginRunWindow()
+        startRunLoopObserver()
         if link == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)
@@ -361,6 +541,9 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         lastOffset = nil
         lastContentSamples.removeAll()
         recentTouches.removeAll()
+        slowScrollSegments.removeAll()
+        runLoopStalls.removeAll()
+        activeSection = ""
         frameTimestamps.removeAll()
         drawerTransitioning = false
         drawerTransitions.removeAll()
@@ -376,12 +559,22 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         drawerFirstTickSeen = false
         drawerPeriodTotal = 0
         postDrawerTicksRemaining = 0
+        stages.removeAll()
+        stackSampler.clear()
         runStartedAt = CACurrentMediaTime()
     }
 
     func detach() {
         link?.invalidate()
         link = nil
+        if let observer = runLoopObserver {
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+            runLoopObserver = nil
+        }
+        if let observer = commitObserver {
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+            commitObserver = nil
+        }
         controller = nil
         adapter = nil
         lastHeights.removeAll()
@@ -457,6 +650,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         // cannot do that: it sees a gap up to 100 ms after it happened, when
         // the drawer flag may already have flipped, which is how scroll
         // hitches ended up in drawer transitions (probe 17:54).
+        if let view = controller?.collectionView {
+            // Stacks are only meaningful while the reader is moving the list;
+            // the sampler pauses itself when ticks stop.
+            stackSampler.noteActivity(scrolling: view.isTracking || view.isDecelerating)
+        }
         if lastTickAt > 0, let view = controller?.collectionView,
            view.isTracking || view.isDecelerating || drawerTransitioning {
             let ms = (now - lastTickAt) * 1000
@@ -483,9 +681,39 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             }
             let startArtifact = drawerFirstFrame && ms <= 100
             if ms > 33, !startArtifact {
+                let gapMs = Int(ms.rounded())
                 counters["frameRateHitches", default: 0] += 1
-                frameHitches.append((at: now, ms: Int(ms.rounded()),
-                                     drawer: drawerTransitioning))
+                // Per-phase totals so the panel can say which gesture the
+                // dropped frames belong to (drag vs coast vs drawer).
+                if drawerTransitioning {
+                    counters["drawerHitches", default: 0] += 1
+                    counters["drawerHitchMaxMs", default: 0] =
+                        max(counters["drawerHitchMaxMs"] ?? 0, gapMs)
+                } else if view.isTracking {
+                    counters["scrollHitchesDrag", default: 0] += 1
+                    counters["scrollDragMaxMs", default: 0] =
+                        max(counters["scrollDragMaxMs"] ?? 0, gapMs)
+                } else {
+                    counters["scrollHitchesCoast", default: 0] += 1
+                    counters["scrollCoastMaxMs", default: 0] =
+                        max(counters["scrollCoastMaxMs"] ?? 0, gapMs)
+                }
+                // Attach the run-loop stall that ended inside this gap, so the
+                // report names the code that owned the dropped frame instead
+                // of only its length and phase.
+                let stall = runLoopStalls.last { $0.at > now - Double(gapMs) / 1000 - 0.005 }
+                let stallLabel = stall.map { "\($0.section) \(Int($0.ms.rounded()))ms" }
+                // The nominal refresh the system was running at tells a real
+                // dropped frame (2+ periods) apart from a refresh-rate switch
+                // (one 33.3 ms frame on a 30 Hz stretch).
+                let periods = Double(gapMs) / max(link.duration * 1000, 1)
+                let owner = (stallLabel.map { $0 + " " } ?? "")
+                    + "period=\(Int((link.duration * 1000).rounded()))ms "
+                    + "x\(String(format: "%.1f", periods))"
+                frameHitches.append((at: now, ms: gapMs,
+                                     drawer: drawerTransitioning,
+                                     tracking: view.isTracking,
+                                     owner: owner))
                 if frameHitches.count > Self.maxHitches {
                     frameHitches.removeFirst(frameHitches.count - Self.maxHitches)
                 }
@@ -622,12 +850,61 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// animation, which invalidates the host view right after the transition;
     /// this is the piece of that body whose cost scales with the session
     /// count (probe 2026-10-31, drawer hand-feel report).
+    /// Counts a SwiftUI body pass that happened while the drawer was moving.
+    /// The drawer's own body and the chat page's body are recorded separately:
+    /// a per-frame re-evaluation of either is a different fix from a render
+    /// cost, and the previous rounds only had frame gaps to guess from.
+    func noteDrawerBodyEval() {
+        guard drawerTransitioning else { return }
+        counters["drawerBodyEvals", default: 0] += 1
+    }
+
+    func noteChatBodyEval() {
+        guard drawerTransitioning else { return }
+        counters["chatBodyEvals", default: 0] += 1
+    }
+
     func noteShellSessions(seconds: TimeInterval) {
         let ms = Int((max(0, seconds) * 1000).rounded())
         counters["shellSessionsCount", default: 0] += 1
         counters["shellSessionsMsTotal", default: 0] += ms
+        if ms > (counters["shellSessionsMsMax"] ?? 0) {
+            sidebarRebuildMaxAt = CACurrentMediaTime()
+        }
         counters["shellSessionsMsMax", default: 0] =
             max(counters["shellSessionsMsMax"] ?? 0, ms)
+    }
+
+    /// Accumulate one timed stage. Unlike `noteScrollSegment`, this records
+    /// every call: the stage split is what the device report cannot get from
+    /// sampling (system frames are redacted), so the totals are the evidence.
+    func noteStage(_ name: String, seconds: TimeInterval) {
+        let ms = max(0, seconds) * 1000
+        guard ms.isFinite else { return }
+        var stat = stages[name] ?? StageStat()
+        stat.count += 1
+        stat.totalMs += ms
+        stat.lastMs = ms
+        stat.maxMs = max(stat.maxMs, ms)
+        stages[name] = stat
+    }
+
+    /// Streaming flush cadence. `adapter.refresh` stages say what one rebuild
+    /// costs; this says how often the presentation layer asks for one during a
+    /// run, so a 20-30 ms refresh at 30 flushes/s is visible as such.
+    private var streamFlushWindowStart: CFTimeInterval = 0
+    private var streamFlushWindowCount = 0
+
+    func noteStreamFlush() {
+        let now = CACurrentMediaTime()
+        if now - streamFlushWindowStart >= 1 {
+            streamFlushWindowStart = now
+            streamFlushWindowCount = 0
+        }
+        streamFlushWindowCount += 1
+        counters["streamFlushes", default: 0] += 1
+        counters["streamFlushesMaxPerSec", default: 0] =
+            max(counters["streamFlushesMaxPerSec"] ?? 0, streamFlushWindowCount)
     }
 
     func noteMeasureDuration(_ seconds: TimeInterval) {
@@ -1314,12 +1591,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         //    moving. The drawer is not a scroll phase, so it has its own
         //    window in the sampler.
         if let worst = frameHitches.max(by: { $0.ms < $1.ms }) {
+            let dragCount = frameHitches.filter { !$0.drawer && $0.tracking }.count
+            let coastCount = frameHitches.filter { !$0.drawer && !$0.tracking }.count
             let drawerCount = frameHitches.filter { $0.drawer }.count
-            let scrollCount = frameHitches.count - drawerCount
             result.append(Finding(at: worst.at,
                                   severity: frameHitches.count >= 5 ? 2 : 1,
                                   kind: "frame_hitch",
-                                  detail: ">33ms \(frameHitches.count) 次（滚动 \(scrollCount) / 抽屉 \(drawerCount)），"
+                                  detail: ">33ms \(frameHitches.count) 次"
+                                      + "（拖动 \(dragCount) / 惯性 \(coastCount) / 抽屉 \(drawerCount)），"
                                       + "最大 \(worst.ms)ms @t=\(elapsed(worst.at))"))
         }
         if let transition = drawerTransitions.last, transition.hitches > 0 {
@@ -1361,11 +1640,74 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 detail: "\(activeRowSample.count) 行仍为进行中且回合空闲：\(list)"))
         }
 
+        // 9. One row re-keyed repeatedly inside a short window. The b788 long
+        //    message re-keyed 7 times in 8 s; every pass re-parsed its
+        //    markdown and reconfigured the cell, which is the 1.1 s apply.
+        var keyTimes: [String: [TimeInterval]] = [:]
+        for apply in applies {
+            for id in apply.changedKeySample {
+                keyTimes[id, default: []].append(apply.at)
+            }
+        }
+        for (id, times) in keyTimes where times.count >= 3 {
+            var start = 0
+            var worst = 0
+            var worstEnd = 0
+            for end in times.indices {
+                while times[end] - times[start] > 5 { start += 1 }
+                let count = end - start + 1
+                if count > worst {
+                    worst = count
+                    worstEnd = end
+                }
+            }
+            guard worst >= 3 else { continue }
+            let at = times[worstEnd]
+            let diff = applies.last {
+                $0.at <= at && $0.changedKeySample.contains(id)
+            }?.keyDiffSample.first ?? "-"
+            result.append(Finding(at: at, severity: worst >= 5 ? 2 : 1,
+                                  kind: "rekey_churn",
+                                  detail: "\(id) 5s 内重配 \(worst) 次，签名变化 \(diff)"))
+        }
+
+        // 10. The sidebar's session map+sort, rerun when the drawer's settled
+        //     `isOpen` write rebuilds the shell. Grows with the session count.
+        if let maxMs = counters["shellSessionsMsMax"], maxMs >= 16 {
+            result.append(Finding(at: sidebarRebuildMaxAt,
+                                  severity: maxMs >= 33 ? 2 : 1,
+                                  kind: "sidebar_rebuild",
+                                  detail: "侧栏装配最慢 \(maxMs)ms，共 \(counters["shellSessionsCount"] ?? 0) 次"))
+        }
+
         result.sort { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
             return lhs.at > rhs.at
         }
         return Array(result.prefix(10))
+    }
+
+    /// One dropped frame as the panel lists it: which gesture it belonged to
+    /// and where it sits in the measured window.
+    struct HitchSample {
+        let at: TimeInterval
+        let elapsed: String
+        let ms: Int
+        let phase: String
+    }
+
+    /// Newest first. The ring is bounded, so this is "recent", not "all".
+    func recentHitches(limit: Int = 8) -> [HitchSample] {
+        frameHitches.suffix(max(0, limit)).reversed().map { hitch in
+            HitchSample(at: hitch.at, elapsed: elapsed(hitch.at), ms: hitch.ms,
+                        phase: hitch.drawer ? "抽屉" : (hitch.tracking ? "拖动" : "惯性"))
+        }
+    }
+
+    /// Newest first. The panel compares open vs close without reading the
+    /// raw log.
+    func recentDrawerTransitions(limit: Int = 5) -> [DrawerTransition] {
+        Array(drawerTransitions.suffix(max(0, limit)).reversed())
     }
 
     /// Display-link intervals (ms), oldest first. The ring holds ~2 s.
@@ -1384,12 +1726,30 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         let hitches: Int
         let maxGapMs: Int
         let slowFrames: Int
+        /// Hitches split by what the reader was doing. A frame dropped under
+        /// the finger is a different fix from one dropped during deceleration
+        /// or a sidebar transition.
+        let dragHitches: Int
+        let coastHitches: Int
+        let drawerHitches: Int
+        let dragMaxMs: Int
+        let coastMaxMs: Int
+        let drawerMaxMs: Int
         let applyCount: Int
         let applyMaxMs: Int
         let applyP95Ms: Int
         let measureCount: Int
         let measureMaxMs: Int
         let measureP95Ms: Int
+        /// `ChatShellView.sidebarSessions` map+sort, which grows with the
+        /// session count and reruns when the drawer's settled `isOpen` write
+        /// rebuilds the shell.
+        let sidebarRebuildCount: Int
+        let sidebarRebuildMaxMs: Int
+        /// SwiftUI body passes during drawer motion (probe A/B): tells a
+        /// per-frame view rebuild apart from a per-frame render cost.
+        let drawerBodyEvals: Int
+        let chatBodyEvals: Int
     }
 
     func performanceStats() -> PerformanceStats {
@@ -1398,12 +1758,22 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             hitches: counters["frameRateHitches"] ?? 0,
             maxGapMs: counters["frameRateMaxGapMs"] ?? 0,
             slowFrames: counters["slowFrames"] ?? 0,
+            dragHitches: counters["scrollHitchesDrag"] ?? 0,
+            coastHitches: counters["scrollHitchesCoast"] ?? 0,
+            drawerHitches: counters["drawerHitches"] ?? 0,
+            dragMaxMs: counters["scrollDragMaxMs"] ?? 0,
+            coastMaxMs: counters["scrollCoastMaxMs"] ?? 0,
+            drawerMaxMs: counters["drawerHitchMaxMs"] ?? 0,
             applyCount: counters["applyCount"] ?? 0,
             applyMaxMs: counters["applyMsMax"] ?? 0,
             applyP95Ms: percentile(applyDurations.map { $0.ms }, 0.95),
             measureCount: counters["measureCount"] ?? 0,
             measureMaxMs: counters["measureMsMax"] ?? 0,
-            measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95))
+            measureP95Ms: percentile(measureDurations.map { $0.ms }, 0.95),
+            sidebarRebuildCount: counters["shellSessionsCount"] ?? 0,
+            sidebarRebuildMaxMs: counters["shellSessionsMsMax"] ?? 0,
+            drawerBodyEvals: counters["drawerBodyEvals"] ?? 0,
+            chatBodyEvals: counters["chatBodyEvals"] ?? 0)
     }
 
     private func percentile(_ values: [Int], _ fraction: Double) -> Int {
@@ -1451,7 +1821,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The drawer publishes its motion window. The collection view is not
     /// scrolling during a drag, so without this signal the sidebar's dropped
     /// frames never reach the report (pp 2026-10-31).
-    func noteDrawerTransition(_ active: Bool, opening: Bool) {
+    func noteDrawerTransition(_ active: Bool, opening: Bool, variant: Int = 0) {
         guard active != drawerTransitioning else { return }
         let now = CACurrentMediaTime()
         drawerTransitioning = active
@@ -1483,6 +1853,7 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                               intentToEnvMs: drawerIntentToEnvMs,
                                               envToTickMs: drawerEnvToTickMs,
                                               periodMs: periodMs,
+                                              variant: variant,
                                               hitches: gaps.dropFirst().filter { $0 > 33 }.count
                                                   + ((drawerIntentToEnvMs + drawerEnvToTickMs) > 100 ? 1 : 0),
                                               maxGapMs: gaps.max() ?? 0,
@@ -1616,6 +1987,21 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("cleared \(Self.absolute(lastClearedAt)) CST")
         }
 
+        if !stages.isEmpty {
+            lines.append("--- STAGES (since clear) ---")
+            for (name, stat) in stages.sorted(by: { $0.value.totalMs > $1.value.totalMs }) {
+                let avg = stat.totalMs / Double(max(stat.count, 1))
+                lines.append("G \(name) n=\(stat.count) "
+                    + "total=\(f(stat.totalMs))ms avg=\(f(avg))ms "
+                    + "last=\(f(stat.lastMs))ms max=\(f(stat.maxMs))ms")
+            }
+        }
+
+        if let flushes = counters["streamFlushes"], flushes > 0 {
+            lines.append("G flush n=\(flushes) "
+                + "max/s=\(counters["streamFlushesMaxPerSec"] ?? 0)")
+        }
+
         lines.append("--- WINDOW ---")
         if let window = adapter?.model.session.windowSnapshot {
             lines.append("W endSeq=\(window.endOrderSeq) cursor=\(window.cursorSequence) "
@@ -1627,6 +2013,14 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "failed \(window.latestFailed)] last=\(window.lastLatest)")
         } else {
             lines.append("W not attached")
+        }
+
+        if !recentRestores.isEmpty {
+            lines.append("--- RESTORE (newest first) ---")
+            for record in recentRestores.reversed() {
+                lines.append("R \(Self.absolute(record.at)) CST source=\(record.source) "
+                    + "rows=\(record.rows) bytes=\(record.bytes / 1_048_576)MB ms=\(record.ms)")
+            }
         }
 
         lines.append("--- STATUS ---")
@@ -1650,6 +2044,11 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             }
         }
 
+        // The only section that names code we never instrumented. Exporting
+        // closes an open scroll session first, so the last scroll is included.
+        lines.append(contentsOf: stackSampler.reportLines(
+            hitches: frameHitches.map { (at: $0.at, ms: $0.ms) }))
+
         if !markers.isEmpty {
             lines.append("--- MARKS (oldest first) ---")
             for mark in markers {
@@ -1662,7 +2061,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
             lines.append("--- DRAWER (oldest first) ---")
             for transition in drawerTransitions {
                 lines.append("D t=\(elapsed(transition.startedAt)) dir=\(transition.opening ? "open" : "close") "
-                    + "intent=\(transition.intent) i2e=\(transition.intentToEnvMs)ms "
+                    + "intent=\(transition.intent) v=\(transition.variant) "
+                    + "i2e=\(transition.intentToEnvMs)ms "
                     + "e2t=\(transition.envToTickMs)ms "
                     + "period=\(String(format: "%.1f", transition.periodMs))ms "
                     + "dur=\(transition.durationMs)ms "
@@ -1696,6 +2096,19 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 lines.append("DD dir=\(direction ? "open" : "close") n=\(items.count) "
                     + "avgFirst=\(avgFirst)ms "
                     + "hitches=\(items.map(\.hitches).reduce(0, +))")
+            }
+            // Probe A/B: the per-frame cost by visual variant (0 baseline,
+            // 1 no container clip, 2 no card clip, 3 no sidebar shade).
+            for variant in 0..<Self.drawerVariantCount {
+                let items = drawerTransitions.filter { $0.variant == variant }
+                guard !items.isEmpty else { continue }
+                let p50 = items.map(\.p50GapMs).reduce(0, +) / items.count
+                let avg = items.map(\.avgGapMs).reduce(0, +) / items.count
+                let firsts = items.map(\.firstGapMs).reduce(0, +) / items.count
+                lines.append("DV v=\(variant) n=\(items.count) p50=\(p50)ms avg=\(avg)ms "
+                    + "avgFirst=\(firsts)ms "
+                    + "hitches=\(items.map(\.hitches).reduce(0, +)) "
+                    + "maxGap=\(items.map(\.maxGapMs).max() ?? 0)ms")
             }
         }
 
@@ -1757,6 +2170,25 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                 + "keys=\(apply.changedKeyCount)[\(keys)]\(diffs)\(itemDelta)")
         }
 
+        if !frameHitches.isEmpty {
+            lines.append("--- HITCHES (newest first) ---")
+            for hitch in frameHitches.suffix(12).reversed() {
+                let phase = hitch.drawer ? "drawer" : (hitch.tracking ? "drag" : "coast")
+                lines.append("X t=\(elapsed(hitch.at)) \(hitch.ms)ms \(phase) [\(hitch.owner)]")
+            }
+        }
+        if !runLoopStalls.isEmpty {
+            lines.append("--- RUN LOOP STALLS (newest first) ---")
+            for stall in runLoopStalls.suffix(25).reversed() {
+                lines.append("L t=\(elapsed(stall.at)) \(f(stall.ms))ms \(stall.section)")
+            }
+        }
+        if !slowScrollSegments.isEmpty {
+            lines.append("--- SLOW SCROLL (newest first) ---")
+            for segment in slowScrollSegments.suffix(30).reversed() {
+                lines.append("Y t=\(elapsed(segment.at)) \(f(segment.ms))ms \(segment.label)")
+            }
+        }
         lines.append("--- HISTORY (oldest first) ---")
         for event in historyEvents {
             lines.append("H t=\(elapsed(event.at)) \(event.text)")

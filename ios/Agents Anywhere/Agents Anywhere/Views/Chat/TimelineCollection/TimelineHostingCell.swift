@@ -13,6 +13,37 @@ import UIKit
 final class TimelineHostingCell: UICollectionViewCell {
     static let reuseIdentifier = "TimelineHostingCell"
 
+#if AA_TIMELINE_PROBE
+    /// Set by `configure`; the first layout after it closes the row's first
+    /// render window. This is the one number that answers "how long does a
+    /// newly visible message row cost before it can be drawn".
+    private var probeConfiguredAt: TimeInterval = 0
+
+    /// SwiftUI hosting layout runs inside this call, off the scroll callback
+    /// stack. Timing it is how the probe tells a UIKit/SwiftUI layout stall
+    /// apart from a stall in the controller's own passes.
+    override func layoutSubviews() {
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("cell.hostingLayout")
+        super.layoutSubviews()
+        let probeLayout = CACurrentMediaTime() - probeStart
+        TimelineProbeStore.shared.noteStage("cell.hostingLayout", seconds: probeLayout)
+        // Short rows are the tool/status rows the device reports as one drop
+        // per entry; split them out so the report can tell whether the cost is
+        // in the hosting layout of those rows.
+        if bounds.height > 0, bounds.height <= 240 {
+            TimelineProbeStore.shared.noteStage("cell.shortHosting", seconds: probeLayout)
+        }
+        TimelineProbeStore.shared.noteScrollSegment("cell.hostingLayout", since: probeStart)
+        TimelineProbeStore.shared.leaveSection()
+        if probeConfiguredAt > 0 {
+            TimelineProbeStore.shared.noteScrollSegment("row.firstRender",
+                                                        since: probeConfiguredAt)
+            probeConfiguredAt = 0
+        }
+    }
+#endif
+
     /// The hosting content's laid-out height, in row coordinates, already
     /// rounded up. This **is** the measurement: the official row wraps its
     /// content in `_GeometryActionModifier(value: GeometryProxy.size)`
@@ -60,6 +91,14 @@ final class TimelineHostingCell: UICollectionViewCell {
     func configure(_ view: AnyView, itemID: String, policy: TimelineRowHeightPolicy,
                    isMeasured: Bool, reportsContentHeight: Bool,
                    seededHeight: CGFloat? = nil) {
+#if AA_TIMELINE_PROBE
+        probeConfiguredAt = CACurrentMediaTime()
+        let configureStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "cell.configure", seconds: CACurrentMediaTime() - configureStart)
+        }
+#endif
         self.itemID = itemID
         self.policy = policy
         self.isMeasured = isMeasured
@@ -126,6 +165,13 @@ final class TimelineHostingCell: UICollectionViewCell {
     override func preferredLayoutAttributesFitting(
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
+#if AA_TIMELINE_PROBE
+        let fitStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "cell.fit", seconds: CACurrentMediaTime() - fitStart)
+        }
+#endif
         // The attributes the layout just handed over are the current truth;
         // the stored flag is the configuration-time snapshot. Either one
         // saying "measured" means the layout owns the height and the cell must

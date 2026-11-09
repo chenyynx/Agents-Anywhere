@@ -24,15 +24,21 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     /// fallback keeps previews and gates honest when they build the row
     /// directly.
     var typography: TimelineTypographySnapshot?
+    /// The collection column width. When known, the stack can build its block
+    /// views while the cell is still offscreen (configured ahead of its first
+    /// layout) instead of in the frame that draws the row.
+    var columnWidth: CGFloat?
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
 
-    init(text: String, typography: TimelineTypographySnapshot?) {
+    init(text: String, typography: TimelineTypographySnapshot?,
+         columnWidth: CGFloat? = nil) {
         self.text = text
         self.typography = typography
+        self.columnWidth = columnWidth
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -202,7 +208,8 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
                        displayScale: max(displayScale, 1),
                        generation: coordinator.generation,
                        cache: coordinator.heightCache,
-                       typographyRevision: coordinator.builderRevision ?? 0)
+                       typographyRevision: coordinator.builderRevision ?? 0,
+                       width: columnWidth)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize,
@@ -211,14 +218,19 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0, width.isFinite else { return nil }
         let coordinator = context.coordinator
-        guard let document = document(in: coordinator) else {
-            return CGSize(width: width, height: 0)
+        let document = document(in: coordinator)
+        // Mirror `updateUIView`: the size query may run before the update
+        // callback on the first pass.
+        if !uiView.matches(documentKey: coordinator.documentKey) {
+            uiView.install(document: document,
+                           key: coordinator.documentKey,
+                           displayScale: max(displayScale, 1),
+                           generation: coordinator.generation,
+                           cache: coordinator.heightCache,
+                           typographyRevision: coordinator.builderRevision ?? 0)
         }
-        let height = ceil(AssistantMarkdownTextLayout.measure(
-            document, width: width, displayScale: max(displayScale, 1),
-            cache: coordinator.heightCache,
-            typographyRevision: coordinator.builderRevision ?? 0))
-        return CGSize(width: width, height: height)
+        let height = uiView.prepareAndMeasure(width: width)
+        return CGSize(width: width, height: max(0, ceil(height)))
     }
 }
 
@@ -227,7 +239,7 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 /// The heights are constraints, exactly like `AssistantMarkdownCell`, so the
 /// rendered layout and the value returned by `sizeThatFits` are the same
 /// arithmetic.
-final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
+final class CodeMarkdownTextStackView: UIView {
     private let stack = UIStackView()
 
     /// One installed block. `key` is the block's stable identity and `digest`
@@ -238,6 +250,8 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         var digest: Int
         let view: UIView
         let constraint: NSLayoutConstraint
+        /// The height this block was laid out at, in row coordinates.
+        var height: CGFloat
     }
 
     private var records: [Record] = []
@@ -273,36 +287,146 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
             bottom,
         ])
 
-        // Ancestor fallback: the hosted list sometimes lets the text view's
-        // own link gesture lose arbitration. A tap recognizer on the stack
-        // still sees the touch; resolve it to the descendant text view.
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleAncestorLinkTap(_:)))
-        tap.cancelsTouchesInView = false
-        tap.delegate = self
-        addGestureRecognizer(tap)
+        // Link taps belong to the text view's own recognizer, the way the
+        // official leaf does it (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
+        // §Q6). The old ancestor copy here fired on the first tap of a double
+        // tap and opened a link chip before the selection could run.
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The latest document. Building happens on the next layout pass, when the
-    /// representable has its real width.
+    /// A block build being spread across run-loop turns while the cell is
+    /// still offscreen. `layoutSubviews`/`prepareAndMeasure` finish it
+    /// synchronously if the row is asked to display first, so the fallback is
+    /// exactly the old synchronous build.
+    private struct PendingBuild {
+        let document: AssistantMarkdownDocument
+        let key: String
+        let width: CGFloat
+        let generation: Int
+        let keyed: Bool
+        var nextIndex: Int
+        let startedAt: CFTimeInterval
+    }
+
+    private var pendingBuild: PendingBuild?
+    private var chunkScheduled = false
+    private static let chunkSize = 3
+
+    /// The latest document. Building normally happens on the next layout pass,
+    /// when the representable has its real width. When the adapter already
+    /// knows the column width and the cell is offscreen (the list configures
+    /// hosting content well before its first layout), the build starts here
+    /// and runs in small chunks on successive run-loop turns.
     func install(document: AssistantMarkdownDocument?, key: String,
                  displayScale: CGFloat, generation: Int,
                  cache: AssistantMarkdownBlockHeightCache?,
-                 typographyRevision: Int) {
+                 typographyRevision: Int,
+                 width: CGFloat? = nil) {
         self.document = document
         self.documentKey = key
         self.displayScale = displayScale
         self.generation = generation
         self.cache = cache
         self.typographyRevision = typographyRevision
+        if let width, width > 0, width.isFinite,
+           window == nil,
+           let document,
+           document.blocks.count > Self.chunkSize * 2,
+           key != builtKey || abs(width - builtWidth) > 0.5 {
+            // The same content may arrive again while its chunks are running
+            // (SwiftUI re-runs the update); keep the in-flight build.
+            if let pending = pendingBuild, pending.key == key,
+               abs(pending.width - width) <= 0.5 {
+                return
+            }
+            pendingBuild = nil
+            removeRecords(from: 0)
+            builtKey = ""
+            builtWidth = -1
+            builtGeneration = -1
+            pendingBuild = PendingBuild(
+                document: document,
+                key: key,
+                width: width,
+                generation: generation,
+                keyed: document.blockKeys.count == document.blocks.count
+                    && document.blockDigests.count == document.blocks.count,
+                nextIndex: 0,
+                startedAt: CACurrentMediaTime())
+            scheduleNextChunk()
+        }
         setNeedsLayout()
+    }
+
+    private func scheduleNextChunk() {
+        guard !chunkScheduled else { return }
+        chunkScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.chunkScheduled = false
+            self.buildNextChunk()
+        }
+    }
+
+    private func buildNextChunk() {
+        guard var pending = pendingBuild else { return }
+        var built = 0
+        while pending.nextIndex < pending.document.blocks.count,
+              built < Self.chunkSize {
+            appendPendingRecord(&pending)
+            built += 1
+        }
+        pendingBuild = pending
+        if pending.nextIndex >= pending.document.blocks.count {
+            finishPendingBuild()
+        } else {
+            scheduleNextChunk()
+        }
+    }
+
+    private func appendPendingRecord(_ pending: inout PendingBuild) {
+        let index = pending.nextIndex
+        let block = pending.document.blocks[index]
+        let key = pending.keyed
+            ? pending.document.blockKeys[index]
+            : "unkeyed:\(index)"
+        let digest = pending.keyed ? pending.document.blockDigests[index] : 0
+        appendRecord(block: block, key: key, digest: digest, width: pending.width)
+        pending.nextIndex += 1
+    }
+
+    /// Finish any spread-out build now. Called before the synchronous paths so
+    /// a row that reaches the viewport early still displays completely.
+    private func finishPendingBuild() {
+        guard var pending = pendingBuild else { return }
+        while pending.nextIndex < pending.document.blocks.count {
+            appendPendingRecord(&pending)
+        }
+        pendingBuild = nil
+        builtWidth = pending.width
+        builtKey = pending.key
+        builtGeneration = pending.generation
+        updateSpacing(document: pending.document)
+        #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "leaf.prebuildLead", seconds: CACurrentMediaTime() - pending.startedAt)
+        #endif
+        setNeedsDisplay()
+    }
+
+    /// Whether the given document identity is already installed. `sizeThatFits`
+    /// asks this before re-installing, so repeated size queries do not request
+    /// a layout pass on every call.
+    func matches(documentKey: String) -> Bool {
+        self.documentKey == documentKey
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = bounds.width
         guard width > 0 else { return }
+        finishPendingBuild()
         let widthChanged = abs(width - builtWidth) > 0.5
         guard widthChanged || documentKey != builtKey else { return }
         builtWidth = width
@@ -310,26 +434,30 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
         applyDocument(width: width, widthChanged: widthChanged)
     }
 
-    @objc private func handleAncestorLinkTap(_ recognizer: UITapGestureRecognizer) {
-        _ = openLink(in: self, at: recognizer.location(in: self))
-    }
-
-    private func openLink(in view: UIView, at point: CGPoint) -> Bool {
-        if let textView = view as? AssistantMarkdownBlockTextView {
-            let local = textView.convert(point, from: self)
-            if textView.bounds.contains(local), textView.openLink(at: local) {
-                return true
+    /// Build (or update) the block views at `width` and return their total
+    /// height. The representable calls this from `sizeThatFits`, so the row
+    /// height comes from the views that will draw — one TextKit layout per
+    /// block, reused by drawing (the official leaf's `measuredSizes`
+    /// contract). `layoutSubviews` then only places frames.
+    func prepareAndMeasure(width: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite else { return 0 }
+        finishPendingBuild()
+        let widthChanged = abs(width - builtWidth) > 0.5
+        if widthChanged || documentKey != builtKey {
+            builtWidth = width
+            builtKey = documentKey
+            applyDocument(width: width, widthChanged: widthChanged)
+        }
+        var total = records.reduce(0) { $0 + $1.height }
+        // `updateSpacing` places inter-block gaps; the document measurement
+        // includes them, so the sum must too.
+        if let document, records.count == document.blocks.count, records.count > 1 {
+            for index in 1..<records.count {
+                total += AssistantMarkdownTextLayout.topLevelSpacing(
+                    after: index - 1, in: document)
             }
         }
-        for subview in view.subviews {
-            if openLink(in: subview, at: point) { return true }
-        }
-        return false
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
+        return total
     }
 
     private func enableTextInteraction(in view: UIView) {
@@ -350,6 +478,13 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
     /// only when the document's generation changed (a correction, a typography
     /// change, or a fallback document without block identities).
     private func applyDocument(width: CGFloat, widthChanged: Bool) {
+        #if AA_TIMELINE_PROBE
+        let buildStart = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteStage(
+                "codeStack.build", seconds: CACurrentMediaTime() - buildStart)
+        }
+        #endif
         guard let document else {
             UIView.performWithoutAnimation { removeRecords(from: 0) }
             builtGeneration = generation
@@ -422,22 +557,44 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                             digest: Int, width: CGFloat) -> Record {
         let made = AssistantMarkdownBlockViewFactory.make(
             block, width: width, displayScale: displayScale,
-            interactiveText: true)
+            interactiveText: true,
+            key: key, digest: digest,
+            typographyRevision: typographyRevision, cache: cache)
         // Body text (including list/quote paragraphs) gets system
         // link/selection interaction. Fenced code owns its copy button and
         // horizontal scroll; tables keep their own link lift/menu, so
         // those subtrees stay inert.
+#if AA_TIMELINE_PROBE
+        let interactionStart = CACurrentMediaTime()
+#endif
         enableTextInteraction(in: made.view)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.interaction", seconds: CACurrentMediaTime() - interactionStart)
+        let constraintStart = CACurrentMediaTime()
+#endif
         let constraint = made.view.heightAnchor.constraint(equalToConstant: made.height)
         constraint.isActive = true
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.constraints", seconds: CACurrentMediaTime() - constraintStart)
+#endif
         return Record(key: key, kind: block.kindName, digest: digest,
-                      view: made.view, constraint: constraint)
+                      view: made.view, constraint: constraint,
+                      height: made.height)
     }
 
     private func appendRecord(block: AssistantMarkdownBlock, key: String,
                               digest: Int, width: CGFloat) {
         let record = makeRecord(block: block, key: key, digest: digest, width: width)
+#if AA_TIMELINE_PROBE
+        let addStart = CACurrentMediaTime()
+#endif
         stack.addArrangedSubview(record.view)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "block.addSubview", seconds: CACurrentMediaTime() - addStart)
+#endif
         records.append(record)
     }
 
@@ -484,8 +641,22 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 view.attributedText = text.attributed
             }
             if record.digest != digest || widthChanged {
-                record.constraint.constant = height(
-                    of: block, key: record.key, digest: digest, width: width)
+                // Same rule as the factory: the width-explicit measurement is
+                // the height. The view's own `usageBounds` collapses to one
+                // line while the view has no bounds yet (device 2026-11-07
+                // 01:30), so it is only a fallback.
+                let structural = height(of: block, key: record.key,
+                                        digest: digest, width: width)
+                let resolved: CGFloat
+                if structural > 0 {
+                    view.prepareLayout(width: width)
+                    resolved = structural
+                } else {
+                    resolved = view.measuredHeight(
+                        width: width, displayScale: displayScale)
+                }
+                record.constraint.constant = resolved
+                records[index].height = resolved
             }
         case .code(let code):
             guard let view = record.view as? AssistantCodeBlockView else {
@@ -494,7 +665,9 @@ final class CodeMarkdownTextStackView: UIView, UIGestureRecognizerDelegate {
                 return
             }
             if record.digest != digest {
-                record.constraint.constant = view.update(codeBlock: code)
+                let updated = view.update(codeBlock: code)
+                record.constraint.constant = updated
+                records[index].height = updated
             }
         case .divider:
             break

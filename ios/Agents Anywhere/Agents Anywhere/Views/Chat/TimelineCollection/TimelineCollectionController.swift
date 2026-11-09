@@ -338,6 +338,15 @@ final class TimelineCollectionController: UIViewController {
         // reconfigure, so automatic invalidation would only add layout passes.
         collectionView.selfSizingInvalidation = .disabled
         collectionView.delegate = self
+        // With a prefetch data source UIKit materializes prepared cells for
+        // upcoming rows in the update cycle's idle phase
+        // (`_prefetchItemsForPrefetchingContext` → the provider). The row's
+        // first SwiftUI layout therefore runs before the frame that scrolls it
+        // in. The callback itself has nothing to build: the cells must come
+        // from `dequeueReusableCell`, and UIKit's prefetch machinery rejects a
+        // cell made by hand (b1029 SIGABRT in
+        // `_createPreparedCellForItemAtIndexPath`).
+        collectionView.prefetchDataSource = self
         anchorDriver = TimelineAnchorDriver(scrollView: collectionView, inputs: .init(
             contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
@@ -367,6 +376,18 @@ final class TimelineCollectionController: UIViewController {
         ])
         layout.host = self
         dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { [weak self] collectionView, indexPath, item in
+#if AA_TIMELINE_PROBE
+            // Hosting-cell creation is the one per-new-row cost a scroll pays
+            // inside UICollectionView; time it so a coast hitch can be blamed
+            // on cell materialization instead of a background pass.
+            let probeCell = CACurrentMediaTime()
+            TimelineProbeStore.shared.noteCellProvider()
+            TimelineProbeStore.shared.enterSection("cellProvider")
+            defer {
+                TimelineProbeStore.shared.noteScrollSegment("cellProvider", since: probeCell)
+                TimelineProbeStore.shared.leaveSection()
+            }
+#endif
             if let self, let content = self.content {
                 if let streaming = content.assistantStreamingDocument(for: item),
                    self.documentHeights[item.itemID] != nil {
@@ -458,7 +479,7 @@ final class TimelineCollectionController: UIViewController {
                 } else {
                     cell.onContentHeightReport = nil
                 }
-                cell.configure(content.rowView(for: item),
+                cell.configure(content.rowView(for: item, width: self.columnWidth),
                                itemID: item.itemID,
                                policy: content.heightPolicy(for: item),
                                isMeasured: isMeasured,
@@ -474,13 +495,62 @@ final class TimelineCollectionController: UIViewController {
         if let hosted = measurer as? TimelineHostingHeightMeasurer {
             hosted.updateTraitOverrides(from: traitCollection)
         }
-        if let pending = pendingApply, columnWidth > 0 {
-            pendingApply = nil
-            apply(items: pending.items, animating: pending.animating)
-        }
+        applyPendingIfNeeded()
         handleContainerHeightChange()
         startAnchorDriverIfNeeded()
         scheduleVisibleCellFrameSync()
+    }
+
+    /// A finger resting on the list is still `isDragging == true`, but the
+    /// reader is not moving anything — parking then would freeze the stream
+    /// under a motionless finger. Only a recent offset change counts as the
+    /// reader owning the frame.
+    private var lastScrollMovementAt: CFTimeInterval = 0
+
+    private var isScrollMoving: Bool {
+        guard let collectionView else { return false }
+        if collectionView.isDecelerating { return true }
+        guard collectionView.isDragging else { return false }
+        return CACurrentMediaTime() - lastScrollMovementAt < 0.15
+    }
+
+    /// UIKit does not promise `scrollViewDidEndDecelerating` when a
+    /// programmatic offset write interrupts the coast (see `requestBottom`),
+    /// so a parked snapshot gets a timed re-check instead of relying on that
+    /// callback alone.
+    /// A reload requested while the list was moving; performed on settle.
+    private var reloadDeferred = false
+
+    private var pendingApplyCheck: DispatchWorkItem?
+
+    private func schedulePendingApplyCheck() {
+        guard pendingApplyCheck == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingApplyCheck = nil
+            guard self.pendingApply != nil || self.reloadDeferred else { return }
+            if self.isScrollMoving {
+                self.schedulePendingApplyCheck()
+            } else {
+                self.applyPendingIfNeeded()
+            }
+        }
+        pendingApplyCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    private func applyPendingIfNeeded() {
+        guard !navigationSuspended, columnWidth > 0 else { return }
+        if isScrollMoving { return }
+        if reloadDeferred {
+            // A deferred reload re-reads the adapter generation, so it also
+            // supersedes whatever snapshot was parked before.
+            reloadFromContent()
+            return
+        }
+        guard let pending = pendingApply else { return }
+        pendingApply = nil
+        apply(items: pending.items, animating: pending.animating)
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -520,6 +590,17 @@ final class TimelineCollectionController: UIViewController {
 
     func reloadFromContent(animating: Bool = false) {
         guard let content else { return }
+        // Reading `contentGeneration` is what runs the adapter's refresh
+        // (grouping, signatures, diff) — 17 ms per flush. While the reader is
+        // dragging or coasting that work lands inside the scrolling frame and
+        // produced the stream-only hitches (the parked apply left the refresh
+        // untouched). Defer the whole reload; `applyPendingIfNeeded` performs
+        // it once the list settles.
+        if isScrollMoving || (navigationSuspended && !historyPaging) {
+            reloadDeferred = true
+            return
+        }
+        reloadDeferred = false
         guard content.contentGeneration != lastReloadGeneration else { return }
         lastReloadGeneration = content.contentGeneration
         let items = (0..<content.itemCount).map { content.item(at: $0) }
@@ -537,6 +618,36 @@ final class TimelineCollectionController: UIViewController {
             pendingSnapshotUpdate = .apply(items: items, animating: animating)
             return
         }
+        // The drawer transition runs its own display link; a snapshot apply
+        // plus synchronous measurement inside those frames is what turned a
+        // swipe into dropped frames. Park the latest content and apply it the
+        // moment the transition ends.
+        // Only tail updates park: a history page carries an anchor
+        // compensation that has to land on the frame it was computed for (a
+        // page parked past the 15 s paging timeout would apply as a plain
+        // snapshot and shift the reading position). Item count is not a
+        // reliable discriminator — a streamed tail changes the row set too
+        // (a new step group appears, the message group splits), and those
+        // applies are exactly the ones that dropped frames mid-drag.
+        if navigationSuspended, !historyPaging {
+            pendingApply = (items: items, animating: animating)
+            schedulePendingApplyCheck()
+            return
+        }
+        // Same rule for the reader's own gesture: dragging or coasting is the
+        // frame the reader is looking at, and a streamed refresh landed inside
+        // it every 0.2-1 s (a 16 ms rebuild plus a 19 ms snapshot apply on top
+        // of the row being materialized). Park it; `applyPendingIfNeeded`
+        // lands the latest content as soon as scrolling settles.
+        // Only tail updates park: a snapshot whose item count moved is a
+        // prepend/append (history paging), and its anchor correction must
+        // land on the frame it was computed for.
+        if isScrollMoving, !historyPaging {
+            pendingApply = (items: items, animating: animating)
+            schedulePendingApplyCheck()
+            return
+        }
+        pendingApply = nil
         isPerformingSnapshot = true
 #if AA_TIMELINE_PROBE
         let probeApplyStart = CACurrentMediaTime()
@@ -605,11 +716,20 @@ final class TimelineCollectionController: UIViewController {
         if windowReplaced { layout.discardParkedHeights() }
         let resolveWindowBottom = windowReplaced && windowReplacementReturn
             && insertionProjection == nil
+#if AA_TIMELINE_PROBE
+        let probeEntriesStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.noteStage(
+            "apply.prep", seconds: probeEntriesStart - probeApplyStart)
+#endif
         let entries: [TimelineContentEntry] = items.map { item in
             TimelineContentEntry(item: item, signature: content.contentSignature(for: item))
         }
         let change = signatures.update(entries)
         let changed = Set(change.changed)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.entries", seconds: CACurrentMediaTime() - probeEntriesStart)
+#endif
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteApply(items: items, changedCount: change.changed.count,
                                             animating: animating,
@@ -652,6 +772,9 @@ final class TimelineCollectionController: UIViewController {
         let measurementTop = viewport.offsetY + viewport.topInset
         let measurementSkipAbove = measurementTop
             - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+#if AA_TIMELINE_PROBE
+        let probeHeightKeyStart = CACurrentMediaTime()
+#endif
         for item in items {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
@@ -674,6 +797,8 @@ final class TimelineCollectionController: UIViewController {
             }
         }
 #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.heightKey", seconds: CACurrentMediaTime() - probeHeightKeyStart)
         let probeMeasureStart = CACurrentMediaTime()
 #endif
         if !applyingHistoryPage {
@@ -684,7 +809,10 @@ final class TimelineCollectionController: UIViewController {
             measureSynchronously(toMeasure, width: columnWidth)
         }
 #if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.measure", seconds: CACurrentMediaTime() - probeMeasureStart)
         TimelineProbeStore.shared.noteMeasureDuration(CACurrentMediaTime() - probeApplyStart)
+        let probePostMeasureStart = CACurrentMediaTime()
         TimelineProbeStore.shared.noteHistory(
             "apply-measure skipped=\(applyingHistoryPage ? 1 : 0) n=\(toMeasure.count) "
             + "ms=\(Int(((CACurrentMediaTime() - probeMeasureStart) * 1000).rounded()))")
@@ -723,6 +851,11 @@ final class TimelineCollectionController: UIViewController {
             }
         }
 
+#if AA_TIMELINE_PROBE
+        let probeSnapshotStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.noteStage(
+            "apply.postMeasure", seconds: probeSnapshotStart - probePostMeasureStart)
+#endif
         var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
         snapshot.appendSections([.main])
         snapshot.appendItems(items)
@@ -735,11 +868,21 @@ final class TimelineCollectionController: UIViewController {
         for item in existingChanges where changed.contains(item) {
             if let height = beforeHeights[item.itemID] { staleFits[item.itemID] = height }
         }
+#if AA_TIMELINE_PROBE
+        var probeApplyReturnedAt: CFTimeInterval = 0
+#endif
         currentItems = items
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteApplyDuration(CACurrentMediaTime() - probeApplyStart)
+            // The completion can run after UIKit commits and lays the snapshot
+            // out; this separates that wait from the synchronous apply.
+            if probeApplyReturnedAt > 0 {
+                TimelineProbeStore.shared.noteStage(
+                    "apply.commitWait",
+                    seconds: CACurrentMediaTime() - probeApplyReturnedAt)
+            }
 #endif
             self.isPerformingSnapshot = false
 #if AA_TIMELINE_PROBE
@@ -818,6 +961,13 @@ final class TimelineCollectionController: UIViewController {
             }
             self.performPendingSnapshotUpdate()
         }
+#if AA_TIMELINE_PROBE
+        // Only the synchronous part of `dataSource.apply` is measured here;
+        // the completion above runs after UIKit commits the snapshot.
+        probeApplyReturnedAt = CACurrentMediaTime()
+        TimelineProbeStore.shared.noteStage(
+            "apply.snapshot", seconds: probeApplyReturnedAt - probeSnapshotStart)
+#endif
     }
 
     /// Run the newest snapshot request once the in-flight one has finished.
@@ -1394,6 +1544,7 @@ final class TimelineCollectionController: UIViewController {
         pendingMeasurementTask = Task { @MainActor [weak self] in
 #if AA_TIMELINE_PROBE
             let probeStart = CACurrentMediaTime()
+            TimelineProbeStore.shared.enterSection("pendingMeasure")
             var probeMeasured = 0
             var probeSkipped = 0
             var probeScrolled = 0
@@ -1403,6 +1554,9 @@ final class TimelineCollectionController: UIViewController {
                     "pending-measure end n=\(pending.count) measured=\(probeMeasured) "
                     + "skipped=\(probeSkipped) scrolled=\(probeScrolled) "
                     + "ms=\(Int(((CACurrentMediaTime() - probeStart) * 1000).rounded()))")
+                TimelineProbeStore.shared.noteScrollSegment("pendingMeasure.pass",
+                                                             since: probeStart)
+                TimelineProbeStore.shared.leaveSection()
             }
 #endif
             if let self, let hosted = self.measurer as? TimelineHostingHeightMeasurer {
@@ -1677,7 +1831,16 @@ final class TimelineCollectionController: UIViewController {
                     // This pass consumes the wake signal; a request that
                     // arrives during the pass stays pending for the next one.
                     self.visibleCellSettleNudged = false
-                    if !self.settleVisibleCellHeightsOnce() { return }
+#if AA_TIMELINE_PROBE
+                    let probeSettle = CACurrentMediaTime()
+                    TimelineProbeStore.shared.enterSection("settle")
+#endif
+                    let settleResult = self.settleVisibleCellHeightsOnce()
+#if AA_TIMELINE_PROBE
+                    TimelineProbeStore.shared.noteScrollSegment("settle.pass", since: probeSettle)
+                    TimelineProbeStore.shared.leaveSection()
+#endif
+                    if !settleResult { return }
                     if CACurrentMediaTime() >= slotEnd { break }
                 }
             }
@@ -1860,7 +2023,15 @@ final class TimelineCollectionController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.cellFrameSyncScheduled = false
+#if AA_TIMELINE_PROBE
+            let probeSync = CACurrentMediaTime()
+            TimelineProbeStore.shared.enterSection("frameSync")
+#endif
             self.syncVisibleCellFrames()
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteScrollSegment("frameSync.pass", since: probeSync)
+            TimelineProbeStore.shared.leaveSection()
+#endif
         }
     }
 
@@ -1884,10 +2055,12 @@ final class TimelineCollectionController: UIViewController {
               phase.phase != .animating, !collectionView.isTracking,
               !collectionView.isDecelerating else { return }
         var stale: [IndexPath] = []
-        var wrongContent: [IndexPath] = []
+        var wrongContent: [(indexPath: IndexPath, item: TimelineListItem)] = []
         for indexPath in collectionView.indexPathsForVisibleItems {
-            guard currentItems.indices.contains(indexPath.item) else { continue }
-            let item = currentItems[indexPath.item]
+            // The committed snapshot is the truth for what this index path
+            // should show; `currentItems` is only the last array handed to the
+            // data source and can be one update ahead of it.
+            guard let item = dataSource.itemIdentifier(for: indexPath) else { continue }
             guard let cell = collectionView.cellForItem(at: indexPath),
                   let attributes = layout.layoutAttributesForItem(at: indexPath) else { continue }
             var contentMismatch = false
@@ -1895,7 +2068,7 @@ final class TimelineCollectionController: UIViewController {
                hosting.itemID != item.itemID {
                 // A nil id is a visible cell whose configuration never ran;
                 // it draws nothing, which is exactly the blank this repairs.
-                wrongContent.append(indexPath)
+                wrongContent.append((indexPath, item))
                 contentMismatch = true
             }
             // Hosted-contract rows invalidate their own row and the rows below
@@ -1915,8 +2088,25 @@ final class TimelineCollectionController: UIViewController {
         }
 #endif
         if !wrongContent.isEmpty {
-            UIView.performWithoutAnimation {
-                collectionView.reconfigureItems(at: wrongContent)
+            // A diffable data source owns cell configuration: calling
+            // `collectionView.reconfigureItems(at:)` directly trips UIKit's
+            // assertion (the b1067/b1068 crash class; the simulator gate
+            // crashed here from `toolStorm`, run 42498517710). Reconfigure the
+            // same identities through the data source — the apply rebinds the
+            // cells on the next update cycle, still before the frame the
+            // reader would see.
+            // Every entry was read from the committed snapshot, so these
+            // identifiers are exactly what `snapshot()` holds.
+            let wrongItems = wrongContent.map(\.item)
+            if !wrongItems.isEmpty {
+                isPerformingSnapshot = true
+                var rebind = dataSource.snapshot()
+                rebind.reconfigureItems(wrongItems)
+                dataSource.apply(rebind, animatingDifferences: false) { [weak self] in
+                    guard let self else { return }
+                    self.isPerformingSnapshot = false
+                    self.performPendingSnapshotUpdate()
+                }
             }
         }
         guard !stale.isEmpty else {
@@ -2915,6 +3105,9 @@ final class TimelineCollectionController: UIViewController {
                 let transition = phase.apply(.watchdogExpired)
                 onPhaseChanged?(transition)
             }
+            // Land parked content before the driver places the viewport
+            // against the new heights.
+            applyPendingIfNeeded()
             // The driver's navigationSuspendedChanged(false) performs the
             // placement itself.
             publishViewport()
@@ -3164,6 +3357,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        lastScrollMovementAt = CACurrentMediaTime()
         guard !navigationSuspended else { return }
 #if DEBUG
         if testGestureState != nil {
@@ -3180,16 +3374,39 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 #endif
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.scrollTick()
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("didScroll")
+        defer { TimelineProbeStore.shared.leaveSection() }
 #endif
         let current = viewport
         if phase.phase == .interacting { rearmVisiblePulls(at: current) }
         if phase.phase == .interacting || phase.phase == .decelerating { updatePulls(current) }
+#if AA_TIMELINE_PROBE
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.publish", since: probePublish)
+        let probeAnchor = CACurrentMediaTime()
+#endif
         anchorDriver?.scrolledWithoutAHand()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.anchor", since: probeAnchor)
+        TimelineProbeStore.shared.noteScrollSegment("didScroll.total", since: probeStart)
+#endif
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { applyPendingIfNeeded() }
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("endDragging")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("endDragging.total", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         // Official: the drag-end event applies only while `motion == dragging`
         // (part-ag §1.7). If a programmatic return is already animating (a
         // product event started it under the finger is deferred, see
@@ -3202,16 +3419,39 @@ extension TimelineCollectionController: UICollectionViewDelegate {
                 anchorDriver?.readerLifted(willCoast: decelerate)
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeLayout = CACurrentMediaTime()
+#endif
         layout.noteDragDidEnd(willDecelerate: decelerate)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.layout", since: probeLayout)
+        let probeSchedule = CACurrentMediaTime()
+#endif
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.schedule", since: probeSchedule)
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDragging.publish", since: probePublish)
+#endif
         replayPendingGestureBottomRequest()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        applyPendingIfNeeded()
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("endDecel")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("endDecel.total", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         // Official: the deceleration-end event applies only while
         // `motion == coasting` (part-ag §1.7). A return that halted the coast
         // is `.animating` now; this callback must not set it idle or the
@@ -3226,12 +3466,26 @@ extension TimelineCollectionController: UICollectionViewDelegate {
                 anchorDriver?.coastingEnded()
             }
         }
+#if AA_TIMELINE_PROBE
+        let probeLayout = CACurrentMediaTime()
+#endif
         layout.noteDecelerationDidEnd()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.layout", since: probeLayout)
+        let probeSchedule = CACurrentMediaTime()
+#endif
         scheduleVisibleCellSettle()
         scheduleVisibleCellFrameSync()
         schedulePendingMeasurements()
         scheduleVisibleCellSettle()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.schedule", since: probeSchedule)
+        let probePublish = CACurrentMediaTime()
+#endif
         publishViewport()
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteScrollSegment("endDecel.publish", since: probePublish)
+#endif
         replayPendingGestureBottomRequest()
     }
 
@@ -3253,4 +3507,21 @@ extension TimelineCollectionController: UICollectionViewDelegate {
     }
 
 
+}
+
+// MARK: - Cell prefetching
+
+extension TimelineCollectionController: UICollectionViewDataSourcePrefetching {
+    /// Nothing to build here. Setting the prefetch data source is what makes
+    /// UIKit materialize prepared cells for the rows just outside the viewport
+    /// during the update cycle's idle phase; the provider already does the
+    /// work, one row off the scroll frame. The previous attempt warmed cells
+    /// by hand and returned them from the provider; UIKit's prefetch machinery
+    /// asserts on a cell that did not come from `dequeueReusableCell`
+    /// (b1029 SIGABRT), so the cells stay exclusively dequeued.
+    func collectionView(_ collectionView: UICollectionView,
+                        prefetchItemsAt indexPaths: [IndexPath]) {}
+
+    func collectionView(_ collectionView: UICollectionView,
+                        cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {}
 }

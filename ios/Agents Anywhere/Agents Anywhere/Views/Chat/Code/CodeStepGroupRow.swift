@@ -124,8 +124,10 @@ struct CodeStepGroupRowView: View {
     }
 
     private var summaryText: Text {
-        let summary = TimelineStepSummarizer.summary(steps: group.steps, cwd: cwd)
-        return Text(TimelineStepSummaryText.line(summary))
+        // Built with the group (apply time). Re-running the summarizer here
+        // priced one label plan and diff scan per step inside the frame that
+        // scrolled the row in.
+        return Text(TimelineStepSummaryText.line(group.summary))
             .font(.custom(CodePageTheme.sansFontName,
                           size: CodePageTheme.toolRowFontSize,
                           relativeTo: CodePageTheme.toolRowBodyTextStyle))

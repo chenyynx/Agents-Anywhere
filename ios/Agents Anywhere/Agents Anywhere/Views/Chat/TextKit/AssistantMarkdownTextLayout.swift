@@ -61,13 +61,38 @@ enum AssistantMarkdownTextLayout {
         let manager = NSTextLayoutManager()
         storage.addTextLayoutManager(manager)
         let container = NSTextContainer(
-            size: CGSize(width: width, height: .greatestFiniteMagnitude))
+            size: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         manager.textContainer = container
         manager.ensureLayout(for: manager.documentRange)
         let used = manager.usageBoundsForTextContainer.maxY
         guard used.isFinite, used > 0 else { return 0 }
         return roundUp(used, scale: displayScale)
+    }
+
+    /// TextKit's used size at the given wrap width. The user bubble hugs the
+    /// longest *wrapped* line; the unbounded `intrinsicSize` below instead
+    /// hands any text wider than the column the whole column, which left a
+    /// two-line URL with half a bubble of empty trailing space (pp
+    /// 2026-11-08).
+    static func wrappedSize(of attributed: NSAttributedString,
+                            width: CGFloat,
+                            displayScale: CGFloat) -> CGSize {
+        guard width > 0, width.isFinite, attributed.length > 0 else { return .zero }
+        let storage = NSTextContentStorage()
+        storage.attributedString = attributed
+        let manager = NSTextLayoutManager()
+        storage.addTextLayoutManager(manager)
+        let container = NSTextContainer(
+            size: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.textContainer = container
+        manager.ensureLayout(for: manager.documentRange)
+        let used = manager.usageBoundsForTextContainer
+        guard used.width.isFinite, used.width > 0,
+              used.maxY.isFinite, used.maxY > 0 else { return .zero }
+        return CGSize(width: min(width, roundUp(used.width, scale: displayScale)),
+                      height: roundUp(used.maxY, scale: displayScale))
     }
 
     /// TextKit's used size for an attributed string laid out without wrapping.
@@ -89,6 +114,47 @@ enum AssistantMarkdownTextLayout {
         guard used.width.isFinite, used.height.isFinite, used.height > 0 else { return .zero }
         return CGSize(width: roundUp(used.width, scale: displayScale),
                       height: roundUp(used.height, scale: displayScale))
+    }
+
+    /// Code text size, memoised by the same key + digest the height cache
+    /// uses. The height computation and the card's own init both need the
+    /// unbounded layout of the source; without this they laid the whole code
+    /// block out twice, and a long card was the single most expensive block on
+    /// the device probe (max 60 ms).
+    private struct IntrinsicKey: Hashable {
+        let key: String
+        let digest: Int
+        let displayScale: CGFloat
+        let typographyRevision: Int
+    }
+
+    private static var intrinsicSizes: [IntrinsicKey: CGSize] = [:]
+    private static var intrinsicOrder: [IntrinsicKey] = []
+    private static let intrinsicLimit = 256
+
+    static func cachedIntrinsicSize(of attributed: NSAttributedString,
+                                    displayScale: CGFloat,
+                                    key: String?,
+                                    digest: Int,
+                                    typographyRevision: Int) -> CGSize {
+        guard let key else {
+            return intrinsicSize(of: attributed, displayScale: displayScale)
+        }
+        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
+        let cacheKey = IntrinsicKey(
+            key: key, digest: digest,
+            displayScale: (scale * 100).rounded() / 100,
+            typographyRevision: typographyRevision)
+        if let hit = intrinsicSizes[cacheKey] { return hit }
+        let size = intrinsicSize(of: attributed, displayScale: displayScale)
+        intrinsicSizes[cacheKey] = size
+        intrinsicOrder.append(cacheKey)
+        if intrinsicOrder.count > intrinsicLimit {
+            let drop = intrinsicOrder.count - intrinsicLimit
+            for old in intrinsicOrder.prefix(drop) { intrinsicSizes[old] = nil }
+            intrinsicOrder.removeFirst(drop)
+        }
+        return size
     }
 
     /// Height of any block, from the same measurements its view installs as
@@ -298,6 +364,19 @@ enum AssistantMarkdownTextLayout {
         guard let key, let cache else {
             return height(of: block, width: width, displayScale: displayScale)
         }
+        if case .code(let code) = block {
+            // The intrinsic size is the whole cost of a code block's height;
+            // the arithmetic around it is free, and the card's init reads the
+            // same entry instead of laying the source out again.
+            let textSize = cachedIntrinsicSize(
+                of: code.code, displayScale: displayScale, key: key,
+                digest: digest, typographyRevision: typographyRevision)
+            let divider = displayScale > 0 && displayScale.isFinite
+                ? 1 / displayScale : 1
+            return roundUp(code.headerHeight + divider
+                           + code.contentPadding * 2 + textSize.height,
+                           scale: displayScale)
+        }
         return cache.height(
             blockKey: key, digest: digest, width: width,
             displayScale: displayScale,
@@ -384,57 +463,189 @@ final class AssistantMarkdownBlockHeightCache {
     }
 }
 
-/// One TextKit 2 block. `UITextView` is the official renderer's base too
-/// (`MarkdownUITextView` holds a custom `NSTextLayoutManager`); the M2 cell
-/// only needs the default TextKit 2 stack and an intrinsic height that matches
-/// `AssistantMarkdownTextLayout.height(of:)`.
-final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
-                                           UIGestureRecognizerDelegate {
-    private var lastMeasuredWidth: CGFloat = -1
-    /// The Code page opts in; Chat's hosted cell leaves the text inert for now.
-    private var textInteractionEnabled = false
+/// One TextKit 2 block, drawn by this view itself.
+///
+/// `UITextView` cost 0.8 ms to create and 0.3 ms to assign per block; a row
+/// carries six of them, which was most of the 7 ms `codeStack.build` measured
+/// on device (the 120 Hz frame budget is 8.3 ms).
+///
+/// The official renderer has three leaves behind a remote flag
+/// (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4, §3 Q1): `MarkdownUITextView`
+/// (a `UITextView` subclass, the default), `MarkdownTextView` (a plain
+/// `UIView` that self-draws its layout fragments) and
+/// `SelectableMarkdownTextView` (the same self-drawn view plus
+/// `UITextInteraction` and its own `UITextInput`). This view is the second
+/// shape. The third is what the selection layer will need when it comes back.
+final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate {
+    private let ownStorage: NSTextContentStorage
+    private let ownLayoutManager: NSTextLayoutManager
+    private let ownContainer: NSTextContainer
+
+    /// The backing storage, shared with the layout manager. The code card's
+    /// streaming highlight path edits it in place, so it is exposed as-is.
+    ///
+    /// `NSTextContentStorage` creates this storage lazily, and neither its
+    /// init-time empty assignment nor a self-assignment is guaranteed to
+    /// materialise it: the simulator gates crashed here from a code card that
+    /// had never been laid out (run 42538286526, four identical stacks
+    /// `AssistantCodeBlockView.apply(tokens:base:)` → this getter). A layout
+    /// pass is the one thing that definitely asks the content storage for its
+    /// text, so force one before giving up.
+    var textStorage: NSTextStorage {
+        if let storage = ownStorage.textStorage { return storage }
+        ownStorage.attributedString = NSAttributedString(
+            attributedString: ownStorage.attributedString ?? NSAttributedString())
+        if let storage = ownStorage.textStorage { return storage }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        if let storage = ownStorage.textStorage { return storage }
+        assertionFailure("NSTextContentStorage has no backing text storage")
+        return NSTextStorage()
+    }
+
+    /// Whether the backing storage exists yet. Callers that can fall back to a
+    /// whole-string assignment (the code card's incremental append) must ask
+    /// this instead of provoking the materialisation above.
+    var hasTextStorage: Bool { ownStorage.textStorage != nil }
+
+    /// What is actually laid out — the storage, not `sourceAttributed`: the
+    /// code card appends to the storage without going through the setter.
+    /// Go through the getter: `NSTextContentStorage.textStorage` is nil until
+    /// it is materialised, and a nil read here silently skipped every glyph
+    /// (only the chip overlay, which reads the layout manager, kept drawing).
+    private var renderedLength: Int {
+        ownStorage.offset(from: ownStorage.documentRange.location,
+                          to: ownStorage.documentRange.endLocation)
+    }
+
+    /// The string the owner assigned, unchanged. The storage holds a copy
+    /// whose link runs are recoloured (see `recolouringLinks`), so the getter
+    /// keeps answering what was set — callers diff it against the document to
+    /// decide whether a block needs updating.
+    private var sourceAttributed: NSAttributedString?
+
+    var attributedText: NSAttributedString? {
+        get { sourceAttributed }
+        set {
+            sourceAttributed = newValue
+            selectionOffsets = nil
+            ownStorage.attributedString = Self.recolouringLinks(newValue ?? NSAttributedString())
+            setNeedsDisplay()
+        }
+    }
+
+    /// `UITextView` painted links with `linkTextAttributes` — body colour and
+    /// a single underline (`CANONICAL/06-visuals-assets.md`: links are not
+    /// blue) — overriding whatever colour the document builder put on the run.
+    /// A layout manager draws the run's own colour, so the override has to be
+    /// written into the string this view lays out.
+    private static func recolouringLinks(_ attributed: NSAttributedString) -> NSAttributedString {
+        let full = NSRange(location: 0, length: attributed.length)
+        guard attributed.length > 0 else { return attributed }
+        var hasLink = false
+        attributed.enumerateAttribute(.link, in: full) { value, _, stop in
+            if value != nil {
+                hasLink = true
+                stop.pointee = true
+            }
+        }
+        guard hasLink else { return attributed }
+        let copy = NSMutableAttributedString(attributedString: attributed)
+        copy.enumerateAttribute(.link, in: full) { value, range, _ in
+            guard value != nil else { return }
+            copy.addAttributes([
+                .foregroundColor: CodePageTheme.markdownTextUIColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ], range: range)
+        }
+        return copy
+    }
+
+    var textLayoutManager: NSTextLayoutManager? { ownLayoutManager }
+    var textContainer: NSTextContainer { ownContainer }
+
     /// Set by the owner when it wants a non-default URL router.
     var openLink: ((URL) -> Void)?
-    /// Some hosting/scroll combinations swallow UITextView's own link tap;
-    /// the explicit tap recognizer is the fallback (the official custom
-    /// engine uses its own tapGestureRecognizer for the same reason).
-    private var linkTapRecognizer: UITapGestureRecognizer?
+
+    private var textInteractionEnabled = false
+    private var linkTapRecognizer: LinkTapRecognizer?
     private var lastOpened: (url: URL, at: TimeInterval)?
+    private var lastMeasuredWidth: CGFloat = -1
+    private var lastContainerSize: CGSize = .zero
+
+    /// Selection in UTF-16 offsets; `nil` when nothing is selected.
+    private var selectionOffsets: (start: Int, end: Int)?
+    private weak var textInputDelegateStorage: UITextInputDelegate?
+    private lazy var textTokenizer: UITextInputStringTokenizer = {
+        let tokenizer = SelectableMarkdownTextTokenizer(textInput: self)
+        tokenizer.surface = self
+        return tokenizer
+    }()
 
     init(interactive: Bool = false) {
-        super.init(frame: .zero, textContainer: nil)
+        let storage = NSTextContentStorage()
+        let layout = NSTextLayoutManager()
+        let container = NSTextContainer(
+            size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.textContainer = container
+        storage.addTextLayoutManager(layout)
+        // Materialise the backing storage up front: `NSTextContentStorage`
+        // creates it lazily, and the code card edits it before any
+        // `attributedText` has been assigned. Without this the getter would
+        // hand out a detached copy (edits never reach the layout) and the
+        // next insert would throw an NSRangeException.
+        storage.attributedString = NSAttributedString()
+        ownStorage = storage
+        ownLayoutManager = layout
+        ownContainer = container
+        super.init(frame: .zero)
+        // Links are body-coloured and underlined, not the system blue: the
+        // official `MarkdownTextLayout` answers this same delegate method and
+        // nothing else (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.1/§1.2).
+        layout.delegate = self
         #if DEBUG
         CodePageBuildStats.textViewCreations += 1
         #endif
-        isEditable = false
-        isScrollEnabled = false
-        isSelectable = interactive
         isUserInteractionEnabled = interactive
         backgroundColor = .clear
         isOpaque = false
         contentMode = .redraw
-        textContainerInset = .zero
-        textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = true
+        container.widthTracksTextView = false
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The Code page's body text: links tap and long-press selection/copy
-    /// work. The official page uses the same system text view with a custom
-    /// link action (`part-aa-markdown-ui.md` §Q6); the composite cross-block
-    /// selection adapter is a later batch.
+    // MARK: - Drawing
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        // The selection highlight is not drawn here: `UITextInteraction`
+        // paints it (and the handles) from `selectionRects(for:)`. Filling the
+        // rects here too doubled the alpha and read as a black band.
+        guard renderedLength > 0 else { return }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            context.saveGState()
+            context.translateBy(x: fragment.layoutFragmentFrame.minX,
+                                y: fragment.layoutFragmentFrame.minY)
+            for line in fragment.textLineFragments {
+                line.draw(at: line.typographicBounds.origin, in: context)
+            }
+            context.restoreGState()
+            return true
+        }
+    }
+
+    // MARK: - Interaction
+
+    /// Body text: links tap, long press selects, and the edit menu copies.
     func enableTextInteraction() {
         guard !textInteractionEnabled else { return }
         textInteractionEnabled = true
-        isSelectable = true
         isUserInteractionEnabled = true
-        // Links are body-coloured and underlined in the official page, not
-        // the system blue (`CANONICAL/06-visuals-assets.md`).
-        linkTextAttributes = [
-            .foregroundColor: CodePageTheme.markdownTextUIColor,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-        ]
         if openLink == nil {
             openLink = { url in
                 guard let scheme = url.scheme?.lowercased(),
@@ -444,49 +655,116 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
                 UIApplication.shared.open(url)
             }
         }
-        delegate = self
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+        let tap = LinkTapRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
+        // UITextView semantics: a link tap waits until UIKit has ruled out a
+        // double tap. Without the wait, the first tap of a double tap opened a
+        // link chip before the interaction could select the word under it.
+        let doubleTapGate = UITapGestureRecognizer(target: nil, action: nil)
+        doubleTapGate.numberOfTapsRequired = 2
+        doubleTapGate.cancelsTouchesInView = false
+        doubleTapGate.delegate = self
+        addGestureRecognizer(doubleTapGate)
+        tap.require(toFail: doubleTapGate)
         addGestureRecognizer(tap)
         linkTapRecognizer = tap
+        // The official selectable leaf is this view plus
+        // `UITextInteraction` and its own `UITextInput`
+        // (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4); the interaction
+        // brings word selection, the loupe, the drag handles and the edit
+        // menu, and talks to the text through `UITextInput`.
+        let interaction = UITextInteraction(for: .nonEditable)
+        interaction.textInput = self
+        addInteraction(interaction)
+        textSelectionInteraction = interaction
     }
 
-    /// Resolve and open a link at a point in this text view. The owner's
-    /// stack view also calls this (ancestor gesture) when the text view's own
-    /// gesture loses arbitration inside the hosted list.
+    private var textSelectionInteraction: UITextInteraction?
+
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
         guard textInteractionEnabled,
               let index = characterIndex(at: point),
-              let attributedText,
-              attributedText.length > 0 else { return false }
-        let clamped = min(max(index, 0), attributedText.length - 1)
-        guard let url = attributedText.attribute(.link, at: clamped,
-                                                 effectiveRange: nil) as? URL
+              let attributed = attributedText,
+              attributed.length > 0 else { return false }
+        let clamped = min(max(index, 0), attributed.length - 1)
+        guard let url = attributed.attribute(.link, at: clamped,
+                                             effectiveRange: nil) as? URL
         else { return false }
         open(url)
         return true
     }
 
-    /// Fallback for hosting/scroll stacks that do not deliver the text view's
-    /// own link action. Resolve the tapped character and forward only when it
-    /// carries a `.link` attribute; non-link taps are ignored.
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
-        openLink(at: recognizer.location(in: self))
+        // The official tap recognizer only begins when the touch is a tap,
+        // not the touch-up that ends a long press (press < 0.5 s,
+        // `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6). Selection and its
+        // dismissal belong to `UITextInteraction`; this handler only opens
+        // links.
+        if let link = recognizer as? LinkTapRecognizer, !link.isQuickTap { return }
+        _ = openLink(at: recognizer.location(in: self))
     }
 
+    /// Dismiss the selection and give up first responder.
+    func endSelection() {
+        if selectionOffsets != nil { selectedTextRange = nil }
+        if isFirstResponder { resignFirstResponder() }
+    }
+
+    /// Resolve a tap to a character index by walking the laid-out lines. The
+    /// line fragment answers in its own coordinates, so the point is rebased
+    /// twice: fragment origin, then the line's typographic origin.
+    ///
+    /// A point is not always inside a glyph's box: the trailing area after a
+    /// line's last glyph and the leading between two lines are both inside the
+    /// block. The old exact-hit test returned nil there, and the interaction's
+    /// fallback resolved that to the document start/end — so a tap beside a
+    /// line selected the block's first word or its last (pp 2026-11-08).
+    /// Clamp the point into the nearest line instead.
     private func characterIndex(at point: CGPoint) -> Int? {
-        if textLayoutManager != nil {
-            guard let position = closestPosition(to: point) else { return nil }
-            return offset(from: beginningOfDocument, to: position)
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var best: (vertical: CGFloat, horizontal: CGFloat, index: Int)?
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            // `characterIndex(for:)` answers in the line fragment's own
+            // attributed string (the paragraph), so the line's start offset is
+            // already inside it; adding `line.characterRange.location` as well
+            // pushed every line after the first one forward by its own start
+            // offset — the selection landed on later text or clamped away
+            // (pp 2026-11-08). Convert with the fragment's document offset.
+            let fragmentStart = ownLayoutManager.offset(
+                from: ownLayoutManager.documentRange.location,
+                to: fragment.rangeInElement.location)
+            for line in fragment.textLineFragments {
+                let origin = CGPoint(
+                    x: fragment.layoutFragmentFrame.minX + line.typographicBounds.minX,
+                    y: fragment.layoutFragmentFrame.minY + line.typographicBounds.minY)
+                let box = CGRect(origin: origin, size: line.typographicBounds.size)
+                let verticalGap = max(box.minY - point.y, point.y - box.maxY, 0)
+                let horizontalGap = max(box.minX - point.x, point.x - box.maxX, 0)
+                let local = CGPoint(
+                    x: min(max(point.x, box.minX), box.maxX) - origin.x,
+                    y: min(max(point.y, box.minY), box.maxY) - origin.y)
+                let index = fragmentStart + line.characterIndex(for: local)
+                if let current = best {
+                    // The nearest line vertically wins; inside the line's own
+                    // band, the nearest horizontally decides between the end of
+                    // the previous line and the start of the next.
+                    if verticalGap < current.vertical - 0.5
+                        || (abs(verticalGap - current.vertical) <= 0.5
+                            && horizontalGap < current.horizontal) {
+                        best = (verticalGap, horizontalGap, index)
+                    }
+                } else {
+                    best = (verticalGap, horizontalGap, index)
+                }
+            }
+            return true
         }
-        let local = CGPoint(x: point.x - textContainerInset.left,
-                            y: point.y - textContainerInset.top)
-        let index = layoutManager.characterIndex(
-            for: local, in: textContainer,
-            fractionOfDistanceBetweenInsertionPoints: nil)
-        return index
+        return best?.index
     }
 
     /// Both the system link action and the fallback tap can fire for one tap;
@@ -505,34 +783,290 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         true
     }
 
-    // iOS 17+ link action. Returning a custom action keeps the official
-    // "invoke default action" path instead of the system menu's open button.
-    @available(iOS 17.0, *)
-    func textView(_ textView: UITextView,
-                  primaryActionFor textItem: UITextItem,
-                  defaultAction: UIAction) -> UIAction? {
-        guard case let .link(url) = textItem.content else { return defaultAction }
-        return UIAction(title: defaultAction.title, image: defaultAction.image) { [weak self] _ in
-            self?.open(url)
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldReceive touch: UITouch) -> Bool {
+        // The window-level catcher exists only to collapse a selection when a
+        // tap lands outside this block. Receiving in-block touches made it
+        // recognize on the first tap of a double tap and cancel the
+        // interaction's word-selection gesture, so it only takes outside ones.
+        if gestureRecognizer === outsideTapRecognizer {
+            return !bounds.contains(touch.location(in: self))
+        }
+        return true
+    }
+
+    // MARK: - Selection
+
+    private var textLength: Int { sourceAttributed?.length ?? 0 }
+
+    private func location(atOffset offset: Int) -> NSTextLocation? {
+        ownStorage.location(ownStorage.documentRange.location, offsetBy: offset)
+    }
+
+    private func offset(of location: NSTextLocation) -> Int {
+        ownStorage.offset(from: ownStorage.documentRange.location, to: location)
+    }
+
+    /// Segment rectangles for `[start, end)`, the same enumeration the reveal
+    /// mask uses.
+    func selectionFrames(from start: Int, to end: Int) -> [CGRect] {
+        guard end > start,
+              let a = location(atOffset: start),
+              let b = location(atOffset: end),
+              let range = NSTextRange(location: a, end: b) else { return [] }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var frames: [CGRect] = []
+        ownLayoutManager.enumerateTextSegments(in: range, type: .standard, options: []) {
+            _, frame, _, _ in
+            frames.append(frame)
+            return true
+        }
+        return frames
+    }
+
+    private func characterFrame(at offset: Int) -> CGRect? {
+        guard offset >= 0, offset < textLength,
+              let a = location(atOffset: offset),
+              let b = location(atOffset: offset + 1),
+              let range = NSTextRange(location: a, end: b) else { return nil }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var frame = CGRect.zero
+        ownLayoutManager.enumerateTextSegments(in: range, type: .standard, options: []) {
+            _, rect, _, _ in
+            frame = rect
+            return false
+        }
+        return frame.isEmpty ? nil : frame
+    }
+
+    private func caretFrame(at offset: Int) -> CGRect? {
+        let clamped = min(max(offset, 0), textLength)
+        if clamped < textLength, let rect = characterFrame(at: clamped) {
+            return CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+        }
+        if clamped > 0, let rect = characterFrame(at: clamped - 1) {
+            return CGRect(x: rect.maxX, y: rect.minY, width: 2, height: rect.height)
+        }
+        return nil
+    }
+
+    private func wordRange(at offset: Int) -> UITextRange? {
+        guard textLength > 0 else { return nil }
+        let clamped = min(max(offset, 0), textLength - 1)
+        let position = MarkdownTextOffsetPosition(clamped)
+        if let range = textTokenizer.rangeEnclosingPosition(
+            position, with: .word, inDirection: .storage(.forward)) as? MarkdownTextOffsetRange,
+           range.startOffset != range.endOffset {
+            return range
+        }
+        return MarkdownTextOffsetRange(clamped, min(clamped + 1, textLength))
+    }
+
+    private func notifySelectionChanged() {
+        textInputDelegateStorage?.selectionWillChange(self)
+        textInputDelegateStorage?.selectionDidChange(self)
+    }
+
+    override var canBecomeFirstResponder: Bool { textInteractionEnabled }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            installOutsideTapRecognizer()
+        }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        selectionOffsets = nil
+        removeOutsideTapRecognizer()
+        restoreAncestorClipping()
+        return resigned
+    }
+
+    /// While a block is first responder, a tap almost anywhere else should
+    /// collapse its selection — the message list has no other owner for that
+    /// gesture, so the catcher lives on the window and ignores touches that
+    /// land on this view.
+    private var outsideTapRecognizer: UITapGestureRecognizer?
+
+    private func installOutsideTapRecognizer() {
+        guard outsideTapRecognizer == nil, let window else { return }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleOutsideTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        window.addGestureRecognizer(tap)
+        outsideTapRecognizer = tap
+    }
+
+    private func removeOutsideTapRecognizer() {
+        if let outsideTapRecognizer {
+            outsideTapRecognizer.view?.removeGestureRecognizer(outsideTapRecognizer)
+        }
+        outsideTapRecognizer = nil
+    }
+
+    @objc private func handleOutsideTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: self)
+        guard !bounds.contains(point) else { return }
+        endSelection()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            removeOutsideTapRecognizer()
+            restoreAncestorClipping()
         }
     }
 
-    // iOS 16 fallback.
-    func textView(_ textView: UITextView,
-                  shouldInteractWith URL: URL,
-                  in characterRange: NSRange,
-                  interaction: UITextItemInteraction) -> Bool {
-        guard interaction == .invokeDefaultAction else { return true }
-        open(URL)
-        return false
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) {
+            guard let selectionOffsets else { return false }
+            return selectionOffsets.end > selectionOffsets.start
+        }
+        return super.canPerformAction(action, withSender: sender)
     }
 
+    override func copy(_ sender: Any?) {
+        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start,
+              let source = sourceAttributed else { return }
+        let range = NSRange(location: selectionOffsets.start,
+                            length: selectionOffsets.end - selectionOffsets.start)
+        // Official copy: the attributed substring when the rendered string
+        // matches the source, cleaned of attachment placeholders and word
+        // joiners; the clipboard carries both `public.html` and
+        // `public.utf8-plain-text` (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
+        // §Q6).
+        let plain = Self.cleanedPlainText(source.attributedSubstring(from: range))
+        let html = Self.htmlRepresentation(of: source, range: range)
+        UIPasteboard.general.items = [[
+            "public.html": "<meta charset=\"utf-8\">" + html,
+            "public.utf8-plain-text": plain,
+        ]]
+        // A text view drops the selection once an edit action runs; the
+        // interaction here does not, so do it ourselves (the official app
+        // dismisses the selection after Copy too).
+        endSelection()
+    }
+
+    private static func cleanedPlainText(_ text: NSAttributedString) -> String {
+        var plain = text.string
+        plain = plain.replacingOccurrences(of: "\u{FFFC}", with: "")
+        plain = plain.replacingOccurrences(of: "\u{2060}", with: "")
+        plain = plain.replacingOccurrences(of: "\u{00A0}", with: " ")
+        return plain
+    }
+
+    /// Minimal HTML for the clipboard: paragraphs by newline, then bold /
+    /// italic / inline code / links on the runs.
+    private static func htmlRepresentation(of source: NSAttributedString,
+                                           range: NSRange) -> String {
+        let ns = source.string as NSString
+        var html = ""
+        var cursor = range.location
+        let end = range.location + range.length
+        while cursor < end {
+            var lineEnd = cursor
+            while lineEnd < end, ns.character(at: lineEnd) != 10 { lineEnd += 1 }
+            let lineRange = NSRange(location: cursor, length: lineEnd - cursor)
+            if lineRange.length > 0 {
+                html += "<p>" + htmlInline(of: source, range: lineRange) + "</p>"
+            }
+            cursor = lineEnd + 1
+        }
+        return html
+    }
+
+    private static func htmlInline(of source: NSAttributedString, range: NSRange) -> String {
+        let ns = source.string as NSString
+        var out = ""
+        source.enumerateAttributes(in: range, options: []) { attributes, runRange, _ in
+            var piece = escapingHTML(ns.substring(with: runRange))
+            if let url = attributes[.link] as? URL {
+                piece = "<a href=\"\(url.absoluteString)\">\(piece)</a>"
+            }
+            if attributes[.assistantInlineCodeChip] != nil {
+                piece = "<code>\(piece)</code>"
+            }
+            if let font = attributes[.font] as? UIFont {
+                let traits = font.fontDescriptor.symbolicTraits
+                if traits.contains(.traitBold) { piece = "<strong>\(piece)</strong>" }
+                if traits.contains(.traitItalic) { piece = "<em>\(piece)</em>" }
+            }
+            out += piece
+        }
+        return out
+    }
+
+    private static func escapingHTML(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    // MARK: - Selection clipping
+
+    /// Views whose `clipsToBounds` this view relaxed so the system's
+    /// selection handles can hang past the text column. The chat cell clips
+    /// its content view (needed while a streaming row is shorter than its
+    /// content), and that clip sits exactly on the text's left edge, so a
+    /// start-of-line handle was cut in half. Only relaxed while something is
+    /// selected and restored when the selection goes away.
+    private var relaxedClippingViews: [UIView] = []
+
+    private func relaxAncestorClipping() {
+        guard relaxedClippingViews.isEmpty else { return }
+        var current = superview
+        while let view = current {
+            if view.clipsToBounds {
+                view.clipsToBounds = false
+                relaxedClippingViews.append(view)
+            }
+            current = view.superview
+        }
+    }
+
+    private func restoreAncestorClipping() {
+        for view in relaxedClippingViews { view.clipsToBounds = true }
+        relaxedClippingViews.removeAll()
+    }
+
+    // MARK: - Tokenizer support
+
+    fileprivate var markdownTextLength: Int { renderedLength }
+
+    fileprivate func markdownCharacter(at offset: Int) -> unichar {
+        let text = (sourceAttributed?.string ?? "") as NSString
+        guard offset >= 0, offset < text.length else { return 0 }
+        return text.character(at: offset)
+    }
+
+    /// Character offsets where a laid-out line starts, from the same layout
+    /// the glyphs come from.
+    fileprivate func markdownLineStartOffsets() -> [Int] {
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        var starts: [Int] = []
+        ownLayoutManager.enumerateTextLayoutFragments(
+            from: ownLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            for line in fragment.textLineFragments {
+                let start = line.characterRange.location
+                if starts.last != start { starts.append(start) }
+            }
+            return true
+        }
+        return starts
+    }
+
+    // MARK: - Chip overlay
+
     /// The inline-code chip background is painted by the overlay in
-    /// `AssistantMarkdownTextBlockView`, not here: a text view's `draw(_:)`
-    /// is clipped to its bounds, which cut the 4 pt left padding (and the
-    /// rounded cap) off any chip that started a line. The overlay is a
-    /// sibling 4 pt wider on each side, so the chip keeps the geometry the
-    /// official `InlineCodeChips.Renderer` draws outside the text layout.
+    /// `AssistantMarkdownTextBlockView`, not here (`draw(_:)` is clipped to the
+    /// view's bounds, which cut the chip's 4 pt padding off a line start).
     weak var chipOverlay: AssistantInlineCodeChipOverlayView?
 
     override func setNeedsDisplay() {
@@ -552,15 +1086,39 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
         }
     }
 
+    // MARK: - Measurement
+
+    /// Give the container the row width without laying the text out. The block
+    /// height comes from `AssistantMarkdownTextLayout.height`, which already
+    /// laid the text out at this width; laying it out again here would price
+    /// every text block twice. The view lays out once, when it first draws.
+    func prepareLayout(width: CGFloat) {
+        guard width > 0, width.isFinite else { return }
+        let target = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        if ownContainer.size != target {
+            ownContainer.size = target
+            lastContainerSize = target
+        }
+    }
+
+    func measuredHeight(width: CGFloat, displayScale: CGFloat) -> CGFloat {
+        guard width > 0, width.isFinite,
+              renderedLength > 0 else { return 0 }
+        prepareLayout(width: width)
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
+        let used = ownLayoutManager.usageBoundsForTextContainer.maxY
+        guard used.isFinite, used > 0 else { return 0 }
+        let scale = displayScale > 0 && displayScale.isFinite ? displayScale : 1
+        return ceil(used * scale) / scale
+    }
+
     override var intrinsicContentSize: CGSize {
-        guard bounds.width > 0, let attributedText, attributedText.length > 0 else {
+        guard bounds.width > 0, renderedLength > 0 else {
             return CGSize(width: UIView.noIntrinsicMetric, height: 0)
         }
-        let height = AssistantMarkdownTextLayout.height(
-            of: attributedText,
-            width: bounds.width,
-            displayScale: traitCollection.displayScale)
-        return CGSize(width: UIView.noIntrinsicMetric, height: height)
+        return CGSize(width: UIView.noIntrinsicMetric,
+                      height: measuredHeight(width: bounds.width,
+                                             displayScale: traitCollection.displayScale))
     }
 
     override func layoutSubviews() {
@@ -569,6 +1127,381 @@ final class AssistantMarkdownBlockTextView: UITextView, UITextViewDelegate,
             lastMeasuredWidth = bounds.width
             invalidateIntrinsicContentSize()
         }
+        // The code card resizes the container directly; redraw when it moves.
+        if ownContainer.size != lastContainerSize {
+            lastContainerSize = ownContainer.size
+            setNeedsDisplay()
+        }
     }
 }
+
+// MARK: - UITextInput
+
+extension AssistantMarkdownBlockTextView: UITextInput {
+    var selectedTextRange: UITextRange? {
+        get {
+            guard let selectionOffsets else { return nil }
+            return MarkdownTextOffsetRange(selectionOffsets.start, selectionOffsets.end)
+        }
+        set {
+            if let range = newValue as? MarkdownTextOffsetRange {
+                selectionOffsets = (range.startOffset, range.endOffset)
+            } else if newValue == nil {
+                selectionOffsets = nil
+            }
+            if let selectionOffsets, selectionOffsets.end > selectionOffsets.start {
+                relaxAncestorClipping()
+            } else {
+                restoreAncestorClipping()
+            }
+            setNeedsDisplay()
+            notifySelectionChanged()
+        }
+    }
+
+    var markedTextRange: UITextRange? { nil }
+
+    var markedTextStyle: [NSAttributedString.Key: Any]? {
+        get { nil }
+        set {}
+    }
+
+    var inputDelegate: UITextInputDelegate? {
+        get { textInputDelegateStorage }
+        set { textInputDelegateStorage = newValue }
+    }
+
+    var tokenizer: UITextInputTokenizer { textTokenizer }
+
+    var beginningOfDocument: UITextPosition { MarkdownTextOffsetPosition(0) }
+
+    var endOfDocument: UITextPosition { MarkdownTextOffsetPosition(textLength) }
+
+    var textInputView: UIView { self }
+
+    var hasText: Bool { textLength > 0 }
+
+    func text(in range: UITextRange) -> String? {
+        guard let range = range as? MarkdownTextOffsetRange,
+              range.startOffset >= 0, range.endOffset <= textLength else { return nil }
+        return ((sourceAttributed?.string ?? "") as NSString).substring(
+            with: NSRange(location: range.startOffset,
+                          length: range.endOffset - range.startOffset))
+    }
+
+    // Read-only: the block never accepts edits, but the protocol requires the
+    // entry points.
+    func replace(_ range: UITextRange, withText text: String) {}
+
+    func insertText(_ text: String) {}
+
+    func deleteBackward() {}
+
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
+
+    func unmarkText() {}
+
+    func position(within range: UITextRange,
+                  farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        guard let range = range as? MarkdownTextOffsetRange else { return nil }
+        let forward = direction == .right || direction == .down
+        return MarkdownTextOffsetPosition(forward ? range.endOffset : range.startOffset)
+    }
+
+    func characterRange(byExtending position: UITextPosition,
+                        in direction: UITextLayoutDirection) -> UITextRange? {
+        guard let p = position as? MarkdownTextOffsetPosition else { return nil }
+        let forward = direction == .right || direction == .down
+        let other = min(max(p.offset + (forward ? 1 : -1), 0), textLength)
+        return MarkdownTextOffsetRange(p.offset, other)
+    }
+
+    func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        guard let p = position as? MarkdownTextOffsetPosition else { return nil }
+        return MarkdownTextOffsetPosition(min(max(p.offset + offset, 0), textLength))
+    }
+
+    func position(from position: UITextPosition, in direction: UITextLayoutDirection,
+                  offset: Int) -> UITextPosition? {
+        let backwards = direction == .left || direction == .up
+        return self.position(from: position, offset: backwards ? -offset : offset)
+    }
+
+    func offset(from: UITextPosition, to: UITextPosition) -> Int {
+        guard let a = from as? MarkdownTextOffsetPosition,
+              let b = to as? MarkdownTextOffsetPosition else { return 0 }
+        return b.offset - a.offset
+    }
+
+    func textRange(from: UITextPosition, to: UITextPosition) -> UITextRange? {
+        guard let a = from as? MarkdownTextOffsetPosition,
+              let b = to as? MarkdownTextOffsetPosition else { return nil }
+        return MarkdownTextOffsetRange(a.offset, b.offset)
+    }
+
+    func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        guard let a = position as? MarkdownTextOffsetPosition,
+              let b = other as? MarkdownTextOffsetPosition else { return .orderedSame }
+        if a.offset < b.offset { return .orderedAscending }
+        if a.offset > b.offset { return .orderedDescending }
+        return .orderedSame
+    }
+
+    func firstRect(for range: UITextRange) -> CGRect {
+        guard let range = range as? MarkdownTextOffsetRange else { return .zero }
+        if let first = selectionFrames(from: range.startOffset, to: range.endOffset).first {
+            return convert(first, to: nil)
+        }
+        if let caret = caretFrame(at: range.startOffset) {
+            return convert(caret, to: nil)
+        }
+        return .zero
+    }
+
+    func caretRect(for position: UITextPosition) -> CGRect {
+        guard let p = position as? MarkdownTextOffsetPosition,
+              let caret = caretFrame(at: p.offset) else { return .zero }
+        return caret
+    }
+
+    func closestPosition(to point: CGPoint) -> UITextPosition? {
+        if let index = characterIndex(at: point) {
+            return MarkdownTextOffsetPosition(min(max(index, 0), textLength))
+        }
+        return MarkdownTextOffsetPosition(point.y > bounds.height / 2 ? textLength : 0)
+    }
+
+    func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
+        guard let limit = range as? MarkdownTextOffsetRange,
+              let closest = closestPosition(to: point) as? MarkdownTextOffsetPosition else {
+            return closestPosition(to: point)
+        }
+        return MarkdownTextOffsetPosition(
+            min(max(closest.offset, limit.startOffset), limit.endOffset))
+    }
+
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+        guard let range = range as? MarkdownTextOffsetRange else { return [] }
+        let frames = selectionFrames(from: range.startOffset, to: range.endOffset)
+        return frames.enumerated().map { index, frame in
+            MarkdownTextSelectionRect(rect: frame,
+                                      containsStart: index == 0,
+                                      containsEnd: index == frames.count - 1)
+        }
+    }
+
+    func characterRange(at point: CGPoint) -> UITextRange? {
+        guard let index = characterIndex(at: point) else { return nil }
+        return wordRange(at: index)
+    }
+
+    func baseWritingDirection(for position: UITextPosition,
+                              in direction: UITextStorageDirection) -> UITextWritingDirection {
+        effectiveUserInterfaceLayoutDirection == .rightToLeft ? .rightToLeft : .leftToRight
+    }
+
+    func setBaseWritingDirection(_ writingDirection: UITextWritingDirection,
+                                 for range: UITextRange) {}
+}
+
+/// Positions are UTF-16 offsets into the block's string; the official
+/// `SelectableMarkdownTextView` wraps its offsets the same way (`OffsetPosition`
+/// / `OffsetRange`, `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4).
+final class MarkdownTextOffsetPosition: UITextPosition {
+    let offset: Int
+    init(_ offset: Int) { self.offset = offset }
+}
+
+final class MarkdownTextOffsetRange: UITextRange {
+    let startOffset: Int
+    let endOffset: Int
+    init(_ start: Int, _ end: Int) {
+        startOffset = min(start, end)
+        endOffset = max(start, end)
+    }
+    override var start: UITextPosition { MarkdownTextOffsetPosition(startOffset) }
+    override var end: UITextPosition { MarkdownTextOffsetPosition(endOffset) }
+    override var isEmpty: Bool { startOffset == endOffset }
+}
+
+final class MarkdownTextSelectionRect: UITextSelectionRect {
+    private let frame: CGRect
+    private let startsHere: Bool
+    private let endsHere: Bool
+    init(rect: CGRect, containsStart: Bool, containsEnd: Bool) {
+        frame = rect
+        startsHere = containsStart
+        endsHere = containsEnd
+    }
+    override var rect: CGRect { frame }
+    override var containsStart: Bool { startsHere }
+    override var containsEnd: Bool { endsHere }
+    override var writingDirection: UITextWritingDirection { .leftToRight }
+    override var isVertical: Bool { false }
+}
+
+
+// MARK: - NSTextLayoutManagerDelegate
+
+extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
+    /// The rendering pass asks for link attributes here. Without an answer it
+    /// draws links in the system link colour, whatever the string carries.
+    func textLayoutManager(
+        _ textLayoutManager: NSTextLayoutManager,
+        renderingAttributesForLink link: Any,
+        at location: NSTextLocation,
+        defaultAttributes renderingAttributes: [NSAttributedString.Key: Any] = [:]
+    ) -> [NSAttributedString.Key: Any]? {
+        [.foregroundColor: CodePageTheme.markdownTextUIColor,
+         .underlineStyle: NSUnderlineStyle.single.rawValue]
+    }
+}
+
+
+/// Official tokenizer shape (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6):
+/// sentence and paragraph end at newlines, line boundaries come from the laid
+/// out fragments, word defers to the system tokenizer with a fallback, and
+/// character/document stay on the system implementation.
+final class SelectableMarkdownTextTokenizer: UITextInputStringTokenizer {
+    weak var surface: AssistantMarkdownBlockTextView?
+
+    private var textLength: Int { surface?.markdownTextLength ?? 0 }
+
+    private func isForward(_ direction: UITextDirection) -> Bool {
+        if direction == UITextDirection.storage(.backward) { return false }
+        if direction == UITextDirection.layout(.left) { return false }
+        if direction == UITextDirection.layout(.up) { return false }
+        return true
+    }
+
+    private func character(at offset: Int) -> unichar {
+        surface?.markdownCharacter(at: offset) ?? 0
+    }
+
+    private func isBreak(atEndOf offset: Int) -> Bool {
+        offset <= 0 ? true : character(at: offset - 1) == 10
+    }
+
+    private func paragraphBounds(around offset: Int) -> (start: Int, end: Int) {
+        let length = textLength
+        var start = min(max(offset, 0), length)
+        while start > 0, character(at: start - 1) != 10 { start -= 1 }
+        var end = min(max(offset, 0), length)
+        while end < length, character(at: end) != 10 { end += 1 }
+        return (start, end)
+    }
+
+    private func nextParagraphBoundary(after offset: Int) -> Int? {
+        let length = textLength
+        var position = max(offset, 0)
+        while position < length {
+            position += 1
+            if isBreak(atEndOf: position) { return position }
+        }
+        return length > offset ? length : nil
+    }
+
+    private func previousParagraphBoundary(before offset: Int) -> Int? {
+        var position = min(max(offset, 0), textLength)
+        while position > 0 {
+            if isBreak(atEndOf: position) { return position }
+            position -= 1
+        }
+        return offset > 0 ? 0 : nil
+    }
+
+    override func isPosition(_ position: UITextPosition,
+                             atBoundary granularity: UITextGranularity,
+                             inDirection direction: UITextDirection) -> Bool {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return false }
+        switch granularity {
+        case .sentence, .paragraph:
+            return isBreak(atEndOf: offset) || offset == textLength
+        case .line:
+            return surface?.markdownLineStartOffsets().contains(offset) ?? false
+        case .word:
+            return super.isPosition(position, atBoundary: granularity, inDirection: direction)
+        default:
+            return super.isPosition(position, atBoundary: granularity, inDirection: direction)
+        }
+    }
+
+    override func position(from position: UITextPosition,
+                           toBoundary granularity: UITextGranularity,
+                           inDirection direction: UITextDirection) -> UITextPosition? {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return nil }
+        switch granularity {
+        case .sentence, .paragraph:
+            let boundary = isForward(direction)
+                ? nextParagraphBoundary(after: offset)
+                : previousParagraphBoundary(before: offset)
+            return boundary.map(MarkdownTextOffsetPosition.init)
+        case .line:
+            let starts = surface?.markdownLineStartOffsets() ?? []
+            let candidate = isForward(direction)
+                ? starts.first(where: { $0 > offset })
+                : starts.last(where: { $0 < offset })
+            return candidate.map(MarkdownTextOffsetPosition.init)
+        case .word:
+            return super.position(from: position, toBoundary: granularity, inDirection: direction)
+                ?? MarkdownTextOffsetPosition(offset)
+        default:
+            return super.position(from: position, toBoundary: granularity, inDirection: direction)
+        }
+    }
+
+    override func rangeEnclosingPosition(_ position: UITextPosition,
+                                         with granularity: UITextGranularity,
+                                         inDirection direction: UITextDirection) -> UITextRange? {
+        guard let offset = (position as? MarkdownTextOffsetPosition)?.offset else { return nil }
+        switch granularity {
+        case .sentence, .paragraph:
+            let bounds = paragraphBounds(around: offset)
+            return MarkdownTextOffsetRange(bounds.start, bounds.end)
+        case .line:
+            let starts = surface?.markdownLineStartOffsets() ?? []
+            guard let index = starts.lastIndex(where: { $0 <= offset }) else { return nil }
+            let start = starts[index]
+            let end = index + 1 < starts.count ? starts[index + 1] : textLength
+            return MarkdownTextOffsetRange(start, max(start, end))
+        case .word:
+            return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
+                ?? MarkdownTextOffsetRange(offset, min(offset + 1, textLength))
+        default:
+            return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
+        }
+    }
+}
+
+/// A one-tap recognizer that remembers how long its touch was held. The
+/// official link tap begins only when the press is shorter than 0.5 s
+/// (`gestureRecognizerShouldBegin:` → `systemUptime − touchDownTime < 0.5`,
+/// `EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6); a longer press belongs to
+/// the selection interaction.
+final class LinkTapRecognizer: UITapGestureRecognizer {
+    private var touchDownAt: TimeInterval?
+    private(set) var lastTouchDuration: TimeInterval = 0
+
+    /// True for a plain quick tap, not the tail of a long press.
+    var isQuickTap: Bool { lastTouchDuration < 0.5 }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let timestamp = touches.first?.timestamp { touchDownAt = timestamp }
+        lastTouchDuration = 0
+        super.touchesBegan(touches, with: event)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let timestamp = touches.first?.timestamp, let down = touchDownAt {
+            lastTouchDuration = timestamp - down
+        }
+        super.touchesEnded(touches, with: event)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        touchDownAt = nil
+        super.touchesCancelled(touches, with: event)
+    }
+}
+
 #endif

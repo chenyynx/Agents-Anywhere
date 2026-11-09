@@ -28,6 +28,12 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// measurement-consistency gate.
     func rowView(for item: TimelineListItem) -> AnyView
 
+    /// Width-aware row entry used by the live list: the adapter passes the
+    /// collection column so a text leaf can start building its block views
+    /// while the cell is still offscreen. Gates and fixtures keep the
+    /// width-less entry point.
+    func rowView(for item: TimelineListItem, width: CGFloat) -> AnyView
+
     /// The C5/M2 TextKit 2 path: a static assistant body whose blocks the
     /// controller can measure synchronously before apply. Nil means "keep the
     /// hosting cell" — unsupported blocks, streaming rows, attachments, folds
@@ -105,6 +111,11 @@ protocol TimelineCollectionContentProviding: AnyObject {
 }
 
 extension TimelineCollectionContentProviding {
+    /// Providers that do not care about the column keep the width-less entry.
+    func rowView(for item: TimelineListItem, width: CGFloat) -> AnyView {
+        rowView(for: item)
+    }
+
     /// Synthetic providers have no prompt alias; their row ids are their
     /// physical rows.
     func anchorRowIDs(in item: TimelineListItem) -> [String] { rowIDs(in: item) }

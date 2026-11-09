@@ -16,6 +16,10 @@ import UIKit
 @Observable
 final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     static let launchArgument = "aa-timeline-autorun"
+    /// Profiling launch: the gate skips every assertion phase and scrolls a
+    /// long fixture for 20 s, so a Time Profiler trace recorded over this run
+    /// contains only scroll work.
+    static let scrollProfileArgument = "aa-timeline-scroll-profile"
     static let resultFileName = "timeline-autorun.json"
     /// Row-id prefix for the gesture-freeze fixture; also the marker the
     /// official cell-reported height contract is keyed on (see
@@ -288,6 +292,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     private func run() async {
         guard !didRun else { return }
         didRun = true
+        if ProcessInfo.processInfo.arguments.contains(Self.scrollProfileArgument) {
+            // Profiling mode: only the scroll loop, so a Time Profiler trace
+            // taken during this run attributes its samples to scrolling and
+            // the row renders it performs.
+            await wait(1200)
+            await scrollProfileRun()
+            writeReport()
+            return
+        }
         await wait(900)
         // Async first: the automatic pending pass may settle Markdown shortly
         // after apply, so the first-displayed snapshot is captured by
@@ -325,6 +338,106 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         writeReport()
     }
 
+    /// Scroll-only run for the Time Profiler job. Adds a long fixture of
+    /// representative message rows, then moves the offset every frame for
+    /// 20 s; the frame gaps go into the report so the trace and the numbers
+    /// line up.
+    private func scrollProfileRun() async {
+        for index in 0..<120 {
+            entries.append(Entry(id: "profile-\(index)", kind: .message,
+                                 text: Self.profileText(index)))
+        }
+        contentGeneration += 1
+        controller?.reloadFromContent()
+        await wait(2000)
+        guard let controller, let view = controller.collectionView else { return }
+        view.layoutIfNeeded()
+        let maxOffset = max(0, view.contentSize.height - view.bounds.height)
+        guard maxOffset > 0 else { return }
+#if DEBUG
+        MarkdownLayoutStats.reset()
+#endif
+        var gaps: [Double] = []
+        var layoutDurations: [Double] = []
+        var last = CACurrentMediaTime()
+        let started = last
+        var y: CGFloat = 0
+        var direction: CGFloat = 1
+        while CACurrentMediaTime() - started < 20 {
+            y += direction * 24
+            if y <= 0 { y = 0; direction = 1 }
+            if y >= maxOffset { y = maxOffset; direction = -1 }
+            let layoutStart = CACurrentMediaTime()
+            view.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+            view.layoutIfNeeded()
+            layoutDurations.append((CACurrentMediaTime() - layoutStart) * 1000)
+            await wait(16)
+            let now = CACurrentMediaTime()
+            gaps.append((now - last) * 1000)
+            last = now
+            if gaps.count % 30 == 0 { writeScrollProfile(gaps, completed: false) }
+        }
+#if DEBUG
+        let sortedLayout = layoutDurations.sorted()
+        if !sortedLayout.isEmpty {
+            report["layoutCost"] = [
+                "samples": sortedLayout.count,
+                "medianMs": sortedLayout[sortedLayout.count / 2],
+                "p95Ms": sortedLayout[min(sortedLayout.count - 1,
+                                          Int(Double(sortedLayout.count - 1) * 0.95))],
+                "maxMs": sortedLayout.last ?? 0,
+            ]
+        }
+        report["markdownLayout"] = [
+            "calls": MarkdownLayoutStats.calls,
+            "measured": MarkdownLayoutStats.measured,
+        ]
+#endif
+        writeScrollProfile(gaps, completed: true)
+    }
+
+    /// Persist the running scroll statistics: the CI job samples the process
+    /// while the loop is still running, so waiting for the final file alone
+    /// read a stale or missing report.
+    private func writeScrollProfile(_ gaps: [Double], completed: Bool) {
+        guard !gaps.isEmpty else { return }
+        let sorted = gaps.sorted()
+        report["scrollProfile"] = [
+            "samples": gaps.count,
+            "medianMs": sorted[sorted.count / 2],
+            "p95Ms": sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.95))],
+            "maxMs": sorted.last ?? 0,
+            "hitches": gaps.filter { $0 > 33 }.count,
+            "rows": entries.count,
+        ]
+        persist(phase: completed ? "scrollProfile" : "scrollProfileProgress")
+    }
+
+    /// Representative message text: prose, a list and a code block, so a row
+    /// costs the same shape of work the product rows do.
+    private static func profileText(_ index: Int) -> String {
+        """
+        ## Step \(index)
+
+        This is a representative reply body with **emphasis**, a list and a
+        fenced code block, sized like the messages the device report scrolls.
+
+        - first item with some text
+        - second item with more text
+        - third item
+
+        ```swift
+        func step\(index)() -> Int {
+            let value = \(index) * 42
+            return value
+        }
+        ```
+
+        Closing paragraph with a little more prose so the block wraps twice
+        and the row is taller than the viewport's usual item.
+        """
+    }
+
     /// Proves the layout consumes `itemSpacing(after:)` instead of its old
     /// global constant: zero for the first row, then the default restored.
     private func perItemSpacing() async {
@@ -336,6 +449,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(300)
+        // Spacing is not part of the content signature, so the reload applies
+        // the same identities and UIKit keeps the layout's previous pass. The
+        // gate is about `TimelineListLayout` consuming `itemSpacing(after:)`
+        // (in the product spacing is stable per identity), so invalidate the
+        // layout explicitly to exercise that read.
+        controller.collectionView.collectionViewLayout.invalidateLayout()
         controller.collectionView.layoutIfNeeded()
         let zeroGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
             - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)
@@ -344,6 +463,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(300)
+        controller.collectionView.collectionViewLayout.invalidateLayout()
         controller.collectionView.layoutIfNeeded()
         let defaultGap = (controller.layout.attributes(for: second.itemID)?.frame.minY ?? 0)
             - (controller.layout.attributes(for: first.itemID)?.frame.maxY ?? 0)

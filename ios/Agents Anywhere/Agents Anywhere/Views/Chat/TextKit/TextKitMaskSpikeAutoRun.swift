@@ -35,6 +35,13 @@ enum TextKitMaskSpikeAutoRun {
             .paragraphStyle: style,
         ])
         textView.attributedText = attributed
+        // `AssistantMarkdownBlockTextView` owns a fixed NSTextContainer whose
+        // width is only set by `prepareLayout(width:)` (the product cells call
+        // it from the factory / leaf update). Without it the container keeps
+        // its 0-width default and TextKit lays the paragraph out as one
+        // unbreakable line, which made this spike compare 15.5 pt against the
+        // real 337 pt (gate run 42498517710).
+        textView.prepareLayout(width: width)
         textView.layoutIfNeeded()
         if let manager = textView.textLayoutManager {
             manager.ensureLayout(for: manager.documentRange)

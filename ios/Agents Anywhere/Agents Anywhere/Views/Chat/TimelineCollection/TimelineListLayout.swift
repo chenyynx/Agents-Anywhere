@@ -114,6 +114,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func prepare() {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("layout.prepare")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("layout.prepare", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         super.prepare()
         guard let collectionView, let host else {
             attributesByIndex = []
@@ -254,6 +262,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func layoutAttributesForElements(in rect: CGRect) -> [UICollectionViewLayoutAttributes]? {
+#if AA_TIMELINE_PROBE
+        let probeStart = CACurrentMediaTime()
+        TimelineProbeStore.shared.enterSection("layout.elements")
+        defer {
+            TimelineProbeStore.shared.noteScrollSegment("layout.elements", since: probeStart)
+            TimelineProbeStore.shared.leaveSection()
+        }
+#endif
         guard !attributesByIndex.isEmpty else { return [] }
         // Attributes are sorted by y. Find the first whose bottom reaches the
         // rect, then walk until the top passes the rect's bottom.
@@ -538,6 +554,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
+            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: state.streamingItemIDs.contains(itemID),
@@ -879,6 +896,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         // top is above the viewport moves the text the reader sees.
         let decision = TimelinePreferredAttributesDecision.pendingMeasurement(
             delta: delta,
+            cellMinY: attributes.frame.minY,
             cellMaxY: attributes.frame.maxY,
             viewportTop: viewportTop,
             isStreaming: false,

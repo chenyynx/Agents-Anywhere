@@ -173,6 +173,23 @@ class SessionListPage(tuple):
         )
 
 
+def _with_window_order(
+    snapshot: RuntimeTimelineSnapshot,
+) -> RuntimeTimelineSnapshot:
+    """Mark a snapshot's row order as authoritative for the rows it names.
+
+    Used by every snapshot that publishes the local live store (or the visible
+    history chain) outside the incremental syncer. Without the flag the Server
+    can only append a row it has not seen, so a missed old row lands after the
+    newest one (2026-11-10).
+    """
+
+    return replace(
+        snapshot,
+        metadata={**snapshot.metadata, "windowOrder": True},
+    )
+
+
 @dataclass(slots=True)
 class ClaudeSessionReader:
     config: RuntimeConfig
@@ -320,10 +337,12 @@ class ClaudeSessionReader:
         limit: int | None = None,
     ) -> RuntimeTimelineSnapshot:
         local_session = self.session_store.get(session_id, external_session_id)
-        local_snapshot = self.session_store.snapshot(
-            session_id=session_id,
-            external_session_id=external_session_id,
-            limit=limit,
+        local_snapshot = _with_window_order(
+            self.session_store.snapshot(
+                session_id=session_id,
+                external_session_id=external_session_id,
+                limit=limit,
+            )
         )
         if external_session_id is None:
             return local_snapshot
@@ -538,6 +557,10 @@ class ClaudeSessionReader:
             metadata={
                 "source": "claude.session.history",
                 "messageCount": len(messages),
+                # The whole visible chain is the authority for the rows it
+                # names; without this flag a missed old row is appended after
+                # the newest one (2026-11-10).
+                "windowOrder": True,
                 "sdk": _sdk_session_metadata(info),
             },
         )

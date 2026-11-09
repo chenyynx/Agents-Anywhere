@@ -66,3 +66,16 @@ def test_live_store_retry_carries_chain_order_authority() -> None:
     # one; with it the chain plan inserts the batch by its live order.
     assert prepared.snapshot.metadata["windowOrder"] is True
     assert prepared.snapshot.metadata["source"] == "claude.live.retry"
+
+
+def test_local_snapshot_without_external_id_carries_chain_order_authority() -> None:
+    """The no-transcript local snapshot is the only source; it carries order."""
+
+    syncer = _syncer(host=_SyncStateHost(), sdk=_CompactHistorySdk(messages=[]))
+    syncer.session_store = _RetryStore()  # type: ignore[assignment]
+
+    prepared = asyncio.run(syncer.prepare_session_timeline_sync(SESSION_ID, None))
+
+    assert prepared is not None
+    assert prepared.snapshot is not None
+    assert prepared.snapshot.metadata["windowOrder"] is True

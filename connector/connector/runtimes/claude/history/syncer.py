@@ -176,6 +176,14 @@ class ClaudeHistorySyncer:
     ) -> PreparedSessionTimelineSync | None:
         if external_session_id is None:
             snapshot = self.session_store.snapshot(session_id=session_id)
+            # The live store is the only source for this session. Its order is
+            # the live allocator's (a chain position, not an append), so the
+            # batch carries chain authority like every other local snapshot;
+            # without it the Server appends unseen rows after the newest one.
+            snapshot = replace(
+                snapshot,
+                metadata={**snapshot.metadata, "windowOrder": True},
+            )
 
             async def commit_local_snapshot() -> None:
                 self.session_store.mark_synced(session_id)
@@ -209,7 +217,7 @@ class ClaudeHistorySyncer:
             # missed old turn lands at the end of the timeline (2026-11-10:
             # an Agent-call message group from 02:21 was re-published at the
             # 03:08 restart and drawn after the newest reply). A healthy retry
-            # is a no-op: the plan only rewrites the first misordered suffix.
+            # is a no-op: the plan only positions rows that need one.
             snapshot = replace(
                 snapshot,
                 metadata={**snapshot.metadata, "windowOrder": True},

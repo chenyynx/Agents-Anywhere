@@ -27,6 +27,27 @@ class TimelineBatchWriteResult:
     deleted: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ChainReorderDiagnostics:
+    """One chain reorder plan plus what it could not honour.
+
+    ``plan`` only ever names rows the batch **adds**; a stored row's number is
+    never in it. ``tail_anchored`` names new rows that had no stored batch
+    neighbour at all — they could only be appended, never placed. Rows whose
+    batch neighbours are stored in the opposite order are appended too and
+    named in ``skewed_anchors``; placing them would mean rewriting a stored
+    row the batch does not ask to move.
+    """
+
+    plan: dict[str, int]
+    batch_items: int
+    renumbered_stored: int
+    tail_anchored: tuple[str, ...] = ()
+    #: Runs whose batch anchors are in the opposite order in storage (a
+    #: pre-existing misordered row); they are appended, not placed.
+    skewed_anchors: tuple[str, ...] = ()
+
+
 def chain_reorder_plan(
     *,
     stored_order: Sequence[tuple[str, int]],
@@ -34,71 +55,231 @@ def chain_reorder_plan(
 ) -> dict[str, int] | None:
     """``orderSeq`` for the rows a rebased batch moves, or ``None`` if none.
 
-    A rebased history sync covers the whole visible chain, so ``batch_ids`` is
-    in chain order and is authoritative for the rows it names. The stored rows
-    it does *not* name keep their position relative to the chain: each one is
-    anchored after the last covered row that precedes it in the stored order
-    (rows before the first covered row anchor to the front). That is what
-    keeps a row the rebuild cannot see — a pre-compaction message, or a
-    platform-owned row between two chain rows — in place instead of moving it
-    to an end.
-
-    ``stored_order`` is ``(id, orderSeq)`` already ordered by ``orderSeq``
-    (ties by id). The plan only renumbers the suffix that actually differs:
-    every row before the first mismatch keeps its stored number (so a session
-    with gaps is not compacted by a healthy rebuild), and the suffix is
-    numbered densely from the last kept number. That bounds the rewrite to the
-    rows at and after the first misordered row — an append-only rebuild writes
-    nothing here at all. ``None`` means the stored order already matches the
-    chain and nothing may move.
-
-    Why this exists: without a rebuild, a server-side insert can only append
-    (``max(orderSeq) + 1``), so a backfill that arrives after newer live rows
-    lands at the bottom of the timeline and the client renders old steps after
-    the newest message. The chain order is the truth the append rule cannot
-    express.
+    Compatibility wrapper around :func:`chain_reorder_plan_with_diagnostics`.
     """
 
-    batch_position = {item_id: index for index, item_id in enumerate(batch_ids)}
-    keyed: list[tuple[tuple[int, int, int], str]] = []
-    stored_ids: set[str] = set()
-    last_covered = -1
-    anchor_run = 0
-    for item_id, _order_seq in stored_order:
-        stored_ids.add(item_id)
-        position = batch_position.get(item_id)
-        if position is not None:
-            last_covered = position
-            anchor_run = 0
-            keyed.append(((position, 0, 0), item_id))
-            continue
-        anchor_run += 1
-        keyed.append(((last_covered, 1, anchor_run), item_id))
-    for item_id in batch_ids:
-        if item_id not in stored_ids:
-            keyed.append(((batch_position[item_id], 0, 0), item_id))
-    keyed.sort(key=lambda entry: (entry[0], entry[1]))
-    planned_ids = [item_id for _, item_id in keyed]
+    plan = chain_reorder_plan_with_diagnostics(
+        stored_order=stored_order,
+        batch_ids=batch_ids,
+    ).plan
+    return plan or None
 
-    stored_ids_in_order = [item_id for item_id, _ in stored_order]
-    shared = min(len(planned_ids), len(stored_ids_in_order))
-    first_difference = 0
-    while (
-        first_difference < shared
-        and planned_ids[first_difference] == stored_ids_in_order[first_difference]
-    ):
-        first_difference += 1
-    if first_difference == len(planned_ids) == len(stored_ids_in_order):
-        return None
 
-    # The prefix keeps its stored numbers untouched, so it is not in the plan:
-    # only the suffix (the first misordered row and everything after it) is
-    # rewritten.
+def chain_reorder_plan_with_diagnostics(
+    *,
+    stored_order: Sequence[tuple[str, int]],
+    batch_ids: Sequence[str],
+) -> ChainReorderDiagnostics:
+    """Place a batch's new rows by chain order, with a bounded local renumber.
+
+    ``stored_order`` is ``(id, orderSeq)`` already ordered by ``orderSeq``
+    (ties by id). ``batch_ids`` is the batch's chain order. A rebased history
+    sync covers the whole visible chain; a cursor window covers a chain suffix;
+    a live-store retry re-publishes a subset of the chain.
+
+    The plan is insert-only whenever the integers allow it:
+
+    - a row the Server has never seen is inserted as a run between its nearest
+      stored batch neighbours, into consecutive free integers. A front run may
+      use any free positive slot below its first anchor. This path never
+      touches a stored row.
+    - when the interval has no run of free integers, the smallest block of
+      stored rows around the insertion point is renumbered in its existing
+      order until the run fits. The block grows to the right and may reach the
+      session's end in a dense session (order 1..N has no gaps); only rows
+      inside the block change number, and every other stored row keeps its
+      exact ``orderSeq``. ``renumbered_stored`` reports the count.
+    - a run with no later batch anchor has nowhere to be placed and is
+      appended above the session high-water mark, reported in
+      ``tail_anchored``.
+
+    Why the bounded block: ``orderSeq`` is an integer, and a dense interval
+    cannot hold a new run. Refusing to renumber leaves the new row appended
+    after newer rows — the 2026-11-09 regression reproduced on a fresh session.
+    The block is the minimum span that makes the insertion legal, so churn is
+    local instead of the whole suffix the 2026-11-10 rebuild rewrote.
+
+    The plan is idempotent: applying it makes the next identical batch plan
+    nothing. Repairing an already-misordered row that no batch names remains
+    out of scope; that is a separate one-off pass.
+    """
+
+    stored_value = dict(stored_order)
+    stored_ids = set(stored_value)
+    ordered_batch = list(dict.fromkeys(batch_ids))
+    number = dict(stored_value)
     plan: dict[str, int] = {}
-    base = stored_order[first_difference - 1][1] if first_difference else 0
-    for offset, item_id in enumerate(planned_ids[first_difference:], start=1):
-        plan[item_id] = base + offset
-    return plan
+    used: set[int] = set(number.values())
+    highest = max(used, default=0)
+    tail_anchored: list[str] = []
+    skewed_anchors: list[str] = []
+
+    index = 0
+    while index < len(ordered_batch):
+        if ordered_batch[index] in stored_ids:
+            index += 1
+            continue
+        run_end = index
+        while (
+            run_end < len(ordered_batch)
+            and ordered_batch[run_end] not in stored_ids
+        ):
+            run_end += 1
+        run = ordered_batch[index:run_end]
+        run_start = index
+        index = run_end
+
+        previous = (
+            number.get(ordered_batch[run_start - 1]) if run_start > 0 else None
+        )
+        anchor_id = (
+            ordered_batch[run_end] if run_end < len(ordered_batch) else None
+        )
+        following = number.get(anchor_id) if anchor_id is not None else None
+        if following is None or (
+            previous is not None and previous >= following
+        ):
+            # No later batch anchor: nothing says where this run belongs
+            # relative to the stored tail. Or the stored order contradicts the
+            # batch: the row that should precede this run is stored after the
+            # next anchor, and placing it between them would mean rewriting a
+            # stored row the batch does not ask to move. Append; a run with a
+            # contradicting predecessor is reported so the stranded row stays
+            # visible. A run that merely has no later anchor (the normal
+            # newest rows of a cursor window) appends without noise.
+            if following is not None:
+                skewed_anchors.extend(run)
+            elif previous is None:
+                # Neither stored neighbour exists: the batch names no anchor
+                # at all.
+                tail_anchored.extend(run)
+            slots = []
+            for _ in run:
+                highest += 1
+                slots.append(highest)
+        else:
+            # Every stored row between the previous batch anchor and the next
+            # one anchors before this run, so the run goes above all of them,
+            # immediately below the next anchor.
+            floor_value = max(
+                (
+                    value
+                    for value in used
+                    if value < following
+                    and (previous is None or value > previous)
+                ),
+                default=(previous if previous is not None else 0),
+            )
+            slots = _free_run_between(floor_value, following, len(run), used)
+            if slots is None:
+                assert anchor_id is not None  # following is not None
+                plan.update(
+                    _bounded_insert(
+                        number=number,
+                        used=used,
+                        lower=floor_value,
+                        upper=following,
+                        anchor_id=anchor_id,
+                        run=run,
+                    )
+                )
+                highest = max(used, default=0)
+                continue
+        for item_id, slot in zip(run, slots, strict=True):
+            plan[item_id] = slot
+            number[item_id] = slot
+            used.add(slot)
+            highest = max(highest, slot)
+
+    renumbered_stored = sum(1 for item_id in plan if item_id in stored_ids)
+    return ChainReorderDiagnostics(
+        plan=plan,
+        batch_items=len(ordered_batch),
+        renumbered_stored=renumbered_stored,
+        tail_anchored=tuple(tail_anchored),
+        skewed_anchors=tuple(skewed_anchors),
+    )
+
+
+def _bounded_insert(
+    *,
+    number: dict[str, int],
+    used: set[int],
+    lower: int | None,
+    upper: int,
+    anchor_id: str,
+    run: list[str],
+) -> dict[str, int]:
+    """Renumber the smallest block around ``(lower, upper)`` to fit ``run``.
+
+    ``upper`` is the number of the next stored batch row (``anchor_id``). The
+    block grows to the right, one stored row at a time, until its integer
+    interval holds every block row plus the run. The run is inserted
+    immediately before the anchor; the block rows keep their stored order.
+    Mutates ``number``/``used`` and returns the changed numbers.
+    """
+
+    floor = lower if lower is not None else 0
+    limit: int | None = upper
+    while True:
+        block = sorted(
+            (value, item_id)
+            for item_id, value in number.items()
+            if value > floor and (limit is None or value < limit)
+        )
+        capacity = None if limit is None else limit - floor - 1
+        if capacity is None or len(block) + len(run) <= capacity:
+            break
+        limit = next(
+            (value for value in sorted(used) if value > limit),
+            None,
+        )
+    combined: list[str] = []
+    inserted = False
+    for _, item_id in block:
+        if not inserted and item_id == anchor_id:
+            combined.extend(run)
+            inserted = True
+        combined.append(item_id)
+    if not inserted:
+        combined.extend(run)
+    if limit is None:
+        slots = list(range(floor + 1, floor + 1 + len(combined)))
+    else:
+        slots = list(range(floor + 1, limit))[: len(combined)]
+    changes: dict[str, int] = {}
+    for item_id, slot in zip(combined, slots, strict=True):
+        old = number.get(item_id)
+        number[item_id] = slot
+        if old != slot:
+            changes[item_id] = slot
+    used.clear()
+    used.update(number.values())
+    return changes
+
+
+def _free_run_between(
+    lower: int,
+    upper: int,
+    count: int,
+    used: set[int],
+) -> list[int] | None:
+    """The highest run of ``count`` unused integers in ``(lower, upper)``.
+
+    ``lower`` is already the highest stored value in the interval (or 0 for a
+    front run), so the run sits above every stored row that anchors before it.
+    Slot 0 is never used: every client treats orderSeq <= 0 as "not assigned"
+    (Android ``takeIf { it > 0 }``), so the floor is 1.
+    """
+
+    floor = max(lower + 1, 1)
+    start = upper - count
+    while start >= floor:
+        slots = list(range(start, start + count))
+        if all(slot not in used for slot in slots):
+            return slots
+        start -= 1
+    return None
 
 
 def timeline_item_state_is_unchanged(

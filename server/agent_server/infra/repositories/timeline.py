@@ -18,7 +18,7 @@ from agent_server.core.protocol import PROTOCOL_MAX_REVISION
 from agent_server.core.timeline import (
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
-    chain_reorder_plan,
+    chain_reorder_plan_with_diagnostics,
     latest_timeline_items_by_id,
     native_item_id_from_payload,
     next_timeline_item_revision,
@@ -893,10 +893,11 @@ class TimelineRepositoryMixin:
           by the batch itself (a full-history rebuild superseding older
           projection generations; see ``_prune_orphan_agent_call_rows``)
         - ``reorder_from_batch`` treats the batch as the authoritative chain
-          order and renumbers the whole session, so rows the batch backfills
-          land where the chain says instead of at the end. Only a rebased
-          history rebuild may set it: an incremental batch speaks for a
-          suffix, not for the session (see ``chain_reorder_plan``).
+          order: a new row is inserted between its stored batch neighbours.
+          When the integer range is full, the smallest block around the
+          insertion point is renumbered in its existing order; rows outside
+          that block keep their exact position (see
+          ``chain_reorder_plan_with_diagnostics``).
         """
 
         async with self._timeline_lock(session_id):
@@ -919,6 +920,7 @@ class TimelineRepositoryMixin:
             reorder: dict[str, int] = {}
             order_changed: set[str] = set()
             moved_existing_ids: list[str] = []
+            plan = None
             if reorder_from_batch:
                 # Doomed twins take no part in the plan: they are deleted in
                 # this same transaction, and a moved row is rewritten from its
@@ -931,19 +933,36 @@ class TimelineRepositoryMixin:
                     ).items()
                     if item_id not in converged_deletions
                 }
-                reorder = chain_reorder_plan(
+                plan = chain_reorder_plan_with_diagnostics(
                     stored_order=list(stored_order.items()),
                     batch_ids=list(incoming_by_id),
-                ) or {}
+                )
+                reorder = plan.plan
+                if plan.tail_anchored or plan.skewed_anchors:
+                    # A row the batch names but cannot place between stored
+                    # neighbours is appended, never guessed into place. Keep
+                    # the ids visible: the 2026-11-10 incident needed a DB
+                    # dig to learn which rows were stranded.
+                    logger.warning(
+                        "timeline chain plan has unplaceable rows "
+                        "session_id={} batch_items={} tail_anchored={} "
+                        "skewed_anchors={}",
+                        session_id,
+                        plan.batch_items,
+                        list(plan.tail_anchored[:5]),
+                        list(plan.skewed_anchors[:5]),
+                    )
                 order_changed = {
                     item_id
                     for item_id, order_seq in reorder.items()
                     if stored_order.get(item_id) is not None
                     and stored_order[item_id] != order_seq
                 }
-                # Rows the batch does not cover can still move when the chain
-                # inserts before them; they are written from their stored row
-                # with nothing but the position changed.
+                # When a run has no free integer between its anchors the plan
+                # renumbers the smallest block of stored rows around it (see
+                # ``chain_reorder_plan_with_diagnostics``). Those rows are
+                # written from their stored payload with only the position
+                # changed; rows outside that block keep their numbers.
                 moved_existing_ids = [
                     item_id
                     for item_id in order_changed
@@ -1002,12 +1021,13 @@ class TimelineRepositoryMixin:
                     deleted=tuple(sorted(converged_deletions)),
                 )
 
-            if order_changed:
+            if reorder:
                 logger.info(
-                    "timeline reordered by chain rebuild session_id={} "
-                    "changed_rows={} uncovered_moved={} batch_items={}",
+                    "timeline chain insert session_id={} inserted_rows={} "
+                    "renumbered_stored={} uncovered_moved={} batch_items={}",
                     session_id,
-                    len(order_changed),
+                    len(reorder),
+                    plan.renumbered_stored if plan is not None else 0,
                     len(moved_existing_ids),
                     len(incoming_by_id),
                 )
@@ -1091,6 +1111,16 @@ class TimelineRepositoryMixin:
                     changed_items,
                 )
                 if sibling_movers:
+                    # The intra-message corrector can move an on-disk sibling
+                    # the batch itself does not name. That is a separate
+                    # invariant repair, not part of the insert plan; keep the
+                    # count visible so a tail fallback is never silent.
+                    logger.info(
+                        "timeline intra-message repair moved stored siblings "
+                        "session_id={} count={}",
+                        session_id,
+                        len(sibling_movers),
+                    )
                     # Fresh updated_seq per moved sibling (see the single-row
                     # writer's call site): a move invisible to list_since
                     # leaves online clients rendering the broken order.

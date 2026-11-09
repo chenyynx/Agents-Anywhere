@@ -7,12 +7,16 @@ appended every new row at ``max(order_seq) + 1`` because the batch's own order
 numbers (1..N) were smaller than the session's current maximum, so the UI
 rendered the pre-stuck steps *after* the final message.
 
-A rebased batch (``metadata.rebased``) covers the whole visible chain and its
-order IS the chain order, so the server is allowed to treat it as the
-authoritative order and renumber the session. These tests pin that:
+A rebased batch (``metadata.rebased``) covers the whole visible chain; the rows
+it **adds** are placed by chain order. Since 2026-11-10 the plan is
+insert-only: a row that is already stored keeps its exact number, whether or
+not the batch names it (one rebuild had renumbered 431 batch-external rows and
+still left the visible order wrong). These tests pin that:
 
-- backfilled older rows land before the rows that already existed;
-- rows the batch does not cover keep their position relative to the chain;
+- backfilled **new** rows land before the rows that already existed, in a free
+  integer below the next stored anchor;
+- stored rows keep their position even when the chain disagrees (an already
+  misordered row is not repaired by a rebuild);
 - an already-ordered rebase is a no-op (no rewrites);
 - a plain incremental merge keeps the old append behaviour (the flag is the
   authority signal, not "this batch happens to carry older rows").
@@ -29,7 +33,10 @@ from test_backend_mvp import (
     session_view_for_assertions,
 )
 
-from agent_server.core.timeline import chain_reorder_plan
+from agent_server.core.timeline import (
+    chain_reorder_plan,
+    chain_reorder_plan_with_diagnostics,
+)
 
 
 def test_chain_reorder_plan_is_none_when_the_stored_order_matches() -> None:
@@ -52,19 +59,34 @@ def test_chain_reorder_plan_keeps_gaps_before_the_first_mismatch() -> None:
     ) == {"c": 6}
 
 
-def test_chain_reorder_plan_renumbers_only_the_misordered_suffix() -> None:
-    # The prefix ("a") keeps its number and stays out of the plan.
-    assert chain_reorder_plan(
+def test_a_new_row_with_no_free_slot_renumbers_the_local_block() -> None:
+    # ``x`` belongs between ``a`` (1) and ``b`` (2), but there is no integer
+    # between them. The smallest block around the insertion (b, c) is
+    # renumbered in its existing order to make room: b and c move up, x takes
+    # 2. Nothing outside the block changes.
+    diagnostics = chain_reorder_plan_with_diagnostics(
         stored_order=[("a", 1), ("b", 2), ("c", 3)],
         batch_ids=["a", "x", "b", "c"],
-    ) == {"x": 2, "b": 3, "c": 4}
+    )
+    assert diagnostics.plan == {"x": 2, "b": 3, "c": 4}
+    assert diagnostics.renumbered_stored == 2
 
 
-def test_chain_reorder_plan_anchors_uncovered_rows_to_their_neighbours() -> None:
-    assert chain_reorder_plan(
-        stored_order=[("b", 1), ("platform", 2), ("a", 3)],
-        batch_ids=["a", "b"],
-    ) == {"a": 1, "b": 2, "platform": 3}
+def test_an_existing_only_batch_plans_nothing() -> None:
+    """A batch with no new row has nothing to insert; stored order is kept.
+
+    2026-11-10: one rebuild renumbered 431 rows it did not cover. The plan no
+    longer repositions an existing (even misordered) row that no new row
+    displaces; repairing that is a separate one-off pass.
+    """
+
+    assert (
+        chain_reorder_plan(
+            stored_order=[("b", 1), ("platform", 2), ("a", 3)],
+            batch_ids=["a", "b"],
+        )
+        is None
+    )
 
 
 def _message(

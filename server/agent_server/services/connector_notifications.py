@@ -802,7 +802,8 @@ def _history_rebuild_reorders(params: Mapping[str, Any]) -> bool:
       instead of being appended after later rows (2026-11-09).
 
     A complete snapshot already replaces every row it does not cover, so it
-    never renumbers. The plan only rewrites the first misordered suffix, so a
+    never renumbers. The plan inserts a new run into free integers when it can
+    and otherwise renumbers only the smallest block around the insertion, so a
     healthy window is a no-op.
     """
 

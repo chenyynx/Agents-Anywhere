@@ -1813,11 +1813,35 @@ def participation_age_seconds(
 #: A scan cache keyed by (path, size, mtime_ns). One sync settles a session by
 #: rebuilding its whole window, and the same transcript is read again on the
 #: next settle; caching the parsed scan (not the raw lines) keeps the repeated
-#: cost at one dict lookup and a few KB. Bounded because the connector serves
-#: many sessions over its life. Least-recently-used: a hit is re-inserted so a
-#: session that keeps syncing is not evicted by one-off readers (N4).
+#: cost at one dict lookup. The 60s evidence sweep walks every store session, so
+#: a cache smaller than that working set re-parses the overflow every single
+#: tick (2026-11-09: 33 transcripts / 867MB, 17s of blocked event loop per
+#: minute). A superseded version of the same path is dropped on insert, so one
+#: growing transcript cannot fill the cache with stale versions and evict the
+#: rest of the library. Least-recently-used across paths: a hit is re-inserted
+#: so a session that keeps syncing is not evicted by one-off readers (N4).
+#:
+#: The cap is a memory budget, not an entry count: one parsed scan retains
+#: roughly 0.12–0.38 bytes per source byte (tracemalloc on real transcripts:
+#: 54.9MB → 17.8/20.6MB, 72.6MB → 9.0MB), so a count cap lets a large library
+#: pin unbounded memory. The charge is deliberately conservative (0.5) and the
+#: budget holds today's working set (867MB source → ~433MB charged, ~189MB
+#: actual) while keeping the real ceiling near 256MB as the library grows.
 _SCAN_CACHE: dict[tuple[str, int, int], RawTranscriptScan] = {}
-_SCAN_CACHE_LIMIT = 16
+_SCAN_CACHE_BUDGET_BYTES = 512 * 1024 * 1024
+_SCAN_RETAINED_BYTES_PER_SOURCE_BYTE = 0.5
+#: Per-entry floor: a cache of tiny transcripts is bounded by count as well as
+#: bytes (512MB / 64KB = 8192 entries of per-entry overhead at most).
+_SCAN_MIN_CHARGE_BYTES = 64 * 1024
+
+
+def _scan_cache_charge(source_size: int) -> int:
+    """The budget charged for one cached scan (conservative retained bytes)."""
+
+    return max(
+        int(source_size * _SCAN_RETAINED_BYTES_PER_SOURCE_BYTE),
+        _SCAN_MIN_CHARGE_BYTES,
+    )
 
 
 def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
@@ -1843,8 +1867,22 @@ def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
     except OSError:
         return None
     scan = scan_raw_transcript(lines)
-    while len(_SCAN_CACHE) >= _SCAN_CACHE_LIMIT:
-        _SCAN_CACHE.pop(next(iter(_SCAN_CACHE)))
+    # One entry per transcript: an active session appends continuously, and
+    # keeping its older (path, size, mtime) keys would let a single file fill
+    # the cache and evict every other session — the 2026-11-09 stall. The
+    # current key was already popped above, so this only drops older versions.
+    for stale_key in [stale for stale in _SCAN_CACHE if stale[0] == str(path)]:
+        _SCAN_CACHE.pop(stale_key, None)
+    charge = _scan_cache_charge(stat.st_size)
+    if charge > _SCAN_CACHE_BUDGET_BYTES:
+        # A single transcript larger than the whole budget is still returned;
+        # caching it would evict everything else and not stay under the cap.
+        return scan
+    held = sum(_scan_cache_charge(held_key[1]) for held_key in _SCAN_CACHE)
+    while _SCAN_CACHE and held + charge > _SCAN_CACHE_BUDGET_BYTES:
+        oldest_key = next(iter(_SCAN_CACHE))
+        held -= _scan_cache_charge(oldest_key[1])
+        _SCAN_CACHE.pop(oldest_key)
     _SCAN_CACHE[key] = scan
     return scan
 

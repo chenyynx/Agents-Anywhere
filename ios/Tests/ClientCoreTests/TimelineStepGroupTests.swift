@@ -193,3 +193,34 @@ struct TimelineStepGroupSummaryTests {
             .liveThinkingLine == nil)
     }
 }
+
+@Suite("Chat step-group live mark eligibility")
+struct TimelineStepGroupLiveMarkTests {
+    private func group(_ steps: [TimelineStep]) -> TimelineStepGroup {
+        TimelineStepGroup(id: "steps:test", steps: steps)
+    }
+
+    @Test func terminalFailureResidueCannotCarryTheLiveMark() {
+        for status in [V2TimelineItemStatus.interrupted, .failed, .cancelled] {
+            #expect(!group([.thinking(id: "r", text: "think", status: status)])
+                .canCarryLiveMark)
+        }
+    }
+
+    @Test func aRunningStepAlwaysCarriesTheMark() {
+        #expect(group([.thinking(id: "r", text: "think", status: .running)])
+            .canCarryLiveMark)
+    }
+
+    @Test func aSettledLiveTurnBetweenStepsStillCarriesTheMark() {
+        #expect(group([.thinking(id: "r", text: "think", status: .done)])
+            .canCarryLiveMark)
+    }
+
+    @Test func anyTerminalFailureInTheGroupDisqualifiesIt() {
+        #expect(!group([
+            .thinking(id: "r1", text: "think", status: .done),
+            .thinking(id: "r2", text: "think", status: .interrupted),
+        ]).canCarryLiveMark)
+    }
+}

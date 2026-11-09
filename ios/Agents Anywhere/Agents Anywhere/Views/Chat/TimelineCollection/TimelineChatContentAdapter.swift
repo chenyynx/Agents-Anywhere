@@ -1806,7 +1806,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-03). Keep the old window as the fallback for the
             // frames before the runtime reports the turn.
             let turnActive = model.isRunning || model.sendingPlaceholder != nil
-            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup)
+            // An interrupted/failed group is residue from a previous turn, not
+            // the live one. Selecting it whenever a send was in flight drew
+            // its last step with the running mark again until the new turn's
+            // rows arrived (2026-11-10).
+            let lastStepGroup = lastStepGroupID.flatMap { stepGroupsByID[$0] }
+            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup
+                && (lastStepGroup?.canCarryLiveMark ?? false))
                 ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil

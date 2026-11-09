@@ -87,6 +87,22 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
+    /// Whether the chat profile's live mark may seat on this group while a turn
+    /// is active (pp 2026-11-10).
+    ///
+    /// A group whose steps ended in a terminal failure is residue from an
+    /// interrupted turn, not the live one. The adapter used to select the last
+    /// step group whenever a send was in flight, so the moment the user tapped
+    /// send the interrupted row was drawn with the running mark again and only
+    /// settled once the new turn's rows arrived. A group with a running step
+    /// always qualifies, including the between-steps gap where every step is
+    /// done; only a terminal failure with nothing running disqualifies it.
+    var canCarryLiveMark: Bool {
+        isRunning || !steps.contains {
+            [.failed, .cancelled, .interrupted].contains($0.status)
+        }
+    }
+
     var hasFailure: Bool {
         steps.contains {
             if case .failed = $0.status { return true }

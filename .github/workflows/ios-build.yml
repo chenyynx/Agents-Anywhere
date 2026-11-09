@@ -632,6 +632,18 @@ jobs:
           print("PASS M4.3 static blocks gate")
           PY
 
+      # The collector above only runs after the timeline gate. A gate that
+      # exits during a later launch leaves no file and no crash report; grab
+      # everything the simulator wrote before uploading.
+      - name: Collect simulator crash logs (all gates)
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crashes"
+          cp ~/Library/Logs/DiagnosticReports/*.ips "$RUNNER_TEMP/crashes" 2>/dev/null || true
+          find ~/Library/Logs/CoreSimulator -maxdepth 6 -name "*.ips" \
+            -exec cp {} "$RUNNER_TEMP/crashes" \; 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/crashes" || true
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

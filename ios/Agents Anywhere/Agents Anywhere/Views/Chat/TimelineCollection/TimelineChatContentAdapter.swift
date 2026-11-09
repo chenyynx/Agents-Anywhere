@@ -65,6 +65,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         needsRefresh = true
     }
 
+    /// Whether the step sheet for group `id` opens at its newest step.
+    ///
+    /// Read at tap time, never captured when the cell was configured: the
+    /// live-tail id and the running-turn set both move with the turn, while a
+    /// configured cell keeps its snapshot — a cell configured mid-turn would
+    /// otherwise keep opening at the bottom after the turn settled
+    /// (review 2026-11-10).
+    private func stepDetailStartsAtBottom(_ id: String) -> Bool {
+        if id == chatLiveTailGroupID { return true }
+        return model.isRunning && chatRunningTurnGroupIDs.contains(id)
+    }
+
     var contentGeneration: Int {
         if needsRefresh {
             needsRefresh = false
@@ -133,6 +145,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
+    /// The chat profile's step groups whose first row belongs to the turn in
+    /// flight. Their detail sheet opens at the newest step even when the group
+    /// is not the trailing unit (body text between two tool runs) or nothing
+    /// is running (the gap between two steps) (pp 2026-11-10). Empty in
+    /// `.code` mode.
+    private var chatRunningTurnGroupIDs: Set<String> = []
     /// The selected rendering profile (pp 2026-10-29). `.code` keeps the
     /// official Code page; `.chat` renders one step-group live row.
     let renderMode: TimelineRenderMode
@@ -1183,10 +1201,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if let stepGroup = stepGroupsByID[id] {
                 let cwd = model.session.metadata?.cwd
                 let isLiveTail = id == chatLiveTailGroupID
+                // A group from the running turn opens at its newest step too:
+                // the gap between two steps has nothing running, and a group
+                // that body text follows is still the turn's work
+                // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
-                        group: stepGroup, startsAtBottom: isLiveTail))
+                        group: stepGroup,
+                        startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
                 })
             }
             // A message group (declared message id) renders through the Code
@@ -1650,13 +1673,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             where row.value.type == .message && row.value.role == .user {
                 chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
             }
-            chatLiveTurnHasSteps = chatUnits.contains { unit in
-                guard case let .stepGroup(_, rowIDs) = unit,
-                      let firstID = rowIDs.first,
-                      let first = rowsByID[firstID] else { return false }
-                return first.value.orderSeq > chatLastUserOrder
-            }
+            let turnGroupIDs = TimelineRunningTurnStepGroups.ids(
+                units: chatUnits,
+                orderSeq: { rowsByID[$0]?.value.orderSeq },
+                lastUserOrder: chatLastUserOrder)
+            chatLiveTurnHasSteps = !turnGroupIDs.isEmpty
+            // Only while the runtime reports the turn running. The optimistic
+            // send window still has the previous turn's rows after the last
+            // prompt; admitting it would open settled groups at the bottom
+            // (review 2026-11-10).
+            chatRunningTurnGroupIDs = model.isRunning ? turnGroupIDs : []
         } else {
+            chatRunningTurnGroupIDs = []
             chatUnits = []
             codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,
@@ -1806,13 +1834,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-03). Keep the old window as the fallback for the
             // frames before the runtime reports the turn.
             let turnActive = model.isRunning || model.sendingPlaceholder != nil
-            // An interrupted/failed group is residue from a previous turn, not
-            // the live one. Selecting it whenever a send was in flight drew
-            // its last step with the running mark again until the new turn's
-            // rows arrived (2026-11-10).
+            // While the runtime reports the turn running, a failed tool in the
+            // group is not residue — the agent moves on and the row must keep
+            // the live pose through the next gap (pp 2026-11-10: a mid-turn
+            // ⚠️ settled the row while the turn still ran). The residue rule
+            // only backs the optimistic send window, where a settled turn's
+            // interrupted group must not regain the mark.
             let lastStepGroup = lastStepGroupID.flatMap { stepGroupsByID[$0] }
-            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup
-                && (lastStepGroup?.canCarryLiveMark ?? false))
+            let canCarryLiveMark = lastStepGroup?
+                .canCarryLiveMark(turnIsRunning: model.isRunning) ?? false
+            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup && canCarryLiveMark)
                 ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil

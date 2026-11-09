@@ -223,4 +223,106 @@ struct TimelineStepGroupLiveMarkTests {
             .thinking(id: "r2", text: "think", status: .interrupted),
         ]).canCarryLiveMark)
     }
+
+    @Test func aFailedToolKeepsTheMarkWhileTheTurnStillRuns() {
+        // The agent moves on after a failed tool; while the runtime reports
+        // the turn running the row must keep the live pose, otherwise a
+        // mid-turn ⚠️ settles it (pp 2026-11-10).
+        let failed = group([
+            .thinking(id: "r1", text: "think", status: .done),
+            .thinking(id: "r2", text: "think", status: .failed),
+        ])
+        #expect(failed.canCarryLiveMark(turnIsRunning: true))
+        #expect(!failed.canCarryLiveMark(turnIsRunning: false))
+    }
+}
+
+@Suite("Step sheet tail follow")
+struct StepSheetTailFollowTests {
+    private func viewport(offset: CGFloat,
+                          content: CGFloat = 2000,
+                          container: CGFloat = 600) -> TimelineViewport {
+        TimelineViewport(contentHeight: content, containerHeight: container,
+                         offsetY: offset)
+    }
+
+    @Test func aSettledSheetDoesNotFollowByDefault() {
+        #expect(!StepSheetTailFollow().followsTail)
+    }
+
+    @Test func aSampleAwayFromTheBottomDoesNotReleaseTheLatch() {
+        // This is the sample a content growth produces: the page, not the
+        // reader, moved the bottom edge away. The follow must survive it,
+        // otherwise the first new step would stop the sheet from following.
+        var follow = StepSheetTailFollow(followsTail: true)
+        follow.consume(viewport(offset: 100))
+        #expect(follow.followsTail)
+    }
+
+    @Test func theReaderTakingOverReleasesTheLatch() {
+        var follow = StepSheetTailFollow(followsTail: true)
+        follow.readerTookOver()
+        follow.consume(viewport(offset: 100))
+        #expect(!follow.followsTail)
+    }
+
+    @Test func restingAtTheBottomReArmsTheLatch() {
+        var follow = StepSheetTailFollow(followsTail: true)
+        follow.readerTookOver()
+        follow.consume(viewport(offset: 1400))
+        #expect(follow.followsTail)
+    }
+
+    @Test func anUnmeasuredSampleCannotReArmTheLatch() {
+        // The zero sample arrives before the list has laid out; an "empty
+        // viewport is at its bottom" reading must not re-arm the follow.
+        var follow = StepSheetTailFollow(followsTail: false)
+        follow.consume(TimelineViewport())
+        #expect(!follow.followsTail)
+    }
+}
+
+@Suite("Running-turn step groups")
+struct TimelineRunningTurnStepGroupsTests {
+    private func group(_ id: String, steps: [String]) -> TimelineChatUnit {
+        .stepGroup(TimelineStepGroup(id: id, steps: []), rowIDs: steps)
+    }
+
+    @Test func groupsAfterTheLastPromptBelongToTheRunningTurn() {
+        let units: [TimelineChatUnit] = [
+            group("steps:old", steps: ["s0"]),
+            .message(key: "m", rowIDs: ["body"]),
+            group("steps:a", steps: ["s1"]),
+            group("steps:b", steps: ["s2"]),
+        ]
+        let orders = ["s0": 2, "s1": 4, "s2": 7]
+        let ids = TimelineRunningTurnStepGroups.ids(
+            units: units, orderSeq: { orders[$0] }, lastUserOrder: 3)
+        #expect(ids == ["steps:a", "steps:b"])
+    }
+
+    @Test func aGroupThatStartedBeforeTheLastPromptIsExcluded() {
+        // The turn boundary is the group's FIRST row: a group that spans the
+        // prompt belongs to the settled turn even though its tail is newer.
+        let units: [TimelineChatUnit] = [group("steps:spanning",
+                                               steps: ["before", "after"])]
+        let orders = ["before": 1, "after": 5]
+        let ids = TimelineRunningTurnStepGroups.ids(
+            units: units, orderSeq: { orders[$0] }, lastUserOrder: 3)
+        #expect(ids.isEmpty)
+    }
+
+    @Test func aGroupWhoseFirstRowIsNotResolvableIsExcluded() {
+        let units: [TimelineChatUnit] = [group("steps:a", steps: ["missing"])]
+        let ids = TimelineRunningTurnStepGroups.ids(
+            units: units, orderSeq: { _ in nil }, lastUserOrder: 0)
+        #expect(ids.isEmpty)
+    }
+
+    @Test func aGroupWithNoRowsIsExcluded() {
+        let units: [TimelineChatUnit] = [group("steps:a", steps: [])]
+        let ids = TimelineRunningTurnStepGroups.ids(
+            units: units, orderSeq: { _ in 5 }, lastUserOrder: 0)
+        #expect(ids.isEmpty)
+    }
 }

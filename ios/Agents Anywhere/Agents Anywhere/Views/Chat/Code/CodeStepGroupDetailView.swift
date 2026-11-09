@@ -18,9 +18,9 @@ struct CodeStepGroupDetailView: View {
     /// place and newly emitted calls append at the tail (pp 2026-10-30). The
     /// snapshot is the fallback once the group leaves the timeline window.
     var liveGroups: TimelineLiveStepGroups? = nil
-    /// True when the tapped row is the live turn's trailing group: the sheet
-    /// opens on the newest step and follows the tail. A settled group opens at
-    /// the top (pp 2026-10-30).
+    /// True when the tapped group belongs to the turn in flight: the sheet
+    /// opens on the newest step and follows the tail. A settled turn's group
+    /// opens at the top (pp 2026-10-30; turn-scoped rule 2026-11-10).
     var startsAtBottom: Bool = false
 
     @Environment(\.dismiss) private var dismiss
@@ -30,6 +30,27 @@ struct CodeStepGroupDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var path: [Route] = []
+    /// The append gate: the sheet follows new steps only while its reader is
+    /// at the bottom. A live group starts latched (pp 2026-11-10).
+    @State private var tailFollow: StepSheetTailFollow
+    /// Set once the list has been seen resting at the bottom during the
+    /// opening pass; the opening scroll never runs again after that.
+    @State private var tailSettled = false
+    /// A finger is dragging the list. Appends must not move content under it
+    /// (the timeline's existing contract).
+    @State private var isInteracting = false
+
+    init(group: TimelineStepGroup, cwd: String?,
+         chat: SessionChatModel? = nil,
+         liveGroups: TimelineLiveStepGroups? = nil,
+         startsAtBottom: Bool = false) {
+        self.group = group
+        self.cwd = cwd
+        self.chat = chat
+        self.liveGroups = liveGroups
+        self.startsAtBottom = startsAtBottom
+        _tailFollow = State(initialValue: StepSheetTailFollow(followsTail: startsAtBottom))
+    }
 
     enum Route: Hashable {
         /// Carries the step id so the pushed page can follow the live text;
@@ -71,19 +92,65 @@ struct CodeStepGroupDetailView: View {
                 // Only a live group opens on its newest step: it keeps growing
                 // at the tail, so the reader should land where the work is
                 // happening; a settled group opens at the top (pp 2026-10-30).
-                // Appends keep following the tail through the scroll below.
-                .defaultScrollAnchor(startsAtBottom ? .bottom : nil)
+                // Initial offset only: the size-changes role would re-anchor
+                // every append and pull a reader who scrolled up back down,
+                // which the follow latch below owns instead (pp 2026-11-10).
+                .defaultScrollAnchor(startsAtBottom ? .bottom : nil, for: .initialOffset)
                 // The official StepSheet grows downward while the turn runs: a
                 // newly emitted call slides in at the tail (pp 2026-10-30).
                 // Only the count is animated; streaming text redraws in place.
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
                            value: liveGroup.steps.count)
-                .onChange(of: liveGroup.steps.count) { _, _ in
-                    guard startsAtBottom,
-                          let lastID = liveGroup.steps.last?.id else { return }
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
+                .onScrollPhaseChange { _, phase, _ in
+                    // A drag means the reader owns the list: a step emitted
+                    // now must not pull them back to the bottom (pp 2026-11-10).
+                    // Only `.interacting` counts — `.tracking` is also set by a
+                    // plain touch-down (a row tap), which must not release the
+                    // follow.
+                    isInteracting = phase == .interacting
+                    if phase == .interacting {
+                        tailFollow.readerTookOver()
                     }
+                }
+                .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
+                    TimelineViewport(contentHeight: geometry.contentSize.height,
+                                     containerHeight: geometry.containerSize.height,
+                                     topInset: geometry.contentInsets.top,
+                                     bottomInset: geometry.contentInsets.bottom,
+                                     offsetY: geometry.contentOffset.y)
+                } action: { _, viewport in
+                    tailFollow.consume(viewport)
+                    // `measuredAtBottom` is also true for a zero-content list;
+                    // a sample that arrives before the rows lay out must not
+                    // settle the opening pass (review 2026-11-10).
+                    guard startsAtBottom, !tailSettled, viewport.isMeasured,
+                          viewport.contentHeight > 0 else { return }
+                    if viewport.measuredAtBottom {
+                        tailSettled = true
+                        return
+                    }
+                    // Opened above the tail. Between two steps nothing changes
+                    // size, so the initial anchor alone did not land; scroll
+                    // once the list has measured, and let the next sample retry
+                    // if this pass ran before the rows were laid out.
+                    guard tailFollow.followsTail else { return }
+                    Task { scrollToTail(proxy, animated: false) }
+                }
+                .task(id: startsAtBottom) {
+                    // Backstop for a first layout that produces no geometry
+                    // sample of its own: the sheet must open at the newest
+                    // step of a live group, not at the top.
+                    guard startsAtBottom else { return }
+                    try? await Task.sleep(for: .milliseconds(120))
+                    guard !Task.isCancelled, !tailSettled, tailFollow.followsTail else { return }
+                    scrollToTail(proxy, animated: false)
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled, !tailSettled, tailFollow.followsTail else { return }
+                    scrollToTail(proxy, animated: false)
+                }
+                .onChange(of: liveGroup.steps.count) { _, _ in
+                    guard startsAtBottom, tailFollow.followsTail, !isInteracting else { return }
+                    scrollToTail(proxy, animated: true)
                 }
                 .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
                     .ignoresSafeArea())
@@ -130,6 +197,25 @@ struct CodeStepGroupDetailView: View {
     private var title: String {
         TimelineStepSummaryText.line(
             TimelineStepSummarizer.summary(steps: liveGroup.steps, cwd: cwd))
+    }
+
+    /// Lands the list on the group's newest step. The opening pass never
+    /// animates — an opening jump must be invisible (pp 2026-10-08, the
+    /// instant-opening rule) — while an appended step slides the 16 pt row in
+    /// (pp 2026-10-30).
+    private func scrollToTail(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let lastID = liveGroup.steps.last?.id else { return }
+        if animated {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
+        }
     }
 
     /// The live thinking body for the pushed page; `nil` once the step leaves

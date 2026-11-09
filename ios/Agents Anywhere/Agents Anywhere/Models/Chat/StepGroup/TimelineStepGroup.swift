@@ -88,7 +88,8 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
     /// Whether the chat profile's live mark may seat on this group while a turn
-    /// is active (pp 2026-11-10).
+    /// is active, when the runtime does not report the turn itself
+    /// (pp 2026-11-10).
     ///
     /// A group whose steps ended in a terminal failure is residue from an
     /// interrupted turn, not the live one. The adapter used to select the last
@@ -98,9 +99,25 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// always qualifies, including the between-steps gap where every step is
     /// done; only a terminal failure with nothing running disqualifies it.
     var canCarryLiveMark: Bool {
-        isRunning || !steps.contains {
+        isRunning || !hasTerminalFailure
+    }
+
+    var hasTerminalFailure: Bool {
+        steps.contains {
             [.failed, .cancelled, .interrupted].contains($0.status)
         }
+    }
+
+    /// The live mark's full rule (pp 2026-11-10, ⚠️ follow-up the same day).
+    ///
+    /// The runtime's own turn state wins: while the turn really runs, a failed
+    /// tool inside the group is just a failed tool — the agent moved on and
+    /// the row must keep the live pose through the next gap, otherwise a
+    /// mid-turn ⚠️ settles the row while the turn still runs. Only the
+    /// optimistic send window (`turnIsRunning == false`, placeholder active)
+    /// falls back to the residue rule.
+    func canCarryLiveMark(turnIsRunning: Bool) -> Bool {
+        turnIsRunning || canCarryLiveMark
     }
 
     var hasFailure: Bool {

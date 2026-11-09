@@ -3054,6 +3054,24 @@ def stable_message_item_id(
     return "claude_msg_" + _short("message", scope, native_message_id)
 
 
+def stable_turn_result_item_id(session: ClaudeSession, turn_id: str) -> str:
+    """The item id of a turn's result-envelope reply (2026-11-10).
+
+    The fallback reply never arrived as a streamed assistant message, so it
+    has no native message id of its own. Borrowing the last streamed
+    message's id — usually the message that carried the tool calls — put the
+    body into that message's group, and the Server's intra-message repair
+    then ordered the group ``reasoning → body → tool``: the reply was drawn
+    before the calls it followed. The turn is the only identity this text
+    really has; the history sync re-keys its rebuilt row to this same id
+    (``ClaudeHistorySyncer.bind_turn_result_text``), so the two writers
+    converge on one row instead of two.
+    """
+
+    scope = session.external_session_id or session.session_id
+    return "claude_msg_" + _short("message", scope, f"turn-result:{turn_id}")
+
+
 def stable_tool_item_id(session: ClaudeSession, tool_use_id: str) -> str:
     scope = session.external_session_id or session.session_id
     return "claude_tool_" + _short("tool", scope, tool_use_id)

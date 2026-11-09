@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import asyncer
 
@@ -77,6 +77,13 @@ class ClaudeHistorySyncer:
     #: to append it after. Membership also answers "may the pre-turn gate skip
     #: the sync?".
     synced_sessions: set[str] = field(default_factory=set)
+    #: (session id, turn id) -> the item id the live fallback published for
+    #: that turn's result-envelope reply. The rebuild re-keys its own final
+    #: assistant body to this id so the two writers upsert one row instead of
+    #: two (``_publish_result_text``; 2026-11-10). Bounded: only the newest
+    #: bindings can still be waiting for their turn's rebuild.
+    turn_result_text_items: dict[tuple[str, str], str] = field(default_factory=dict)
+    _TURN_RESULT_BINDING_LIMIT = 256
 
     def has_synced(self, external_session_id: str | None) -> bool:
         """Whether this process already ran a history sync for the session."""
@@ -85,6 +92,23 @@ class ClaudeHistorySyncer:
             external_session_id is not None
             and external_session_id in self.synced_sessions
         )
+
+    def bind_turn_result_text(
+        self, *, session_id: str, turn_id: str, item_id: str
+    ) -> None:
+        """Remember the live fallback row of one turn's result text.
+
+        The rebuild uses it to publish that turn's final assistant body under
+        the same item id, carrying the transcript's own native message id
+        (``_rekey_turn_result_text``).
+        """
+
+        key = (session_id, turn_id)
+        self.turn_result_text_items[key] = item_id
+        overflow = len(self.turn_result_text_items) - self._TURN_RESULT_BINDING_LIMIT
+        if overflow > 0:
+            for stale in list(self.turn_result_text_items)[:overflow]:
+                del self.turn_result_text_items[stale]
 
     async def ensure_first_sync(
         self,
@@ -305,6 +329,9 @@ class ClaudeHistorySyncer:
                 else None
             ),
         )
+        items = _rekey_turn_result_text(
+            items, self.turn_result_text_items, session_id
+        )
         # D-A: adopt a store entry when this session carries an Agent card and
         # the store has none (or the entry is missing the cwd/external id the
         # oracle's probe needs). Cards only ever reach the store through the
@@ -433,6 +460,49 @@ class ClaudeHistorySyncer:
             directory=cwd,
         )
         return info, messages
+
+
+def _rekey_turn_result_text(
+    items: tuple[RuntimeTimelineItem, ...],
+    bindings: Mapping[tuple[str, str], str],
+    session_id: str,
+) -> tuple[RuntimeTimelineItem, ...]:
+    """Point a turn's rebuilt final reply at the live fallback's item id.
+
+    The fallback published the result-envelope text under a turn-scoped id
+    with no native message id (``_publish_result_text``); this rebuild is the
+    first writer that knows the reply's real native message id. Reusing the
+    live id here makes the Server upsert one row — the one the transcript
+    names — instead of keeping the fallback and adding a second bubble.
+
+    Only the LAST assistant body of the turn is its result text; a turn with
+    no bound fallback (the reply streamed normally) is left untouched.
+    """
+
+    wanted = {
+        turn_id: item_id
+        for (bound_session, turn_id), item_id in bindings.items()
+        if bound_session == session_id
+    }
+    if not wanted:
+        return items
+    last_body: dict[str, int] = {}
+    for index, item in enumerate(items):
+        if (
+            item.session_id == session_id
+            and item.type == "message"
+            and item.role == "assistant"
+            and item.turn_id in wanted
+        ):
+            last_body[item.turn_id] = index
+    if not last_body:
+        return items
+    rekeyed = list(items)
+    for turn_id, index in last_body.items():
+        item_id = wanted[turn_id]
+        if rekeyed[index].id != item_id:
+            rekeyed[index] = replace(rekeyed[index], id=item_id)
+    return tuple(rekeyed)
 
 
 def _carries_agent_card(item: RuntimeTimelineItem) -> bool:

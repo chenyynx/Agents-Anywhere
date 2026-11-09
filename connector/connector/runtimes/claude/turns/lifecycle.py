@@ -100,6 +100,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_usage,
     stable_message_item_id,
     stable_tool_item_id,
+    stable_turn_result_item_id,
     terminal_publish_superseded,
 )
 from connector.runtimes.claude.timeline.stream import (
@@ -3940,12 +3941,18 @@ class ClaudeTurnRunner:
         text = message_text(message)
         if not text:
             return False
+        # This text never arrived as a streamed assistant frame, so it has no
+        # native message id. It used to borrow the last streamed message's
+        # id — usually the message that carried the turn's tool calls — which
+        # put the body into that message's group; the Server's intra-message
+        # repair then ordered the group reasoning → body → tool and the reply
+        # was drawn before the calls it followed (2026-11-10). The turn id is
+        # the only identity this text has; the history sync re-keys its
+        # rebuilt row to the same id so the two writers converge on one row.
+        result_item_id = stable_turn_result_item_id(session, turn_id)
         # The frame that carries this text (a ResultMessage envelope) reports
-        # turn-cumulative totals, not one call's usage and not this item's. The
-        # item id, though, is the streamed assistant message's — the partial
-        # items already published usage on it — so the last per-call usage the
-        # accumulator holds rides along and the fallback's later write cannot
-        # publish over the item without one.
+        # turn-cumulative totals, not one call's usage and not this item's, so
+        # the last per-call usage the accumulator holds rides along.
         await self.publish_items(
             execution,
             (
@@ -3955,11 +3962,8 @@ class ClaudeTurnRunner:
                     role="assistant",
                     text=text,
                     event="claude.turn.result",
-                    native_item_id=message_id(message),
-                    item_id=stream_accumulator.final_item_id(
-                        session,
-                        turn_id,
-                    ),
+                    native_item_id=None,
+                    item_id=result_item_id,
                     revision=stream_accumulator.next_final_revision(),
                     usage=stream_accumulator.result_text_usage(),
                     usage_model=stream_accumulator.result_usage_model(),
@@ -3967,6 +3971,12 @@ class ClaudeTurnRunner:
             ),
             counted=counted,
         )
+        if self.history_syncer is not None:
+            self.history_syncer.bind_turn_result_text(
+                session_id=session.session_id,
+                turn_id=turn_id,
+                item_id=result_item_id,
+            )
         # The turn's final text is out; the streamed message is over, so close
         # (and publish) any thinking block still open rather than dropping it.
         settled_items = stream_accumulator.reset(

@@ -201,6 +201,19 @@ class ClaudeHistorySyncer:
                 session_id=session_id,
                 external_session_id=external_session_id,
             )
+            # The live store is re-publishing rows the Server may never have
+            # received. Their order is the live allocator's — a real chain
+            # position, not an append — so the batch carries the same
+            # windowOrder authority a cursor window does. Without it the
+            # Server appends every unseen row after the newest one, and a
+            # missed old turn lands at the end of the timeline (2026-11-10:
+            # an Agent-call message group from 02:21 was re-published at the
+            # 03:08 restart and drawn after the newest reply). A healthy retry
+            # is a no-op: the plan only rewrites the first misordered suffix.
+            snapshot = replace(
+                snapshot,
+                metadata={**snapshot.metadata, "windowOrder": True},
+            )
 
             async def commit_local_retry() -> None:
                 self.session_store.mark_synced(session_id, external_session_id)

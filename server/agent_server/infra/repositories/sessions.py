@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import case, literal_column
+from sqlalchemy import case, literal_column, or_
 from pydantic import BaseModel
 
 from agent_server.infra.repositories.store_support import *
@@ -1275,23 +1275,38 @@ class SessionRepositoryMixin:
         connector_id: str,
         limit: int,
     ) -> list[SessionView]:
-        """Active sessions on one connector, newest write first, bounded.
+        """Sessions that may hold residue, newest write first, bounded.
 
-        A reconnect can only have stranded rows in sessions the server still
-        considers active, so those are the only ones worth asking the
-        connector about. The ordering and the cap stay in SQL: the session's
-        own ``updated_at`` is the write clock the reconcile must walk (the
-        ``SessionView`` model does not expose it), and a bounded sweep must
-        reach the most recently written sessions first.
+        Two shapes qualify: a session the server still calls active (the
+        killed turn never settled it), and a session with a ``running``
+        tool/system row even though its status already moved on — a later turn
+        or a state sync can settle the status while the old reasoning row
+        stays stranded (the 2026-11-10 incident). The ordering and the cap
+        stay in SQL: the session's own ``updated_at`` is the write clock the
+        reconcile must walk (the ``SessionView`` model does not expose it),
+        and a bounded sweep must reach the most recently written sessions
+        first.
         """
 
         if limit <= 0:
             return []
+        residue_exists = (
+            select(timeline_items_t.c.session_id)
+            .where(
+                timeline_items_t.c.session_id == sessions_t.c.id,
+                timeline_items_t.c.status == "running",
+                timeline_items_t.c.type.in_(("tool", "system")),
+            )
+            .exists()
+        )
         query = (
             _session_view_query()
             .where(
                 sessions_t.c.connector_id == connector_id,
-                sessions_t.c.status.in_(_ACTIVE_SESSION_STATUSES),
+                or_(
+                    sessions_t.c.status.in_(_ACTIVE_SESSION_STATUSES),
+                    residue_exists,
+                ),
                 connectors_t.c.revoked == 0,
             )
             .order_by(sessions_t.c.updated_at.desc(), sessions_t.c.id)

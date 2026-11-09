@@ -23,6 +23,7 @@ from agent_server.infra.db import sessions as sessions_t
 from agent_server.infra.repositories.facade import Store
 from agent_server.services.restart_reconcile import (
     CLOSED_BY_EVIDENCE,
+    DISCONNECTED_BY_EVIDENCE,
     ENV_ENABLED,
     RestartReconcileService,
 )
@@ -89,6 +90,8 @@ class FakeConnectorRpc:
         response = self.responses.get(params["sessionId"], self.missing)
         if response is self.missing:
             raise AssertionError(f"unexpected probe for {params['sessionId']!r}")
+        if isinstance(response, list):
+            response = response.pop(0)
         if isinstance(response, BaseException):
             raise response
         return response
@@ -170,7 +173,7 @@ async def test_idle_connector_closes_the_row_and_settles_the_session(tmp_path) -
 
         assert summary.sessions == 1
         assert summary.sessions_changed == 1
-        assert summary.tool_items_closed == 1
+        assert summary.items_closed == 1
         # The probe carries the full runtime binding, not just the session id.
         (connector_id, method, params, timeout) = rpc.calls[0]
         assert connector_id == connector.id
@@ -229,7 +232,7 @@ async def test_missing_state_also_counts_as_not_running(tmp_path) -> None:
             connector.id
         )
 
-        assert summary.tool_items_closed == 1
+        assert summary.items_closed == 1
         (item,) = await store.timeline.read_many(session.id, {"tool_running"})
         assert item.status == "interrupted"
         assert (await store.get_session(session.id)).status == "idle"
@@ -258,7 +261,7 @@ async def test_any_live_state_writes_nothing(tmp_path, connector_state: str) -> 
             connector.id
         )
 
-        assert summary.tool_items_closed == 0
+        assert summary.items_closed == 0
         assert summary.sessions_changed == 0
         assert await store.get_session_seq(session.id) == seq_before
         (item,) = await store.timeline.read_many(session.id, {"tool_running"})
@@ -291,7 +294,7 @@ async def test_probe_failure_writes_nothing(tmp_path, failure: BaseException) ->
             connector.id
         )
 
-        assert summary.tool_items_closed == 0
+        assert summary.items_closed == 0
         assert await store.get_session_seq(session.id) == seq_before
         (item,) = await store.timeline.read_many(session.id, {"tool_running"})
         assert item.status == "running"
@@ -322,7 +325,7 @@ async def test_active_run_blocks_the_write(tmp_path) -> None:
             connector.id
         )
 
-        assert summary.tool_items_closed == 0
+        assert summary.items_closed == 0
         assert await store.get_session_seq(session.id) == seq_before
         (item,) = await store.timeline.read_many(session.id, {"tool_running"})
         assert item.status == "running"
@@ -344,20 +347,20 @@ async def test_second_run_is_idempotent(tmp_path) -> None:
         )
         service = RestartReconcileService(store, rpc)
 
-        assert (await service.reconcile_connector(connector.id)).tool_items_closed == 1
+        assert (await service.reconcile_connector(connector.id)).items_closed == 1
         seq_after_first = await store.get_session_seq(session.id)
 
         second = await service.reconcile_connector(connector.id)
 
         assert second.sessions == 0
-        assert second.tool_items_closed == 0
+        assert second.items_closed == 0
         assert len(rpc.calls) == 1
         assert await store.get_session_seq(session.id) == seq_after_first
         (item,) = await store.timeline.read_many(session.id, {"tool_running"})
         assert item.revision == 2
 
         # The repository write itself is idempotent even if called directly.
-        third = await store.close_running_tool_items(
+        third = await store.close_running_residue_items(
             session_id=session.id,
             closed_by_evidence=CLOSED_BY_EVIDENCE,
         )
@@ -369,7 +372,11 @@ async def test_second_run_is_idempotent(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_non_tool_running_rows_are_untouched(tmp_path) -> None:
+async def test_message_rows_are_untouched_while_system_rows_are_closed(
+    tmp_path,
+) -> None:
+    """Tool *and* system rows are residue; message rows are never touched."""
+
     store, connector, session = await _store_and_running_session()
     try:
         await store.sync_timeline_items(
@@ -403,9 +410,11 @@ async def test_non_tool_running_rows_are_untouched(tmp_path) -> None:
         items = await _items(store, session.id)
         assert items["tool_running"].status == "interrupted"
         assert items["message_running"].status == "running"
-        assert items["system_running"].status == "running"
+        assert items["system_running"].status == "interrupted"
+        assert items["system_running"].content["closedByEvidence"] == (
+            CLOSED_BY_EVIDENCE
+        )
         assert "closedByEvidence" not in items["message_running"].content
-        assert "closedByEvidence" not in items["system_running"].content
     finally:
         await store.close()
 
@@ -521,3 +530,183 @@ def test_from_environment_default_and_malformed(monkeypatch) -> None:
 
     monkeypatch.setenv(ENV_ENABLED, "not-a-flag")
     assert RestartReconcileService.from_environment(object(), object()).enabled is False
+
+
+@pytest.mark.anyio
+async def test_disconnect_settles_rows_and_active_run_without_probing(
+    tmp_path,
+) -> None:
+    """A websocket disconnect closes tool *and* thinking rows immediately."""
+
+    store, connector, session = await _store_and_running_session(tag="disconnect")
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                item_row("tool_running", session_id=session.id, order_seq=1),
+                item_row(
+                    "thinking_running",
+                    session_id=session.id,
+                    order_seq=2,
+                    item_type="system",
+                    role="system",
+                    content={
+                        "kind": "reasoning",
+                        "blockType": "thinking",
+                        "text": "partial thought",
+                    },
+                ),
+                item_row(
+                    "tool_done",
+                    session_id=session.id,
+                    order_seq=3,
+                    status="done",
+                ),
+            ],
+        )
+        await store.start_active_run(
+            session_id=session.id,
+            runtime="claude",
+            runtime_id="claude",
+            external_session_id="claude_ext_main",
+        )
+        rpc = FakeConnectorRpc({})
+        service = RestartReconcileService(store, rpc)
+
+        summary = await service.reconcile_disconnected_connector(
+            connector.id,
+            disconnected_at=_now_iso(),
+        )
+
+        assert summary.sessions == 1
+        assert summary.sessions_changed == 1
+        assert summary.items_closed == 2
+        # No probe: the disconnect itself is the evidence.
+        assert rpc.calls == []
+        items = await _items(store, session.id)
+        for item_id, expected_type in (
+            ("tool_running", "tool"),
+            ("thinking_running", "system"),
+        ):
+            item = items[item_id]
+            assert item.status == "interrupted"
+            assert item.content["closedByEvidence"] == DISCONNECTED_BY_EVIDENCE
+            assert item.contentHash == timeline_item_content_hash(
+                item_type=expected_type,
+                status="interrupted",
+                role=item.role,
+                content=item.content,
+            )
+            assert item.revision == 2
+        assert items["tool_done"].status == "done"
+        assert (await store.get_session(session.id)).status == "idle"
+        assert await store.get_active_run(session.id) is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_disconnect_closes_residue_in_an_idle_session(tmp_path) -> None:
+    """The session status can settle while a reasoning row stays running."""
+
+    store, connector, session = await _store_and_running_session(tag="idle-residue")
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                item_row(
+                    "thinking_running",
+                    session_id=session.id,
+                    order_seq=1,
+                    item_type="system",
+                    role="system",
+                    content={"kind": "reasoning", "text": "partial thought"},
+                )
+            ],
+        )
+        await store.set_session_status(session.id, "idle", expected_status="running")
+        rpc = FakeConnectorRpc({})
+
+        summary = await RestartReconcileService(
+            store, rpc
+        ).reconcile_disconnected_connector(
+            connector.id,
+            disconnected_at=_now_iso(),
+        )
+
+        assert summary.sessions == 1
+        assert summary.items_closed == 1
+        (item,) = await store.timeline.read_many(session.id, {"thinking_running"})
+        assert item.status == "interrupted"
+        assert (await store.get_session(session.id)).status == "idle"
+        assert rpc.calls == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_disconnect_leaves_a_run_started_after_it_alone(tmp_path) -> None:
+    """A turn that started after the disconnect is live, not residue."""
+
+    store, connector, session = await _store_and_running_session(tag="newer-run")
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[item_row("tool_running", session_id=session.id, order_seq=1)],
+        )
+        await store.start_active_run(
+            session_id=session.id,
+            runtime="claude",
+            runtime_id="claude",
+            external_session_id="claude_ext_main",
+        )
+        rpc = FakeConnectorRpc({})
+
+        summary = await RestartReconcileService(
+            store, rpc
+        ).reconcile_disconnected_connector(
+            connector.id,
+            disconnected_at="2000-01-01T00:00:00Z",
+        )
+
+        assert summary.items_closed == 0
+        (item,) = await store.timeline.read_many(session.id, {"tool_running"})
+        assert item.status == "running"
+        assert (await store.get_session(session.id)).status == "running"
+        assert await store.get_active_run(session.id) is not None
+        assert rpc.calls == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_probe_retries_runtime_not_ready_once(tmp_path) -> None:
+    """The connector registers its runtime a few seconds after reconnecting."""
+
+    store, connector, session = await _store_and_running_session(tag="retry")
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[item_row("tool_running", session_id=session.id, order_seq=1)],
+        )
+        rpc = FakeConnectorRpc(
+            {
+                session.id: [
+                    ConnectorRpcError(
+                        "runtime_invalid_request",
+                        "unknown runtime instance 'rti_x'",
+                    ),
+                    state_response(session.id, "idle"),
+                ]
+            }
+        )
+        service = RestartReconcileService(store, rpc, probe_retry_delays=(0.0,))
+
+        summary = await service.reconcile_connector(connector.id)
+
+        assert len(rpc.calls) == 2
+        assert summary.items_closed == 1
+        (item,) = await store.timeline.read_many(session.id, {"tool_running"})
+        assert item.status == "interrupted"
+    finally:
+        await store.close()

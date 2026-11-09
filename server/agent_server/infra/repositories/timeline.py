@@ -1367,7 +1367,7 @@ class TimelineRepositoryMixin:
             ]
             if not doomed:
                 return _JANITOR_NO_CHANGE
-            closed = await self._close_running_tool_items_locked(
+            closed = await self._close_running_items_locked(
                 conn,
                 session_id=session_id,
                 doomed=doomed,
@@ -1381,7 +1381,7 @@ class TimelineRepositoryMixin:
             )
         return TimelineBatchWriteResult(items=tuple(closed), changed=True)
 
-    async def _close_running_tool_items_locked(
+    async def _close_running_items_locked(
         self,
         conn: AsyncConnection,
         *,
@@ -1389,7 +1389,7 @@ class TimelineRepositoryMixin:
         doomed: list[TimelineItem],
         closed_by_evidence: str,
     ) -> list[TimelineItem]:
-        """Rewrite already-vetted ``running`` tool rows to ``interrupted``.
+        """Rewrite already-vetted ``running`` residue rows to ``interrupted``.
 
         The caller owns the session lock, the transaction, and every guard
         that decides *which* rows are doomed; this helper only performs the
@@ -1437,31 +1437,37 @@ class TimelineRepositoryMixin:
         return closed
 
     @session_revision_fenced
-    async def close_running_tool_items(
+    async def close_running_residue_items(
         self,
         *,
         session_id: str,
         closed_by_evidence: str,
+        allow_active_run: bool = False,
     ) -> TimelineBatchWriteResult:
-        """Close every ``running`` tool row in a session on external evidence.
+        """Close every ``running`` tool/system row on external evidence.
 
         Unlike ``close_stale_running_tool_items`` this has no age bound: the
         caller has already proven (by asking the connector that owns the
         session) that no turn is running there, so a freshly stranded row is
         exactly what it must heal. The remaining guards stay:
 
-        - the row is still ``type='tool' AND status='running'`` — queued
-          messages and approvals are never touched;
+        - the row is still ``status='running'`` and its type is ``tool`` or
+          ``system`` — queued messages, approvals and message rows are never
+          touched;
         - the row has settled: ``updated_seq`` at or below the session fence
           (a higher value is an in-flight buffered write);
         - the session has no ``session_active_runs`` row, re-checked here
           under the timeline lock because a turn may have started between the
-          caller's probe and this write.
+          caller's probe and this write. ``allow_active_run`` is the one
+          override: a websocket disconnect is itself the evidence that the
+          connector stopped, and a live connector that was only blipped
+          revives the rows through the ordinary revision bump when it
+          re-publishes them (2026-11-10).
 
         Guard *failure* is silence (``_JANITOR_NO_CHANGE``): the caller's
         evidence is only a hint until re-validated inside the fence. The
         write shape is shared with the age janitor
-        (``_close_running_tool_items_locked``), including
+        (``_close_running_items_locked``), including
         ``touch_updated_at=False`` and ``mark_read=False``.
         """
 
@@ -1483,7 +1489,7 @@ class TimelineRepositoryMixin:
                     )
                 )
             ).first()
-            if active_run is not None:
+            if active_run is not None and not allow_active_run:
                 return _JANITOR_NO_CHANGE
             fence = int(session_row.seq)
             rows = (
@@ -1494,7 +1500,7 @@ class TimelineRepositoryMixin:
                         timeline_items_t.c.payload_json,
                     ).where(
                         timeline_items_t.c.session_id == session_id,
-                        timeline_items_t.c.type == "tool",
+                        timeline_items_t.c.type.in_(("tool", "system")),
                         timeline_items_t.c.status == "running",
                     )
                 )
@@ -1506,7 +1512,7 @@ class TimelineRepositoryMixin:
             ]
             if not doomed:
                 return _JANITOR_NO_CHANGE
-            closed = await self._close_running_tool_items_locked(
+            closed = await self._close_running_items_locked(
                 conn,
                 session_id=session_id,
                 doomed=doomed,
@@ -1514,7 +1520,7 @@ class TimelineRepositoryMixin:
             )
         if closed:
             logger.info(
-                "Timeline restart reconcile closed running tool rows "
+                "Timeline restart reconcile closed running residue rows "
                 "session_id={} closed={}",
                 session_id,
                 sorted(item.id for item in closed),

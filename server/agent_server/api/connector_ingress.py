@@ -33,6 +33,7 @@ from agent_server.core.models import (
     ConnectorIngestRequest,
     ConnectorIngestResponse,
 )
+from agent_server.core.utc import utc_now
 from agent_server.deps import (
     get_attachment_service,
     get_connector_ingest_service,
@@ -716,6 +717,28 @@ async def connector_ws(
                 logger.warning("connector notification drain timed out connector_id={}", connector_id)
             finally:
                 await manager.unregister(connector_id, connection)
+            # The connection is gone: settle the rows it was streaming now,
+            # rather than waiting for a reconnect that may never come. If the
+            # connector was only blipped, its next higher-revision publish
+            # revives them.
+            disconnect_reconcile = getattr(
+                websocket.app.state, "restart_reconcile", None
+            )
+            if disconnect_reconcile is not None:
+                try:
+                    async with asyncio.timeout(10):
+                        # A replacement connection already serving this
+                        # connector is not a disconnect: leave its turn alone.
+                        if not await manager.is_online(connector_id):
+                            await disconnect_reconcile.reconcile_disconnected_connector(
+                                connector_id,
+                                disconnected_at=utc_now(),
+                            )
+                except Exception:  # noqa: BLE001 - must never block cleanup
+                    logger.exception(
+                        "connector disconnect reconcile failed connector_id={}",
+                        connector_id,
+                    )
             removed_terminals = await broker.remove_ephemeral_for_connector(
                 connector_id,
                 connection_id=connection.connection_id,

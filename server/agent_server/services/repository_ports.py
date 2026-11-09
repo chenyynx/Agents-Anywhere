@@ -240,12 +240,15 @@ class RestartReconcileRepository(SessionStateRepository, Protocol):
         limit: int,
     ) -> list[SessionView]: ...
 
-    async def close_running_tool_items(
+    async def close_running_residue_items(
         self,
         *,
         session_id: str,
         closed_by_evidence: str,
+        allow_active_run: bool = False,
     ) -> TimelineBatchWriteResult: ...
+
+    async def clear_active_run(self, session_id: str) -> None: ...
 
 
 class InteractionResolutionRepository(

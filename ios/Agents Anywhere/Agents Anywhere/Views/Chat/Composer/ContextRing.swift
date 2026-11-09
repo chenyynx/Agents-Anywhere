@@ -73,6 +73,11 @@ struct ContextRingButton: View {
     /// Visible ring diameter inside the touch slot; profiles may shrink it to
     /// sit beside the command glyph (Code uses 16, Chat keeps 18).
     var ringDiameter: CGFloat = ChatControlMetrics.contextRingDiameter
+    /// Optical nudge of the drawn ring inside its slot (pp 2026-11-10). The
+    /// slot stays where the layout put it and the hit area stays centred; only
+    /// the ink moves. The composer uses it to balance the visibly larger send
+    /// key on the ring's trailing side.
+    var visualOffsetX: CGFloat = 0
     @State private var showsDetails = false
 
     /// The complete usage, or nil in the unknown / hidden states.
@@ -84,6 +89,7 @@ struct ContextRingButton: View {
     var body: some View {
         Button { showsDetails = true } label: {
             ring
+                .offset(x: visualOffsetX)
                 .frame(width: touchTarget, height: touchTarget)
                 .contentShape(Circle())
         }

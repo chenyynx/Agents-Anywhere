@@ -121,7 +121,8 @@ struct ChatComposer: View {
                     if contextUsage.isVisible, draft.isFocused {
                         ContextRingButton(state: contextUsage,
                             touchTarget: controls.touchTarget,
-                            ringDiameter: controls.contextRingDiameter)
+                            ringDiameter: controls.contextRingDiameter,
+                            visualOffsetX: Self.contextRingOpticalShift)
                     }
 
                     if showsCommands {
@@ -154,6 +155,13 @@ struct ChatComposer: View {
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
     }
+
+    /// The ring's slot is centred between the command glyph (18 pt) and the
+    /// send key's disc (36 pt), so the visible gap is 26 pt on the command
+    /// side and 17 pt on the send side. Half that difference re-centres the
+    /// ring optically without moving the slot or its hit area
+    /// (pp 2026-11-10).
+    private static let contextRingOpticalShift: CGFloat = -4.5
 
     /// The queue form: the single accent key shows the arrow and enqueues.
     private var showsQueueSend: Bool { affordance.shape == .queueSend }

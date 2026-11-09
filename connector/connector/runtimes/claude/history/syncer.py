@@ -328,6 +328,15 @@ class ClaudeHistorySyncer:
                 "messageCount": len(messages),
                 "syncedMessageCount": len(sync_messages),
                 "rebased": rebased,
+                # This batch is a cursor window over the chain: its order is
+                # authoritative for the rows it names even though it does not
+                # cover the whole session. Without it the Server can only
+                # append a row the live path never published — a hook-error
+                # tool result reaches it only here — to the end of the session,
+                # after rows that belong later in the chain (2026-11-09).
+                # The Server only renumbers from the first misordered suffix,
+                # so an already-ordered window stays a no-op.
+                "windowOrder": True,
                 # The rebuild's own ordering time (the transcript's last
                 # modification). The publisher prefers the discovered
                 # session's value and falls back to this, so a backfilled old

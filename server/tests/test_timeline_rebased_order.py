@@ -286,6 +286,113 @@ def test_plain_merge_backfill_still_appends(tmp_path) -> None:
     ]
 
 
+WINDOW = {"source": "claude.history.sync", "windowOrder": True}
+
+
+def _tool(
+    item_id: str,
+    *,
+    session_id: str,
+    order_seq: int,
+    text: str,
+    status: str = "failed",
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "sessionId": session_id,
+        "type": "tool",
+        "status": status,
+        "role": "tool",
+        "content": {"kind": "command", "text": text},
+        "source": {
+            "runtime": "claude",
+            "sessionId": "claude_ext_1",
+            "itemId": item_id,
+            "itemType": "tool_result",
+        },
+        "orderSeq": order_seq,
+        "revision": 1,
+        "contentHash": f"sha256:{item_id}:{text}",
+    }
+
+
+def test_window_batch_places_a_new_row_before_later_rows(tmp_path) -> None:
+    """A settle-sync window carries a row the live path never published.
+
+    A hook-error tool result reaches the Server only through the cursor window;
+    its chain position is before the final body. The append rule would strand
+    it after the body — the "tool call at the end" symptom (2026-11-09).
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [_message("msg_body", session_id=session_id, order_seq=1, text="final")],
+    )
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _tool("claude_tool_failed", session_id=session_id, order_seq=1,
+                  text="hook error"),
+            _message("msg_body", session_id=session_id, order_seq=2, text="final"),
+        ],
+        metadata=WINDOW,
+    )
+
+    assert [item["id"] for item in _ordered_items(client, session_id, headers)] == [
+        "claude_tool_failed",
+        "msg_body",
+    ]
+
+
+def test_window_batch_is_a_noop_when_the_order_already_matches(tmp_path) -> None:
+    """A healthy window must not rewrite the session (no churn on settle)."""
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message("msg_a", session_id=session_id, order_seq=1, text="a"),
+            _message("msg_b", session_id=session_id, order_seq=2, text="b"),
+        ],
+    )
+    before = {
+        item["id"]: item["updatedSeq"]
+        for item in _ordered_items(client, session_id, headers)
+    }
+
+    _post_sync(
+        client,
+        access_token,
+        session_id,
+        [
+            _message("msg_a", session_id=session_id, order_seq=1, text="a"),
+            _message("msg_b", session_id=session_id, order_seq=2, text="b"),
+        ],
+        metadata=WINDOW,
+    )
+
+    after = {
+        item["id"]: item["updatedSeq"]
+        for item in _ordered_items(client, session_id, headers)
+    }
+    assert after == before
+
+
 def test_rebased_rewrite_without_timestamps_keeps_the_stored_item_time(
     tmp_path,
 ) -> None:

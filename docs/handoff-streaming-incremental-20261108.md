@@ -1,7 +1,13 @@
 # 交接：流式增量刷新（2026-11-08）
 
+> **最终状态（2026-11-09，收尾）**：这条线已全量合入 beta —— `c9152a01..bea9fa5f`（集成分支
+> `merge/perf-line-into-beta`，test + build + timeline-autorun 全绿），beta 包 **b1088**。
+> 合并只改 iOS/docs/CI，**server/connector 零改动，不需要部署**。P1 放弃、P2 完成（refresh 18.0 → 6.5 ms）、
+> P3 客户端达标（0.1 s 节流、峰值 10–11 次/秒）、P4 当前已低于目标未改、P5 未复现。
+> 下文保留 11-08 的现场记录，分支/构建号以本节为准。
+
 > 读我：`docs/perf-streaming-incremental-task-sheet.md`（P1–P5 计划与验收线）+ 本文（现状、坑、数据）。
-> 分支 `feat/device-main-thread-sampler`，head `a1e019dd`（本文修订时；以 `git log -1` 为准）。worktree：`/home/ubuntu/aa-wt-sampler`。
+> 历史分支 `feat/device-main-thread-sampler`，head `a1e019dd`（本文修订时；以 `git log -1` 为准）。worktree：`/home/ubuntu/aa-wt-sampler`。
 
 ## 1. 这条分支这两天做了什么
 

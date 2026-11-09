@@ -483,13 +483,29 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     /// The backing storage, shared with the layout manager. The code card's
     /// streaming highlight path edits it in place, so it is exposed as-is.
+    ///
+    /// `NSTextContentStorage` creates this storage lazily, and neither its
+    /// init-time empty assignment nor a self-assignment is guaranteed to
+    /// materialise it: the simulator gates crashed here from a code card that
+    /// had never been laid out (run 42538286526, four identical stacks
+    /// `AssistantCodeBlockView.apply(tokens:base:)` → this getter). A layout
+    /// pass is the one thing that definitely asks the content storage for its
+    /// text, so force one before giving up.
     var textStorage: NSTextStorage {
         if let storage = ownStorage.textStorage { return storage }
-        ownStorage.attributedString = ownStorage.attributedString
+        ownStorage.attributedString = NSAttributedString(
+            attributedString: ownStorage.attributedString)
+        if let storage = ownStorage.textStorage { return storage }
+        ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         if let storage = ownStorage.textStorage { return storage }
         assertionFailure("NSTextContentStorage has no backing text storage")
         return NSTextStorage()
     }
+
+    /// Whether the backing storage exists yet. Callers that can fall back to a
+    /// whole-string assignment (the code card's incremental append) must ask
+    /// this instead of provoking the materialisation above.
+    var hasTextStorage: Bool { ownStorage.textStorage != nil }
 
     /// What is actually laid out — the storage, not `sourceAttributed`: the
     /// code card appends to the storage without going through the setter.

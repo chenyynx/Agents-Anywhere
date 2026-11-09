@@ -605,6 +605,7 @@ final class AssistantCodeBlockView: UIView {
         // or the text never reaches the surface (the storage it would insert
         // into is not the one being laid out).
         if previousLength > 0,
+           codeView.hasTextStorage,
            previousLength <= codeView.textStorage.length,
            newNSString.hasPrefix(previousString) {
             if codeBlock.code.length > 0,
@@ -670,7 +671,8 @@ final class AssistantCodeBlockView: UIView {
             // No language: the card shows the plain attributed code. The
             // prefix-append path already left exactly these characters in the
             // text view, so reloading would throw away the layout for nothing.
-            if codeView.textStorage.string != codeBlock.code.string {
+            if !codeView.hasTextStorage
+                || codeView.textStorage.string != codeBlock.code.string {
                 codeView.attributedText = codeBlock.code
             }
             appliedTokens = []
@@ -720,10 +722,15 @@ final class AssistantCodeBlockView: UIView {
         var common = 0
         let limit = min(tokens.count, appliedTokens.count)
         while common < limit, tokens[common] == appliedTokens[common] { common += 1 }
+        // The backing storage may not exist yet on a card that has never laid
+        // out (simulator gate 42538286526); fall back to a whole-string
+        // assignment in that case instead of materialising it from here.
+        let storage = codeView.hasTextStorage ? codeView.textStorage : nil
         let canAppend = !appliedTokens.isEmpty
             && common == appliedTokens.count
-            && appliedTokenLength <= codeView.textStorage.length
-        if canAppend {
+            && storage != nil
+            && appliedTokenLength <= storage!.length
+        if canAppend, let storage {
             let tail = NSMutableAttributedString()
             for token in tokens[common...] {
                 var attributes = baseAttributes
@@ -735,8 +742,8 @@ final class AssistantCodeBlockView: UIView {
             }
             let remaining = NSRange(
                 location: appliedTokenLength,
-                length: codeView.textStorage.length - appliedTokenLength)
-            codeView.textStorage.replaceCharacters(in: remaining, with: tail)
+                length: storage.length - appliedTokenLength)
+            storage.replaceCharacters(in: remaining, with: tail)
             #if DEBUG
             CodePageBuildStats.highlightIncrementalApplies += 1
             #endif
@@ -744,7 +751,7 @@ final class AssistantCodeBlockView: UIView {
             codeView.attributedText = Self.highlighted(tokens: tokens, base: base)
         }
         appliedTokens = tokens
-        appliedTokenLength = codeView.textStorage.length
+        appliedTokenLength = storage?.length ?? base.length
         highlightedSource = base.string
         #if DEBUG
         CodePageBuildStats.highlightApplies += 1
@@ -944,7 +951,11 @@ final class AssistantCodeBlockView: UIView {
     /// Gate probes: the streaming path must reuse this text view and see the
     /// appended body without recreating the card.
     var debugCodeView: AssistantMarkdownBlockTextView { codeView }
-    var debugCodeText: String { codeView.textStorage.string }
+    var debugCodeText: String {
+        codeView.hasTextStorage
+            ? codeView.textStorage.string
+            : (codeView.attributedText?.string ?? "")
+    }
     #endif
 
     override func layoutSubviews() {

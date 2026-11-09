@@ -58,6 +58,33 @@ def test_first_sync_rebases_and_the_next_pass_is_incremental() -> None:
     assert second.snapshot is None
 
 
+def test_an_incremental_window_declares_its_order() -> None:
+    """A cursor window's order is authoritative for the rows it carries.
+
+    The Server can only append a row the live path never published; declaring
+    the window lets it place that row (a hook-error tool result) at its chain
+    position instead of after later rows (2026-11-09).
+    """
+
+    host = _SyncStateHost()
+    sdk = _CompactHistorySdk(_messages())
+    syncer = _syncer(host=host, sdk=sdk)
+
+    first = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert first is not None
+    asyncio.run(first.commit())
+
+    sdk.messages.append(_user_message("third-user", "再来"))
+    second = asyncio.run(
+        syncer.prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    )
+    assert second is not None and second.snapshot is not None
+    assert second.snapshot.metadata["rebased"] is False
+    assert second.snapshot.metadata["windowOrder"] is True
+
+
 def test_a_restarted_process_rebases_even_with_a_matching_cursor() -> None:
     host = _SyncStateHost()
     sdk = _CompactHistorySdk(_messages())

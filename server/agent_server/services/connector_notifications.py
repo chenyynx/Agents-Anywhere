@@ -791,14 +791,27 @@ def _history_rebuild_prunes_orphan_agent_calls(params: Mapping[str, Any]) -> boo
 def _history_rebuild_reorders(params: Mapping[str, Any]) -> bool:
     """Whether this sync may renumber the session by its own chain order.
 
-    Only a rebased merge-style rebuild qualifies: it covers the whole visible
-    chain, so its item order IS the chain order and every row it backfills can
-    be placed instead of appended. An incremental batch speaks for a suffix
-    only, and a complete snapshot already replaces every row it does not cover
-    — neither may renumber a session it does not fully describe.
+    Two shapes qualify, both merge-style (``complete`` false):
+
+    - a rebased rebuild covers the whole visible chain, so its item order IS
+      the chain order;
+    - a cursor window (``windowOrder``) is a contiguous chain suffix read
+      after the stored cursor. Its order is authoritative for the rows it
+      names, which is how a row the live path never published — a hook-error
+      tool result reaches the Server only here — lands at its chain position
+      instead of being appended after later rows (2026-11-09).
+
+    A complete snapshot already replaces every row it does not cover, so it
+    never renumbers. The plan only rewrites the first misordered suffix, so a
+    healthy window is a no-op.
     """
 
-    return _history_rebuild_prunes_orphan_agent_calls(params)
+    if params.get("complete") is True:
+        return False
+    metadata = params.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return False
+    return metadata.get("rebased") is True or metadata.get("windowOrder") is True
 
 
 class TimelineNotificationHandler:

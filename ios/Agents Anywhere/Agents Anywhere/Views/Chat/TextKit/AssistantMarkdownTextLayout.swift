@@ -494,7 +494,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     var textStorage: NSTextStorage {
         if let storage = ownStorage.textStorage { return storage }
         ownStorage.attributedString = NSAttributedString(
-            attributedString: ownStorage.attributedString)
+            attributedString: ownStorage.attributedString ?? NSAttributedString())
         if let storage = ownStorage.textStorage { return storage }
         ownLayoutManager.ensureLayout(for: ownLayoutManager.documentRange)
         if let storage = ownStorage.textStorage { return storage }

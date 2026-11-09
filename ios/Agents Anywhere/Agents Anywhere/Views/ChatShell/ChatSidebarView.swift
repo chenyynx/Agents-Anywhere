@@ -408,32 +408,33 @@ struct ChatSidebarSessionRow: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            // A read-only row at the top: the long-press answers "when was
-            // this session last active" before the actions do anything.
-            if let activityTimeText = session.activityTimeText {
-                Section {
+            // The long-press answers "when was this session last active"
+            // before the actions do anything. Menu items can't take a custom
+            // font (the system controls it), so the time rides in the section
+            // header — the one native slot that renders smaller than actions.
+            Section {
+                Button(action: onOpen) {
+                    Label(String(localized: "Open"), systemImage: "folder.fill")
+                }
+                Button(action: beginRename) {
+                    Label(String(localized: "Rename"), systemImage: "pencil")
+                }.disabled(session.id.hasPrefix("local:"))
+                Button(action: onTogglePinned) {
+                    if session.pinned {
+                        Label(String(localized: "Unpin"), systemImage: "pin")
+                    } else {
+                        Label(String(localized: "Pin"), systemImage: "pin")
+                    }
+                }
+                .disabled(session.id.hasPrefix("local:"))
+                Button(action: onArchive) {
+                    Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), systemImage: "archivebox")
+                }.disabled(session.id.hasPrefix("local:"))
+            } header: {
+                if let activityTimeText = session.activityTimeText {
                     Text(verbatim: activityTimeText)
-                        .font(.footnote)
                 }
             }
-            Button(action: onOpen) {
-                Label(String(localized: "Open"), systemImage: "folder.fill")
-            }
-            Button(action: beginRename) {
-                Label(String(localized: "Rename"), systemImage: "pencil")
-            }.disabled(session.id.hasPrefix("local:"))
-            Button(action: onTogglePinned) {
-                if session.pinned {
-                    Label(String(localized: "Unpin"), systemImage: "pin")
-                } else {
-                    Label(String(localized: "Pin"), systemImage: "pin")
-                }
-            }
-            .disabled(session.id.hasPrefix("local:"))
-            Button(action: onArchive) {
-                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), systemImage: "archivebox")
-            }.disabled(session.id.hasPrefix("local:"))
-            Divider()
             Button(action: onCopyId) {
                 Label(String(localized: "Copy session ID"), systemImage: "doc.on.doc")
             }

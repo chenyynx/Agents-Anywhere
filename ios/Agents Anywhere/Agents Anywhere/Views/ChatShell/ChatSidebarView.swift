@@ -413,6 +413,7 @@ struct ChatSidebarSessionRow: View {
             if let activityTimeText = session.activityTimeText {
                 Section {
                     Text(verbatim: activityTimeText)
+                        .font(.footnote)
                 }
             }
             Button(action: onOpen) {

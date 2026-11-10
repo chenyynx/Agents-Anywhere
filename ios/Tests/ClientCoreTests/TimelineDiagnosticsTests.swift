@@ -86,6 +86,27 @@ private func recordedKinds(_ log: ClientDiagnosticsLog) -> [String] {
         #expect(missing.detail["orderSeq"] == "1")
     }
 
+    @Test func groupingSummaryReportsUserCoverage() throws {
+        let user = try diagnosticsItem(id: "user", order: 1, role: "user")
+        let assistant = try diagnosticsItem(id: "assistant", order: 2)
+        let rows = [user, assistant]
+        let rendered = TimelineDiagnostics.groupingSummary(
+            rows: rows,
+            units: [.message(key: "turn", rowIDs: ["user", "assistant"])]
+        )
+        #expect(rendered["rows"] == "2")
+        #expect(rendered["messageUnits"] == "1")
+        #expect(rendered["userRows"] == "1")
+        #expect(rendered["userRendered"] == "1")
+        #expect(rendered["userUnrendered"] == "0")
+
+        let missing = TimelineDiagnostics.groupingSummary(
+            rows: rows,
+            units: [.message(key: "assistant", rowIDs: ["assistant"])]
+        )
+        #expect(missing["userUnrendered"] == "1")
+    }
+
     @Test func healthyWindowRecordsNothing() throws {
         let log = diagnosticsLog()
         let user = try diagnosticsItem(id: "user", order: 1, role: "user")

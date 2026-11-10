@@ -229,7 +229,7 @@ final class V2SessionRepository {
         try requireCurrent(entry)
         if let data = entry.projection?.data { return data }
         try requireNetwork()
-        return try await hydrate(entry)
+        return try await hydrate(entry, trigger: "open")
     }
 
     /// A page visit starts with the opening window, including cached visits.
@@ -493,7 +493,7 @@ final class V2SessionRepository {
         entry.historyTask?.cancel()
         entry.historyTask = nil
         defer { if isCurrent(entry) { start(entry) } }
-        return try await hydrate(entry)
+        return try await hydrate(entry, trigger: "refresh")
     }
 
     func loadOlder(sessionId: V2SessionID, limit: Int? = nil,
@@ -1210,7 +1210,7 @@ final class V2SessionRepository {
         for entry in old { dispose(entry) }
     }
 
-    private func hydrate(_ entry: Entry) async throws -> V2SessionData {
+    private func hydrate(_ entry: Entry, trigger: String = "load") async throws -> V2SessionData {
         if let task = entry.loadTask { return try await task.value }
         entry.readVersion += 1
         entry.historyTask?.cancel()
@@ -1237,6 +1237,9 @@ final class V2SessionRepository {
                     sessionID: entry.id,
                     detail: [
                         "outcome": "failed",
+                        "trigger": trigger,
+                        "status": (error as? HTTPError)?.statusCode
+                            .map(String.init) ?? "unknown",
                         "error": String(describing: type(of: error)),
                         "durationMs": String(
                             Int(Date().timeIntervalSince(fetchStarted) * 1000)),
@@ -1250,6 +1253,14 @@ final class V2SessionRepository {
                 sessionID: entry.id,
                 detail: [
                     "outcome": "ok",
+                    "trigger": trigger,
+                    "status": "200",
+                    "bytes": String(
+                        (try? JSONEncoder().encode(
+                            snapshot.timeline.items.map(\.raw)))?.count ?? 0),
+                    "deferred": snapshot.deferredActivity.map {
+                        $0 ? "1" : "0"
+                    } ?? "unknown",
                     "rows": String(snapshot.timeline.items.count),
                     "nextSeq": String(snapshot.timeline.nextSeq),
                     "hasMore": snapshot.timeline.hasMore ? "1" : "0",
@@ -1271,6 +1282,24 @@ final class V2SessionRepository {
             let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             entry.projection?.graftCompleteRows(completeRows)
+            if let projection = entry.projection {
+                let items = projection.data.items
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.snapshot.applied",
+                    sessionID: entry.id,
+                    detail: [
+                        "rows": String(items.count),
+                        "minOrder": String(items.first?.orderSeq ?? 0),
+                        "maxOrder": String(items.last?.orderSeq ?? 0),
+                        "firstId": items.first?.id ?? "",
+                        "lastId": items.last?.id ?? "",
+                        "sequence": String(projection.sequence),
+                        "older": projection.data.hasOlderItems ? "1" : "0",
+                        "newer": projection.data.hasNewerItems ? "1" : "0",
+                    ],
+                    dedupe: false
+                )
+            }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteRestore(
                 source: "network", rows: entry.projection?.data.items.count ?? 0, bytes: 0,
@@ -1326,7 +1355,7 @@ final class V2SessionRepository {
                     self.emit(entry, persist: false)
                     _ = try await self.load(sessionId: entry.id)
                     if entry.needsSnapshot {
-                        _ = try await self.hydrate(entry)
+                        _ = try await self.hydrate(entry, trigger: "reconnect")
                         entry.needsSnapshot = false
                     }
                     if catchUp, self.beginCatchUp(entry) {
@@ -1635,7 +1664,7 @@ final class V2SessionRepository {
         do {
             try requireRecoveryEpoch(entry, epoch: epoch)
             try requireNetwork()
-            if entry.projection == nil { _ = try await hydrate(entry) }
+            if entry.projection == nil { _ = try await hydrate(entry, trigger: "recovery") }
             try requireCurrent(entry)
             try requireRecoveryEpoch(entry, epoch: epoch)
             guard let projection = entry.projection else { throw CacheError.invalidated }
@@ -1666,6 +1695,12 @@ final class V2SessionRepository {
                     "after": cursor,
                     "next": recovery.nextCursor,
                     "events": String(recovery.events.count),
+                    "eventTypes": Dictionary(
+                        grouping: recovery.events, by: \.type
+                    ).map { "\($0.key):\($0.value.count)" }
+                        .sorted().joined(separator: ","),
+                    "eventIds": recovery.events.prefix(5)
+                        .map(\.eventId).joined(separator: ","),
                     "snapshotRequired": recovery.snapshotRequired ? "1" : "0",
                     "durationMs": String(
                         Int(Date().timeIntervalSince(recoveryStarted) * 1000)),
@@ -1682,7 +1717,7 @@ final class V2SessionRepository {
                         "events": String(recovery.events.count),
                     ]
                 )
-                _ = try await hydrate(entry)
+                _ = try await hydrate(entry, trigger: "recovery")
                 try requireCurrent(entry)
                 try requireRecoveryEpoch(entry, epoch: epoch)
             } else {
@@ -1779,7 +1814,7 @@ final class V2SessionRepository {
         // fetch either must not run on every single round.
         entry.lastSnapshotRecoveryAt = now
         do {
-            _ = try await hydrate(entry)
+            _ = try await hydrate(entry, trigger: "rebuild")
         } catch {
             let rebuildCause = (error as? V2SessionRecoveryApplyFailure)?.underlying ?? error
             // A rebuild displaced by a competing read or a newer lifecycle is

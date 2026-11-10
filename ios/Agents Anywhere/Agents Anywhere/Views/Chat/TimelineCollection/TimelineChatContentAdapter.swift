@@ -213,6 +213,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var lastWidth: CGFloat = 0
     /// Reuses the chat profile's units across stream ticks.
     private var chatGroupingCache = TimelineChatGroupingCache()
+    /// The last grouping shape written to diagnostics. A live turn changes it
+    /// often; logging only changes keeps the trail useful without flooding it.
+    private var lastGroupingSignature: String?
     /// What the last chat refresh built for each unit, aligned by index.
     /// The grouping cache proves the leading units unchanged; their built
     /// groups are still exact, so the refresh rebuilds only the tail — the
@@ -1656,15 +1659,29 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #endif
             // Incremental: a stream tick replaces the tail, so the units
             // before the change are reused (see TimelineChatGroupingCache).
+            let timelineRows = model.timeline.rows.map(\.value)
             chatUnits = chatGroupingCache.units(
-                items: model.timeline.rows.map(\.value),
+                items: timelineRows,
                 profile: profile,
                 interactionTargets: interactionTargets,
                 cwd: model.session.metadata?.cwd)
             TimelineDiagnostics.validateUnits(
                 sessionID: model.session.id,
-                rows: model.timeline.rows.map(\.value),
+                rows: timelineRows,
                 units: chatUnits)
+            let grouping = TimelineDiagnostics.groupingSummary(
+                rows: timelineRows, units: chatUnits)
+            let groupingSignature = grouping.keys.sorted()
+                .map { "\($0)=\(grouping[$0] ?? "")" }
+                .joined(separator: "&")
+            if groupingSignature != lastGroupingSignature {
+                lastGroupingSignature = groupingSignature
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.grouping",
+                    sessionID: model.session.id,
+                    detail: grouping,
+                    dedupe: false)
+            }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage(
                 "adapter.group", seconds: CACurrentMediaTime() - probeGroupStart)

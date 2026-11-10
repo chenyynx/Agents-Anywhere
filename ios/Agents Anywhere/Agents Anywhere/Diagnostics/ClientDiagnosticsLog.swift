@@ -57,8 +57,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let schemaLegend: [String: String] = [
         "schemaVersion": schemaVersion,
         "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
-        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch; timeline.recovery; ws.connect|ws.disconnect; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped; timeline.event.gap",
-        "fields": "ts=local ISO8601; kind; severity=info for actions / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; nextSeq=server high watermark; trigger/outcome/durationMs for fetches and recovery; ids/orderSeq/count for anomalies.",
+        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.grouping; timeline.recovery; ws.connect|ws.disconnect; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped; timeline.event.gap",
+        "fields": "ts=local ISO8601; kind; severity=info for actions / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies.",
     ]
 
     /// Action entries are the trail that lets a fresh reader reconstruct what
@@ -69,7 +69,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "diagnostics.enabled", "diagnostics.disabled",
         "cache.clear",
         "session.open", "session.open.ready", "session.refresh",
-        "timeline.snapshot.fetch", "timeline.recovery",
+        "timeline.snapshot.fetch", "timeline.snapshot.applied",
+        "timeline.grouping", "timeline.recovery",
         "ws.connecting", "ws.connect", "ws.disconnect",
     ]
 

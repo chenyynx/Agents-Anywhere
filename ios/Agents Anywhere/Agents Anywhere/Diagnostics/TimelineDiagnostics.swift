@@ -7,6 +7,41 @@ import Foundation
 /// anything: it records what the client actually received and grouped, so a
 /// later reader can tell a transport loss from a display/grouping defect.
 nonisolated enum TimelineDiagnostics {
+    /// Counts that describe what the chat grouping actually produced. Logged
+    /// as a compact `timeline.grouping` trail entry when the shape changes, so
+    /// a later reader can tell "row missing" from "row grouped into a step".
+    static func groupingSummary(
+        rows: [V2TimelineItem],
+        units: [TimelineChatUnit]
+    ) -> [String: String] {
+        let userRows = rows.filter {
+            $0.type == .message && $0.role == .user
+        }
+        let rendered = Set(units.flatMap { $0.rowIDs })
+        var stepGroups = 0
+        var messageUnits = 0
+        var standalone = 0
+        for unit in units {
+            switch unit {
+            case .stepGroup(_, _): stepGroups += 1
+            case .message(_, _): messageUnits += 1
+            case .standalone(_): standalone += 1
+            }
+        }
+        return [
+            "rows": String(rows.count),
+            "units": String(units.count),
+            "stepGroups": String(stepGroups),
+            "messageUnits": String(messageUnits),
+            "standalone": String(standalone),
+            "userRows": String(userRows.count),
+            "userRendered": String(
+                userRows.filter { rendered.contains($0.id) }.count),
+            "userUnrendered": String(
+                userRows.filter { !rendered.contains($0.id) }.count),
+        ]
+    }
+
     /// Duplicate and non-positive `orderSeq` values in a held window.
     static func validateOrder(
         sessionID: String,

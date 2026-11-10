@@ -718,9 +718,26 @@ final class V2SessionRepository {
             defer {
                 if entry.readVersion == version { entry.latestRefreshTask = nil }
             }
+            let fetchStarted = Date()
             do {
                 let page = try await self.detail.latestItems(
                     sessionId: entry.id, limit: limit, excludeAgentChildren: true)
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.latest.fetch",
+                    sessionID: entry.id,
+                    detail: [
+                        "outcome": "ok",
+                        "trigger": "reconcile",
+                        "status": "200",
+                        "limit": String(limit),
+                        "rows": String(page.items.count),
+                        "minOrder": String(page.items.map(\.orderSeq).min() ?? 0),
+                        "maxOrder": String(page.items.map(\.orderSeq).max() ?? 0),
+                        "durationMs": String(
+                            Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+                    ],
+                    dedupe: false
+                )
                 try self.requireCurrent(entry, version: version)
                 // A background fill, not a reader return: if the reader is
                 // paged into history, keep their anchor and only add the
@@ -732,6 +749,20 @@ final class V2SessionRepository {
 #endif
                 self.emit(entry)
             } catch {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.latest.fetch",
+                    sessionID: entry.id,
+                    detail: [
+                        "outcome": "failed",
+                        "trigger": "reconcile",
+                        "status": (error as? HTTPError)?.statusCode
+                            .map(String.init) ?? "unknown",
+                        "error": String(describing: type(of: error)),
+                        "durationMs": String(
+                            Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+                    ],
+                    dedupe: false
+                )
                 // The local page is already displayed. Keep `hasNewerItems`
                 // set so the prompt remains available; the next connection
                 // recovery will reconcile the same rows.
@@ -828,8 +859,45 @@ final class V2SessionRepository {
         // was in flight owns the window now; an older page must not be merged
         // into it (it could reintroduce rows the snapshot deleted).
         let version = entry.readVersion
-        let page = try await detail.latestItems(
-            sessionId: entry.id, limit: policy.networkPageSize, excludeAgentChildren: true)
+        let fetchStarted = Date()
+        let page: V2SessionTimelinePage
+        do {
+            page = try await detail.latestItems(
+                sessionId: entry.id, limit: policy.networkPageSize,
+                excludeAgentChildren: true)
+        } catch {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.latest.fetch",
+                sessionID: entry.id,
+                detail: [
+                    "outcome": "failed",
+                    "trigger": "fill",
+                    "status": (error as? HTTPError)?.statusCode
+                        .map(String.init) ?? "unknown",
+                    "error": String(describing: type(of: error)),
+                    "durationMs": String(
+                        Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+                ],
+                dedupe: false
+            )
+            throw error
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.latest.fetch",
+            sessionID: entry.id,
+            detail: [
+                "outcome": "ok",
+                "trigger": "fill",
+                "status": "200",
+                "limit": String(policy.networkPageSize),
+                "rows": String(page.items.count),
+                "minOrder": String(page.items.map(\.orderSeq).min() ?? 0),
+                "maxOrder": String(page.items.map(\.orderSeq).max() ?? 0),
+                "durationMs": String(
+                    Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+            ],
+            dedupe: false
+        )
         try requireCurrent(entry, version: version)
         guard let projection = entry.projection, projection.isFollowingLatest else { return }
         entry.projection?.applyLatest(page)

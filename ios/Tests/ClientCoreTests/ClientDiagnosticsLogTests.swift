@@ -138,6 +138,16 @@ private func utcCalendar() -> Calendar {
         #expect(text.contains("timeline.user_message.unrendered"))
     }
 
+    @Test func latestFetchIsAnActionNotAnAnomaly() {
+        #expect(ClientDiagnosticsLog.severity(for: "timeline.latest.fetch") == "info")
+    }
+
+    /// Session revisions are lease-allocated, so a sequence jump is normal and
+    /// must not light the day's anomaly flag.
+    @Test func eventGapIsInformational() {
+        #expect(ClientDiagnosticsLog.severity(for: "timeline.event.gap") == "info")
+    }
+
     @Test func actionsDoNotRaiseTheAnomalyFlag() throws {
         let log = ClientDiagnosticsLog(
             directory: diagnosticsDirectory(),

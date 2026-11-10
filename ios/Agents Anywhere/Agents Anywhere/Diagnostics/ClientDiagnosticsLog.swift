@@ -41,6 +41,17 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     /// The same anomaly in the same session is written once per window.
     static let repeatWindow: TimeInterval = 10 * 60
     static let fileNamePrefix = "diagnostics-"
+    static let schemaVersion = "1"
+
+    /// Written as the second line of every daily file. It lets a fresh reader
+    /// reconstruct the file without this codebase: stable kind names and the
+    /// meaning of every detail key used by the action trail and the checks.
+    static let schemaLegend: [String: String] = [
+        "schemaVersion": schemaVersion,
+        "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
+        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch; timeline.recovery; ws.connect|ws.disconnect; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped; timeline.event.gap",
+        "fields": "ts=local ISO8601; kind; severity; session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; nextSeq=server high watermark; trigger/outcome/durationMs for fetches and recovery; ids/orderSeq/count for anomalies.",
+    ]
 
     private let directory: URL
     private let defaults: UserDefaults
@@ -94,15 +105,32 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         }
     }
 
-    /// Record one anomaly. Non-blocking: the caller never waits for the disk.
+    /// Record one entry. Non-blocking: the caller never waits for the disk.
+    ///
+    /// Anomalies use the default `dedupe` so a stuck window cannot flood the
+    /// file. User actions (`session.open`, `cache.clear`, a fetch) pass
+    /// `dedupe: false` because the trail must preserve every occurrence.
+    /// `force` is only for the event that turns recording off: it is written
+    /// after the flag already reads false.
     func record(
         kind: String,
         sessionID: String? = nil,
         detail: [String: String] = [:],
-        severity: String = "warn"
+        severity: String = "warn",
+        dedupe: Bool = true,
+        force: Bool = false
     ) {
-        guard isEnabled else { return }
+        guard force || isEnabled else { return }
         let stamp = now()
+        guard dedupe else {
+            queue.async { [weak self] in
+                self?.append(
+                    kind: kind, sessionID: sessionID, detail: detail,
+                    severity: severity, at: stamp
+                )
+            }
+            return
+        }
         let fingerprint = Self.fingerprint(
             kind: kind, sessionID: sessionID, detail: detail
         )
@@ -244,6 +272,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             ) as? String ?? "?",
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "device": Self.deviceDescription,
+            "schemaVersion": Self.schemaVersion,
         ]
         if let server = defaults.string(forKey: Self.serverKey), !server.isEmpty {
             detail["server"] = server
@@ -254,6 +283,10 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         }
         write(
             kind: "day.started", sessionID: nil, detail: detail,
+            severity: "info", at: stamp, to: url
+        )
+        write(
+            kind: "log.schema", sessionID: nil, detail: Self.schemaLegend,
             severity: "info", at: stamp, to: url
         )
     }
@@ -321,7 +354,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let object = Self.jsonObject(String(line)) else { continue }
-            if (object["kind"] as? String) != "day.started" { return true }
+            let kind = object["kind"] as? String
+            if kind != "day.started" && kind != "log.schema" { return true }
         }
         return false
     }
@@ -377,7 +411,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     private static func decodeEntry(_ line: String) -> DiagnosticsEntry? {
         guard let object = jsonObject(line),
               let kind = object["kind"] as? String,
-              kind != "day.started" else { return nil }
+              kind != "day.started", kind != "log.schema" else { return nil }
         let detail = (object["detail"] as? [String: Any] ?? [:]).mapValues {
             String(describing: $0)
         }

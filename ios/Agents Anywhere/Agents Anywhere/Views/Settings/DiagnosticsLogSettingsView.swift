@@ -100,7 +100,14 @@ struct DiagnosticsLogSettingsView: View {
         }
         .task { reload() }
         .onChange(of: enabled) { _, isOn in
-            if isOn { ClientDiagnosticsLog.shared.markEnabled() }
+            if isOn {
+                ClientDiagnosticsLog.shared.markEnabled()
+                ClientDiagnosticsLog.shared.record(
+                    kind: "diagnostics.enabled", dedupe: false)
+            } else {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "diagnostics.disabled", dedupe: false, force: true)
+            }
             reload()
         }
         .confirmationDialog(

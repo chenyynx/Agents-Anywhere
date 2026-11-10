@@ -67,6 +67,18 @@ final class AppState {
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
     init() {
+        ClientDiagnosticsLog.shared.record(
+            kind: "app.launch",
+            detail: [
+                "build": Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "?",
+                "version": Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString"
+                ) as? String ?? "?",
+            ],
+            dedupe: false
+        )
         Task { await restoreSession() }
     }
 

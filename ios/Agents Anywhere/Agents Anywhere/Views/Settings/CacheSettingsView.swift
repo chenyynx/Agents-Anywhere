@@ -116,7 +116,18 @@ struct CacheSettingsView: View {
     private func clear() async {
         guard let service else { return }
         isWorking = true
+        let before = usage
         usage = await service.clearCache()
         isWorking = false
+        ClientDiagnosticsLog.shared.record(
+            kind: "cache.clear",
+            detail: [
+                "beforeBytes": String(before?.bytes ?? 0),
+                "beforeSessions": String(before?.sessions ?? 0),
+                "afterBytes": String(usage?.bytes ?? 0),
+                "afterSessions": String(usage?.sessions ?? 0),
+            ],
+            dedupe: false
+        )
     }
 }

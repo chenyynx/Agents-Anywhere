@@ -72,8 +72,15 @@ struct AgentsAnywhereApp: App {
                 }
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .background { appState.setAppInBackground(true) }
-                    else if phase == .active { appState.setAppInBackground(false) }
+                    if phase == .background {
+                        appState.setAppInBackground(true)
+                        ClientDiagnosticsLog.shared.record(
+                            kind: "app.background", dedupe: false)
+                    } else if phase == .active {
+                        appState.setAppInBackground(false)
+                        ClientDiagnosticsLog.shared.record(
+                            kind: "app.foreground", dedupe: false)
+                    }
                 }
         }
     }

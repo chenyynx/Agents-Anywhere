@@ -238,9 +238,35 @@ final class V2SessionRepository {
         let signpost = PerfSignpost.begin("session.open")
         defer { PerfSignpost.end("session.open", signpost) }
         let entry = entry(for: sessionId)
+        let cachedProjection = entry.projection
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.open",
+            sessionID: sessionId,
+            detail: [
+                "cached": cachedProjection == nil ? "0" : "1",
+                "rows": String(cachedProjection?.data.items.count ?? 0),
+                "sequence": String(cachedProjection?.sequence ?? 0),
+            ],
+            dedupe: false
+        )
         _ = try await load(sessionId: sessionId)
         try Task.checkCancellation()
         try requireCurrent(entry)
+        if let projection = entry.projection {
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.open.ready",
+                sessionID: sessionId,
+                detail: [
+                    "rows": String(projection.data.items.count),
+                    "sequence": String(projection.sequence),
+                    "minOrder": String(projection.data.items.first?.orderSeq ?? 0),
+                    "maxOrder": String(projection.data.items.last?.orderSeq ?? 0),
+                    "older": projection.data.hasOlderItems ? "1" : "0",
+                    "newer": projection.data.hasNewerItems ? "1" : "0",
+                ],
+                dedupe: false
+            )
+        }
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
@@ -451,6 +477,15 @@ final class V2SessionRepository {
     func refresh(sessionId: V2SessionID) async throws -> V2SessionData {
         try requireNetwork()
         let entry = entry(for: sessionId)
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.refresh",
+            sessionID: sessionId,
+            detail: [
+                "rows": String(entry.projection?.data.items.count ?? 0),
+                "sequence": String(entry.projection?.sequence ?? 0),
+            ],
+            dedupe: false
+        )
         stop(entry)
         entry.loadTask?.cancel()
         entry.loadTask = nil
@@ -1191,7 +1226,38 @@ final class V2SessionRepository {
                 if entry.readVersion == version { entry.loadTask = nil }
                 evict()
             }
-            let snapshot = try await detail.load(sessionId: entry.id, excludeAgentChildren: true)
+            let fetchStarted = Date()
+            let snapshot: V2SessionSnapshot
+            do {
+                snapshot = try await detail.load(
+                    sessionId: entry.id, excludeAgentChildren: true)
+            } catch {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.snapshot.fetch",
+                    sessionID: entry.id,
+                    detail: [
+                        "outcome": "failed",
+                        "error": String(describing: type(of: error)),
+                        "durationMs": String(
+                            Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+                    ],
+                    dedupe: false
+                )
+                throw error
+            }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.snapshot.fetch",
+                sessionID: entry.id,
+                detail: [
+                    "outcome": "ok",
+                    "rows": String(snapshot.timeline.items.count),
+                    "nextSeq": String(snapshot.timeline.nextSeq),
+                    "hasMore": snapshot.timeline.hasMore ? "1" : "0",
+                    "durationMs": String(
+                        Int(Date().timeIntervalSince(fetchStarted) * 1000)),
+                ],
+                dedupe: false
+            )
             try requireCurrent(entry, version: version)
             guard snapshot.session.id == entry.id else { throw CacheError.invalidated }
             // A snapshot replaces the projection, so the merge guard cannot
@@ -1247,6 +1313,12 @@ final class V2SessionRepository {
                         continue
                     }
                     entry.connection = attempt == 0 ? .connecting : .reconnecting
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "ws.connecting",
+                        sessionID: entry.id,
+                        detail: ["attempt": String(attempt)],
+                        dedupe: true
+                    )
                     self.emit(entry, persist: false)
                     _ = try await self.load(sessionId: entry.id)
                     if entry.needsSnapshot {
@@ -1273,6 +1345,12 @@ final class V2SessionRepository {
                             try self.requireCurrent(entry)
                             guard entry.connectionID == connectionID else { return }
                             entry.connection = .connected
+                            ClientDiagnosticsLog.shared.record(
+                                kind: "ws.connect",
+                                sessionID: entry.id,
+                                detail: ["attempt": String(attempt)],
+                                dedupe: true
+                            )
                             attempt = 0
                             self.emit(entry, persist: false)
                         } else {
@@ -1573,9 +1651,23 @@ final class V2SessionRepository {
                 ? Task { try await service.liveState(sessionId: sessionID) }
                 : nil
             defer { liveTask?.cancel() }
+            let recoveryStarted = Date()
             let recovery = try await detail.recover(sessionId: entry.id, after: cursor)
             try requireCurrent(entry)
             try requireRecoveryEpoch(entry, epoch: epoch)
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.recovery",
+                sessionID: entry.id,
+                detail: [
+                    "after": cursor,
+                    "next": recovery.nextCursor,
+                    "events": String(recovery.events.count),
+                    "snapshotRequired": recovery.snapshotRequired ? "1" : "0",
+                    "durationMs": String(
+                        Int(Date().timeIntervalSince(recoveryStarted) * 1000)),
+                ],
+                dedupe: false
+            )
             if recovery.snapshotRequired {
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.recovery.snapshot_required",
@@ -1872,6 +1964,13 @@ final class V2SessionRepository {
         entry.latestFillID = UUID()
         entry.latestFillTask?.cancel()
         entry.latestFillTask = nil
+        if entry.connection == .connected {
+            ClientDiagnosticsLog.shared.record(
+                kind: "ws.disconnect",
+                sessionID: entry.id,
+                dedupe: true
+            )
+        }
         entry.connection = .inactive
         // A stopped or disconnected entry cannot carry a live prediction: the
         // optimistic turn end belongs to the connection lifecycle that proved

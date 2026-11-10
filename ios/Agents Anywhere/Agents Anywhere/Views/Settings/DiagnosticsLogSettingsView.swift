@@ -17,7 +17,7 @@ struct DiagnosticsStatusDot: View {
 }
 
 /// Opt-in daily client diagnostics: a toggle and the retained daily files.
-/// Each row is a file; tapping it opens the raw JSONL exactly as stored, with
+/// Each row is a file; tapping it opens the raw log exactly as stored, with
 /// copy and share in the navigation bar. It does not reuse the developer
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
@@ -69,7 +69,7 @@ struct DiagnosticsLogSettingsView: View {
             } header: {
                 Text(String(localized: "Log files"))
             } footer: {
-                Text(String(localized: "Each day is one JSONL file. Open it to view the raw text, copy or share it."))
+                Text(String(localized: "Each day is one log file. Open it to view the raw text, copy or share it."))
             }
 
             Section {

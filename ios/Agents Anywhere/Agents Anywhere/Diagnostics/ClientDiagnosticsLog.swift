@@ -25,7 +25,9 @@ nonisolated struct DiagnosticsDay: Sendable, Identifiable, Equatable {
 ///
 /// A disabled logger does no work: `record` returns before touching the disk.
 /// Enabled, one JSON object per line is appended to
-/// `diagnostics-YYYY-MM-DD.jsonl` under Application Support. Writes are
+/// `Anywhere-YYYY-MM-DD.log` (one JSON object per line) under Application
+/// Support. Legacy `diagnostics-*` files from the first builds stay readable.
+/// Writes are
 /// serialized on a private queue; reads take the same queue, so a preview or
 /// export always sees the writes that happened before it.
 ///
@@ -40,7 +42,13 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let maxBytesPerDay = 5 * 1024 * 1024
     /// The same anomaly in the same session is written once per window.
     static let repeatWindow: TimeInterval = 10 * 60
-    static let fileNamePrefix = "diagnostics-"
+    static let fileNamePrefix = "Anywhere-"
+    static let fileExtension = "log"
+    /// The first builds wrote `diagnostics-*.jsonl`; keep listing and rotating
+    /// those so an upgrade never hides a day the reader already has.
+    static let legacyFileNamePrefixes = ["diagnostics-"]
+    static let recognizedPrefixes = [fileNamePrefix] + legacyFileNamePrefixes
+    static let recognizedExtensions = ["log", "jsonl"]
     static let schemaVersion = "1"
 
     /// Written as the second line of every daily file. It lets a fresh reader
@@ -225,7 +233,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             }
             let stamp = Self.exportString(now(), calendar: calendar)
             let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("aa-diagnostics-\(stamp).jsonl")
+                .appendingPathComponent("Anywhere-diagnostics-\(stamp).log")
             do {
                 try Data(output.utf8).write(to: url, options: .atomic)
                 return url
@@ -401,7 +409,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
 
     private func fileURL(for day: Date) -> URL {
         directory.appendingPathComponent(
-            "\(Self.fileNamePrefix)\(Self.dayString(day, calendar: calendar)).jsonl"
+            "\(Self.fileNamePrefix)\(Self.dayString(day, calendar: calendar)).\(Self.fileExtension)"
         )
     }
 
@@ -454,11 +462,17 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
 
     private static func date(fromFileName name: String,
                              calendar: Calendar) -> Date? {
-        guard name.hasPrefix(fileNamePrefix), name.hasSuffix(".jsonl") else {
+        guard let prefix = recognizedPrefixes
+            .first(where: { name.hasPrefix($0) }) else {
             return nil
         }
-        let start = name.index(name.startIndex, offsetBy: fileNamePrefix.count)
-        let end = name.index(name.endIndex, offsetBy: -".jsonl".count)
+        guard let suffix = recognizedExtensions
+            .map({ ".\($0)" })
+            .first(where: { name.hasSuffix($0) }) else {
+            return nil
+        }
+        let start = name.index(name.startIndex, offsetBy: prefix.count)
+        let end = name.index(name.endIndex, offsetBy: -suffix.count)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar

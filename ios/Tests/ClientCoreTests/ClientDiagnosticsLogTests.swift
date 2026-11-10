@@ -159,6 +159,40 @@ private func utcCalendar() -> Calendar {
         #expect(log.days().first?.hasEntries == true)
     }
 
+    @Test func dailyFilesUseTheAppName() throws {
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: diagnosticsDefaults(enabled: true),
+            calendar: utcCalendar()
+        )
+        log.record(kind: "session.open", sessionID: "s", dedupe: false)
+        let day = try #require(log.days().first)
+        #expect(day.fileURL.lastPathComponent.hasPrefix("Anywhere-"))
+        #expect(day.fileURL.pathExtension == "log")
+    }
+
+    @Test func recognizesLegacyJSONLFiles() throws {
+        let base = diagnosticsDirectory()
+        let directory = base.appendingPathComponent(
+            "ClientDiagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        try Data().write(
+            to: directory.appendingPathComponent("diagnostics-2026-01-01.jsonl"))
+        let calendar = utcCalendar()
+        let now = calendar.date(
+            from: DateComponents(year: 2026, month: 1, day: 1, hour: 12)
+        )!
+        let log = ClientDiagnosticsLog(
+            directory: base,
+            defaults: diagnosticsDefaults(enabled: true),
+            now: { now },
+            calendar: calendar
+        )
+        #expect(log.days().first?.fileURL.lastPathComponent
+            == "diagnostics-2026-01-01.jsonl")
+    }
+
     @Test func clearRemovesEveryDay() {
         let log = ClientDiagnosticsLog(
             directory: diagnosticsDirectory(),

@@ -205,6 +205,8 @@ struct V2SessionProjection {
         data.hasOlderItems = page.hasMore || trim.droppedOlder
         data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
         // nextSeq is the server high watermark, not proof that intervening events were read.
+        TimelineDiagnostics.validateOrder(
+            sessionID: data.session.id, items: data.items)
     }
 
     /// True while the reader is at the newest edge of the held window (no
@@ -329,6 +331,8 @@ struct V2SessionProjection {
         // A snapshot is the server's complete timeline: a deferred row it does
         // not carry was deleted/reset, not missed. Do not keep retrying it.
         uncoveredDeferredItem = nil
+        TimelineDiagnostics.validateOrder(
+            sessionID: data.session.id, items: data.items)
     }
 
     /// Replaces one summary row with its complete payload, in place. Only a
@@ -665,6 +669,22 @@ struct V2SessionProjection {
     /// the behaviour the caller sees is unchanged.)
     private func lossyItems(in event: V2SessionEvent) throws -> [V2TimelineItem] {
         let raw: JSONValue = try payload("items", in: event)
-        return try decoder.decode(LossyElements<V2TimelineItem>.self, from: JSONEncoder().encode(raw)).elements
+        let elements = try decoder.decode(
+            LossyElements<V2TimelineItem>.self,
+            from: JSONEncoder().encode(raw)
+        ).elements
+        let rawCount = raw.arrayValue?.count ?? elements.count
+        if elements.count < rawCount {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.decode.dropped",
+                sessionID: event.sessionId,
+                detail: [
+                    "event": event.type,
+                    "kept": String(elements.count),
+                    "dropped": String(rawCount - elements.count),
+                ]
+            )
+        }
+        return elements
     }
 }

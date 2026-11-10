@@ -108,6 +108,19 @@ struct AccountSettingsSheet: View {
                         Text(renderMode.detail)
                     }
                 }
+                Section(String(localized: "Help & diagnostics")) {
+                    NavigationLink {
+                        DiagnosticsLogSettingsView()
+                    } label: {
+                        HStack {
+                            Label(String(localized: "Diagnostics log"),
+                                  appSymbol: "doc.text.magnifyingglass")
+                                .labelStyle(.titleAndIcon)
+                            Spacer()
+                            DiagnosticsStatusDot()
+                        }
+                    }
+                }
                 Section(String(localized: "Workspace")) {
                     NavigationLink { SettingsServerView() } label: {
                         SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)

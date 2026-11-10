@@ -1661,6 +1661,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 profile: profile,
                 interactionTargets: interactionTargets,
                 cwd: model.session.metadata?.cwd)
+            TimelineDiagnostics.validateUnits(
+                sessionID: model.session.id,
+                rows: model.timeline.rows.map(\.value),
+                units: chatUnits)
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage(
                 "adapter.group", seconds: CACurrentMediaTime() - probeGroupStart)

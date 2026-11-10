@@ -1330,6 +1330,17 @@ final class V2SessionRepository {
         // round has already been quieted or reported to its own caller.
         if let pending = entry.recoveryTask { _ = await pending.value }
         if event.type == "session.refetch_required" || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
+            if event.type != "session.refetch_required" {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.event.gap",
+                    sessionID: event.sessionId,
+                    detail: [
+                        "after": String(entry.projection?.sequence ?? 0),
+                        "event": String(event.sequence),
+                        "type": event.type,
+                    ]
+                )
+            }
             try await reconcile(entry)
         }
         try requireCurrent(entry)
@@ -1566,6 +1577,15 @@ final class V2SessionRepository {
             try requireCurrent(entry)
             try requireRecoveryEpoch(entry, epoch: epoch)
             if recovery.snapshotRequired {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.recovery.snapshot_required",
+                    sessionID: entry.id,
+                    detail: [
+                        "after": cursor,
+                        "next": recovery.nextCursor,
+                        "events": String(recovery.events.count),
+                    ]
+                )
                 _ = try await hydrate(entry)
                 try requireCurrent(entry)
                 try requireRecoveryEpoch(entry, epoch: epoch)

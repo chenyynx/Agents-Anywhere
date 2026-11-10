@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -2514,6 +2515,7 @@ class TimelineRepositoryMixin:
         keeps its append.
         """
 
+        started = time.perf_counter()
         group_key = _intra_message_input_group_key(item)
         if group_key is None:
             return None
@@ -2617,6 +2619,26 @@ class TimelineRepositoryMixin:
             and row_id in known
             and known[row_id] != order_seq
         }
+        if movers:
+            # Observability for the "is the integer order key still enough?"
+            # question (2026-11-11): a late row that lands in a dense interval
+            # makes the chain plan renumber stored rows. Log only when that
+            # happens, with the block's span and the placement cost, so the
+            # decision to adopt a fractional index can be made from production
+            # data instead of guesses. Healthy appends stay silent.
+            span = max(movers.values()) - min(movers.values())
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            log = logger.warning if len(movers) > _PLACEMENT_MOVER_WARN else logger.info
+            log(
+                "timeline live placement moved stored rows "
+                "session_id={} item_id={} order_seq={} movers={} span={} elapsed_ms={:.1f}",
+                session_id,
+                item.id,
+                new_order,
+                len(movers),
+                span,
+                elapsed_ms,
+            )
         return new_order, movers
 
     async def _apply_intra_message_order_batch(
@@ -3295,6 +3317,12 @@ def _live_item_may_join_group(item: TimelineItem | TimelineItemIn) -> bool:
 #: it; this slice covers every production case seen so far, and the rare miss
 #: falls back to the complete order map.
 _PLACEMENT_SCAN_LIMIT = 512
+
+#: A live placement that has to renumber more stored rows than this logs at
+#: warning level. 200 is above every production sample seen so far (3–35 rows
+#: on 2026-11-10); crossing it is the signal to reopen the fractional-index
+#: decision, not a threshold the code itself acts on.
+_PLACEMENT_MOVER_WARN = 200
 
 
 def _block_reaches_window_end(orders: Iterable[int], after: int) -> bool:

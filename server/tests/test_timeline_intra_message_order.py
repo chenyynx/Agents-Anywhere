@@ -747,3 +747,59 @@ async def test_moved_sibling_gets_fresh_updated_seq(tmp_path) -> None:
         assert "tl_msg" in since_ids
     finally:
         await store.close()
+
+
+@pytest.mark.anyio
+async def test_late_tool_row_lands_before_the_next_message(tmp_path) -> None:
+    """Direct writer (no buffer): a late tool row belongs to its own message.
+
+    The tool row is the message's last tool, so its successor in the chain is
+    the next stored message rather than a sibling. That exercises the
+    successor-follows-the-group branch of the placement plan.
+    """
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                message_input(
+                    session.id, "tl_msg", native_item_id="native_t", order_seq=1
+                ),
+                message_input(
+                    session.id, "tl_other", native_item_id="native_o", order_seq=2
+                ),
+            ],
+        )
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=TimelineItemIn.model_validate(
+                {
+                    "id": "tl_tool",
+                    "sessionId": session.id,
+                    "type": "tool",
+                    "status": "done",
+                    "role": "tool",
+                    "content": {"kind": "command", "command": "ls", "output": "ok"},
+                    "source": {
+                        "runtime": "claude",
+                        "sessionId": "claude_ext_1",
+                        "itemId": "call_late_1",
+                        "itemType": "tool_result",
+                        "nativeMessageId": "native_t",
+                        "blockIndex": 0,
+                    },
+                    "orderSeq": 0,
+                    "revision": 1,
+                    "contentHash": "sha256:late-tool",
+                }
+            ),
+        )
+        rows = await _rows_by_id(store, session.id)
+        assert (
+            rows["tl_msg"].orderSeq
+            < rows["tl_tool"].orderSeq
+            < rows["tl_other"].orderSeq
+        )
+    finally:
+        await store.close()

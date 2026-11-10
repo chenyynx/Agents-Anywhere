@@ -2526,7 +2526,7 @@ class TimelineRepositoryMixin:
             if next_entry is None:
                 return None  # nothing stored after the group: appending is right
             successor_id = next_entry[0]
-            if successor_id in overlay:
+            if overlay and successor_id in overlay:
                 stored_orders[successor_id] = overlay[successor_id]
             elif successor_id not in stored_orders:
                 stored_orders[successor_id] = next_entry[1]

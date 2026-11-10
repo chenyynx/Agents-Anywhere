@@ -329,9 +329,15 @@ async def test_correction_does_not_touch_unrelated_rows(tmp_path) -> None:
             items=[
                 message_input(session.id, "tl_msg", native_item_id="native_1", order_seq=1),
                 # An unrelated message with its own (correct) reasoning.
-                message_input(session.id, "tl_other_msg", native_item_id="native_2", order_seq=2),
+                # The gap after order 1 is the condition this test pins: when a
+                # late sibling can be placed without displacing the next row,
+                # the rows outside its message must stay byte-identical. A
+                # dense suffix (no free integer) is allowed to move by the
+                # bounded placement pass, covered by
+                # tests/test_timeline_late_live_row.py.
+                message_input(session.id, "tl_other_msg", native_item_id="native_2", order_seq=4),
                 reasoning_input(
-                    session.id, "tl_other_reason", native_item_id="native_2", order_seq=3
+                    session.id, "tl_other_reason", native_item_id="native_2", order_seq=5
                 ),
             ],
         )

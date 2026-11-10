@@ -696,6 +696,35 @@ class SqlTimelineStore:
         items = [TimelineItem.model_validate_json(row["payload_json"]) for row in rows[:limit]]
         return items, has_more
 
+    async def next_order_entry_after(
+        self, session_id: str, after: int
+    ) -> tuple[str, int] | None:
+        """The nearest stored row above ``after``: ``(id, order_seq)``.
+
+        A live writer uses this to learn whether anything is stored after a
+        message before paying for the session-wide order map a placement plan
+        needs.
+        """
+
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    timeline_items.select()
+                    .where(
+                        timeline_items.c.session_id == session_id,
+                        timeline_items.c.order_seq > after,
+                    )
+                    .order_by(
+                        timeline_items.c.order_seq,
+                        timeline_items.c.id,
+                    )
+                    .limit(1)
+                )
+            ).mappings().first()
+        if row is None:
+            return None
+        return str(row["id"]), int(row["order_seq"])
+
     async def list_latest(
         self,
         session_id: str,

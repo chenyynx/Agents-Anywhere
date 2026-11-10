@@ -39,7 +39,7 @@ struct DiagnosticsLogSettingsView: View {
                 Text(String(localized: "Diagnostics stay on this device, never include message content, and are kept for 7 days."))
             }
 
-            Section(String(localized: "Last 7 days")) {
+            Section {
                 if days.isEmpty {
                     Text(String(localized: "No diagnostics yet"))
                         .foregroundStyle(.secondary)
@@ -64,6 +64,8 @@ struct DiagnosticsLogSettingsView: View {
                         }
                     }
                 }
+            } header: {
+                Text(String(localized: "Last 7 days"))
             } footer: {
                 Text(String(localized: "Each day is one JSONL file. Open it to view the raw text, copy or share it."))
             }

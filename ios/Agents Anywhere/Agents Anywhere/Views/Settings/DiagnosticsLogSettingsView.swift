@@ -16,9 +16,10 @@ struct DiagnosticsStatusDot: View {
     }
 }
 
-/// Opt-in daily client diagnostics: a toggle, the retained days, preview and
-/// export. Follows the existing Settings list style; it does not reuse the
-/// developer diagnostics panel.
+/// Opt-in daily client diagnostics: a toggle and the retained daily files.
+/// Each row is a file; tapping it opens the raw JSONL exactly as stored, with
+/// copy and share in the navigation bar. It does not reuse the developer
+/// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = false
     @State private var days: [DiagnosticsDay] = []
@@ -48,41 +49,30 @@ struct DiagnosticsLogSettingsView: View {
                         NavigationLink {
                             DiagnosticsDayView(day: day)
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(DiagnosticsFormat.day(day.date))
-                                    Text("\(day.fileURL.lastPathComponent) · \(DiagnosticsFormat.bytes(day.size))")
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
+                            HStack(spacing: 10) {
+                                if day.hasEntries {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
                                 }
+                                Text(day.fileURL.lastPathComponent)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                                 Spacer()
-                                Circle()
-                                    .fill(day.hasEntries ? Color.orange : Color.green)
-                                    .frame(width: 8, height: 8)
-                                    .accessibilityHidden(true)
+                                Text(DiagnosticsFormat.bytes(day.size))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
             } header: {
-                Text(String(localized: "Last 7 days"))
+                Text(String(localized: "Log files"))
             } footer: {
                 Text(String(localized: "Each day is one JSONL file. Open it to view the raw text, copy or share it."))
             }
 
             Section {
-                Button {
-                    if let url = ClientDiagnosticsLog.shared.exportFile() {
-                        shareItems = [url]
-                        showsShare = true
-                    }
-                } label: {
-                    Label(String(localized: "Export diagnostics"),
-                          appSymbol: "square.and.arrow.up")
-                        .labelStyle(.titleAndIcon)
-                }
-                .disabled(days.isEmpty)
-
                 Button(role: .destructive) {
                     confirmsClear = true
                 } label: {
@@ -94,6 +84,20 @@ struct DiagnosticsLogSettingsView: View {
             }
         }
         .settingsPage(String(localized: "Diagnostics log"))
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    if let url = ClientDiagnosticsLog.shared.exportFile() {
+                        shareItems = [url]
+                        showsShare = true
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(days.isEmpty)
+                .accessibilityLabel(String(localized: "Export diagnostics"))
+            }
+        }
         .task { reload() }
         .onChange(of: enabled) { _, isOn in
             if isOn { ClientDiagnosticsLog.shared.markEnabled() }
@@ -119,68 +123,44 @@ struct DiagnosticsLogSettingsView: View {
     }
 }
 
+/// One daily file opened like an attachment: the raw text fills the page and
+/// the navigation bar carries copy and share. No actions live at the bottom.
 struct DiagnosticsDayView: View {
     let day: DiagnosticsDay
     @State private var text = ""
     @State private var copied = false
-    @State private var showsShare = false
 
     var body: some View {
-        List {
-            Section {
-                if text.isEmpty {
-                    Text(String(localized: "No entries"))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(text)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
-            } header: {
-                Text(day.fileURL.lastPathComponent)
-                    .font(.caption.monospaced())
-            } footer: {
-                Text("\(DiagnosticsFormat.day(day.date)) · \(DiagnosticsFormat.bytes(day.size))")
-            }
-
-            Section {
+        ScrollView {
+            Text(text.isEmpty ? String(localized: "No entries") : text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .settingsPage(day.fileURL.lastPathComponent)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     UIPasteboard.general.string = text
                     copied = true
                 } label: {
-                    Label(copied ? String(localized: "Copied")
-                                 : String(localized: "Copy log"),
-                          appSymbol: copied ? "checkmark" : "doc.on.doc")
-                        .labelStyle(.titleAndIcon)
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 }
                 .disabled(text.isEmpty)
+                .accessibilityLabel(String(localized: "Copy log"))
 
-                Button {
-                    showsShare = true
-                } label: {
-                    Label(String(localized: "Share log file"),
-                          appSymbol: "square.and.arrow.up")
-                        .labelStyle(.titleAndIcon)
+                ShareLink(item: day.fileURL) {
+                    Image(systemName: "square.and.arrow.up")
                 }
-                .disabled(text.isEmpty)
+                .accessibilityLabel(String(localized: "Share log file"))
             }
         }
-        .settingsPage(DiagnosticsFormat.day(day.date))
         .task { text = ClientDiagnosticsLog.shared.rawText(for: day) }
-        .sheet(isPresented: $showsShare) {
-            DiagnosticsShareSheet(items: [day.fileURL])
-        }
     }
 }
 
 private enum DiagnosticsFormat {
-    static func day(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
-    }
-
     static func bytes(_ size: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }

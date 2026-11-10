@@ -19833,6 +19833,23 @@
           }
         }
       }
+    },
+    "Log files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Log files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日志文件"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

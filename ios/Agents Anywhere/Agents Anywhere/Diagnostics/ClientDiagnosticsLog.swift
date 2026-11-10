@@ -254,6 +254,15 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         }
     }
 
+    /// Remove the file the reader picked. A later event for the same day
+    /// starts a fresh file with a new header.
+    func delete(_ day: DiagnosticsDay) {
+        queue.sync {
+            try? FileManager.default.removeItem(at: day.fileURL)
+            cappedDays.remove(Self.dayString(day.date, calendar: calendar))
+        }
+    }
+
     // MARK: - Writing
 
     private func append(

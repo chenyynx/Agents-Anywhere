@@ -65,11 +65,19 @@ struct DiagnosticsLogSettingsView: View {
                             }
                         }
                     }
+                    .onDelete { offsets in
+                        for day in offsets.map({ days[$0] }) {
+                            ClientDiagnosticsLog.shared.delete(day)
+                        }
+                        reload()
+                    }
                 }
             } header: {
                 Text(String(localized: "Log files"))
             } footer: {
-                Text(String(localized: "Each day is one log file. Open it to view the raw text, copy or share it."))
+                if !days.isEmpty {
+                    Text(String(localized: "Open a file to view its raw text; swipe left to delete."))
+                }
             }
 
             Section {

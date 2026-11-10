@@ -193,6 +193,31 @@ private func utcCalendar() -> Calendar {
             == "diagnostics-2026-01-01.jsonl")
     }
 
+    @Test func deleteRemovesOnlyTheChosenDay() throws {
+        let calendar = utcCalendar()
+        let start = calendar.date(
+            from: DateComponents(year: 2026, month: 1, day: 1, hour: 10)
+        )!
+        let clock = DiagnosticsClock(start)
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: diagnosticsDefaults(enabled: true),
+            now: { clock.now },
+            calendar: calendar
+        )
+        log.record(kind: "timeline.order.duplicate", sessionID: "a")
+        clock.set(calendar.date(byAdding: .day, value: 1, to: start)!)
+        log.record(kind: "timeline.order.duplicate", sessionID: "b")
+
+        let older = try #require(log.days().last)
+        log.delete(older)
+
+        let remaining = log.days()
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.date == calendar.startOfDay(for: clock.now))
+        #expect(!FileManager.default.fileExists(atPath: older.fileURL.path))
+    }
+
     @Test func clearRemovesEveryDay() {
         let log = ClientDiagnosticsLog(
             directory: diagnosticsDirectory(),

@@ -19851,19 +19851,19 @@
         }
       }
     },
-    "Each day is one log file. Open it to view the raw text, copy or share it.": {
+    "Open a file to view its raw text; swipe left to delete.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Each day is one log file. Open it to view the raw text, copy or share it."
+            "value": "Open a file to view its raw text; swipe left to delete."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每天一个日志文件，点开可查看原文、复制或分享。"
+            "value": "点开查看原文；左滑删除。"
           }
         }
       }

@@ -49,7 +49,12 @@ struct DiagnosticsLogSettingsView: View {
                             DiagnosticsDayView(day: day)
                         } label: {
                             HStack {
-                                Text(DiagnosticsFormat.day(day.date))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(DiagnosticsFormat.day(day.date))
+                                    Text("\(day.fileURL.lastPathComponent) · \(DiagnosticsFormat.bytes(day.size))")
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
                                 Circle()
                                     .fill(day.hasEntries ? Color.orange : Color.green)
@@ -59,6 +64,8 @@ struct DiagnosticsLogSettingsView: View {
                         }
                     }
                 }
+            } footer: {
+                Text(String(localized: "Each day is one JSONL file. Open it to view the raw text, copy or share it."))
             }
 
             Section {
@@ -112,39 +119,55 @@ struct DiagnosticsLogSettingsView: View {
 
 struct DiagnosticsDayView: View {
     let day: DiagnosticsDay
-    @State private var entries: [DiagnosticsEntry] = []
+    @State private var text = ""
+    @State private var copied = false
+    @State private var showsShare = false
 
     var body: some View {
         List {
-            if entries.isEmpty {
-                Text(String(localized: "No entries"))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(entries) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(DiagnosticsFormat.time(entry.timestamp))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text(entry.kind)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                        if let session = entry.sessionID, !session.isEmpty {
-                            Text(session)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(DiagnosticsFormat.detail(entry.detail))
-                            .font(.caption.monospaced())
-                    }
-                    .padding(.vertical, 2)
+            Section {
+                if text.isEmpty {
+                    Text(String(localized: "No entries"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(text)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
                 }
+            } header: {
+                Text(day.fileURL.lastPathComponent)
+                    .font(.caption.monospaced())
+            } footer: {
+                Text("\(DiagnosticsFormat.day(day.date)) · \(DiagnosticsFormat.bytes(day.size))")
+            }
+
+            Section {
+                Button {
+                    UIPasteboard.general.string = text
+                    copied = true
+                } label: {
+                    Label(copied ? String(localized: "Copied")
+                                 : String(localized: "Copy log"),
+                          appSymbol: copied ? "checkmark" : "doc.on.doc")
+                        .labelStyle(.titleAndIcon)
+                }
+                .disabled(text.isEmpty)
+
+                Button {
+                    showsShare = true
+                } label: {
+                    Label(String(localized: "Share log file"),
+                          appSymbol: "square.and.arrow.up")
+                        .labelStyle(.titleAndIcon)
+                }
+                .disabled(text.isEmpty)
             }
         }
         .settingsPage(DiagnosticsFormat.day(day.date))
-        .task { entries = ClientDiagnosticsLog.shared.entries(for: day) }
+        .task { text = ClientDiagnosticsLog.shared.rawText(for: day) }
+        .sheet(isPresented: $showsShare) {
+            DiagnosticsShareSheet(items: [day.fileURL])
+        }
     }
 }
 
@@ -156,17 +179,8 @@ private enum DiagnosticsFormat {
         return formatter.string(from: date)
     }
 
-    static func time(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .medium
-        return formatter.string(from: date)
-    }
-
-    static func detail(_ detail: [String: String]) -> String {
-        detail.keys.sorted()
-            .map { "\($0)=\(detail[$0] ?? "")" }
-            .joined(separator: "  ")
+    static func bytes(_ size: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
 }
 

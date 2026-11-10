@@ -139,6 +139,18 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         days().contains { $0.hasEntries }
     }
 
+    /// The day's file exactly as stored, one JSON object per line. The day
+    /// view shows this verbatim so a reader can copy or share the file rather
+    /// than a re-rendered summary.
+    func rawText(for day: DiagnosticsDay) -> String {
+        queue.sync {
+            guard let data = try? Data(contentsOf: day.fileURL) else {
+                return ""
+            }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+    }
+
     func entries(for day: DiagnosticsDay) -> [DiagnosticsEntry] {
         queue.sync {
             guard let data = try? Data(contentsOf: day.fileURL),

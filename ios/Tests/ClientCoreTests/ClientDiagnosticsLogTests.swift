@@ -129,6 +129,7 @@ private func utcCalendar() -> Calendar {
         let entries = log.entries(for: firstDay)
         #expect(entries.count == 1)
         #expect(entries.first?.kind == "timeline.order.duplicate")
+        #expect(log.rawText(for: firstDay).contains("timeline.order.duplicate"))
 
         let export = try #require(log.exportFile())
         let text = try String(contentsOf: export, encoding: .utf8)

@@ -803,3 +803,171 @@ async def test_late_tool_row_lands_before_the_next_message(tmp_path) -> None:
         )
     finally:
         await store.close()
+
+
+@pytest.mark.anyio
+async def test_healthy_tail_upsert_does_not_read_the_whole_order_map(
+    tmp_path, monkeypatch
+) -> None:
+    """The normal streaming path must not scan every row of the session."""
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                message_input(
+                    session.id, "tl_msg", native_item_id="native_t", order_seq=1
+                ),
+            ],
+        )
+
+        async def fail(*_args, **_kwargs):
+            raise AssertionError("full order map on the healthy tail path")
+
+        monkeypatch.setattr(store.timeline, "order_entries", fail)
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=TimelineItemIn.model_validate(
+                {
+                    "id": "tl_tool",
+                    "sessionId": session.id,
+                    "type": "tool",
+                    "status": "done",
+                    "role": "tool",
+                    "content": {"kind": "command", "command": "ls", "output": "ok"},
+                    "source": {
+                        "runtime": "claude",
+                        "sessionId": "claude_ext_1",
+                        "itemId": "call_tail_1",
+                        "itemType": "tool_result",
+                        "nativeMessageId": "native_t",
+                        "blockIndex": 0,
+                    },
+                    "orderSeq": 0,
+                    "revision": 1,
+                    "contentHash": "sha256:tail-tool",
+                }
+            ),
+        )
+        rows = await _rows_by_id(store, session.id)
+        assert rows["tl_msg"].orderSeq < rows["tl_tool"].orderSeq
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_dense_block_beyond_the_scan_window_still_places_the_row(
+    tmp_path, monkeypatch
+) -> None:
+    """A block longer than the bounded slice falls back to the complete map."""
+
+    import agent_server.infra.repositories.timeline as timeline_repo
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        items = [
+            message_input(
+                session.id, "tl_msg", native_item_id="native_t", order_seq=1
+            )
+        ]
+        for index in range(5):
+            items.append(
+                message_input(
+                    session.id,
+                    f"tl_other_{index}",
+                    native_item_id=f"native_o{index}",
+                    order_seq=2 + index,
+                )
+            )
+        await store.sync_timeline_items(session_id=session.id, items=items)
+        monkeypatch.setattr(timeline_repo, "_PLACEMENT_SCAN_LIMIT", 2)
+
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=TimelineItemIn.model_validate(
+                {
+                    "id": "tl_tool",
+                    "sessionId": session.id,
+                    "type": "tool",
+                    "status": "done",
+                    "role": "tool",
+                    "content": {"kind": "command", "command": "ls", "output": "ok"},
+                    "source": {
+                        "runtime": "claude",
+                        "sessionId": "claude_ext_1",
+                        "itemId": "call_dense_1",
+                        "itemType": "tool_result",
+                        "nativeMessageId": "native_t",
+                        "blockIndex": 0,
+                    },
+                    "orderSeq": 0,
+                    "revision": 1,
+                    "contentHash": "sha256:dense-tool",
+                }
+            ),
+        )
+        rows = await _rows_by_id(store, session.id)
+        orders = [item.orderSeq for item in rows.values()]
+        assert len(orders) == len(set(orders)), orders
+        assert (
+            rows["tl_msg"].orderSeq
+            < rows["tl_tool"].orderSeq
+            < rows["tl_other_0"].orderSeq
+        )
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_healthy_tool_upsert_loads_the_message_group_once(
+    tmp_path, monkeypatch
+) -> None:
+    """Placement and the RBT corrector must share one group read."""
+
+    store, session = await _store_with_session(tmp_path)
+    try:
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                message_input(
+                    session.id, "tl_msg", native_item_id="native_t", order_seq=1
+                ),
+            ],
+        )
+        calls = 0
+        original = store._load_intra_message_group
+
+        async def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(store, "_load_intra_message_group", counting)
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=TimelineItemIn.model_validate(
+                {
+                    "id": "tl_tool",
+                    "sessionId": session.id,
+                    "type": "tool",
+                    "status": "done",
+                    "role": "tool",
+                    "content": {"kind": "command", "command": "ls", "output": "ok"},
+                    "source": {
+                        "runtime": "claude",
+                        "sessionId": "claude_ext_1",
+                        "itemId": "call_group_1",
+                        "itemType": "tool_result",
+                        "nativeMessageId": "native_t",
+                        "blockIndex": 0,
+                    },
+                    "orderSeq": 0,
+                    "revision": 1,
+                    "contentHash": "sha256:group-tool",
+                }
+            ),
+        )
+        assert calls == 1, calls
+    finally:
+        await store.close()

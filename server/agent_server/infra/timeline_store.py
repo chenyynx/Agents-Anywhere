@@ -696,6 +696,38 @@ class SqlTimelineStore:
         items = [TimelineItem.model_validate_json(row["payload_json"]) for row in rows[:limit]]
         return items, has_more
 
+    async def order_entries_from(
+        self,
+        session_id: str,
+        after: int,
+        *,
+        limit: int,
+    ) -> list[tuple[str, int]]:
+        """A bounded slice of stored ``(id, order_seq)`` above ``after``.
+
+        The live placement plan only needs the rows around the insertion
+        point: the slots between the two anchors and the smallest block above
+        until a free integer appears. Reading the whole session for that was
+        the hot-path regression this method exists to remove.
+        """
+
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(timeline_items.c.id, timeline_items.c.order_seq)
+                    .where(
+                        timeline_items.c.session_id == session_id,
+                        timeline_items.c.order_seq > after,
+                    )
+                    .order_by(
+                        timeline_items.c.order_seq,
+                        timeline_items.c.id,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        return [(row[0], int(row[1])) for row in rows]
+
     async def next_order_entry_after(
         self, session_id: str, after: int
     ) -> tuple[str, int] | None:

@@ -363,3 +363,161 @@ def test_replaying_the_late_upsert_does_not_move_the_row(tmp_path):
 
     orders = _orders(state)
     assert orders[BODY_1] < orders[TOOL_1] < orders[USER_2]
+
+
+def test_late_live_body_lands_between_reasoning_and_tools(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    with client.websocket_connect(
+        "/connector/ws",
+        headers={"Authorization": f"Bearer {access_token}"},
+    ) as ws:
+        # The early message stored its reasoning and tool rows; its body is
+        # the row that arrives late.
+        _send_sync(
+            ws,
+            session_id,
+            [
+                _user_item(USER_1, "first", 1),
+                _reasoning_item(2),
+                _late_tool_item(),
+            ],
+        )
+        _send_sync(
+            ws,
+            session_id,
+            [
+                _user_item(USER_2, "later", 4),
+                _assistant_item(BODY_2, "later reply", 5, MESSAGE_2_ID),
+            ],
+        )
+        assert _wait_for_item(client, session_id, headers, BODY_2) is not None
+
+        ws.send_json(
+            {
+                "type": "notification",
+                "method": "timeline.itemUpsert",
+                "params": {
+                    "sessionId": session_id,
+                    "item": {
+                        **_assistant_item(BODY_1, "early reply", 2, MESSAGE_ID),
+                        "sessionId": session_id,
+                    },
+                },
+            }
+        )
+        state = _wait_for_item(client, session_id, headers, BODY_1)
+        assert state is not None
+
+    orders = _orders(state)
+    assert (
+        orders[REASONING_1]
+        < orders[BODY_1]
+        < orders[TOOL_1]
+        < orders[USER_2]
+    ), (
+        f"late body is outside its message: reasoning={orders[REASONING_1]} "
+        f"body={orders[BODY_1]} tool={orders[TOOL_1]} "
+        f"next_user={orders[USER_2]}"
+    )
+
+
+def test_late_live_body_with_only_reasoning_lands_before_the_next_turn(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    with client.websocket_connect(
+        "/connector/ws",
+        headers={"Authorization": f"Bearer {access_token}"},
+    ) as ws:
+        _send_sync(
+            ws,
+            session_id,
+            [_user_item(USER_1, "first", 1), _reasoning_item(2)],
+        )
+        _send_sync(
+            ws,
+            session_id,
+            [
+                _user_item(USER_2, "later", 3),
+                _assistant_item(BODY_2, "later reply", 4, MESSAGE_2_ID),
+            ],
+        )
+        assert _wait_for_item(client, session_id, headers, BODY_2) is not None
+
+        ws.send_json(
+            {
+                "type": "notification",
+                "method": "timeline.itemUpsert",
+                "params": {
+                    "sessionId": session_id,
+                    "item": {
+                        **_assistant_item(BODY_1, "early reply", 2, MESSAGE_ID),
+                        "sessionId": session_id,
+                    },
+                },
+            }
+        )
+        state = _wait_for_item(client, session_id, headers, BODY_1)
+        assert state is not None
+
+    orders = _orders(state)
+    assert orders[REASONING_1] < orders[BODY_1] < orders[USER_2], (
+        f"late body is outside its message: reasoning={orders[REASONING_1]} "
+        f"body={orders[BODY_1]} next_user={orders[USER_2]}"
+    )
+
+
+def test_normal_body_still_appends_after_its_reasoning(tmp_path):
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(
+        client, runtime="claude"
+    )
+
+    with client.websocket_connect(
+        "/connector/ws",
+        headers={"Authorization": f"Bearer {access_token}"},
+    ) as ws:
+        _send_sync(
+            ws,
+            session_id,
+            [_user_item(USER_1, "first", 1), _reasoning_item(2)],
+        )
+        assert _wait_for_item(client, session_id, headers, REASONING_1) is not None
+
+        ws.send_json(
+            {
+                "type": "notification",
+                "method": "timeline.itemUpsert",
+                "params": {
+                    "sessionId": session_id,
+                    "item": {
+                        **_assistant_item(BODY_1, "early reply", 2, MESSAGE_ID),
+                        "sessionId": session_id,
+                    },
+                },
+            }
+        )
+        state = _wait_for_item(client, session_id, headers, BODY_1)
+        assert state is not None
+        ws.send_json(
+            {
+                "type": "notification",
+                "method": "timeline.itemUpsert",
+                "params": {
+                    "sessionId": session_id,
+                    "item": {**_late_tool_item(), "sessionId": session_id},
+                },
+            }
+        )
+        state = _wait_for_item(client, session_id, headers, TOOL_1)
+        assert state is not None
+
+    orders = _orders(state)
+    assert orders[REASONING_1] < orders[BODY_1] < orders[TOOL_1]
+    assert orders[TOOL_1] == max(orders.values())

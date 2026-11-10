@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -796,8 +796,9 @@ class TimelineRepositoryMixin:
                     index
                     for index, item in enumerate(changed_items)
                     if current_by_id.get(item.id) is None
-                    and _live_item_is_group_sibling(item)
+                    and _live_item_may_join_group(item)
                 ]
+                group_cache: dict[str, list[_IntraMessageGroupRow]] = {}
                 if placement_candidates:
                     # The batch's own accepted orders are already published,
                     # so the plan must treat their slots as occupied (and may
@@ -809,6 +810,9 @@ class TimelineRepositoryMixin:
                     placement_orders = {
                         item.id: item.orderSeq for item in changed_items
                     }
+                    placement_max_order = await self._max_timeline_order_seq(
+                        conn, session_id
+                    )
                     for index in placement_candidates:
                         candidate = changed_items[index]
                         placement = await self._plan_live_sibling_order(
@@ -817,6 +821,8 @@ class TimelineRepositoryMixin:
                             candidate,
                             provisional_order=candidate.orderSeq,
                             overlay=placement_orders,
+                            max_order_seq=placement_max_order,
+                            group_cache=group_cache,
                         )
                         if placement is None:
                             continue
@@ -886,6 +892,9 @@ class TimelineRepositoryMixin:
                         if durable_movers:
                             await self.timeline.upsert_many(conn, durable_movers)
                             pre_written_movers = durable_movers
+                            # The cached groups hold the pre-move order_seq;
+                            # the corrector must reload them.
+                            group_cache.clear()
                         changed_items = [
                             revised_pre.get(item.id, item)
                             for item in changed_items
@@ -902,6 +911,7 @@ class TimelineRepositoryMixin:
                     conn,
                     session_id,
                     changed_items,
+                    stored_groups=group_cache,
                 )
                 # Every row whose order moved after a client may have seen its
                 # previous position needs a fresh revision: the stored rows the
@@ -1860,31 +1870,38 @@ class TimelineRepositoryMixin:
                         session_id,
                         mark_read=mark_read_on_change,
                     )
-                    order_seq = await self._live_order_seq_for_upsert(
-                        conn,
-                        session_id,
-                        existing,
-                    )
                     placement_movers: list[TimelineItem] = []
-                    if existing is None and _live_item_is_group_sibling(item):
-                        placement = await self._plan_live_sibling_order(
-                            conn,
-                            session_id,
-                            item,
-                            provisional_order=order_seq,
+                    group_cache: dict[str, list[_IntraMessageGroupRow]] = {}
+                    if existing is None:
+                        max_order_seq = await self._max_timeline_order_seq(
+                            conn, session_id
                         )
-                        if placement is not None:
-                            order_seq, mover_orders = placement
-                            if mover_orders:
-                                movers = await self.timeline.read_many(
-                                    session_id, set(mover_orders)
-                                )
-                                placement_movers = [
-                                    mover.model_copy(
-                                        update={"orderSeq": mover_orders[mover.id]}
+                        order_seq = max_order_seq + 1
+                        if _live_item_may_join_group(item):
+                            placement = await self._plan_live_sibling_order(
+                                conn,
+                                session_id,
+                                item,
+                                provisional_order=order_seq,
+                                max_order_seq=max_order_seq,
+                                group_cache=group_cache,
+                            )
+                            if placement is not None:
+                                order_seq, mover_orders = placement
+                                if mover_orders:
+                                    movers = await self.timeline.read_many(
+                                        session_id, set(mover_orders)
                                     )
-                                    for mover in movers
-                                ]
+                                    placement_movers = [
+                                        mover.model_copy(
+                                            update={
+                                                "orderSeq": mover_orders[mover.id]
+                                            }
+                                        )
+                                        for mover in movers
+                                    ]
+                    else:
+                        order_seq = existing.orderSeq
                     # Write the placement's movers before the RBT pass: the
                     # incoming row can take a slot a sibling still holds on
                     # disk, and the corrector must see the final numbers rather
@@ -1909,12 +1926,17 @@ class TimelineRepositoryMixin:
                         ]
                         await self.timeline.upsert_many(conn, placement_movers)
                         placement_movers = []
+                        # Cached group rows carry the pre-move order_seq.
+                        group_cache.clear()
                     order_seq, sibling_movers = (
                         await self._apply_intra_message_order(
                             conn,
                             session_id,
                             item,
                             order_seq,
+                            preloaded_rows=group_cache.get(
+                                _intra_message_input_group_key(item)
+                            ),
                         )
                     )
                     if sibling_movers:
@@ -2400,6 +2422,8 @@ class TimelineRepositoryMixin:
         session_id: str,
         item: TimelineItemIn,
         order_seq: int,
+        *,
+        preloaded_rows: Sequence[_IntraMessageGroupRow] | None = None,
     ) -> int:
         """Keep one message's rows in the ``RBT`` order (reasoning, body, tools).
 
@@ -2435,7 +2459,12 @@ class TimelineRepositoryMixin:
         if incoming is None or group_key is None:
             return order_seq, []
         group: dict[str, _IntraMessageGroupRow] = {}
-        for row in await self._load_intra_message_group(conn, session_id, group_key):
+        rows = (
+            preloaded_rows
+            if preloaded_rows is not None
+            else await self._load_intra_message_group(conn, session_id, group_key)
+        )
+        for row in rows:
             if row.id != item.id:
                 group[row.id] = row
         group[item.id] = incoming
@@ -2458,6 +2487,8 @@ class TimelineRepositoryMixin:
         *,
         provisional_order: int,
         overlay: Mapping[str, int] | None = None,
+        max_order_seq: int | None = None,
+        group_cache: dict[str, list[_IntraMessageGroupRow]] | None = None,
     ) -> tuple[int, dict[str, int]] | None:
         """Place a new live row inside the message it belongs to.
 
@@ -2468,20 +2499,32 @@ class TimelineRepositoryMixin:
         the session's final answer. The message group, not the arrival time,
         owns the position, so this computes the row's ``RBT`` predecessor and
         successor and reuses the insert-only chain plan: a free integer when
-        the interval has one, else the smallest bounded renumber (all eight
-        production samples sat directly at ``body + 1``, so the bounded path is
-        required).
+        the interval has one, else the smallest bounded renumber.
+
+        The healthy streaming path must stay cheap. ``max_order_seq`` (the
+        caller reads it once per batch) lets the common "the predecessor is the
+        session's last row" case return before any placement read; the plan
+        itself only reads a bounded slice above the insertion floor, falling
+        back to the complete map only when that slice cannot prove where the
+        block ends. ``group_cache`` is shared with the RBT corrector so a
+        healthy flush loads each message group once.
 
         Returns ``(order_seq, mover_orders)``, or ``None`` when the row has no
-        stored group or nothing stored follows it — the caller keeps its
-        append. ``overlay`` lets a batch flush see rows it already placed (the
-        durable map is read once and layered).
+        stored group or nothing is stored after its predecessor — the caller
+        keeps its append.
         """
 
         group_key = _intra_message_input_group_key(item)
         if group_key is None:
             return None
-        rows = await self._load_intra_message_group(conn, session_id, group_key)
+        if group_cache is not None and group_key in group_cache:
+            rows = group_cache[group_key]
+        else:
+            rows = await self._load_intra_message_group(
+                conn, session_id, group_key
+            )
+            if group_cache is not None:
+                group_cache[group_key] = rows
         if not rows:
             return None
         incoming = _intra_message_input_group_row(
@@ -2502,42 +2545,66 @@ class TimelineRepositoryMixin:
             return None
         predecessor = target[position - 1] if position > 0 else None
         successor = target[position + 1] if position + 1 < len(target) else None
+        if max_order_seq is None:
+            max_order_seq = await self._max_timeline_order_seq(conn, session_id)
 
-        stored_orders = await self.timeline.order_entries(session_id)
-        if overlay:
-            stored_orders = {**stored_orders, **overlay}
-        # A batch caller seeds the overlay with every in-flight order, the
-        # incoming row included; the plan only places ids it has not seen.
-        stored_orders.pop(item.id, None)
-        successor_id: str | None
+        def effective_order(row: _IntraMessageGroupRow) -> int:
+            if overlay and row.id in overlay:
+                return overlay[row.id]
+            return row.order_seq
+
+        floor = effective_order(predecessor) if predecessor is not None else 0
         if successor is not None:
             successor_id = successor.id
-            if successor_id not in stored_orders:
-                return None
+            successor_order = effective_order(successor)
         else:
-            floor = (
-                stored_orders.get(predecessor.id, predecessor.order_seq)
-                if predecessor is not None
-                else 0
-            )
+            if floor >= max_order_seq:
+                # The predecessor is the session's last stored row: nothing
+                # follows the new row, so appending (the caller's max+1) is
+                # already correct. This is the normal streaming path.
+                return None
             next_entry = await self.timeline.next_order_entry_after(
                 session_id, floor
             )
             if next_entry is None:
-                return None  # nothing stored after the group: appending is right
-            successor_id = next_entry[0]
+                return None
+            successor_id, successor_order = next_entry
             if overlay and successor_id in overlay:
-                stored_orders[successor_id] = overlay[successor_id]
-            elif successor_id not in stored_orders:
-                stored_orders[successor_id] = next_entry[1]
+                successor_order = overlay[successor_id]
+        if successor_order <= floor:
+            return None  # stored order contradicts the chain: append, never guess
+
+        window = await self.timeline.order_entries_from(
+            session_id, floor, limit=_PLACEMENT_SCAN_LIMIT
+        )
+        known: dict[str, int] = {row_id: order for row_id, order in window}
+        if overlay:
+            known.update(overlay)
+        known.pop(item.id, None)
+        if predecessor is not None:
+            known[predecessor.id] = floor
+        known[successor_id] = successor_order
+        if len(window) >= _PLACEMENT_SCAN_LIMIT and _block_reaches_window_end(
+            known.values(), successor_order
+        ):
+            # The bounded slice may hide stored rows above the block; read the
+            # complete map so a dense insertion can never collide with a row
+            # the window did not see.
+            known = await self.timeline.order_entries(session_id)
+            if overlay:
+                known.update(overlay)
+            known.pop(item.id, None)
+            if predecessor is not None:
+                known[predecessor.id] = floor
+            known[successor_id] = successor_order
 
         batch_ids: list[str] = []
-        if predecessor is not None and predecessor.id in stored_orders:
+        if predecessor is not None and predecessor.id in known:
             batch_ids.append(predecessor.id)
         batch_ids.append(item.id)
         batch_ids.append(successor_id)
         plan = chain_reorder_plan_with_diagnostics(
-            stored_order=list(stored_orders.items()),
+            stored_order=list(known.items()),
             batch_ids=batch_ids,
         )
         new_order = plan.plan.get(item.id)
@@ -2547,8 +2614,8 @@ class TimelineRepositoryMixin:
             row_id: order_seq
             for row_id, order_seq in plan.plan.items()
             if row_id != item.id
-            and row_id in stored_orders
-            and stored_orders[row_id] != order_seq
+            and row_id in known
+            and known[row_id] != order_seq
         }
         return new_order, movers
 
@@ -2557,6 +2624,8 @@ class TimelineRepositoryMixin:
         conn: AsyncConnection,
         session_id: str,
         items: list[TimelineItem],
+        *,
+        stored_groups: Mapping[str, Sequence[_IntraMessageGroupRow]] | None = None,
     ) -> list[TimelineItem]:
         """Enforce the invariant across one sync batch, in place on ``items``.
 
@@ -2590,9 +2659,16 @@ class TimelineRepositoryMixin:
         batch_ids: set[str] = set()
         for group_key, batch_rows in batch_by_group.items():
             group: dict[str, _IntraMessageGroupRow] = {}
-            for row in await self._load_intra_message_group(
-                conn, session_id, group_key
-            ):
+            stored_rows = (
+                stored_groups.get(group_key)
+                if stored_groups is not None
+                else None
+            )
+            if stored_rows is None:
+                stored_rows = await self._load_intra_message_group(
+                    conn, session_id, group_key
+                )
+            for row in stored_rows:
                 if row.id in batch_rows:
                     continue  # the in-batch value supersedes the stored row
                 group[row.id] = row
@@ -3195,15 +3271,49 @@ def _intra_message_input_group_row(
     )
 
 
-def _live_item_is_group_sibling(item: TimelineItem | TimelineItemIn) -> bool:
-    """Whether a new live row can join an already-stored assistant message.
+def _live_item_may_join_group(item: TimelineItem | TimelineItemIn) -> bool:
+    """Whether the placement pass should look for a stored message group.
 
-    A body row starts a new message and must keep appending; reasoning and tool
-    rows belong to the message that produced them, so a late arrival needs its
-    group's position rather than the session tail.
+    Tool and reasoning rows always belong to the assistant message that
+    produced them. A body row normally starts a new message and appends; it is
+    only a placement candidate when its group already has stored rows (a late
+    body), which the helper decides from the loaded group. Subagent child rows
+    are excluded: they render inside their card, not the main timeline.
     """
 
-    return _intra_message_kind(item.type, item.content) in {"reasoning", "tool"}
+    kind = _intra_message_kind(item.type, item.content)
+    if kind in {"tool", "reasoning"}:
+        return True
+    if kind != "message" or item.role != "assistant":
+        return False
+    content = item.content
+    return not (isinstance(content, Mapping) and content.get("parentItemId"))
+
+
+#: How many stored rows the live placement reads above the insertion floor.
+#: The plan needs the interval between the anchors and the smallest block above
+#: it; this slice covers every production case seen so far, and the rare miss
+#: falls back to the complete order map.
+_PLACEMENT_SCAN_LIMIT = 512
+
+
+def _block_reaches_window_end(orders: Iterable[int], after: int) -> bool:
+    """Whether the contiguous run above ``after`` reaches the slice's end.
+
+    True means the bounded slice cannot prove the next free integer is free:
+    stored rows beyond the slice may continue the same run. The caller must
+    read the complete map instead of letting the plan pick a slot that may
+    already be taken.
+    """
+
+    values = {value for value in orders if value > after}
+    if not values:
+        return False
+    highest = max(values)
+    value = after + 1
+    while value in values:
+        value += 1
+    return value > highest
 
 
 def _intra_message_target_order(

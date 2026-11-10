@@ -168,7 +168,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             }
             self.append(
                 kind: kind, sessionID: sessionID, detail: merged,
-                severity: severity, at: stamp
+                severity: resolvedSeverity, at: stamp
             )
         }
     }

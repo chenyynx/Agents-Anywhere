@@ -377,4 +377,84 @@ import Testing
         #expect(!projection.data.liveStateIsFresh)
         #expect(projection.data.items.count == 1)
     }
+
+    /// A late row that lands inside the held window is the client-side
+    /// counterpart of the server's live placement. The diagnostics trail must
+    /// carry its id, position and immediate neighbours so the two logs can be
+    /// matched without message content.
+    @Test func midWindowInsertionIsRecordedInClientDiagnostics() throws {
+        let log = diagnosticsLog()
+        let seed = try [1, 2, 4].map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: seed),
+            maximumItems: 100,
+            diagnostics: log
+        )
+        try projection.apply(event(
+            "timeline.item_created",
+            seq: 11,
+            payload: ["item": itemObject(id: "item-3", order: 3, seq: 11)]
+        ))
+        let entry = try #require(
+            diagnosticsEntries(log).first { $0.kind == "timeline.row.inserted" }
+        )
+        #expect(entry.sessionID == "session")
+        #expect(entry.detail["id"] == "item-3")
+        #expect(entry.detail["orderSeq"] == "3")
+        #expect(entry.detail["prevId"] == "item-2")
+        #expect(entry.detail["prevOrder"] == "2")
+        #expect(entry.detail["nextId"] == "item-4")
+        #expect(entry.detail["nextOrder"] == "4")
+        #expect(entry.detail["trigger"] == "live")
+        #expect(entry.detail["windowMin"] == "1")
+        #expect(entry.detail["windowMax"] == "4")
+        #expect(entry.detail["rowsBefore"] == "3")
+    }
+
+    /// A server mover reaches the client as an update whose orderSeq changed.
+    /// The trail records both positions so it lines up with the server's
+    /// `timeline live placement moved stored rows` entry.
+    @Test func movedRowIsRecordedInClientDiagnostics() throws {
+        let log = diagnosticsLog()
+        let seed = try [1, 2, 3].map { try itemObject(id: "item-\($0)", order: $0) }
+        var projection = V2SessionProjection(
+            snapshot: try snapshot(items: seed),
+            maximumItems: 100,
+            diagnostics: log
+        )
+        try projection.apply(event(
+            "timeline.item_updated",
+            seq: 11,
+            payload: ["item": itemObject(
+                id: "item-2", order: 9, revision: 2, seq: 11
+            )]
+        ))
+        let entry = try #require(
+            diagnosticsEntries(log).first { $0.kind == "timeline.row.moved" }
+        )
+        #expect(entry.sessionID == "session")
+        #expect(entry.detail["id"] == "item-2")
+        #expect(entry.detail["oldOrder"] == "2")
+        #expect(entry.detail["newOrder"] == "9")
+        #expect(entry.detail["trigger"] == "live")
+    }
+
+    private func diagnosticsLog() -> ClientDiagnosticsLog {
+        let suite = "SessionProjectionTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(true, forKey: ClientDiagnosticsLog.enabledKey)
+        return ClientDiagnosticsLog(
+            directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "aa-projection-diagnostics-\(UUID().uuidString)",
+                    isDirectory: true
+                ),
+            defaults: defaults
+        )
+    }
+
+    private func diagnosticsEntries(_ log: ClientDiagnosticsLog) -> [DiagnosticsEntry] {
+        log.days().flatMap { log.entries(for: $0) }
+    }
 }

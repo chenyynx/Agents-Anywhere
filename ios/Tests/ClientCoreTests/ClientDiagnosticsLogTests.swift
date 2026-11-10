@@ -140,6 +140,8 @@ private func utcCalendar() -> Calendar {
 
     @Test func latestFetchIsAnActionNotAnAnomaly() {
         #expect(ClientDiagnosticsLog.severity(for: "timeline.latest.fetch") == "info")
+        #expect(ClientDiagnosticsLog.severity(for: "timeline.row.inserted") == "info")
+        #expect(ClientDiagnosticsLog.severity(for: "timeline.row.moved") == "info")
     }
 
     /// Session revisions are lease-allocated, so a sequence jump is normal and

@@ -46,6 +46,7 @@ struct V2SessionProjection {
     /// avoids shifting the whole window for every event once it is full.
     private var eventOrder: [String] = []
     private let now: () -> Date
+    private let diagnostics: ClientDiagnosticsLog
     private var eventOrderNext = 0
     private static let dedupeWindow = 2048
     private let decoder = JSONDecoder()
@@ -55,15 +56,27 @@ struct V2SessionProjection {
     /// with the cursor already past it (2026-11-01 review P1).
     private var uncoveredDeferredItem: V2TimelineItem?
 
-    init(snapshot: V2SessionSnapshot, maximumItems: Int, now: @escaping () -> Date = Date.init) {
+    init(
+        snapshot: V2SessionSnapshot,
+        maximumItems: Int,
+        now: @escaping () -> Date = Date.init,
+        diagnostics: ClientDiagnosticsLog = .shared
+    ) {
         data = V2SessionData(snapshot: snapshot)
         self.maximumItems = max(1, maximumItems)
         self.now = now
+        self.diagnostics = diagnostics
         replaceTimeline(snapshot.timeline.items, hasMore: snapshot.timeline.hasMore)
     }
 
-    init(archive: V2SessionSnapshot, hasNewerItems: Bool, maximumItems: Int, now: @escaping () -> Date = Date.init) {
-        self.init(snapshot: archive, maximumItems: maximumItems, now: now)
+    init(
+        archive: V2SessionSnapshot,
+        hasNewerItems: Bool,
+        maximumItems: Int,
+        now: @escaping () -> Date = Date.init,
+        diagnostics: ClientDiagnosticsLog = .shared
+    ) {
+        self.init(snapshot: archive, maximumItems: maximumItems, now: now, diagnostics: diagnostics)
         data.hasNewerItems = hasNewerItems
     }
 
@@ -384,6 +397,7 @@ struct V2SessionProjection {
             } else {
                 // `supersedes` does not promise a stable orderSeq; a row that
                 // moved has to be relocated or the sort invariant breaks.
+                recordMoved(item, old: old, trigger: "live")
                 data.items.remove(at: index)
                 insertSorted(item)
             }
@@ -413,7 +427,15 @@ struct V2SessionProjection {
                                               deferredNewer: true)
             }
         }
-        insertSorted(item)
+        let rowsBefore = data.items.count
+        let index = insertionIndex(for: item)
+        let previous = index > 0 ? data.items[index - 1] : nil
+        let next = index < data.items.count ? data.items[index] : nil
+        data.items.insert(item, at: index)
+        applyWindowTrim()
+        recordInserted(
+            item, previous: previous, next: next, trigger: "live",
+            windowMin: start, windowMax: end, rowsBefore: rowsBefore)
         if item.id == uncoveredDeferredItem?.id { uncoveredDeferredItem = nil }
         return V2TimelineMergeOutcome(item: item, wasInserted: true)
     }
@@ -512,7 +534,7 @@ struct V2SessionProjection {
     /// Keeps `data.items` ordered by `(orderSeq, id)` and applies the viewport
     /// window rule: anchored windows keep both sides of the reader, while a
     /// latest window keeps the newest `maximumItems`.
-    private mutating func insertSorted(_ item: V2TimelineItem) {
+    private func insertionIndex(for item: V2TimelineItem) -> Int {
         var low = 0
         var high = data.items.count
         while low < high {
@@ -524,8 +546,101 @@ struct V2SessionProjection {
                 high = mid
             }
         }
-        data.items.insert(item, at: low)
+        return low
+    }
+
+    private mutating func insertSorted(_ item: V2TimelineItem) {
+        data.items.insert(item, at: insertionIndex(for: item))
         applyWindowTrim()
+    }
+
+    /// Records a genuinely new row that landed *inside* the held window rather
+    /// than at either edge. This is the client-side counterpart of the server's
+    /// live placement: a late row inserted between two rows the reader already
+    /// holds. Only ids, positions and counts; never content.
+    private func recordInserted(
+        _ item: V2TimelineItem,
+        previous: V2TimelineItem?,
+        next: V2TimelineItem?,
+        trigger: String,
+        windowMin: Int,
+        windowMax: Int,
+        rowsBefore: Int
+    ) {
+        guard rowsBefore > 0,
+              item.orderSeq > windowMin,
+              item.orderSeq < windowMax else { return }
+        var detail: [String: String] = [
+            "trigger": trigger,
+            "id": item.id,
+            "type": item.type.rawValue,
+            "orderSeq": String(item.orderSeq),
+            "windowMin": String(windowMin),
+            "windowMax": String(windowMax),
+            "rowsBefore": String(rowsBefore),
+        ]
+        if let role = item.role { detail["role"] = role.rawValue }
+        if let previous {
+            detail["prevId"] = previous.id
+            detail["prevOrder"] = String(previous.orderSeq)
+        }
+        if let next {
+            detail["nextId"] = next.id
+            detail["nextOrder"] = String(next.orderSeq)
+        }
+        diagnostics.record(
+            kind: "timeline.row.inserted",
+            sessionID: data.session.id,
+            detail: detail,
+            dedupe: false
+        )
+    }
+
+    /// Records a held row whose `orderSeq` changed (a server mover), so the
+    /// client trail can be matched against the server's placement log.
+    private func recordMoved(
+        _ item: V2TimelineItem,
+        old: V2TimelineItem,
+        trigger: String
+    ) {
+        var detail: [String: String] = [
+            "trigger": trigger,
+            "id": item.id,
+            "type": item.type.rawValue,
+            "oldOrder": String(old.orderSeq),
+            "newOrder": String(item.orderSeq),
+            "oldUpdatedSeq": String(old.updatedSeq),
+            "newUpdatedSeq": String(item.updatedSeq),
+        ]
+        if let role = item.role { detail["role"] = role.rawValue }
+        diagnostics.record(
+            kind: "timeline.row.moved",
+            sessionID: data.session.id,
+            detail: detail,
+            dedupe: false
+        )
+    }
+
+    /// Nearest held neighbours for a row that is about to enter the sorted
+    /// window. Used by the batch path, where the insertion index is not
+    /// otherwise computed.
+    private static func neighbours(
+        of item: V2TimelineItem,
+        in items: [V2TimelineItem]
+    ) -> (previous: V2TimelineItem?, next: V2TimelineItem?) {
+        var low = 0
+        var high = items.count
+        while low < high {
+            let mid = (low + high) / 2
+            let candidate = items[mid]
+            if (candidate.orderSeq, candidate.id) < (item.orderSeq, item.id) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return (low > 0 ? items[low - 1] : nil,
+                low < items.count ? items[low] : nil)
     }
 
     /// Applies incoming rows. Batch paging and live recovery share the window
@@ -535,6 +650,8 @@ struct V2SessionProjection {
         let signpost = PerfSignpost.begin("timeline.merge")
         defer { PerfSignpost.end("timeline.merge", signpost) }
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
+        let heldItems = data.items
+        let rowsBefore = heldItems.count
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
         let anchored = !data.items.isEmpty && windowAnchor != nil
@@ -550,15 +667,32 @@ struct V2SessionProjection {
             if let old = byID[item.id] {
                 guard item.supersedes(old) || completesActiveRow(item, old) else { continue }
                 if Self.downgradesCompleteRow(item, old) { continue }
-            } else if !history, anchored {
-                if item.orderSeq < start || item.orderSeq > end {
-                    if item.orderSeq > end { data.hasNewerItems = true }
-                    continue
+                if old.orderSeq != item.orderSeq {
+                    recordMoved(item, old: old, trigger: history ? "history" : "batch")
                 }
-            } else if !history, data.hasOlderItems, item.orderSeq < start {
-                continue // Recovery must not reinsert older rows outside the selected window.
-            } else if !history, data.hasNewerItems, item.orderSeq > end {
-                continue // Preserve the history window until the caller explicitly loads latest.
+            } else {
+                if !history, anchored {
+                    if item.orderSeq < start || item.orderSeq > end {
+                        if item.orderSeq > end { data.hasNewerItems = true }
+                        continue
+                    }
+                } else if !history, data.hasOlderItems, item.orderSeq < start {
+                    continue // Recovery must not reinsert older rows outside the selected window.
+                } else if !history, data.hasNewerItems, item.orderSeq > end {
+                    continue // Preserve the history window until the caller explicitly loads latest.
+                }
+                if rowsBefore > 0, start < item.orderSeq, item.orderSeq < end {
+                    let neighbours = Self.neighbours(of: item, in: heldItems)
+                    recordInserted(
+                        item,
+                        previous: neighbours.previous,
+                        next: neighbours.next,
+                        trigger: history ? "history" : "batch",
+                        windowMin: start,
+                        windowMax: end,
+                        rowsBefore: rowsBefore
+                    )
+                }
             }
             byID[item.id] = item
         }

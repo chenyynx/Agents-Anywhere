@@ -268,14 +268,15 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             at: directory, withIntermediateDirectories: true
         )
         excludeFromBackup(directory)
+        let line = data + Data("\n".utf8)
         if !FileManager.default.fileExists(atPath: url.path) {
-            try? data.write(to: url, options: .atomic)
+            try? line.write(to: url, options: .atomic)
             return
         }
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         defer { try? handle.close() }
-        try? handle.seekToEnd()
-        try? handle.write(contentsOf: data + Data("\n".utf8))
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: line)
     }
 
     private func daysLocked() -> [DiagnosticsDay] {

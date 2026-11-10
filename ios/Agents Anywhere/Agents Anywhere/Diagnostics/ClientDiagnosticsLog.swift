@@ -50,8 +50,24 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "schemaVersion": schemaVersion,
         "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
         "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch; timeline.recovery; ws.connect|ws.disconnect; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped; timeline.event.gap",
-        "fields": "ts=local ISO8601; kind; severity; session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; nextSeq=server high watermark; trigger/outcome/durationMs for fetches and recovery; ids/orderSeq/count for anomalies.",
+        "fields": "ts=local ISO8601; kind; severity=info for actions / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; nextSeq=server high watermark; trigger/outcome/durationMs for fetches and recovery; ids/orderSeq/count for anomalies.",
     ]
+
+    /// Action entries are the trail that lets a fresh reader reconstruct what
+    /// happened. Anything not listed here stays `warn`, so a new kind is never
+    /// silently downgraded to informational.
+    static let actionKinds: Set<String> = [
+        "app.launch", "app.foreground", "app.background",
+        "diagnostics.enabled", "diagnostics.disabled",
+        "cache.clear",
+        "session.open", "session.open.ready", "session.refresh",
+        "timeline.snapshot.fetch", "timeline.recovery",
+        "ws.connecting", "ws.connect", "ws.disconnect",
+    ]
+
+    static func severity(for kind: String) -> String {
+        actionKinds.contains(kind) ? "info" : "warn"
+    }
 
     private let directory: URL
     private let defaults: UserDefaults
@@ -116,17 +132,18 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         kind: String,
         sessionID: String? = nil,
         detail: [String: String] = [:],
-        severity: String = "warn",
+        severity: String? = nil,
         dedupe: Bool = true,
         force: Bool = false
     ) {
         guard force || isEnabled else { return }
+        let resolvedSeverity = severity ?? Self.severity(for: kind)
         let stamp = now()
         guard dedupe else {
             queue.async { [weak self] in
                 self?.append(
                     kind: kind, sessionID: sessionID, detail: detail,
-                    severity: severity, at: stamp
+                    severity: resolvedSeverity, at: stamp
                 )
             }
             return
@@ -355,7 +372,10 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let object = Self.jsonObject(String(line)) else { continue }
             let kind = object["kind"] as? String
-            if kind != "day.started" && kind != "log.schema" { return true }
+            let severity = object["severity"] as? String
+            if kind != "day.started", kind != "log.schema", severity != "info" {
+                return true
+            }
         }
         return false
     }

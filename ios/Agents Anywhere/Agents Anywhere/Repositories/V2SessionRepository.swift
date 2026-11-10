@@ -1253,6 +1253,10 @@ final class V2SessionRepository {
                     "rows": String(snapshot.timeline.items.count),
                     "nextSeq": String(snapshot.timeline.nextSeq),
                     "hasMore": snapshot.timeline.hasMore ? "1" : "0",
+                    "minOrder": String(
+                        snapshot.timeline.items.map(\.orderSeq).min() ?? 0),
+                    "maxOrder": String(
+                        snapshot.timeline.items.map(\.orderSeq).max() ?? 0),
                     "durationMs": String(
                         Int(Date().timeIntervalSince(fetchStarted) * 1000)),
                 ],

@@ -138,6 +138,27 @@ private func utcCalendar() -> Calendar {
         #expect(text.contains("timeline.user_message.unrendered"))
     }
 
+    @Test func actionsDoNotRaiseTheAnomalyFlag() throws {
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: diagnosticsDefaults(enabled: true),
+            calendar: utcCalendar()
+        )
+        log.record(
+            kind: "session.open",
+            sessionID: "s",
+            detail: ["cached": "0"],
+            dedupe: false
+        )
+        #expect(log.days().first?.hasEntries == false)
+        log.record(
+            kind: "timeline.order.duplicate",
+            sessionID: "s",
+            detail: ["orderSeq": "7"]
+        )
+        #expect(log.days().first?.hasEntries == true)
+    }
+
     @Test func clearRemovesEveryDay() {
         let log = ClientDiagnosticsLog(
             directory: diagnosticsDirectory(),

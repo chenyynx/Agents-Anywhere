@@ -23,6 +23,7 @@ struct DiagnosticsStatusDot: View {
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = false
     @State private var days: [DiagnosticsDay] = []
+    @State private var didLoad = false
     @State private var shareItems: [Any] = []
     @State private var showsShare = false
     @State private var confirmsClear = false
@@ -41,7 +42,12 @@ struct DiagnosticsLogSettingsView: View {
             }
 
             Section {
-                if days.isEmpty {
+                if !didLoad {
+                    // A spinner, not "No diagnostics yet": the directory read
+                    // is fast but still finishes after the first frame, and the
+                    // false empty state read as a flash of missing files.
+                    ProgressView()
+                } else if days.isEmpty {
                     Text(String(localized: "No diagnostics yet"))
                         .foregroundStyle(.secondary)
                 } else {
@@ -102,7 +108,10 @@ struct DiagnosticsLogSettingsView: View {
                 .accessibilityLabel(String(localized: "Export diagnostics"))
             }
         }
-        .task { reload() }
+        .task {
+            reload()
+            didLoad = true
+        }
         .onChange(of: enabled) { _, isOn in
             if isOn {
                 ClientDiagnosticsLog.shared.markEnabled()
@@ -138,8 +147,17 @@ struct DiagnosticsLogSettingsView: View {
 /// the navigation bar carries copy and share. No actions live at the bottom.
 struct DiagnosticsDayView: View {
     let day: DiagnosticsDay
-    @State private var text = ""
+    @State private var text: String
     @State private var copied = false
+
+    init(day: DiagnosticsDay) {
+        self.day = day
+        // Read while the destination is being built, not after it appears.
+        // The file is local and at most 5 MB; a deferred `.task` rendered one
+        // frame of the empty state ("暂无记录") during the push transition,
+        // which read as a one-second blank even though the read was instant.
+        _text = State(initialValue: ClientDiagnosticsLog.shared.rawText(for: day))
+    }
 
     var body: some View {
         ScrollView {
@@ -167,7 +185,6 @@ struct DiagnosticsDayView: View {
                 .accessibilityLabel(String(localized: "Share log file"))
             }
         }
-        .task { text = ClientDiagnosticsLog.shared.rawText(for: day) }
     }
 }
 

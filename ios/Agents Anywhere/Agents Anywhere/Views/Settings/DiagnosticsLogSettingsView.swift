@@ -74,10 +74,6 @@ struct DiagnosticsLogSettingsView: View {
                 }
             } header: {
                 Text(String(localized: "Log files"))
-            } footer: {
-                if !days.isEmpty {
-                    Text(String(localized: "Open a file to view its raw text; swipe left to delete."))
-                }
             }
 
             Section {

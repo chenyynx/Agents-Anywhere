@@ -19850,23 +19850,6 @@
           }
         }
       }
-    },
-    "Open a file to view its raw text; swipe left to delete.": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open a file to view its raw text; swipe left to delete."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "点开查看原文；左滑删除。"
-          }
-        }
-      }
     }
   },
   "version": "1.0"

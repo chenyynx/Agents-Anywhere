@@ -19,7 +19,7 @@ struct PrivacyPolicyContent: View {
 
     var body: some View {
         SettingsScreen(title: String(localized: "privacyPolicy.title")) {
-            SettingsSection(String(verbatim: "Agents Anywhere"),
+            SettingsSection("Agents Anywhere",
                             footer: String(localized: "privacyPolicy.updated")) {
                 paragraph("privacyPolicy.introduction")
             }

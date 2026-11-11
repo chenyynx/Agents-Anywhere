@@ -17,7 +17,9 @@ struct ChatComposerDock: View {
     var isStreaming = false
     var canStop = true
     var isBusy = false
-    var placeholder = String(localized: "询问 Agents")
+    /// The new-session host leaves this at the official "type or hold to
+    /// talk" line; a session with history passes its own reply wording.
+    var placeholder = String(localized: "输入或长按说话")
     var isLoadingSettings = false
     var settingsError: String?
     var sessionChat: SessionChatModel?

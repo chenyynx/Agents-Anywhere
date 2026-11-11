@@ -223,7 +223,12 @@ struct SessionChatView: View, Equatable {
            session.composer.isFocused, !session.composer.hasContent {
             return String(localized: "排队至本轮结束后…")
         }
-        return String(localized: "询问 Agents")
+        // Official wording: a fresh session invites typing, a session with
+        // history replies to the agent by name.
+        if !model.timeline.rows.isEmpty || !session.pendingMessages.isEmpty {
+            return String(localized: "回复 \(model.agentName) 或长按说话")
+        }
+        return String(localized: "输入或长按说话")
     }
     private var session: V2SessionModel { model.session }
     private var requiresTakeover: Bool { session.metadata?.takeover == false }

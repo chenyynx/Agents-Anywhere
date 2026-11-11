@@ -6,7 +6,7 @@ struct ChatComposer: View {
     let isStreaming: Bool
     var canSend = true
     var isBusy = false
-    var placeholder = String(localized: "询问 Agents")
+    var placeholder = String(localized: "输入或长按说话")
     let maximumEditorHeight: CGFloat
     let controls: ChatControlMetrics
     let onSend: () -> Void

@@ -19850,6 +19850,40 @@
           }
         }
       }
+    },
+    "输入或长按说话": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type or hold to talk"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入或长按说话"
+          }
+        }
+      }
+    },
+    "回复 %@ 或长按说话": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reply to %@ or hold to talk"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复 %@ 或长按说话"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

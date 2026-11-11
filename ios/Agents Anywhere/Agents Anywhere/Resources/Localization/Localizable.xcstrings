@@ -18864,20 +18864,20 @@
         }
       }
     },
-    "排队至本轮结束后…": {
-      "comment": "Code composer placeholder while a turn is running and the field is focused; mirrors the official mid_turn_queue_placeholder.",
+    "排队至本轮结束后": {
+      "comment": "Code composer placeholder while a turn is running and the field is focused; the official mid_turn_queue_placeholder without its trailing ellipsis (pp 2026-11-11).",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Queue for after this turn…"
+            "value": "Queue for after this turn"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "排队至本轮结束后…"
+            "value": "排队至本轮结束后"
           }
         }
       }

@@ -33,6 +33,7 @@ from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
     message_usage,
     stable_message_item_id,
+    stable_turn_result_item_id,
     usage_counts,
 )
 from connector.runtimes.claude.timeline.stream import ClaudeStreamAccumulator
@@ -330,8 +331,9 @@ def test_result_envelope_fallback_keeps_usage() -> None:
 
 async def _test_result_envelope_fallback_keeps_usage() -> None:
     # A tool-only call produces no message row; the reply text rides the
-    # result envelope instead. The fallback republishes the same item id the
-    # streamed partial used — with usage — rather than erasing it.
+    # result envelope instead. Since 2026-11-10 the fallback uses the turn's
+    # own item id (not the tool message's), so the reply cannot be drawn
+    # inside the tool message's group; the partial keeps the streamed id.
     host = await _run_turn(
         [
             _stream_event(_message_start("msg_2", USAGE_RAW)),
@@ -359,9 +361,13 @@ async def _test_result_envelope_fallback_keeps_usage() -> None:
         "claude.turn.assistant.partial",
         "claude.turn.result",
     ]
-    assert len({item.id for item in assistant_items}) == 1
-    assert assistant_items[-1].content["text"] == "the reply text"
-    assert assistant_items[-1].content["usage"] == {**USAGE_WIRE, "outputTokens": 0}
+    assert len({item.id for item in assistant_items}) == 2
+    partial_item, result_item = assistant_items
+    assert partial_item.id == stable_message_item_id(_session(), "msg_2")
+    assert result_item.id == stable_turn_result_item_id(_session(), result_item.turn_id)
+    assert "itemId" not in result_item.source
+    assert result_item.content["text"] == "the reply text"
+    assert result_item.content["usage"] == {**USAGE_WIRE, "outputTokens": 0}
 
 
 def test_tool_only_turn_carries_usage_on_tool_rows() -> None:

@@ -127,6 +127,22 @@ import Testing
         #expect(usage.fraction == 1)
     }
 
+    @Test func percentIsClampedToTheWindow() throws {
+        let over = try decode("""
+        {"runtime": "claude", "totalTokens": 250000, "maxTokens": 200000,
+         "percentage": 250}
+        """)
+        #expect(over.percentUsed == 100)
+        #expect(over.remainingPercent == 0)
+
+        let under = try decode("""
+        {"runtime": "claude", "totalTokens": 0, "maxTokens": 200000,
+         "percentage": -5}
+        """)
+        #expect(under.percentUsed == 0)
+        #expect(under.remainingPercent == 100)
+    }
+
     @Test func tokenFormattingMatchesTheOfficialSheet() {
         #expect(ContextTokenFormat.wan(0) == "0")
         #expect(ContextTokenFormat.wan(999) == "999")

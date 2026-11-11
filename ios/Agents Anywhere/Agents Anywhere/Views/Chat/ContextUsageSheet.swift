@@ -42,7 +42,7 @@ struct ContextUsageRing: View {
         guard let percent = usage.percentUsed else {
             return String(localized: "用量未知")
         }
-        return String(localized: "已使用 \(percent)%")
+        return String(format: String(localized: "已使用 %lld%%"), percent)
     }
 }
 
@@ -166,9 +166,9 @@ struct ContextUsageSheet: View {
     private func caption(_ usage: V2ContextUsage) -> some View {
         let used = ContextTokenFormat.wan(usage.totalTokens)
         let total = usage.maxTokens.map(ContextTokenFormat.wan) ?? "—"
-        var text = String(localized: "\(used) / \(total) token")
+        var text = String(format: String(localized: "%@ / %@ token"), used, total)
         if let measured = Self.measuredTime(usage.measuredAt) {
-            text += String(localized: " · 更新于 \(measured)")
+            text += String(format: String(localized: " · 更新于 %@"), measured)
         }
         return Text(text)
             .font(.footnote)

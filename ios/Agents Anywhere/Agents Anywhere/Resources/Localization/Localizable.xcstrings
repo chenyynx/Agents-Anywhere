@@ -20140,23 +20140,6 @@
         }
       }
     },
-    "分类明细": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Breakdown"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "分类明细"
-          }
-        }
-      }
-    },
     "正在读取分类明细…": {
       "extractionState": "manual",
       "localizations": {
@@ -20170,23 +20153,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在读取分类明细…"
-          }
-        }
-      }
-    },
-    "暂无上下文用量": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No context usage yet"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "暂无上下文用量"
           }
         }
       }
@@ -20327,36 +20293,87 @@
         }
       }
     },
-    "%@ / %@ token": {
+    "%@/%@ 个 token · 更新时间：%@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ / %@ tokens"
+            "value": "%@ of %@ tokens · Updated %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ / %@ token"
+            "value": "%@/%@ 个 token · 更新时间：%@"
           }
         }
       }
     },
-    " · 更新于 %@": {
+    "%@ / %@ 个 token": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": " · Updated %@"
+            "value": "%@ of %@ tokens"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": " · 更新于 %@"
+            "value": "%@ / %@ 个 token"
+          }
+        }
+      }
+    },
+    "暂无用量数据": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No usage data yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无用量数据"
+          }
+        }
+      }
+    },
+    "用量": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usage"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用量"
+          }
+        }
+      }
+    },
+    "上下文": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Context"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文"
           }
         }
       }

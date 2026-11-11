@@ -47,40 +47,62 @@ struct ContextUsageRing: View {
 }
 
 /// The sheet the ring opens: the runtime's own context-window answer with its
-/// per-category breakdown. Runtimes that answer summary-only (codex) show the
-/// header and token line without a breakdown section.
+/// per-category breakdown, laid out as the official Usage page's context card.
+/// Runtimes that answer summary-only (codex) show the header, meter and token
+/// line without a breakdown section. The sheet chrome (background, cards,
+/// typography) follows the add-to-chat sheet so the two read as one family.
 struct ContextUsageSheet: View {
     let chat: SessionChatModel
     let sessionID: V2SessionID
-    @ScaledMetric(relativeTo: .largeTitle) private var percentSize: CGFloat = 34
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 16) {
                     if chat.isRefreshingContextUsage, chat.displayedContextUsage == nil {
                         ProgressView()
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 48)
-                    } else if let usage = chat.displayedContextUsage {
-                        content(usage)
+                            .padding(.vertical, 48)
                     } else {
-                        Text(String(localized: "暂无上下文用量"))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 48)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(String(localized: "上下文"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+                            if let usage = chat.displayedContextUsage {
+                                contextCard(usage)
+                            } else {
+                                emptyCard
+                            }
+                        }
                     }
                     if let error = chat.contextUsageError {
                         Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12))
+                            .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, ChatSheetMetrics.horizontalInset)
+                .padding(.top, 8)
+                .padding(.bottom, 24)
             }
-            .navigationTitle(String(localized: "上下文窗口"))
+            .scrollIndicators(.hidden)
+            .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())
+            .toolbarBackground(AppTheme.composerSheetBackground(colorScheme), for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                SheetCloseToolbar { dismiss() }
+                ToolbarItem(placement: .principal) {
+                    Text(String(localized: "用量"))
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task {
@@ -89,7 +111,9 @@ struct ContextUsageSheet: View {
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 17))
                     }
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                     .disabled(chat.isRefreshingContextUsage)
                     .accessibilityLabel(String(localized: "刷新"))
                 }
@@ -103,76 +127,85 @@ struct ContextUsageSheet: View {
         }
     }
 
-    @ViewBuilder private func content(_ usage: V2ContextUsage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(usage.percentUsed.map { "\($0)%" } ?? "—")
-                    .font(.system(size: percentSize, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                Text(String(localized: "已使用"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let model = usage.model, !model.isEmpty {
-                    Text(model)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+    private var emptyCard: some View {
+        Text(String(localized: "暂无用量数据"))
+            .font(.system(size: 13))
+            .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 32)
+            .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
+    }
+
+    private func contextCard(_ usage: V2ContextUsage) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(String(localized: "上下文窗口"))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                Spacer(minLength: 8)
+                if let percent = usage.percentUsed {
+                    Text(String(format: String(localized: "已使用 %lld%%"), percent))
+                        .font(.system(size: 15, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(ContextUsageRing.tint(forPercent: percent))
+                } else {
+                    Text(String(localized: "用量未知"))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
             }
             ContextUsageMeter(usage: usage)
             caption(usage)
-        }
-
-        if usage.hasBreakdown {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(String(localized: "分类明细"))
-                    .font(.headline)
-                ForEach(usage.visibleCategories.indices, id: \.self) { index in
-                    let category = usage.visibleCategories[index]
-                    ContextUsageRow(
-                        label: category.name,
-                        tokens: category.tokens,
-                        total: usage.maxTokens ?? usage.totalTokens,
-                        tone: ContextUsageMeter.tone(for: category, index: index)
-                    )
+            if usage.hasBreakdown {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(usage.visibleCategories.indices, id: \.self) { index in
+                        let category = usage.visibleCategories[index]
+                        ContextUsageRow(
+                            label: category.name,
+                            tokens: category.tokens,
+                            total: usage.maxTokens ?? usage.totalTokens,
+                            tone: ContextUsageMeter.tone(for: category, index: index)
+                        )
+                    }
                 }
+                .padding(.top, 2)
+                ContextUsageGroups(usage: usage)
+            } else if chat.isRefreshingContextUsage {
+                statusLine(String(localized: "正在读取分类明细…"), spinner: true)
+            } else if usage.isEstimate {
+                statusLine(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
+            } else if usage.isCached {
+                statusLine(String(localized: "显示上次测量结果，连接会话后会自动更新"))
+            } else {
+                statusLine(String(localized: "该 Runtime 只提供总体用量，暂无分类明细"))
             }
-            ContextUsageGroups(usage: usage)
-        } else if chat.isRefreshingContextUsage {
-            // A summary-only value is on screen while the full pass runs; say
-            // so instead of claiming the runtime has no breakdown.
-            HStack(spacing: 8) {
-                ProgressView()
-                Text(String(localized: "正在读取分类明细…"))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        } else if usage.isEstimate {
-            Text(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        } else if usage.isCached {
-            Text(String(localized: "显示上次测量结果，连接会话后会自动更新"))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        } else {
-            Text(String(localized: "该 Runtime 只提供总体用量，暂无分类明细"))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
+    }
+
+    private func statusLine(_ text: String, spinner: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            if spinner { ProgressView().controlSize(.mini) }
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
     }
 
     private func caption(_ usage: V2ContextUsage) -> some View {
         let used = ContextTokenFormat.wan(usage.totalTokens)
         let total = usage.maxTokens.map(ContextTokenFormat.wan) ?? "—"
-        var text = String(format: String(localized: "%@ / %@ token"), used, total)
+        let text: String
         if let measured = Self.measuredTime(usage.measuredAt) {
-            text += String(format: String(localized: " · 更新于 %@"), measured)
+            text = String(format: String(localized: "%@/%@ 个 token · 更新时间：%@"),
+                          used, total, measured)
+        } else {
+            text = String(format: String(localized: "%@ / %@ 个 token"), used, total)
         }
         return Text(text)
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+            .font(.system(size: 12))
+            .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             .monospacedDigit()
     }
 
@@ -217,27 +250,39 @@ struct ContextUsageMeter: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // The runtime's rows can sum past the nominal window (different
-            // accounting between summary and breakdown); scale by whichever is
-            // larger so the bar never overflows or clips.
-            let categoryTotal = usage.visibleCategories.reduce(0) { $0 + $1.tokens }
-            let total = max(usage.maxTokens ?? usage.totalTokens, categoryTotal, 1)
-            HStack(spacing: 1) {
-                ForEach(usage.visibleCategories.indices, id: \.self) { index in
-                    let category = usage.visibleCategories[index]
-                    Rectangle()
-                        .fill(Self.tone(for: category, index: index))
-                        .frame(
-                            width: max(
-                                0,
-                                CGFloat(category.tokens) / CGFloat(total) * proxy.size.width
-                            )
-                        )
+            let categories = usage.visibleCategories
+            if categories.isEmpty {
+                // Summary-only / estimate: there is no per-category split, so
+                // the bar still has to show the measured share of the window.
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.15))
+                    Capsule()
+                        .fill(ContextUsageRing.tint(forPercent: usage.percentUsed ?? 0))
+                        .frame(width: proxy.size.width * CGFloat(min(max(usage.fraction ?? 0, 0), 1)))
                 }
-                Spacer(minLength: 0)
+            } else {
+                // The runtime's rows can sum past the nominal window (different
+                // accounting between summary and breakdown); scale by whichever
+                // is larger so the bar never overflows or clips.
+                let categoryTotal = categories.reduce(0) { $0 + $1.tokens }
+                let total = max(usage.maxTokens ?? usage.totalTokens, categoryTotal, 1)
+                HStack(spacing: 1) {
+                    ForEach(categories.indices, id: \.self) { index in
+                        let category = categories[index]
+                        Rectangle()
+                            .fill(Self.tone(for: category, index: index))
+                            .frame(
+                                width: max(
+                                    0,
+                                    CGFloat(category.tokens) / CGFloat(total) * proxy.size.width
+                                )
+                            )
+                    }
+                    Spacer(minLength: 0)
+                }
+                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                .clipShape(Capsule())
             }
-            .background(Capsule().fill(Color.secondary.opacity(0.15)))
-            .clipShape(Capsule())
         }
         .frame(height: 8)
         .accessibilityHidden(true)
@@ -256,15 +301,15 @@ private struct ContextUsageRow: View {
                 .fill(tone)
                 .frame(width: 8, height: 8)
             Text(label)
-                .font(.subheadline)
+                .font(.system(size: 13))
                 .lineLimit(1)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
-                .font(.subheadline)
+                .font(.system(size: 13))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             Text(share)
-                .font(.caption)
+                .font(.system(size: 12))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 46, alignment: .trailing)
@@ -282,6 +327,7 @@ private struct ContextUsageRow: View {
 /// The grouped detail lists the CLI reports alongside the categories.
 private struct ContextUsageGroups: View {
     let usage: V2ContextUsage
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if !usage.mcpTools.isEmpty {
@@ -328,29 +374,33 @@ private struct ContextUsageGroups: View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) { content() }
                 .padding(.top, 6)
+                .padding(.leading, 2)
         } label: {
             HStack {
-                Text(title).font(.headline)
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 Spacer()
                 Text("\(ContextTokenFormat.wan(tokens))")
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
         }
+        .tint(AppTheme.composerSecondaryGlyph(colorScheme))
     }
 
     private func item(label: String, tokens: Int, isPath: Bool = false) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(isPath ? Font.caption.monospaced() : Font.subheadline)
+                .font(.system(size: 13, design: isPath ? .monospaced : .default))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
-                .font(.caption)
+                .font(.system(size: 12))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
     }
 }

@@ -130,6 +130,10 @@ struct AccountSettingsSheet: View {
                                   value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title),
                                   destination: AppearanceSettingsView())
             SettingsRowDivider()
+            SettingsNavigationRow(icon: "image",
+                                  title: String(localized: "应用图标"),
+                                  destination: AppIconSettingsView())
+            SettingsRowDivider()
             SettingsNavigationRow(icon: "paintpalette",
                                   title: String(localized: "Accent color"),
                                   value: String(localized: AppAccent.resolve(accentValue).title),

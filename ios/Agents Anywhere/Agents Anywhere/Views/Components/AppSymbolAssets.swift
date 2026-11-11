@@ -73,6 +73,7 @@ enum AppSymbolAssets {
         "globe": "aa-Globe",
         "hammer": "aa-Hammer",
         "hand.raised": "aa-Hand",
+        "image": "aa-Image",
         "info.circle": "aa-Info",
         "key": "aa-KeyRound",
         "key.horizontal": "aa-KeyRound",

@@ -20377,6 +20377,40 @@
           }
         }
       }
+    },
+    "说明": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "说明"
+          }
+        }
+      }
+    },
+    "用量来自 Runtime 的上下文统计；连接不可用时显示上次测量或 timeline 估算。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usage comes from the runtime's context accounting. When the session is unreachable, the last measurement or a timeline estimate is shown."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用量来自 Runtime 的上下文统计；连接不可用时显示上次测量或 timeline 估算。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

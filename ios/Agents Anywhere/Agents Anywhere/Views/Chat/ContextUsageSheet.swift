@@ -56,6 +56,7 @@ struct ContextUsageSheet: View {
     let sessionID: V2SessionID
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showsInfo = false
 
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -72,8 +73,9 @@ struct ContextUsageSheet: View {
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(String(localized: "上下文"))
-                                .font(.system(size: 13))
+                                .font(.system(size: 15))
                                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
+                                .padding(.leading, 16)
                             if let usage = chat.displayedContextUsage {
                                 contextCard(usage)
                             } else {
@@ -100,10 +102,10 @@ struct ContextUsageSheet: View {
                 SheetCloseToolbar { dismiss() }
                 ToolbarItem(placement: .principal) {
                     Text(String(localized: "用量"))
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         Task {
                             await chat.refreshContextUsage(
@@ -113,13 +115,24 @@ struct ContextUsageSheet: View {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 17))
                     }
-                    .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                     .disabled(chat.isRefreshingContextUsage)
                     .accessibilityLabel(String(localized: "刷新"))
+                    Button {
+                        showsInfo = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 17))
+                    }
+                    .accessibilityLabel(String(localized: "说明"))
                 }
             }
         }
         .presentationDetents([.medium, .large])
+        .alert(String(localized: "上下文窗口"), isPresented: $showsInfo) {
+            Button(String(localized: "好"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "用量来自 Runtime 的上下文统计；连接不可用时显示上次测量或 timeline 估算。"))
+        }
         .task {
             // The sheet's own read is the runtime's full per-category pass;
             // the ring only ever asks for `summary`.
@@ -140,17 +153,17 @@ struct ContextUsageSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(String(localized: "上下文窗口"))
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 Spacer(minLength: 8)
                 if let percent = usage.percentUsed {
                     Text(String(format: String(localized: "已使用 %lld%%"), percent))
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 15))
                         .monospacedDigit()
-                        .foregroundStyle(ContextUsageRing.tint(forPercent: percent))
+                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 } else {
                     Text(String(localized: "用量未知"))
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 15))
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
             }
@@ -188,7 +201,7 @@ struct ContextUsageSheet: View {
         HStack(spacing: 8) {
             if spinner { ProgressView().controlSize(.mini) }
             Text(text)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
     }
@@ -204,7 +217,7 @@ struct ContextUsageSheet: View {
             text = String(format: String(localized: "%@ / %@ 个 token"), used, total)
         }
         return Text(text)
-            .font(.system(size: 12))
+            .font(.system(size: 13))
             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             .monospacedDigit()
     }
@@ -229,6 +242,16 @@ struct ContextUsageSheet: View {
 /// is the track itself.
 struct ContextUsageMeter: View {
     let usage: V2ContextUsage
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Sampled from the official Usage page (dark mode): #3E78CE fill over a
+    /// #0B1D40 track. The light track keeps the same hue at low opacity.
+    private var fill: Color { Color(red: 62 / 255, green: 120 / 255, blue: 206 / 255) }
+    private var track: Color {
+        colorScheme == .dark
+            ? Color(red: 11 / 255, green: 29 / 255, blue: 64 / 255)
+            : fill.opacity(0.16)
+    }
 
     private static let palette: [Color] = [
         Color(red: 33 / 255, green: 86 / 255, blue: 162 / 255),
@@ -255,9 +278,9 @@ struct ContextUsageMeter: View {
                 // Summary-only / estimate: there is no per-category split, so
                 // the bar still has to show the measured share of the window.
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.secondary.opacity(0.15))
+                    Capsule().fill(track)
                     Capsule()
-                        .fill(ContextUsageRing.tint(forPercent: usage.percentUsed ?? 0))
+                        .fill(fill)
                         .frame(width: proxy.size.width * CGFloat(min(max(usage.fraction ?? 0, 0), 1)))
                 }
             } else {
@@ -280,11 +303,11 @@ struct ContextUsageMeter: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                .background(Capsule().fill(track))
                 .clipShape(Capsule())
             }
         }
-        .frame(height: 8)
+        .frame(height: 7)
         .accessibilityHidden(true)
     }
 }
@@ -301,7 +324,7 @@ private struct ContextUsageRow: View {
                 .fill(tone)
                 .frame(width: 8, height: 8)
             Text(label)
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .lineLimit(1)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
@@ -309,7 +332,7 @@ private struct ContextUsageRow: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             Text(share)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 46, alignment: .trailing)
@@ -378,11 +401,11 @@ private struct ContextUsageGroups: View {
         } label: {
             HStack {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 Spacer()
                 Text("\(ContextTokenFormat.wan(tokens))")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .monospacedDigit()
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
@@ -393,12 +416,12 @@ private struct ContextUsageGroups: View {
     private func item(label: String, tokens: Int, isPath: Bool = false) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 13, design: isPath ? .monospaced : .default))
+                .font(.system(size: 15, design: isPath ? .monospaced : .default))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .monospacedDigit()
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }

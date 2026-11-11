@@ -5,43 +5,82 @@ struct SessionDetailsSheet: View {
     let chat: SessionChatModel
     let service: V2SessionDetailService
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var exportRequest: String?
     @State private var document: TimelineJSONDocument?
     @State private var showsExporter = false
     @State private var error: String?
+
     var body: some View {
         NavigationStack {
-            List {
+            SettingsScreen(title: String(localized: "会话详情"), close: { dismiss() }) {
                 if let meta = chat.session.metadata {
-                    Section(String(localized: "会话")) {
-                        row(String(localized: "标题"), meta.title ?? String(localized: "未命名会话"))
-                        row(String(localized: "设备"), meta.connectorId)
-                        row(String(localized: "Agent"), meta.runtimeName ?? meta.runtime)
-                        row(String(localized: "Agent 类型"), meta.runtimeTypeDisplayName ?? meta.runtimeType ?? meta.runtime)
-                        row(String(localized: "状态"), (chat.session.runtime.state?.status ?? meta.status).displayName)
-                        row(String(localized: "dashboard.session.workspace"), meta.cwd ?? String(localized: "无"))
-                        row(String(localized: "接管"), meta.takeover ? String(localized: "已开启") : String(localized: "只读"))
+                    SettingsSection(String(localized: "会话")) {
+                        infoRow(String(localized: "标题"), meta.title ?? String(localized: "未命名会话"))
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "设备"), meta.connectorId)
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "Agent"), meta.runtimeName ?? meta.runtime)
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "Agent 类型"), meta.runtimeTypeDisplayName ?? meta.runtimeType ?? meta.runtime)
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "状态"), (chat.session.runtime.state?.status ?? meta.status).displayName)
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "dashboard.session.workspace"), meta.cwd ?? String(localized: "无"))
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "接管"), meta.takeover ? String(localized: "已开启") : String(localized: "只读"))
                     }
-                    Section(String(localized: "标识与时间线")) {
-                        row(String(localized: "Session ID"), meta.id)
-                        row(String(localized: "外部 Session ID"), meta.externalSessionId ?? String(localized: "无"))
-                        row(String(localized: "已加载条目"), String(chat.session.timeline.count))
-                        row(String(localized: "待回应交互"), String(chat.session.notices.notices.filter { $0.isVisible && $0.notice.type == "interaction" }.count))
+                    SettingsSection(String(localized: "标识与时间线")) {
+                        infoRow(String(localized: "Session ID"), meta.id)
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "外部 Session ID"), meta.externalSessionId ?? String(localized: "无"))
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "已加载条目"), String(chat.session.timeline.count))
+                        SettingsRowDivider(leading: SettingsStyle.rowPadding)
+                        infoRow(String(localized: "待回应交互"), String(chat.session.notices.notices.filter { $0.isVisible && $0.notice.type == "interaction" }.count))
                     }
-                    Section {
-                        Button { exportRequest = "memory" } label: { Label(String(localized: "导出已加载时间线 JSON"), appSymbol: "square.and.arrow.up") }
-                            .disabled(exportRequest != nil)
-                        Button { exportRequest = "remote" } label: { Label(String(localized: "导出服务器时间线 JSON"), appSymbol: "arrow.down.document") }
-                            .disabled(exportRequest != nil || chat.session.network.availability == .offline)
+                    SettingsSection {
+                        SettingsDisclosureRow(icon: "arrow.up.right.square",
+                                              title: String(localized: "导出已加载时间线 JSON"),
+                                              showsChevron: false,
+                                              isEnabled: exportRequest == nil) {
+                            exportRequest = "memory"
+                        }
+                        SettingsRowDivider()
+                        SettingsDisclosureRow(icon: "arrow.down.document",
+                                              title: String(localized: "导出服务器时间线 JSON"),
+                                              showsChevron: false,
+                                              isEnabled: exportRequest == nil && chat.session.network.availability != .offline) {
+                            exportRequest = "remote"
+                        }
                         if exportRequest != nil {
-                            HStack { ProgressView(); Text(String(localized: "正在准备导出…")); Spacer(); Button(String(localized: "取消")) { exportRequest = nil } }
+                            SettingsRowDivider()
+                            SettingsRowContainer(verticalPadding: 12) {
+                                HStack(spacing: 12) {
+                                    ProgressView()
+                                    Text(String(localized: "正在准备导出…"))
+                                        .font(SettingsStyle.text(16))
+                                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                                    Spacer(minLength: 8)
+                                    Button(String(localized: "取消")) { exportRequest = nil }
+                                        .font(SettingsStyle.text(16))
+                                }
+                            }
                         }
                     }
                 }
-                if let error { Section { Text(error).foregroundStyle(.secondary) } }
+                if let error {
+                    SettingsSection {
+                        SettingsRowContainer {
+                            Text(error)
+                                .font(SettingsStyle.text(15))
+                                .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
             }
-            .navigationTitle(String(localized: "会话详情")).navigationBarTitleDisplayMode(.inline)
-            .toolbar { SheetCloseToolbar { dismiss() } }
         }
         .appSheetPresentation(.expanded)
         .task(id: exportRequest) {
@@ -71,8 +110,21 @@ struct SessionDetailsSheet: View {
             document = nil
         }
     }
-    private func row(_ title: String, _ value: String) -> some View {
-        LabeledContent(title) { Text(value).textSelection(.enabled).font(.subheadline).multilineTextAlignment(.trailing) }
+
+    private func infoRow(_ title: String, _ value: String) -> some View {
+        SettingsRowContainer {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(SettingsStyle.text(16))
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                Spacer(minLength: 8)
+                Text(value)
+                    .font(SettingsStyle.text(16))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+            }
+        }
     }
 }
 
@@ -80,7 +132,18 @@ private struct TimelineJSONDocument: FileDocument {
     static let readableContentTypes: [UTType] = [.json]
     let data: Data
     let name: String
-    init(data: Data, name: String) { self.data = data; self.name = name }
-    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data(); name = "timeline" }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+
+    init(data: Data, name: String) {
+        self.data = data
+        self.name = name
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+        name = "timeline"
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
 }

@@ -323,7 +323,7 @@ private struct ContextUsageGroups: View {
     private func group<Content: View>(
         _ title: String,
         tokens: Int,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) { content() }

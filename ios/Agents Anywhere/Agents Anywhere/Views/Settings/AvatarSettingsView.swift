@@ -31,7 +31,7 @@ struct AvatarSettingsView: View {
                             .frame(width: SettingsStyle.iconFrame)
                             .foregroundStyle(SettingsStyle.icon(colorScheme))
                         Text(String(localized: "Choose photo"))
-                            .font(.system(size: 17))
+                            .font(SettingsStyle.text(16))
                             .foregroundStyle(SettingsStyle.ink(colorScheme))
                         Spacer(minLength: 8)
                     }
@@ -61,7 +61,7 @@ struct AvatarSettingsView: View {
                             AppSymbol("trash", size: 18)
                                 .frame(width: SettingsStyle.iconFrame)
                             Text(String(localized: "Remove profile photo"))
-                                .font(.system(size: 17))
+                                .font(SettingsStyle.text(16))
                             Spacer(minLength: 0)
                         }
                         .foregroundStyle(.red)

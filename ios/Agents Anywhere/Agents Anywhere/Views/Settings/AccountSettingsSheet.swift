@@ -85,10 +85,10 @@ struct AccountSettingsSheet: View {
                               source: appState.accountAvatarSource, size: 36)
             VStack(alignment: .leading, spacing: 3) {
                 Text(me.accountLabel)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(SettingsStyle.text(16, weight: .semibold))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(detail)
-                    .font(.system(size: 15))
+                    .font(SettingsStyle.text(15))
                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -197,7 +197,7 @@ struct AccountSettingsSheet: View {
                     AppSymbol("rectangle.portrait.and.arrow.forward", size: 18)
                         .frame(width: SettingsStyle.iconFrame)
                     Text(String(localized: "Sign out"))
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(.red)

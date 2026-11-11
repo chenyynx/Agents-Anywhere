@@ -49,7 +49,7 @@ struct DiagnosticsLogSettingsView: View {
                 } else if days.isEmpty {
                     SettingsRowContainer {
                         Text(String(localized: "No diagnostics yet"))
-                            .font(.system(size: 17))
+                            .font(SettingsStyle.text(16))
                             .foregroundStyle(SettingsStyle.secondary(colorScheme))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -71,7 +71,7 @@ struct DiagnosticsLogSettingsView: View {
                         AppSymbol("trash", size: 18)
                             .frame(width: SettingsStyle.iconFrame)
                         Text(String(localized: "Clear diagnostics"))
-                            .font(.system(size: 17))
+                            .font(SettingsStyle.text(16))
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.red)
@@ -137,7 +137,7 @@ struct DiagnosticsLogSettingsView: View {
                     .frame(width: SettingsStyle.iconFrame)
                     .foregroundStyle(SettingsStyle.icon(colorScheme))
                 Text(day.fileURL.lastPathComponent)
-                    .font(.system(size: 17))
+                    .font(SettingsStyle.text(16))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -148,7 +148,7 @@ struct DiagnosticsLogSettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Text(DiagnosticsFormat.bytes(day.size))
-                    .font(.system(size: 15))
+                    .font(SettingsStyle.text(15))
                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))

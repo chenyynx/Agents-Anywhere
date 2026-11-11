@@ -53,7 +53,7 @@ struct SettingsServerView: View {
                                 UIPasteboard.general.string = url.absoluteString
                             } label: {
                                 Label(String(localized: "Copy server address"), appSymbol: "doc.on.doc")
-                                    .font(.system(size: 15))
+                                    .font(SettingsStyle.text(15))
                                     .foregroundStyle(SettingsStyle.controlTint(colorScheme))
                             }
                             .buttonStyle(.plain)
@@ -65,7 +65,7 @@ struct SettingsServerView: View {
             if let error = appState.restoreConnectionError {
                 SettingsSection {
                     Text(error)
-                        .font(.system(size: 15))
+                        .font(SettingsStyle.text(15))
                         .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(SettingsStyle.rowPadding)

@@ -34,18 +34,18 @@ struct CacheSettingsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
                             Text(String(localized: "Used"))
-                                .font(.system(size: 17))
+                                .font(SettingsStyle.text(16))
                                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                             Spacer(minLength: 8)
                             Text(usageText)
-                                .font(.system(size: 17))
+                                .font(SettingsStyle.text(16))
                                 .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         }
                         ProgressView(value: progress)
                             .tint(SettingsStyle.controlTint(colorScheme))
                         if let usage {
                             Text(String(localized: "\(usage.sessions) sessions cached"))
-                                .font(.system(size: 13))
+                                .font(SettingsStyle.text(13))
                                 .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         }
                     }
@@ -80,7 +80,7 @@ struct CacheSettingsView: View {
                         AppSymbol("trash", size: 18)
                             .frame(width: SettingsStyle.iconFrame)
                         Text(String(localized: "Clear cache"))
-                            .font(.system(size: 17))
+                            .font(SettingsStyle.text(16))
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.red)

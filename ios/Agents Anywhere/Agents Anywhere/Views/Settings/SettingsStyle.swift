@@ -17,6 +17,15 @@ nonisolated enum SettingsStyle {
     static let sectionGap: CGFloat = 24
     static let headerGap: CGFloat = 8
 
+    /// The official UI face (the same one the Code page uses). CJK falls back
+    /// to the system face at the same point size, which is why the sampled
+    /// sizes below read smaller than the SF-numbers they replace.
+    static let fontName = "AnthropicSansMobileVariable-TextRegular"
+
+    static func text(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom(fontName, size: size, relativeTo: .body).weight(weight)
+    }
+
     static func background(_ scheme: ColorScheme) -> Color {
         AppTheme.composerSheetBackground(scheme)
     }
@@ -114,7 +123,7 @@ struct SettingsSection<Content: View>: View {
         VStack(alignment: .leading, spacing: SettingsStyle.headerGap) {
             if let header {
                 Text(header)
-                    .font(.system(size: 15))
+                    .font(SettingsStyle.text(14))
                     .foregroundStyle(SettingsStyle.header(colorScheme))
                     .padding(.leading, 2)
             }
@@ -125,7 +134,7 @@ struct SettingsSection<Content: View>: View {
                         in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius, style: .continuous))
             if let footer {
                 Text(footer)
-                    .font(.system(size: 13))
+                    .font(SettingsStyle.text(12))
                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 4)
@@ -147,23 +156,23 @@ struct SettingsRowLabelContent: View {
 
     var body: some View {
         HStack(spacing: SettingsStyle.iconGap) {
-            AppSymbol(icon, size: 18)
+            AppSymbol(icon, size: 17)
                 .frame(width: SettingsStyle.iconFrame)
                 .foregroundStyle(SettingsStyle.icon(colorScheme))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 17))
+                    .font(SettingsStyle.text(16))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 15))
+                        .font(SettingsStyle.text(15))
                         .foregroundStyle(SettingsStyle.secondary(colorScheme))
                 }
             }
             Spacer(minLength: 8)
             if let value, !value.isEmpty {
                 Text(value)
-                    .font(.system(size: 17))
+                    .font(SettingsStyle.text(16))
                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -240,16 +249,16 @@ struct SettingsToggleRow: View {
     var body: some View {
         Toggle(isOn: $isOn) {
             HStack(spacing: SettingsStyle.iconGap) {
-                AppSymbol(icon, size: 18)
+                AppSymbol(icon, size: 17)
                     .frame(width: SettingsStyle.iconFrame)
                     .foregroundStyle(SettingsStyle.icon(colorScheme))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
-                            .font(.system(size: 15))
+                            .font(SettingsStyle.text(15))
                             .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     }
                 }
@@ -286,17 +295,17 @@ struct SettingsSelectRow: View {
                         .frame(width: 22, height: 22)
                         .frame(width: SettingsStyle.iconFrame)
                 } else if let icon {
-                    AppSymbol(icon, size: 18)
+                    AppSymbol(icon, size: 17)
                         .frame(width: SettingsStyle.iconFrame)
                         .foregroundStyle(SettingsStyle.icon(colorScheme))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
-                            .font(.system(size: 15))
+                            .font(SettingsStyle.text(15))
                             .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     }
                 }

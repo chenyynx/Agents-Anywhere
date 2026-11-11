@@ -22,7 +22,7 @@ struct AppearanceSettingsView: View {
                             VStack(spacing: 8) {
                                 AppearancePreviewTile(appearance: appearance, isSelected: isSelected)
                                 Text(appearance.title)
-                                    .font(.system(size: 13))
+                                    .font(SettingsStyle.text(13))
                                     .foregroundStyle(isSelected
                                                      ? SettingsStyle.controlTint(colorScheme)
                                                      : SettingsStyle.secondary(colorScheme))

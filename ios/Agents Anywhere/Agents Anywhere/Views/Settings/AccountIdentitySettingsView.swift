@@ -30,7 +30,7 @@ struct AccountIdentitySettingsView: View {
                         .textContentType(mode == .nickname ? .nickname : .emailAddress)
                         .keyboardType(mode == .email ? .emailAddress : .default)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .onChange(of: draft.text) { _, _ in draft.code = ""; codeSent = false }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,7 +65,7 @@ struct AccountIdentitySettingsView: View {
                         SettingsRowContainer(verticalPadding: 14) {
                             TextField(String(localized: "Email verification code"), text: $draft.code)
                                 .textContentType(.oneTimeCode).keyboardType(.numberPad)
-                                .font(.system(size: 17))
+                                .font(SettingsStyle.text(16))
                                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                                 .onChange(of: draft.code) { _, _ in draft.code = String(draft.code.filter(\.isNumber).prefix(6)) }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,7 +83,7 @@ struct AccountIdentitySettingsView: View {
                             SettingsRowDivider()
                             SettingsRowContainer {
                                 Text(String(localized: "Code sent. Check your inbox."))
-                                    .font(.system(size: 15))
+                                    .font(SettingsStyle.text(15))
                                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }

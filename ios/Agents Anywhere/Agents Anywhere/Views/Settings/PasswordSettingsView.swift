@@ -13,7 +13,7 @@ struct PasswordSettingsView: View {
                 SettingsRowContainer(verticalPadding: 14) {
                     SecureField(String(localized: "New password"), text: $draft.password)
                         .textContentType(.newPassword)
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -23,7 +23,7 @@ struct PasswordSettingsView: View {
                 SettingsRowContainer(verticalPadding: 14) {
                     SecureField(String(localized: "Confirm password"), text: $draft.confirmation)
                         .textContentType(.newPassword)
-                        .font(.system(size: 17))
+                        .font(SettingsStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

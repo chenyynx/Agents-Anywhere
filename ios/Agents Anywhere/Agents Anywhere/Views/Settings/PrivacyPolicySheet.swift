@@ -48,7 +48,7 @@ struct PrivacyPolicyContent: View {
                         AppSymbol("arrow.up.right", size: 18)
                             .frame(width: SettingsStyle.iconFrame)
                         Text(String(localized: "privacyPolicy.projectSupport"))
-                            .font(.system(size: 17))
+                            .font(SettingsStyle.text(16))
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(SettingsStyle.controlTint(colorScheme))
@@ -64,7 +64,7 @@ struct PrivacyPolicyContent: View {
     private func paragraph(_ text: LocalizedStringResource) -> some View {
         SettingsRowContainer(verticalPadding: 16) {
             Text(text)
-                .font(.system(size: 15))
+                .font(SettingsStyle.text(15))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)

@@ -50,6 +50,7 @@ Current backend state:
 | Session capabilities | `GET /api/v2/sessions/{sessionId}/runtime/capabilities` | exists | Keep. Verify frontend uses this for action availability. |
 | Session model catalog | `GET /api/v2/sessions/{sessionId}/runtime/catalogs/model` | exists | Keep as a session path to the runtime-level live catalog for existing session selectors. |
 | Session permission catalog | `GET /api/v2/sessions/{sessionId}/runtime/catalogs/permission` | exists | Keep as a session path to the runtime-level live catalog for existing session selectors. |
+| Session context usage | `GET /api/v2/sessions/{sessionId}/runtime/context-usage?detail=summary\|full` | exists | Keep. Runtime live fact; `summary` feeds the session toolbar ring, `full` feeds the sheet's breakdown. |
 | Runtime model catalog | `GET /api/v2/connectors/{connectorId}/runtimes/{runtimeId}/catalogs/model` | exists | Keep for setup/new-session UI. |
 | Runtime permission catalog | `GET /api/v2/connectors/{connectorId}/runtimes/{runtimeId}/catalogs/permission` | exists | Keep for setup/new-session UI. |
 | Runtime capabilities | `GET /api/v2/connectors/{connectorId}/runtimes/{runtimeId}/capabilities` | exists | Keep for dashboard/setup UI. |

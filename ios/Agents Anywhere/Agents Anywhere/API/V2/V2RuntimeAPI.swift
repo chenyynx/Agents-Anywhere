@@ -5,6 +5,7 @@ protocol V2RuntimeAPIProtocol {
     func capabilities(sessionId: V2SessionID) async throws -> V2RuntimeCapabilityResponse
     func modelCatalog(sessionId: V2SessionID) async throws -> V2ModelCatalogResponse
     func permissionCatalog(sessionId: V2SessionID) async throws -> V2PermissionCatalogResponse
+    func contextUsage(sessionId: V2SessionID, detail: V2ContextUsageDetail) async throws -> V2ContextUsageResponse
     func updateSelections(sessionId: V2SessionID, request: V2RuntimeSelectionUpdateRequest) async throws -> V2RuntimeSelectionUpdateResponse
     func commands(sessionId: V2SessionID) async throws -> V2RuntimeCommandListResponse
     func executeCommand(sessionId: V2SessionID, request: V2RuntimeCommandExecuteRequest) async throws -> V2RuntimeCommandExecuteResponse
@@ -33,6 +34,21 @@ struct V2RuntimeAPI: V2RuntimeAPIProtocol {
 
     func permissionCatalog(sessionId: V2SessionID) async throws -> V2PermissionCatalogResponse {
         try await get(sessionId: sessionId, suffix: "catalogs/permission")
+    }
+
+    /// The runtime's own context-window answer. `detail=summary` is the cheap
+    /// read the ring uses; `detail=full` runs the runtime's per-category
+    /// counting pass and is asked for only when the sheet opens.
+    func contextUsage(
+        sessionId: V2SessionID,
+        detail: V2ContextUsageDetail
+    ) async throws -> V2ContextUsageResponse {
+        let request = HTTPRequest<EmptyRequestBody, V2ContextUsageResponse>(
+            method: .get,
+            path: runtimePath(sessionId, suffix: "context-usage"),
+            queryItems: [URLQueryItem(name: "detail", value: detail.rawValue)]
+        )
+        return try await transport.send(request)
     }
 
     func updateSelections(

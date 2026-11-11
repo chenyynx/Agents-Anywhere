@@ -66,6 +66,14 @@
     },
     {
       "direction": "egress",
+      "model": "ProtocolContextUsageResponse",
+      "path": "schemas/context-usage-response.schema.json",
+      "pydanticMode": "serialization",
+      "sha256": "5f0b65015292f35fc512789d8392c71bb190f99f2939b75e2232e3f7003c4b0c",
+      "slug": "context-usage-response"
+    },
+    {
+      "direction": "egress",
       "model": "ProtocolSessionSnapshotResponse",
       "path": "schemas/session-snapshot-response.schema.json",
       "pydanticMode": "serialization",

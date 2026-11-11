@@ -13,12 +13,14 @@ from connector.runtime_protocol import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeIdentity,
     RuntimeModelCatalog,
     RuntimeOperationResult,
     RuntimePermissionCatalog,
     RuntimeSessionStateCache,
     RuntimeTimelineSnapshot,
+    RuntimeUnavailableError,
     RuntimeUnsupportedError,
     SessionMeta,
     SessionNotice,
@@ -26,6 +28,7 @@ from connector.runtime_protocol import (
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
+from connector.runtimes.context_usage_cache import ContextUsageCache
 from connector.runtimes.claude.domain.capabilities import (
     ClaudeCapabilityContext,
     claude_runtime_capabilities,
@@ -101,6 +104,7 @@ class ClaudeRuntime(AgentRuntime):
         self._session_store = ClaudeSessionStore(self._sessions)
         self._session_sync_states = ClaudeSessionSyncStateStore(self.host)
         self._session_bindings = ClaudeSessionBindingStore(self.host)
+        self._context_usage_cache = ContextUsageCache(self.host, "claude")
         self._pending_messages = ClaudePendingClientMessageRegistry(
             connector_id=getattr(
                 self.host,
@@ -218,6 +222,41 @@ class ClaudeRuntime(AgentRuntime):
     ) -> RuntimePermissionCatalog:
         return await self._catalogs.list_permission_catalog(query=query, limit=limit)
 
+    async def get_session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        """Live answer first, durable last-known summary second.
+
+        The ring must survive a connector restart or a retired transport, so a
+        failed live read falls back to the persisted snapshot (marked cached)
+        instead of hiding the surface. Only a session that has never answered
+        raises.
+        """
+
+        try:
+            usage = await self._turns.session_context_usage(
+                session_id, detail=detail
+            )
+        except RuntimeUnsupportedError as exc:
+            if exc.method != "session_disconnected":
+                raise
+            return await self._cached_context_usage(session_id)
+        except RuntimeUnavailableError:
+            return await self._cached_context_usage(session_id)
+        await self._context_usage_cache.write(session_id, usage)
+        return usage
+
+    async def _cached_context_usage(
+        self,
+        session_id: str,
+    ) -> RuntimeContextUsage:
+        cached = await self._context_usage_cache.read(session_id)
+        if cached is None:
+            raise RuntimeUnavailableError("context_usage_unavailable")
+        return cached
+
     async def bind_external_session(
         self,
         external_session_id: str,
@@ -301,6 +340,7 @@ class ClaudeRuntime(AgentRuntime):
                 ),
                 has_active_turn=claude_state_has_active_execution(state),
                 **self._subagent_control_context(session_id),
+                **self._context_usage_context(),
             )
         )
 
@@ -323,6 +363,7 @@ class ClaudeRuntime(AgentRuntime):
                     ),
                     has_active_turn=claude_state_has_active_execution(state),
                     **self._subagent_control_context(state.session_id),
+                    **self._context_usage_context(),
                 )
             )
         )
@@ -341,6 +382,11 @@ class ClaudeRuntime(AgentRuntime):
             "subagent_control_supported": self._turns.subagent_control_supported(),
             "connection_online": self._turns.has_live_connection(session_id),
         }
+
+    def _context_usage_context(self) -> dict[str, bool]:
+        """The SDK fact behind ``session.context_usage`` support."""
+
+        return {"context_usage_supported": self._turns.context_usage_supported()}
 
     def _session_binding(
         self,

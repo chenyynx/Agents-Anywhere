@@ -22,6 +22,7 @@ from loguru import logger
 from starlette.requests import HTTPConnection
 
 from agent_server.api.connector_runtimes import (
+    parse_runtime_context_usage_response,
     parse_runtime_model_catalog_response,
     parse_runtime_permission_catalog_response,
 )
@@ -67,6 +68,7 @@ from agent_server.core.models import (
 from agent_server.core.protocol import (
     ProtocolCapabilitiesResponse,
     ProtocolCapabilitySet,
+    ProtocolContextUsageResponse,
     ProtocolEventRecoveryResponse,
     ProtocolModelCatalogResponse,
     ProtocolPermissionCatalogResponse,
@@ -811,6 +813,36 @@ async def session_runtime_permission_catalog(
     )
     return ProtocolPermissionCatalogResponse(
         catalog=parse_runtime_permission_catalog_response(result),
+        serverTime=utc_now(),
+    )
+
+
+@router.get(
+    "/{session_id}/runtime/context-usage",
+    response_model=ProtocolContextUsageResponse,
+)
+async def session_runtime_context_usage(
+    session_id: str,
+    detail: str = Query(default="summary", pattern="^(summary|full)$"),
+    user_id: str = Depends(current_user_id),
+    db: Store = Depends(get_store),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+    device_runtimes: DeviceRuntimeService = Depends(get_device_runtime_service),
+) -> ProtocolContextUsageResponse:
+    try:
+        session = await db.get_session(session_id, user_id=user_id)
+        await device_runtimes.ensure_active_running(
+            session.connectorId,
+            _session_runtime_id(session),
+            user_id=user_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found") from None
+    except DeviceRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    result = await request_session_context_usage(manager, session, detail=detail)
+    return ProtocolContextUsageResponse(
+        usage=parse_runtime_context_usage_response(result),
         serverTime=utc_now(),
     )
 
@@ -2275,6 +2307,39 @@ async def request_session_runtime_catalog(
                 "runtime": session.runtime,
                 "runtimeId": _session_runtime_id(session),
                 "limit": limit,
+            },
+            timeout=30,
+        )
+    except ConnectorOfflineError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ConnectorRpcError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": exc.code, "message": exc.message or exc.code},
+        ) from exc
+
+
+async def request_session_context_usage(
+    manager: ConnectorRpcManager,
+    session: SessionView,
+    *,
+    detail: str,
+) -> Any:
+    """Ask the session's runtime for its context-window usage.
+
+    Side effects:
+    - sends a connector RPC request to the session's owning runtime.
+    """
+
+    try:
+        return await manager.request(
+            session.connectorId,
+            "session.contextUsage",
+            {
+                "sessionId": session.id,
+                "runtime": session.runtime,
+                "runtimeId": _session_runtime_id(session),
+                "detail": detail,
             },
             timeout=30,
         )

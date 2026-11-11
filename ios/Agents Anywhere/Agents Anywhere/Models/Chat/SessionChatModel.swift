@@ -439,94 +439,94 @@ final class SessionChatModel {
 
     // MARK: Context usage
 
-    /// The composer ring's published state (context-usage-ring §1.2): the
-    /// newest carrier's per-call usage over the selected model's window. It is
-    /// `.hidden` until a real measurement lands — the ring then shows the arc
-    /// when the window is known, or the unknown state while a gateway model's
-    /// window is still unknown, rather than vanishing. codex / dsh sessions
-    /// never fill it.
-    private(set) var contextUsage: ContextRingState = .hidden
-    /// Catalog windows for this page visit; nil until the (retrying) read lands.
-    @ObservationIgnored private var contextWindows: ContextWindowIndex?
-    /// Uptime of the last catalog attempt, pacing the failed-read retry.
-    @ObservationIgnored private var lastContextWindowAttempt: TimeInterval = 0
-    /// The newest recomputed value, waiting for its publish slot.
-    @ObservationIgnored private var stagedContextUsage: ContextRingState = .hidden
-    /// Uptime of the last publish — the anchor of the 4 Hz cadence.
-    @ObservationIgnored private var lastContextUsagePublish: TimeInterval = 0
-    /// Publish cap: one per 250 ms, with the final value landed afterwards.
-    private static let contextUsageInterval: TimeInterval = 0.25
-    /// A failed catalog read waits at least this long before retrying.
-    private static let contextWindowRetryInterval: TimeInterval = 5
+    /// The runtime's latest context-window answer (live, or the connector's
+    /// durable last-known summary served as `.cache`). `nil` until a read
+    /// lands. Detail lists are present only when the runtime reports them
+    /// (codex answers summary-only).
+    private(set) var contextUsage: V2ContextUsage?
+    /// The client-side estimate from the loaded timeline — the ring's
+    /// last-resort fallback for a cold session, an offline connector, or a
+    /// runtime that cannot answer. Same data the old composer ring read.
+    private(set) var estimatedContextUsage: V2ContextUsage?
+    /// What the ring and sheet render: live (or cached) first, estimate second.
+    var displayedContextUsage: V2ContextUsage? {
+        contextUsage ?? estimatedContextUsage
+    }
+    /// A read is in flight; the sheet shows its spinner from this.
+    private(set) var isRefreshingContextUsage = false
+    /// The last read failure. The ring keeps its previous value; the sheet
+    /// surfaces this next to the refresh control.
+    private(set) var contextUsageError: String?
+    /// Newest ask wins: a sheet's `full` read supersedes a summary still in
+    /// flight from the page-open trigger instead of being dropped.
+    @ObservationIgnored private var contextUsageRequest: UUID?
+    /// Selected model's catalog window, read once per page for the estimate.
+    @ObservationIgnored private var catalogWindowForEstimate: Int?
+    @ObservationIgnored private var didReadEstimateCatalog = false
 
-    /// The ring's pipeline. Mirrors `SessionTimelinePresentation.run`: it runs
-    /// for the page visit, recomputes on every observation, and publishes
-    /// through a coalescing loop — at most four times a second, the trailing
-    /// wake guaranteeing the newest value is never lost. The catalog is read
-    /// once up front and retried on later observations until it lands.
-    func runContextUsage(sessionID: V2SessionID) async {
-        await refreshContextWindows(sessionID: sessionID, force: true)
-        guard !Task.isCancelled else { return }
-        let signal = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        defer { signal.continuation.finish() }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { @MainActor [weak self] in
-                guard let self else { return }
-                defer { signal.continuation.finish() }
-                for await observation in self.repository.observe(sessionId: sessionID) {
-                    guard !Task.isCancelled else { return }
-                    await self.receiveContextUsage(observation, sessionID: sessionID)
-                    signal.continuation.yield(())
-                }
+    /// Whether this session's runtime advertises the capability at all.
+    var supportsContextUsage: Bool {
+        guard let capability = session.runtime.capabilities?
+            .capability(id: "session.context_usage") else { return false }
+        return capability.supported && capability.available && capability.allowed
+    }
+
+    /// The live ask: `summary` for the ring's refresh points (page open, turn
+    /// end), `full` when the sheet opens — the runtime's own per-category
+    /// counting pass, which is more expensive and only worth it there.
+    func refreshContextUsage(
+        sessionID: V2SessionID,
+        detail: V2ContextUsageDetail = .summary
+    ) async {
+        if supportsContextUsage {
+            let request = UUID()
+            contextUsageRequest = request
+            isRefreshingContextUsage = true
+            defer {
+                if contextUsageRequest == request { isRefreshingContextUsage = false }
             }
-            group.addTask { @MainActor [weak self] in
-                for await _ in signal.stream {
-                    guard !Task.isCancelled, let self else { return }
-                    await self.publishContextUsage()
-                }
+            do {
+                let usage = try await repository.contextUsage(
+                    sessionId: sessionID,
+                    usageDetail: detail
+                )
+                guard session.isValid, contextUsageRequest == request else { return }
+                contextUsage = usage
+                contextUsageError = nil
+                estimatedContextUsage = nil
+                return
+            } catch {
+                guard contextUsageRequest == request else { return }
+                // Keep the last good reading; the estimate below keeps the
+                // ring visible and the next trigger retries.
+                contextUsageError = String(localized: "读取上下文用量失败")
             }
-            await group.waitForAll()
+        } else {
+            contextUsageError = nil
         }
+        await refreshEstimatedContextUsage(sessionID: sessionID)
     }
 
-    /// One observation's recompute. A missing catalog read is retried here —
-    /// throttled — until it lands; until then every recompute resolves nil.
-    private func receiveContextUsage(_ observation: V2SessionObservation, sessionID: V2SessionID) async {
-        if contextWindows == nil {
-            await refreshContextWindows(sessionID: sessionID)
+    /// The fallback half: newest timeline usage over the window it reports
+    /// (catalog window when the row lacks one). The catalog read happens once
+    /// per page and a failure simply leaves the window to the row itself.
+    private func refreshEstimatedContextUsage(sessionID: V2SessionID) async {
+        if !didReadEstimateCatalog {
+            didReadEstimateCatalog = true
+            if let catalogs = try? await repository.catalogs(
+                sessionId: sessionID,
+                capabilities: session.runtime.capabilities
+            ) {
+                catalogWindowForEstimate = ContextUsageEstimate.catalogWindow(
+                    catalogs,
+                    selection: currentSelections[.model]
+                )
+            }
         }
-        guard let data = observation.data else { return }
-        stagedContextUsage = ContextRingState.resolve(items: data.items, windows: contextWindows,
-            selection: currentSelections[.model])
-    }
-
-    /// Reads the model catalog and builds the selection → window index. A
-    /// failure keeps the index nil (the ring hides) and the throttle paces the
-    /// next attempt; a success is final for the page visit.
-    private func refreshContextWindows(sessionID: V2SessionID, force: Bool = false) async {
-        let now = ProcessInfo.processInfo.systemUptime
-        if !force, now - lastContextWindowAttempt < Self.contextWindowRetryInterval { return }
-        lastContextWindowAttempt = now
-        do {
-            let catalogs = try await repository.catalogs(sessionId: sessionID, capabilities: session.runtime.capabilities)
-            guard session.isValid, !Task.isCancelled else { return }
-            contextWindows = ContextWindowIndex(catalogs)
-        } catch {
-            // The ring stays hidden; the throttle paces the next attempt.
-        }
-    }
-
-    /// The coalescing half: every wake waits out the 4 Hz slot and then lands
-    /// the newest staged value, so a burst of frames costs one publish and
-    /// still delivers its final value on the trailing wake.
-    private func publishContextUsage() async {
-        let wait = lastContextUsagePublish + Self.contextUsageInterval - ProcessInfo.processInfo.systemUptime
-        if wait > 0 {
-            do { try await Task.sleep(for: .seconds(wait)) } catch { return }
-        }
-        guard !Task.isCancelled else { return }
-        if contextUsage != stagedContextUsage { contextUsage = stagedContextUsage }
-        lastContextUsagePublish = ProcessInfo.processInfo.systemUptime
+        estimatedContextUsage = ContextUsageEstimate.resolve(
+            items: timeline.rows.map(\.value),
+            catalogWindow: catalogWindowForEstimate
+        )
     }
 
     // MARK: Send queue

@@ -987,6 +987,17 @@ final class V2SessionRepository {
         return try await task.value
     }
 
+    /// The runtime's own context-window answer. Deliberately uncached: every
+    /// caller is a fresh measurement point (page open, turn end, sheet open,
+    /// refresh), and a cached number would read as stale exactly there.
+    func contextUsage(
+        sessionId: V2SessionID,
+        usageDetail: V2ContextUsageDetail = .summary
+    ) async throws -> V2ContextUsage {
+        try requireNetwork()
+        return try await detail.contextUsage(sessionId: sessionId, detail: usageDetail)
+    }
+
     /// The command catalog is read once per live connection; it is dropped with
     /// the option catalogs when the connection stops or selections change.
     func commands(sessionId: V2SessionID, force: Bool = false) async throws -> [V2RuntimeCommand] {

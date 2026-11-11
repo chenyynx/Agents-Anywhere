@@ -42,6 +42,7 @@ CAPABILITY_CATALOG_MODEL = "catalog.model"
 CAPABILITY_CATALOG_PERMISSION = "catalog.permission"
 CAPABILITY_CATALOG_EFFORT = "catalog.effort"
 CAPABILITY_SESSION_COMMANDS = "session.commands"
+CAPABILITY_SESSION_CONTEXT_USAGE = "session.context_usage"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,69 @@ class RuntimePermissionCatalog:
     runtime: str
     revision: int
     permissions: tuple[RuntimePermissionItem, ...]
+    runtime_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsageCategory:
+    """One row of the runtime's context-window breakdown."""
+
+    name: str
+    tokens: int
+    kind: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsageMcpTool:
+    name: str
+    server_name: str
+    tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsageMemoryFile:
+    path: str
+    tokens: int
+    type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsageAgent:
+    agent_type: str
+    tokens: int
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsageSkill:
+    name: str
+    tokens: int
+    source: str | None = None
+    plugin_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextUsage:
+    """A runtime's own answer for the context window in use.
+
+    ``categories`` and the grouped detail lists are optional: runtimes that can
+    only report a used/max pair (codex today) leave them empty, and clients
+    render the summary without a breakdown.
+    """
+
+    runtime: str
+    total_tokens: int
+    model: str | None = None
+    max_tokens: int | None = None
+    percentage: float | None = None
+    detail: str = "summary"
+    source: str = "runtime"
+    measured_at: str | None = None
+    categories: tuple[RuntimeContextUsageCategory, ...] = ()
+    mcp_tools: tuple[RuntimeContextUsageMcpTool, ...] = ()
+    memory_files: tuple[RuntimeContextUsageMemoryFile, ...] = ()
+    agents: tuple[RuntimeContextUsageAgent, ...] = ()
+    skills: tuple[RuntimeContextUsageSkill, ...] = ()
     runtime_id: str | None = None
 
 

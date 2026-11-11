@@ -16,11 +16,13 @@ from connector.server.runtime_rpc_params import (
     RuntimeCatalogParams,
     RuntimeConfigParams,
     RuntimeIdParams,
+    SessionContextUsageParams,
     SessionReadParams,
     scoped_runtime,
 )
 from connector.server.runtime_rpc_payloads import (
     capability_set_payload,
+    context_usage_payload,
     model_catalog_payload,
     permission_catalog_payload,
     runtime_config_payload,
@@ -69,6 +71,7 @@ class RuntimeRpcHandler:
         "session.sync",
         "session.state",
         "session.capabilities",
+        "session.contextUsage",
         "session.notices",
         "session.selections.update",
         "session.commands",
@@ -222,6 +225,17 @@ class RuntimeRpcHandler:
             return self._runtime_result(
                 runtime,
                 await read_session_capabilities(runtime, params),
+            )
+        if method == "session.contextUsage":
+            runtime = self._resolve_agent_runtime(params)
+            parsed = SessionContextUsageParams.parse(params)
+            usage = await runtime.get_session_context_usage(
+                parsed.session_id,
+                detail=parsed.detail,
+            )
+            return self._runtime_result(
+                runtime,
+                {"usage": context_usage_payload(usage)},
             )
         if method == "session.notices":
             runtime = self._resolve_agent_runtime(params)

@@ -43,6 +43,7 @@ session.steer
 session.interrupt
 session.subagent_control
 session.commands
+session.context_usage
 session.interaction.approval
 catalog.model
 catalog.effort
@@ -62,6 +63,28 @@ busy gating lives in the catalog instead, where each command carries its own
 `disabledReason` (`session_unloaded`, `session_<status>`, ...). Those strings are
 what clients translate and fallback to verbatim, so runtimes report only tokens
 from the shared vocabulary here rather than inventing per-runtime reasons.
+
+### `session.context_usage`
+
+`session.context_usage` answers one question: can this session's runtime report
+its current context-window usage through
+`GET /sessions/{sessionId}/runtime/context-usage?detail=summary|full`?
+
+- `supported`: the runtime's SDK exposes the context-usage control. Claude
+  sessions report true only when the bundled Agent SDK exposes
+  `get_context_usage`; Codex sessions report true because the runtime captures
+  `thread/tokenUsage/updated`. DSH does not declare it.
+- `available`: the runtime can answer at all. This is deliberately not
+  connection-gated: a session whose transport is gone still answers from the
+  durable last-known summary (marked `source: <runtime>.cache`, `detail:
+  cached`), so the ring survives connector restarts and cold page opens.
+  `metadata.live` says whether the next read is a fresh measurement.
+- `metadata.breakdown`: whether the answer carries per-category rows and
+  grouped detail lists. Claude reports `true`; Codex reports `false` and
+  clients render the summary without a breakdown section.
+- `metadata.detailLevels`: the accepted `detail` values. `summary` answers from
+  the last response and local estimates; `full` runs the runtime's
+  per-category counting pass. Both are optional hints.
 
 ### `session.subagent_control`
 

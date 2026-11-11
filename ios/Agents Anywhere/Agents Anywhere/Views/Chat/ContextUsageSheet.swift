@@ -1,0 +1,338 @@
+import SwiftUI
+
+/// The session toolbar's context-window ring — the official Code page carries
+/// this beside the overflow menu. A 21 pt ring, 3 pt stroke, arc from twelve
+/// o'clock clockwise over a light track. The colour follows the usage level:
+/// normal is the official blue sampled from the 1.261023 build's screenshot;
+/// warning / critical reuse the app's amber / red severity palette.
+struct ContextUsageRing: View {
+    let usage: V2ContextUsage
+    var diameter: CGFloat = 21
+    var lineWidth: CGFloat = 3
+
+    private var fraction: Double { usage.fraction ?? 0 }
+    private var tint: Color { Self.tint(forPercent: usage.percentUsed ?? 0) }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.22), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: max(fraction, 0.02))
+                .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: diameter, height: diameter)
+        .animation(.smooth(duration: 0.35), value: fraction)
+        .animation(.smooth(duration: 0.35), value: tint)
+        .accessibilityHidden(true)
+    }
+
+    static func tint(forPercent percent: Int) -> Color {
+        if percent < 75 {
+            return Color(red: 33 / 255, green: 86 / 255, blue: 162 / 255)
+        }
+        if percent < 90 {
+            return Color(red: 239 / 255, green: 159 / 255, blue: 39 / 255)
+        }
+        return Color(red: 226 / 255, green: 75 / 255, blue: 74 / 255)
+    }
+
+    static func accessibilityValue(_ usage: V2ContextUsage) -> String {
+        guard let percent = usage.percentUsed else {
+            return String(localized: "用量未知")
+        }
+        return String(localized: "已使用 \(percent)%")
+    }
+}
+
+/// The sheet the ring opens: the runtime's own context-window answer with its
+/// per-category breakdown. Runtimes that answer summary-only (codex) show the
+/// header and token line without a breakdown section.
+struct ContextUsageSheet: View {
+    let chat: SessionChatModel
+    let sessionID: V2SessionID
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if chat.isRefreshingContextUsage, chat.displayedContextUsage == nil {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 48)
+                    } else if let usage = chat.displayedContextUsage {
+                        content(usage)
+                    } else {
+                        Text(String(localized: "暂无上下文用量"))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 48)
+                    }
+                    if let error = chat.contextUsageError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle(String(localized: "上下文窗口"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Task {
+                            await chat.refreshContextUsage(
+                                sessionID: sessionID, detail: .full)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(chat.isRefreshingContextUsage)
+                    .accessibilityLabel(String(localized: "刷新"))
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .task {
+            // The sheet's own read is the runtime's full per-category pass;
+            // the ring only ever asks for `summary`.
+            await chat.refreshContextUsage(sessionID: sessionID, detail: .full)
+        }
+    }
+
+    @ViewBuilder private func content(_ usage: V2ContextUsage) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(usage.percentUsed.map { "\($0)%" } ?? "—")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                Text(String(localized: "已使用"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let model = usage.model, !model.isEmpty {
+                    Text(model)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            ContextUsageMeter(usage: usage)
+            caption(usage)
+        }
+
+        if usage.hasBreakdown {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(String(localized: "分类明细"))
+                    .font(.headline)
+                ForEach(usage.visibleCategories.indices, id: \.self) { index in
+                    let category = usage.visibleCategories[index]
+                    ContextUsageRow(
+                        label: category.name,
+                        tokens: category.tokens,
+                        total: usage.maxTokens ?? usage.totalTokens,
+                        tone: ContextUsageMeter.tone(for: category, index: index)
+                    )
+                }
+            }
+            ContextUsageGroups(usage: usage)
+        } else if usage.isEstimate {
+            Text(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else if usage.isCached {
+            Text(String(localized: "显示上次测量结果，连接会话后会自动更新"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else {
+            Text(String(localized: "该 Runtime 只提供总体用量，暂无分类明细"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func caption(_ usage: V2ContextUsage) -> some View {
+        let used = ContextTokenFormat.wan(usage.totalTokens)
+        let total = usage.maxTokens.map(ContextTokenFormat.wan) ?? "—"
+        var text = String(localized: "\(used) / \(total) token")
+        if let measured = Self.measuredTime(usage.measuredAt) {
+            text += String(localized: " · 更新于 \(measured)")
+        }
+        return Text(text)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+    }
+
+    private static func measuredTime(_ iso: String?) -> String? {
+        guard let iso, !iso.isEmpty else { return nil }
+        let precise = ISO8601DateFormatter()
+        precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        guard let date = precise.date(from: iso) ?? plain.date(from: iso) else { return nil }
+        let time = DateFormatter()
+        time.locale = .current
+        time.dateStyle = .none
+        time.timeStyle = .short
+        return time.string(from: date)
+    }
+}
+
+/// The proportional segmented bar. Categories fill the window in order; free
+/// space and the compaction buffer keep the muted tone; whatever is left over
+/// is the track itself.
+struct ContextUsageMeter: View {
+    let usage: V2ContextUsage
+
+    private static let palette: [Color] = [
+        Color(red: 33 / 255, green: 86 / 255, blue: 162 / 255),
+        Color(red: 29 / 255, green: 158 / 255, blue: 117 / 255),
+        Color(red: 239 / 255, green: 159 / 255, blue: 39 / 255),
+        Color(red: 138 / 255, green: 108 / 255, blue: 208 / 255),
+        Color(red: 74 / 255, green: 144 / 255, blue: 226 / 255),
+        Color(red: 216 / 255, green: 90 / 255, blue: 48 / 255),
+        Color(red: 99 / 255, green: 153 / 255, blue: 34 / 255),
+        Color(red: 150 / 255, green: 150 / 255, blue: 150 / 255),
+    ]
+
+    static func tone(for category: V2ContextUsageCategory, index: Int) -> Color {
+        if category.isFreeOrBuffer {
+            return Color.secondary.opacity(0.35)
+        }
+        return palette[index % palette.count]
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let total = max(usage.maxTokens ?? usage.totalTokens, 1)
+            HStack(spacing: 1) {
+                ForEach(usage.visibleCategories.indices, id: \.self) { index in
+                    let category = usage.visibleCategories[index]
+                    Rectangle()
+                        .fill(Self.tone(for: category, index: index))
+                        .frame(
+                            width: max(
+                                0,
+                                CGFloat(category.tokens) / CGFloat(total) * proxy.size.width
+                            )
+                        )
+                }
+                Spacer(minLength: 0)
+            }
+            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+            .clipShape(Capsule())
+        }
+        .frame(height: 8)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ContextUsageRow: View {
+    let label: String
+    let tokens: Int
+    let total: Int
+    let tone: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(tone)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.subheadline)
+                .lineLimit(1)
+            Spacer()
+            Text(ContextTokenFormat.wan(tokens))
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Text(share)
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 46, alignment: .trailing)
+        }
+    }
+
+    private var share: String {
+        guard total > 0 else { return "—" }
+        let percent = Double(tokens) / Double(total) * 100
+        if percent < 0.1 { return "<0.1%" }
+        return String(format: "%.1f%%", percent)
+    }
+}
+
+/// The grouped detail lists the CLI reports alongside the categories.
+private struct ContextUsageGroups: View {
+    let usage: V2ContextUsage
+
+    var body: some View {
+        if !usage.mcpTools.isEmpty {
+            group(String(localized: "MCP 工具"), tokens: sum(usage.mcpTools.map(\.tokens))) {
+                ForEach(usage.mcpTools) { tool in
+                    item(label: "\(tool.serverName) · \(tool.name)", tokens: tool.tokens)
+                }
+            }
+        }
+        if !usage.memoryFiles.isEmpty {
+            group(String(localized: "记忆文件"), tokens: sum(usage.memoryFiles.map(\.tokens))) {
+                ForEach(usage.memoryFiles) { file in
+                    item(label: file.path, tokens: file.tokens, isPath: true)
+                }
+            }
+        }
+        if !usage.agents.isEmpty {
+            group(String(localized: "自定义智能体"), tokens: sum(usage.agents.map(\.tokens))) {
+                ForEach(usage.agents) { agent in
+                    item(label: agent.agentType, tokens: agent.tokens)
+                }
+            }
+        }
+        if !usage.skills.isEmpty {
+            group(String(localized: "Skills"), tokens: sum(usage.skills.map(\.tokens))) {
+                ForEach(usage.skills) { skill in
+                    item(label: skill.name, tokens: skill.tokens)
+                }
+            }
+        }
+    }
+
+    private func sum(_ values: [Int]) -> Int { values.reduce(0, +) }
+
+    private func group<Content: View>(
+        _ title: String,
+        tokens: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) { content() }
+                .padding(.top, 6)
+        } label: {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                Text("\(ContextTokenFormat.wan(tokens))")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func item(label: String, tokens: Int, isPath: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(isPath ? Font.caption.monospaced() : Font.subheadline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Text(ContextTokenFormat.wan(tokens))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+}

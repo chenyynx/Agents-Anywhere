@@ -21,6 +21,7 @@ from agent_server.core.models import (
 from agent_server.core.protocol import (
     ProtocolCapabilitiesResponse,
     ProtocolCapabilitySet,
+    ProtocolContextUsage,
     ProtocolModelCatalog,
     ProtocolModelCatalogResponse,
     ProtocolPermissionCatalog,
@@ -445,6 +446,19 @@ def parse_runtime_permission_catalog_response(result: Any) -> ProtocolPermission
         raise HTTPException(
             status_code=502,
             detail={"code": "invalid_runtime_catalog", "message": str(exc)},
+        ) from exc
+
+
+def parse_runtime_context_usage_response(result: Any) -> ProtocolContextUsage:
+    raw_usage = result.get("usage") if isinstance(result, dict) else None
+    if not isinstance(raw_usage, dict):
+        raise_invalid_runtime_response("invalid_runtime_context_usage")
+    try:
+        return ProtocolContextUsage.model_validate(raw_usage)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_runtime_context_usage", "message": str(exc)},
         ) from exc
 
 

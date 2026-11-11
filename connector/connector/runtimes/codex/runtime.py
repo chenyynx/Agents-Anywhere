@@ -7,6 +7,7 @@ from typing import Any
 
 from connector.core.json_kv import JsonKeyValueStore
 from connector.logging import logger
+from connector.time import utc_now
 from connector.runtime_protocol import (
     AgentRuntime,
     PreparedSessionTimelineSync,
@@ -15,6 +16,7 @@ from connector.runtime_protocol import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeIdentity,
     RuntimeModelCatalog,
     RuntimeOperationResult,
@@ -22,6 +24,7 @@ from connector.runtime_protocol import (
     RuntimeSessionSourceStateCache,
     RuntimeSessionStateCache,
     RuntimeTimelineSnapshot,
+    RuntimeUnavailableError,
     RuntimeUnsupportedError,
     SessionMeta,
     SessionNotice,
@@ -30,6 +33,10 @@ from connector.runtime_protocol import (
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.codex.catalogs.reader import CodexCatalogReader
 from connector.runtimes.codex.domain import sessions as codex_sessions
+from connector.runtimes.codex.domain.context_usage import (
+    CodexContextUsageSnapshot,
+    context_usage_from_notification,
+)
 from connector.runtimes.codex.domain.capabilities import (
     codex_capability_context,
     codex_runtime_capabilities,
@@ -68,6 +75,7 @@ from connector.runtimes.codex.sessions.reader import CodexSessionReader
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
 from connector.runtimes.codex.turns.command_input import command_input
 from connector.runtimes.codex.turns.controller import CodexTurnController
+from connector.runtimes.context_usage_cache import ContextUsageCache
 
 
 @dataclass(slots=True)
@@ -87,6 +95,11 @@ class CodexRuntime(AgentRuntime):
 
     def __post_init__(self) -> None:
         self._active_turn_ids: dict[str, str] = {}
+        # Newest `thread/tokenUsage/updated` figures per AA session. Memory
+        # only: the numbers describe the live thread, and a restarted
+        # connector re-learns them on the next turn.
+        self._context_usage: dict[str, CodexContextUsageSnapshot] = {}
+        self._context_usage_cache = ContextUsageCache(self.host, "codex")
         self._session_states = RuntimeSessionStateCache(
             "codex",
             self.host,
@@ -197,10 +210,16 @@ class CodexRuntime(AgentRuntime):
                 read_model_catalog=self._ipc_model_catalog,
                 read_permission_catalog=self._ipc_permission_catalog,
             )
+            async def handle_ipc_event(event: Any) -> None:
+                # IPC sessions bypass the SDK lifecycle; capture here so their
+                # context-usage figures are recorded the same way.
+                await self._capture_context_usage(event)
+                await projector.handle(event)
+
             self.ipc_service = CodexIpcService(
                 client=self.ipc,
                 codex_home=Path(codex_home),
-                on_event=projector.handle,
+                on_event=handle_ipc_event,
             )
         if self.ipc_service is not None:
             await self.ipc_service.start()
@@ -487,6 +506,45 @@ class CodexRuntime(AgentRuntime):
         limit: int = 100,
     ) -> RuntimePermissionCatalog:
         return await self._catalogs.list_permission_catalog(query=query, limit=limit)
+
+    async def get_session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        """The newest token-usage figures Codex reported for this thread.
+
+        Codex reports used tokens and the model window on
+        ``thread/tokenUsage/updated``; it has no per-category breakdown, so the
+        grouped detail stays empty. A session that has not reported since this
+        connector started cannot answer — the client hides the surface rather
+        than showing a zero.
+        """
+
+        _ = detail
+        snapshot = self._context_usage.get(session_id)
+        if snapshot is None:
+            # A connector restart loses the in-memory event; the persisted
+            # summary keeps the ring alive (marked cached) until the next
+            # `thread/tokenUsage/updated` lands.
+            cached = await self._context_usage_cache.read(session_id)
+            if cached is not None:
+                return cached
+            raise RuntimeUnavailableError("context_usage_unavailable")
+        percentage = (
+            snapshot.used_tokens / snapshot.max_tokens * 100.0
+            if snapshot.max_tokens
+            else None
+        )
+        return RuntimeContextUsage(
+            runtime="codex",
+            total_tokens=snapshot.used_tokens,
+            max_tokens=snapshot.max_tokens,
+            percentage=percentage,
+            detail="summary",
+            source="codex.event",
+            measured_at=snapshot.measured_at,
+        )
 
     async def list_sessions(
         self,
@@ -833,9 +891,76 @@ class CodexRuntime(AgentRuntime):
     async def _handle_notification(self, message: Any) -> None:
         await self._lifecycle.handle_notification(message)
 
-    async def _after_notification(self, message: Any) -> None:
-        """Let the IPC owner republish after a native notification was projected."""
+    async def _capture_context_usage(self, message: Any) -> None:
+        """Record the newest token-usage figures off the notification stream.
 
+        Capture is deliberately before projection and best-effort: the
+        notification also feeds the timeline, and a malformed frame must never
+        break that path. Resolution mirrors the projector (platform session id,
+        then the thread's cached binding, then the stable synthetic id).
+        """
+
+        try:
+            event = notification_event(message)
+        except Exception:  # noqa: BLE001 - best effort by contract
+            return
+        if event.event_type != "thread/tokenUsage/updated":
+            return
+        thread_id = event.thread_id or codex_sessions.thread_id_from_result(
+            event.params
+        )
+        session_id = event.platform_session_id or (
+            codex_sessions.session_id_from_notification(event.params)
+        )
+        if session_id is None and thread_id is not None:
+            cached_state = self._session_states.get_by_external_session_id(thread_id)
+            session_id = (
+                cached_state.session_id
+                if cached_state is not None
+                else codex_sessions.stable_session_id(
+                    getattr(
+                        self.host,
+                        "session_namespace",
+                        self.host.connector_id,
+                    ),
+                    thread_id,
+                )
+            )
+        if session_id is None:
+            return
+        snapshot = context_usage_from_notification(
+            event.params,
+            measured_at=utc_now(),
+        )
+        if snapshot is None:
+            return
+        self._context_usage[session_id] = snapshot
+        await self._context_usage_cache.write(
+            session_id,
+            RuntimeContextUsage(
+                runtime="codex",
+                total_tokens=snapshot.used_tokens,
+                max_tokens=snapshot.max_tokens,
+                percentage=(
+                    snapshot.used_tokens / snapshot.max_tokens * 100.0
+                    if snapshot.max_tokens
+                    else None
+                ),
+                detail="summary",
+                source="codex.event",
+                measured_at=snapshot.measured_at,
+            ),
+        )
+
+    async def _after_notification(self, message: Any) -> None:
+        """Let the IPC owner republish after a native notification was projected.
+
+        Also the live capture point for `thread/tokenUsage/updated`: the
+        lifecycle forwards every SDK notification here after projection, and
+        capture is best-effort so a malformed frame never breaks it.
+        """
+
+        await self._capture_context_usage(message)
         if self.ipc_owner is not None:
             try:
                 thread_id = notification_event(message).thread_id

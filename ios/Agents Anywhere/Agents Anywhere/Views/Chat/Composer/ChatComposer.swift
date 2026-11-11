@@ -18,10 +18,6 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
-    /// Live context-window state; hidden, or an unfocused editor (no
-    /// keyboard), hides the ring entirely. A real measurement with an unknown
-    /// window shows the neutral unknown ring instead of vanishing.
-    var contextUsage: ContextRingState = .hidden
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -118,13 +114,6 @@ struct ChatComposer: View {
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
                     .accessibilityIdentifier(showsQueueSend ? "chat.composer.queueSend" : "chat.composer.send")
 
-                    if contextUsage.isVisible, draft.isFocused {
-                        ContextRingButton(state: contextUsage,
-                            touchTarget: controls.touchTarget,
-                            ringDiameter: controls.contextRingDiameter,
-                            visualOffsetX: Self.contextRingOpticalShift)
-                    }
-
                     if showsCommands {
                         Button(action: onCommands) {
                             AppSymbol("command", size: 18)
@@ -155,13 +144,6 @@ struct ChatComposer: View {
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
     }
-
-    /// The ring's slot is centred between the command glyph (18 pt) and the
-    /// send key's disc (36 pt), so the visible gap is 26 pt on the command
-    /// side and 17 pt on the send side. Half that difference re-centres the
-    /// ring optically without moving the slot or its hit area
-    /// (pp 2026-11-10).
-    private static let contextRingOpticalShift: CGFloat = -4.5
 
     /// The queue form: the single accent key shows the arrow and enqueues.
     private var showsQueueSend: Bool { affordance.shape == .queueSend }

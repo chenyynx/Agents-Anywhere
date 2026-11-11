@@ -22,7 +22,7 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files
+        case notices, details, files, contextUsage
         /// The SubAgent panel: the anchor card id plus its entry point. The
         /// capsule (entry A) lists every active card; a timeline card (entry B)
         /// shows that one card's detail alone (pp 2026-10-08).
@@ -39,6 +39,7 @@ struct SessionChatView: View, Equatable {
             case .notices: "notices"
             case .details: "details"
             case .files: "files"
+            case .contextUsage: "contextUsage"
             case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
@@ -54,6 +55,15 @@ struct SessionChatView: View, Equatable {
     /// reader can page back from (C0). Kept out of the overlay's ViewBuilder:
     /// the multi-way conjunction inside a builder pushes the type checker past
     /// its budget (it timed out once).
+    /// The trailing slot shows the context ring once any reading exists
+    /// (live, connector cache, or timeline estimate); until then the folder
+    /// occupies it and opens the file manager.
+    private var showsContextRing: Bool { model.displayedContextUsage != nil }
+
+    private func trailingSlotAction() {
+        sheet = showsContextRing ? .contextUsage : .files
+    }
+
     private var showsEmptyState: Bool {
         model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.canLoadOlder
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
@@ -125,7 +135,6 @@ struct SessionChatView: View, Equatable {
                 isBusy: model.isWorking || !model.isOpeningReady, placeholder: composerPlaceholder,
                 isLoadingSettings: model.isLoadingSettings,
                 settingsError: model.settingsError, sessionChat: model,
-                contextUsage: model.contextUsage,
                 // A defaulted parameter is not part of a function's type: the
                 // two-argument `send` cannot stand in for `(String) async -> Void`.
                 onSend: { await model.send($0) }, onStop: model.interrupt, onLoadSettings: model.loadSettings,
@@ -147,6 +156,7 @@ struct SessionChatView: View, Equatable {
         switch destination {
         case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
         case .details: SessionDetailsSheet(chat: model, service: detailService)
+        case .contextUsage: ContextUsageSheet(chat: model, sessionID: session.id)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
                 initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
@@ -314,10 +324,37 @@ struct SessionChatView: View, Equatable {
         .toolbarBackgroundVisibility(.automatic, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { sheet = .files } label: { AppSymbol("folder") }
-                    .accessibilityLabel(String(localized: "文件管理"))
-                    .disabled(session.metadata?.cwd?.isEmpty != false)
+                // The folder is the placeholder occupant of the ring's slot:
+                // before any context reading exists it opens the file manager;
+                // once a reading lands it morphs into the ring (scale + fade)
+                // and the folder entry slides into the overflow menu — the
+                // official toolbar's ring position, without a dead grey ring.
+                Button(action: trailingSlotAction) {
+                    ZStack {
+                        if let usage = model.displayedContextUsage {
+                            ContextUsageRing(usage: usage)
+                                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                        } else {
+                            AppSymbol("folder")
+                                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.smooth(duration: 0.28), value: showsContextRing)
+                }
+                .accessibilityLabel(
+                    showsContextRing
+                        ? String(localized: "上下文窗口")
+                        : String(localized: "文件管理")
+                )
+                .accessibilityValue(
+                    model.displayedContextUsage.map(ContextUsageRing.accessibilityValue) ?? ""
+                )
+                .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
                 Menu {
+                    if showsContextRing {
+                        Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
+                            .disabled(session.metadata?.cwd?.isEmpty != false)
+                    }
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
 #if AA_TIMELINE_PROBE
@@ -342,6 +379,21 @@ struct SessionChatView: View, Equatable {
             current > previous && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
         }
+        // Context usage is asked for, not derived: once when the page opens and
+        // again on every authoritative turn ending. Both reads use `summary`;
+        // the sheet upgrades to `full` when it opens.
+        .task(id: session.id) {
+            await model.refreshContextUsage(sessionID: session.id)
+        }
+        .onChange(of: session.runtime.authoritativeTurnEnds) { _, _ in
+            Task { await model.refreshContextUsage(sessionID: session.id) }
+        }
+        // Capabilities arrive after the page's first frame on a cold open;
+        // the initial read can find them missing, so a capability update is a
+        // refresh point too (it also gates the ring's visibility).
+        .onChange(of: session.runtime.capabilities) { _, _ in
+            Task { await model.refreshContextUsage(sessionID: session.id) }
+        }
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
             guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed
@@ -363,16 +415,12 @@ struct SessionChatView: View, Equatable {
             // below, which only return when the view goes away.
             await model.completeQueuedUploads()
             guard !Task.isCancelled else { return }
-            // The context ring observes the same repository stream as the
-            // timeline: both loops share this task's lifetime and stop when
+            // The timeline loop shares this task's lifetime and stops when
             // the view's task is cancelled.
             let chat = model
             let timeline = chat.timeline
             let repository = chat.repository
-            let sessionID = session.id
-            async let timelineRun: Void = timeline.run(sessionID: sessionID, repository: repository)
-            async let usageRun: Void = chat.runContextUsage(sessionID: sessionID)
-            _ = await (timelineRun, usageRun)
+            await timeline.run(sessionID: session.id, repository: repository)
         }
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)

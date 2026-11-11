@@ -188,6 +188,64 @@ class ProtocolPermissionCatalogResponse(ProtocolWireModel):
     serverTime: str
 
 
+class ProtocolContextUsageCategory(ProtocolWireModel):
+    name: str
+    tokens: int
+    kind: str | None = None
+
+
+class ProtocolContextUsageMcpTool(ProtocolWireModel):
+    name: str
+    serverName: str
+    tokens: int
+
+
+class ProtocolContextUsageMemoryFile(ProtocolWireModel):
+    path: str
+    tokens: int
+    type: str | None = None
+
+
+class ProtocolContextUsageAgent(ProtocolWireModel):
+    agentType: str
+    tokens: int
+    source: str | None = None
+
+
+class ProtocolContextUsageSkill(ProtocolWireModel):
+    name: str
+    tokens: int
+    source: str | None = None
+    pluginName: str | None = None
+
+
+class ProtocolContextUsage(ProtocolWireModel):
+    """One runtime's context-window answer.
+
+    Detail lists are empty for runtimes that report only used/max (codex); the
+    client renders the summary and hides the breakdown section in that case.
+    """
+
+    runtime: RuntimeName
+    totalTokens: int
+    model: str | None = None
+    maxTokens: int | None = None
+    percentage: float | None = None
+    detail: str = "summary"
+    source: str = "runtime"
+    measuredAt: str | None = None
+    categories: list[ProtocolContextUsageCategory] = Field(default_factory=list)
+    mcpTools: list[ProtocolContextUsageMcpTool] = Field(default_factory=list)
+    memoryFiles: list[ProtocolContextUsageMemoryFile] = Field(default_factory=list)
+    agents: list[ProtocolContextUsageAgent] = Field(default_factory=list)
+    skills: list[ProtocolContextUsageSkill] = Field(default_factory=list)
+
+
+class ProtocolContextUsageResponse(ProtocolWireModel):
+    usage: ProtocolContextUsage
+    serverTime: str
+
+
 class ProtocolTimelineSnapshot(ProtocolWireModel):
     items: list[TimelineItem] = Field(default_factory=list)
     nextSeq: int

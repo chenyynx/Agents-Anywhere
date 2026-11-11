@@ -52,6 +52,7 @@ struct ContextUsageRing: View {
 struct ContextUsageSheet: View {
     let chat: SessionChatModel
     let sessionID: V2SessionID
+    @ScaledMetric(relativeTo: .largeTitle) private var percentSize: CGFloat = 34
 
     var body: some View {
         NavigationStack {
@@ -106,7 +107,7 @@ struct ContextUsageSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(usage.percentUsed.map { "\($0)%" } ?? "—")
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .font(.system(size: percentSize, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                 Text(String(localized: "已使用"))
                     .font(.subheadline)
@@ -138,6 +139,15 @@ struct ContextUsageSheet: View {
                 }
             }
             ContextUsageGroups(usage: usage)
+        } else if chat.isRefreshingContextUsage {
+            // A summary-only value is on screen while the full pass runs; say
+            // so instead of claiming the runtime has no breakdown.
+            HStack(spacing: 8) {
+                ProgressView()
+                Text(String(localized: "正在读取分类明细…"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         } else if usage.isEstimate {
             Text(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
                 .font(.footnote)
@@ -207,7 +217,11 @@ struct ContextUsageMeter: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let total = max(usage.maxTokens ?? usage.totalTokens, 1)
+            // The runtime's rows can sum past the nominal window (different
+            // accounting between summary and breakdown); scale by whichever is
+            // larger so the bar never overflows or clips.
+            let categoryTotal = usage.visibleCategories.reduce(0) { $0 + $1.tokens }
+            let total = max(usage.maxTokens ?? usage.totalTokens, categoryTotal, 1)
             HStack(spacing: 1) {
                 ForEach(usage.visibleCategories.indices, id: \.self) { index in
                     let category = usage.visibleCategories[index]
@@ -272,28 +286,32 @@ private struct ContextUsageGroups: View {
     var body: some View {
         if !usage.mcpTools.isEmpty {
             group(String(localized: "MCP 工具"), tokens: sum(usage.mcpTools.map(\.tokens))) {
-                ForEach(usage.mcpTools) { tool in
+                ForEach(usage.mcpTools.indices, id: \.self) { index in
+                    let tool = usage.mcpTools[index]
                     item(label: "\(tool.serverName) · \(tool.name)", tokens: tool.tokens)
                 }
             }
         }
         if !usage.memoryFiles.isEmpty {
             group(String(localized: "记忆文件"), tokens: sum(usage.memoryFiles.map(\.tokens))) {
-                ForEach(usage.memoryFiles) { file in
+                ForEach(usage.memoryFiles.indices, id: \.self) { index in
+                    let file = usage.memoryFiles[index]
                     item(label: file.path, tokens: file.tokens, isPath: true)
                 }
             }
         }
         if !usage.agents.isEmpty {
             group(String(localized: "自定义智能体"), tokens: sum(usage.agents.map(\.tokens))) {
-                ForEach(usage.agents) { agent in
+                ForEach(usage.agents.indices, id: \.self) { index in
+                    let agent = usage.agents[index]
                     item(label: agent.agentType, tokens: agent.tokens)
                 }
             }
         }
         if !usage.skills.isEmpty {
             group(String(localized: "Skills"), tokens: sum(usage.skills.map(\.tokens))) {
-                ForEach(usage.skills) { skill in
+                ForEach(usage.skills.indices, id: \.self) { index in
+                    let skill = usage.skills[index]
                     item(label: skill.name, tokens: skill.tokens)
                 }
             }

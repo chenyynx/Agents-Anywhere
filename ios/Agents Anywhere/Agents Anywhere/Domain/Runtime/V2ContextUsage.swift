@@ -135,7 +135,11 @@ nonisolated struct V2ContextUsage: Decodable, Hashable {
     /// sent one, otherwise derived from used/max (never invented when both
     /// sides are unknown).
     var percentUsed: Int? {
-        if let percentage { return Int(percentage.rounded()) }
+        if let percentage, percentage.isFinite {
+            // The runtime is untrusted input: clamp before the Int conversion
+            // so NaN / ±inf / out-of-range values can never trap.
+            return Int(min(max(percentage, 0), 100).rounded())
+        }
         guard let fraction else { return nil }
         return Int((fraction * 100).rounded())
     }

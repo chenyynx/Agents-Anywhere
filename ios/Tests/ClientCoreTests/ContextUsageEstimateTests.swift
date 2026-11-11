@@ -72,33 +72,36 @@ import Testing
     }
 
     @Test func catalogWindowFollowsSelectionAndReasoningEntries() throws {
-        let catalogs = try decode([
-            "model": [
-                "runtime": "claude",
-                "revision": 1,
-                "models": [
-                    [
-                        "id": "opus", "displayName": "Opus", "selectionId": "sel_opus",
-                        "default": false, "reasoningItems": [],
-                        "metadata": ["contextWindow": 200_000],
+        let model = try decode([
+            "runtime": "claude",
+            "revision": 1,
+            "models": [
+                [
+                    "id": "opus", "displayName": "Opus", "selectionId": "sel_opus",
+                    "default": false, "reasoningItems": [],
+                    "metadata": ["contextWindow": 200_000],
+                ],
+                [
+                    "id": "sonnet", "displayName": "Sonnet",
+                    "selectionId": "sel_sonnet", "default": false,
+                    "reasoningItems": [
+                        [
+                            "id": "high", "displayName": "High",
+                            "fullModelId": "sonnet-high",
+                            "selectionId": "sel_sonnet_high", "default": false,
+                            "metadata": [:],
+                        ]
                     ],
-                    [
-                        "id": "sonnet", "displayName": "Sonnet", "selectionId": "sel_sonnet",
-                        "default": false,
-                        "reasoningItems": [
-                            [
-                                "id": "high", "displayName": "High",
-                                "fullModelId": "sonnet-high",
-                                "selectionId": "sel_sonnet_high", "default": false,
-                                "metadata": [:],
-                            ]
-                        ],
-                        "metadata": ["contextWindow": 1_000_000],
-                    ],
+                    "metadata": ["contextWindow": 1_000_000],
                 ],
             ],
-            "permission": ["runtime": "claude", "revision": 1, "permissions": []],
-        ], as: V2SessionCatalogs.self)
+        ], as: V2ModelCatalog.self)
+        let permission = try decode([
+            "runtime": "claude",
+            "revision": 1,
+            "permissions": [],
+        ], as: V2PermissionCatalog.self)
+        let catalogs = V2SessionCatalogs(model: model, permission: permission)
 
         #expect(ContextUsageEstimate.catalogWindow(catalogs, selection: "sel_opus")
             == 200_000)
@@ -107,5 +110,19 @@ import Testing
             == 1_000_000)
         #expect(ContextUsageEstimate.catalogWindow(catalogs, selection: "sel_unknown") == nil)
         #expect(ContextUsageEstimate.catalogWindow(catalogs, selection: nil) == nil)
+    }
+
+    @Test func inputOrderDoesNotMatter() throws {
+        let first = try item(
+            id: "first", order: 1,
+            usage: ["inputTokens": 1_000, "contextWindow": 200_000])
+        let second = try item(
+            id: "second", order: 2,
+            usage: ["inputTokens": 5_000, "contextWindow": 200_000])
+
+        #expect(ContextUsageEstimate.resolve(items: [second, first], catalogWindow: nil)?
+            .totalTokens == 5_000)
+        #expect(ContextUsageEstimate.resolve(items: [first, second], catalogWindow: nil)?
+            .totalTokens == 5_000)
     }
 }

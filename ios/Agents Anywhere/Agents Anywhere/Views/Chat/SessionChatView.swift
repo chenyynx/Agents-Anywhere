@@ -49,12 +49,6 @@ struct SessionChatView: View, Equatable {
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
-    /// The welcome line shows only for a settled, genuinely empty page — a
-    /// queued message counts as content even before its timeline rows exist,
-    /// and a window with older items is not empty: it is a partial window the
-    /// reader can page back from (C0). Kept out of the overlay's ViewBuilder:
-    /// the multi-way conjunction inside a builder pushes the type checker past
-    /// its budget (it timed out once).
     /// The trailing slot shows the context ring once any reading exists
     /// (live, connector cache, or timeline estimate); until then the folder
     /// occupies it and opens the file manager.
@@ -64,6 +58,12 @@ struct SessionChatView: View, Equatable {
         sheet = showsContextRing ? .contextUsage : .files
     }
 
+    /// The welcome line shows only for a settled, genuinely empty page — a
+    /// queued message counts as content even before its timeline rows exist,
+    /// and a window with older items is not empty: it is a partial window the
+    /// reader can page back from (C0). Kept out of the overlay's ViewBuilder:
+    /// the multi-way conjunction inside a builder pushes the type checker past
+    /// its budget (it timed out once).
     private var showsEmptyState: Bool {
         model.isOpeningReady && model.timeline.rows.isEmpty && !model.session.canLoadOlder
             && model.timeline.pendingMessages.isEmpty && model.session.sendQueue.isEmpty
@@ -392,6 +392,11 @@ struct SessionChatView: View, Equatable {
         // the initial read can find them missing, so a capability update is a
         // refresh point too (it also gates the ring's visibility).
         .onChange(of: session.runtime.capabilities) { _, _ in
+            Task { await model.refreshContextUsage(sessionID: session.id) }
+        }
+        // A model switch changes both the live window and the catalog window
+        // the estimate falls back to.
+        .onChange(of: session.runtime.state?.selections) { _, _ in
             Task { await model.refreshContextUsage(sessionID: session.id) }
         }
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in

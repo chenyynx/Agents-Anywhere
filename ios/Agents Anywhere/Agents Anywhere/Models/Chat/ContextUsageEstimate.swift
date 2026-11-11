@@ -17,10 +17,14 @@ enum ContextUsageEstimate {
         items: [V2TimelineItem],
         catalogWindow: Int?
     ) -> V2ContextUsage? {
-        let latest = items.reversed().lazy.compactMap { item -> V2MessageUsage? in
-            guard let usage = item.usage, usage.contextTokens > 0 else { return nil }
-            return usage
-        }.first
+        // Sort instead of trusting the caller's order: the projection keeps
+        // rows ascending today, but the old ring's tests proved the rule must
+        // hold for any input order.
+        let latest = items.sorted { $0.orderSeq > $1.orderSeq }
+            .lazy.compactMap { item -> V2MessageUsage? in
+                guard let usage = item.usage, usage.contextTokens > 0 else { return nil }
+                return usage
+            }.first
         guard let latest else { return nil }
         guard let window = latest.contextWindow ?? catalogWindow, window > 0 else {
             return nil
@@ -46,13 +50,18 @@ enum ContextUsageEstimate {
     ) -> Int? {
         guard let selection else { return nil }
         for model in catalogs.model.models {
-            guard model.enabled != false else { continue }
+            guard model.enabled != false,
+                  model.metadata["enabled"]?.boolValue != false else { continue }
             let window = model.metadata["contextWindow"]?.intValue
             guard let window, window > 0 else { continue }
             if model.selectionId == selection {
                 return window
             }
             for reasoning in model.reasoningItems where reasoning.selectionId == selection {
+                guard reasoning.enabled != false,
+                      reasoning.metadata["enabled"]?.boolValue != false else {
+                    continue
+                }
                 return window
             }
         }

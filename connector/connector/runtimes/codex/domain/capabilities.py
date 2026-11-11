@@ -126,14 +126,16 @@ def codex_session_capabilities(context: CodexCapabilityContext) -> RuntimeCapabi
             session_capability(
                 context,
                 capability_id=CAPABILITY_SESSION_CONTEXT_USAGE,
-                available=context.client_available,
-                unavailable_reason=client_unavailable_reason(context),
+                available=True,
                 metadata={
                     "source": "codex.capabilities.session",
                     # Codex reports used tokens and the model window only; the
                     # client renders the summary without a breakdown section.
                     "breakdown": False,
                     "detailLevels": ["summary"],
+                    # Durable last-known summaries answer without a live
+                    # client; this says whether the next read is fresh.
+                    "live": context.client_available,
                 },
             ),
             session_capability(

@@ -446,8 +446,15 @@ final class SessionChatModel {
     private(set) var contextUsage: V2ContextUsage?
     /// The client-side estimate from the loaded timeline — the ring's
     /// last-resort fallback for a cold session, an offline connector, or a
-    /// runtime that cannot answer. Same data the old composer ring read.
-    private(set) var estimatedContextUsage: V2ContextUsage?
+    /// runtime that cannot answer. Computed from the presented rows at read
+    /// time (not snapshotted), so it follows rows as they land — the page's
+    /// first frame has none.
+    var estimatedContextUsage: V2ContextUsage? {
+        ContextUsageEstimate.resolve(
+            items: timeline.rows.map(\.value),
+            catalogWindow: catalogWindowForEstimate
+        )
+    }
     /// What the ring and sheet render: live (or cached) first, estimate second.
     var displayedContextUsage: V2ContextUsage? {
         contextUsage ?? estimatedContextUsage
@@ -460,9 +467,15 @@ final class SessionChatModel {
     /// Newest ask wins: a sheet's `full` read supersedes a summary still in
     /// flight from the page-open trigger instead of being dropped.
     @ObservationIgnored private var contextUsageRequest: UUID?
-    /// Selected model's catalog window, read once per page for the estimate.
-    @ObservationIgnored private var catalogWindowForEstimate: Int?
-    @ObservationIgnored private var didReadEstimateCatalog = false
+    /// Uptime of the last successful automatic (`summary`) read. Capability
+    /// pushes repeat around every turn, so bursts inside this window reuse the
+    /// value already on screen instead of firing another RPC.
+    @ObservationIgnored private var lastAutomaticContextRefreshAt: TimeInterval = 0
+    private static let automaticContextRefreshInterval: TimeInterval = 1.5
+    /// Selected model's catalog window for the estimate, refreshed when the
+    /// selection changes (the first page-open read can predate the state).
+    private var catalogWindowForEstimate: Int?
+    private var catalogReadSelection: V2SelectionID?
 
     /// Whether this session's runtime advertises the capability at all.
     var supportsContextUsage: Bool {
@@ -479,6 +492,12 @@ final class SessionChatModel {
         detail: V2ContextUsageDetail = .summary
     ) async {
         if supportsContextUsage {
+            if detail == .summary,
+               ProcessInfo.processInfo.systemUptime - lastAutomaticContextRefreshAt
+                   < Self.automaticContextRefreshInterval {
+                await refreshEstimatedContextUsage(sessionID: sessionID)
+                return
+            }
             let request = UUID()
             contextUsageRequest = request
             isRefreshingContextUsage = true
@@ -491,9 +510,24 @@ final class SessionChatModel {
                     usageDetail: detail
                 )
                 guard session.isValid, contextUsageRequest == request else { return }
+                // A background summary must not downgrade a breakdown the
+                // sheet's full read already landed.
+                if detail == .summary,
+                   let existing = contextUsage,
+                   existing.hasBreakdown,
+                   !usage.hasBreakdown,
+                   usage.model == existing.model {
+                    return
+                }
                 contextUsage = usage
                 contextUsageError = nil
-                estimatedContextUsage = nil
+                if detail == .summary {
+                    lastAutomaticContextRefreshAt = ProcessInfo.processInfo.systemUptime
+                }
+                return
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
                 return
             } catch {
                 guard contextUsageRequest == request else { return }
@@ -507,26 +541,25 @@ final class SessionChatModel {
         await refreshEstimatedContextUsage(sessionID: sessionID)
     }
 
-    /// The fallback half: newest timeline usage over the window it reports
-    /// (catalog window when the row lacks one). The catalog read happens once
-    /// per page and a failure simply leaves the window to the row itself.
+    /// The fallback half: keep the catalog window in step with the selected
+    /// model. The estimate itself is a computed property; this only refreshes
+    /// the window the rows may lack (the first page-open read can predate the
+    /// runtime state, so a later trigger retries with the real selection).
     private func refreshEstimatedContextUsage(sessionID: V2SessionID) async {
-        if !didReadEstimateCatalog {
-            didReadEstimateCatalog = true
-            if let catalogs = try? await repository.catalogs(
-                sessionId: sessionID,
-                capabilities: session.runtime.capabilities
-            ) {
-                catalogWindowForEstimate = ContextUsageEstimate.catalogWindow(
-                    catalogs,
-                    selection: currentSelections[.model]
-                )
-            }
+        guard let selection = currentSelections[.model] else { return }
+        if catalogReadSelection == selection, catalogWindowForEstimate != nil {
+            return
         }
-        estimatedContextUsage = ContextUsageEstimate.resolve(
-            items: timeline.rows.map(\.value),
-            catalogWindow: catalogWindowForEstimate
-        )
+        if let catalogs = try? await repository.catalogs(
+            sessionId: sessionID,
+            capabilities: session.runtime.capabilities
+        ) {
+            catalogWindowForEstimate = ContextUsageEstimate.catalogWindow(
+                catalogs,
+                selection: selection
+            )
+            catalogReadSelection = selection
+        }
     }
 
     // MARK: Send queue

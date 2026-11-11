@@ -186,6 +186,15 @@ struct V2SessionDetailService {
         )
     }
 
+    /// The runtime's live context-window answer (`summary` for the ring,
+    /// `full` for the sheet's per-category pass).
+    func contextUsage(
+        sessionId: V2SessionID,
+        detail: V2ContextUsageDetail
+    ) async throws -> V2ContextUsage {
+        try await runtimeAPI.contextUsage(sessionId: sessionId, detail: detail).usage
+    }
+
     func catalogs(sessionId: V2SessionID, scopes: Set<String>? = nil) async throws -> V2SessionCatalogs {
         async let model = scopes?.contains("model") != false
             ? runtimeAPI.modelCatalog(sessionId: sessionId).catalog

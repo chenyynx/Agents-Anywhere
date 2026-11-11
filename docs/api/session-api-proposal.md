@@ -337,6 +337,7 @@ POST  /sessions/{sessionId}/runtime/notices/{noticeId}/respond
 GET   /sessions/{sessionId}/runtime/capabilities
 GET   /sessions/{sessionId}/runtime/catalogs/model
 GET   /sessions/{sessionId}/runtime/catalogs/permission
+GET   /sessions/{sessionId}/runtime/context-usage
 GET   /sessions/{sessionId}/runtime/commands
 POST  /sessions/{sessionId}/runtime/commands
 PATCH /sessions/{sessionId}/runtime/selections

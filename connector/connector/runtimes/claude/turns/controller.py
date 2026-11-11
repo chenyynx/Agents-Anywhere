@@ -9,6 +9,7 @@ from connector.runtime_protocol import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeOperationResult,
     RuntimeSessionStateCache,
 )
@@ -188,6 +189,18 @@ class ClaudeTurnController:
         """Whether the loaded SDK offers the per-task stop control."""
 
         return self.runner.subagent_control_supported()
+
+    def context_usage_supported(self) -> bool:
+        """Whether the loaded SDK offers the context-usage control."""
+
+        return self.runner.context_usage_supported()
+
+    async def session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        return await self.runner.session_context_usage(session_id, detail=detail)
 
     def list_commands(
         self,

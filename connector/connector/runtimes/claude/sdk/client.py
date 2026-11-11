@@ -247,6 +247,109 @@ def client_supports_set_permission_mode(client: Any) -> bool:
     return callable(getattr(client, "set_permission_mode", None))
 
 
+# The context-usage control answers from the CLI's own state; `full` runs the
+# per-category token-count pass, `summary` answers from the last response and
+# local estimates. Ten seconds keeps the server's 30 s RPC budget intact even
+# when the CLI is wedged on a large `full` pass.
+CLAUDE_CONTEXT_USAGE_TIMEOUT_SECONDS = 10.0
+
+
+def sdk_supports_context_usage(sdk: Any) -> bool:
+    """Whether the loaded SDK's client class offers the context-usage call.
+
+    The capability bit's ``supported`` fact, probed once by the runner the
+    same way ``sdk_supports_stop_task`` is — never by version number.
+    """
+
+    client_cls = getattr(sdk, "ClaudeSDKClient", None)
+    return callable(getattr(client_cls, "get_context_usage", None))
+
+
+def client_supports_context_usage(client: Any) -> bool:
+    """Whether this connection can answer the context-usage control.
+
+    Checked on the client's own seams (the public ``get_context_usage`` method
+    or the underlying query's control sender), never by version number: an
+    older SDK ships a CLI without the subtype and would answer an error.
+    """
+
+    if callable(getattr(client, "get_context_usage", None)):
+        return True
+    query = getattr(client, "_query", None)
+    return callable(getattr(query, "_send_control_request", None))
+
+
+async def get_context_usage_client(
+    client: Any,
+    detail: str = "summary",
+    timeout: float = CLAUDE_CONTEXT_USAGE_TIMEOUT_SECONDS,
+) -> Mapping[str, Any] | None:
+    """Ask the live CLI for its context-window usage.
+
+    Preferred path carries ``detail`` through the query's control sender (the
+    public SDK method predates the parameter); a client without that seam
+    falls back to ``get_context_usage()`` (the CLI default, ``full``). Returns
+    the response mapping, or None on a refusal / timeout / malformed answer —
+    the caller decides whether that hides the surface.
+    """
+
+    query = getattr(client, "_query", None)
+    sender = getattr(query, "_send_control_request", None)
+    if callable(sender):
+        request: dict[str, Any] = {"subtype": "get_context_usage"}
+        if detail:
+            request["detail"] = detail
+        try:
+            # The SDK's own sender takes the timeout and runs its pending-map
+            # cleanup on expiry; an external wait_for would skip that cleanup
+            # and strand a full response in the pending table.
+            try:
+                result = sender(request, timeout=timeout)
+            except TypeError:
+                result = sender(request)
+                if inspect.isawaitable(result):
+                    result = await asyncio.wait_for(result, timeout=timeout)
+            else:
+                if inspect.isawaitable(result):
+                    result = await result
+            if isinstance(result, Mapping):
+                return result
+        except (TimeoutError, asyncio.TimeoutError):
+            # A wedged CLI costs the whole budget once; retrying the public
+            # method would double it.
+            logger.warning(
+                "Claude context usage timed out detail={} timeout_s={}",
+                detail,
+                timeout,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - try the public seam next
+            logger.warning(
+                "Claude context usage control failed detail={}: {}; "
+                "falling back to the public method",
+                detail,
+                exc,
+            )
+
+    method = getattr(client, "get_context_usage", None)
+    if callable(method):
+        try:
+            result = method()
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(result, timeout=timeout)
+            if isinstance(result, Mapping):
+                return result
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(
+                "Claude context usage timed out detail={} timeout_s={}",
+                detail,
+                timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-soft by contract
+            logger.warning("Claude context usage failed detail={}: {}", detail, exc)
+    return None
+
+
 async def set_model_client(client: Any, model: str | None) -> bool:
     """Apply `model` to the live connection; True when the CLI accepted it.
 

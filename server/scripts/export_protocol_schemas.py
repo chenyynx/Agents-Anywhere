@@ -13,6 +13,7 @@ from agent_server.core.protocol import (
     PROTOCOL_VERSION_1,
     ProtocolCapabilitiesResponse,
     ProtocolCapabilitySet,
+    ProtocolContextUsageResponse,
     ProtocolEventEnvelope,
     ProtocolEventRecoveryResponse,
     ProtocolHandshakeRequest,
@@ -66,6 +67,12 @@ SCHEMAS = (
     ProtocolSchema(
         "permission-catalog-response",
         ProtocolPermissionCatalogResponse,
+        "egress",
+        "serialization",
+    ),
+    ProtocolSchema(
+        "context-usage-response",
+        ProtocolContextUsageResponse,
         "egress",
         "serialization",
     ),

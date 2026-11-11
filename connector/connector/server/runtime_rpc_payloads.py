@@ -11,6 +11,7 @@ from connector.runtime_protocol import (
     RuntimeCommandResult,
     RuntimeConfig,
     RuntimeConfigSchema,
+    RuntimeContextUsage,
     RuntimeInventoryItem,
     RuntimeModelCatalog,
     RuntimeOperationResult,
@@ -269,6 +270,86 @@ def session_notice_payload(notice: SessionNotice) -> dict[str, Any]:
             "metadata": dict(notice.metadata),
         }
     )
+
+
+def context_usage_payload(usage: RuntimeContextUsage) -> dict[str, Any]:
+    """Wire shape of one context-usage answer.
+
+    Detail lists are omitted when the runtime has none (codex today); clients
+    treat their absence as "summary only" rather than as an empty breakdown.
+    """
+
+    payload: dict[str, Any] = {
+        "runtime": usage.runtime,
+        "totalTokens": usage.total_tokens,
+        "detail": usage.detail,
+        "source": usage.source,
+    }
+    if usage.runtime_id is not None:
+        payload["runtimeId"] = usage.runtime_id
+    if usage.model is not None:
+        payload["model"] = usage.model
+    if usage.max_tokens is not None:
+        payload["maxTokens"] = usage.max_tokens
+    if usage.percentage is not None:
+        payload["percentage"] = usage.percentage
+    if usage.measured_at is not None:
+        payload["measuredAt"] = usage.measured_at
+    if usage.categories:
+        payload["categories"] = [
+            {
+                "name": category.name,
+                "tokens": category.tokens,
+                **({"kind": category.kind} if category.kind is not None else {}),
+            }
+            for category in usage.categories
+        ]
+    if usage.mcp_tools:
+        payload["mcpTools"] = [
+            {
+                "name": tool.name,
+                "serverName": tool.server_name,
+                "tokens": tool.tokens,
+            }
+            for tool in usage.mcp_tools
+        ]
+    if usage.memory_files:
+        payload["memoryFiles"] = [
+            {
+                "path": memory_file.path,
+                "tokens": memory_file.tokens,
+                **(
+                    {"type": memory_file.type}
+                    if memory_file.type is not None
+                    else {}
+                ),
+            }
+            for memory_file in usage.memory_files
+        ]
+    if usage.agents:
+        payload["agents"] = [
+            {
+                "agentType": agent.agent_type,
+                "tokens": agent.tokens,
+                **({"source": agent.source} if agent.source is not None else {}),
+            }
+            for agent in usage.agents
+        ]
+    if usage.skills:
+        payload["skills"] = [
+            {
+                "name": skill.name,
+                "tokens": skill.tokens,
+                **({"source": skill.source} if skill.source is not None else {}),
+                **(
+                    {"pluginName": skill.plugin_name}
+                    if skill.plugin_name is not None
+                    else {}
+                ),
+            }
+            for skill in usage.skills
+        ]
+    return payload
 
 
 def model_catalog_payload(catalog: RuntimeModelCatalog) -> dict[str, Any]:

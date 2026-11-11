@@ -317,6 +317,19 @@ class SessionReadParams:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionContextUsageParams:
+    session_id: str
+    detail: str
+
+    @classmethod
+    def parse(cls, params: dict[str, Any]) -> SessionContextUsageParams:
+        detail = params.get("detail", "summary")
+        if detail not in {"summary", "full"}:
+            raise ValueError("detail must be 'summary' or 'full'")
+        return cls(session_id=required_session_id(params), detail=detail)
+
+
+@dataclass(frozen=True, slots=True)
 class SessionCapabilityParams:
     session_id: str
     external_session_id: str | None

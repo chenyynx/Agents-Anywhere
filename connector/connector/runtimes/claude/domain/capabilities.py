@@ -8,6 +8,7 @@ from connector.runtime_protocol import (
     CAPABILITY_CATALOG_PERMISSION,
     CAPABILITY_RUNTIME_ATTACHMENT,
     CAPABILITY_SESSION_COMMANDS,
+    CAPABILITY_SESSION_CONTEXT_USAGE,
     CAPABILITY_SESSION_INTERACTION_APPROVAL,
     CAPABILITY_SESSION_INTERRUPT,
     CAPABILITY_SESSION_SEND_MESSAGE,
@@ -35,6 +36,10 @@ class ClaudeCapabilityContext:
     #: ``session.subagent_control`` availability: background subagents can be
     #: running while the session itself is idle.
     connection_online: bool = False
+    #: The SDK offers the ``get_context_usage`` control (the
+    #: ``session.context_usage`` supported fact). Checked on the loaded SDK's
+    #: client class, never by version number.
+    context_usage_supported: bool = False
 
 
 def claude_runtime_capabilities(
@@ -197,6 +202,28 @@ def claude_session_capabilities(
                 available=loaded,
                 unavailable_reason=session_unloaded_reason(context),
                 metadata={"source": "claude.runtime"},
+            ),
+            RuntimeCapability(
+                capability_id=CAPABILITY_SESSION_CONTEXT_USAGE,
+                scope="session",
+                runtime="claude",
+                session_id=session_id,
+                connector_id=context.connector_id,
+                supported=context.context_usage_supported,
+                # Availability is not connection-gated: a session whose
+                # transport is gone still answers from the durable last-known
+                # summary. `live` tells clients whether the next read is a
+                # fresh CLI measurement or the cached value.
+                available=context.context_usage_supported,
+                unavailable_reason=(
+                    None if context.context_usage_supported else "not_implemented"
+                ),
+                metadata={
+                    "source": "claude.runtime",
+                    "breakdown": True,
+                    "detailLevels": ["summary", "full"],
+                    "live": context.connection_online,
+                },
             ),
             RuntimeCapability(
                 capability_id=CAPABILITY_CATALOG_PERMISSION,

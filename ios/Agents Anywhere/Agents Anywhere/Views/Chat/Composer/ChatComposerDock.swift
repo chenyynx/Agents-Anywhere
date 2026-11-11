@@ -23,8 +23,6 @@ struct ChatComposerDock: View {
     var isLoadingSettings = false
     var settingsError: String?
     var sessionChat: SessionChatModel?
-    /// Session context-window state for the composer ring; `.hidden` hides it.
-    var contextUsage: ContextRingState = .hidden
     let onSend: (String) async -> Void
     var onStop: () async -> Void = {}
     var onLoadSettings: () async -> Void = {}
@@ -80,7 +78,6 @@ struct ChatComposerDock: View {
                 onOptions: presentOptions,
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
-                contextUsage: contextUsage,
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
                 onEditAttachment: presentImageEditor,

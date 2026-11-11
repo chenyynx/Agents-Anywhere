@@ -19,6 +19,7 @@ from connector.runtime_protocol.models import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeIdentity,
     RuntimeModelCatalog,
     RuntimeOperationResult,
@@ -589,6 +590,17 @@ class RuntimeInstance(AgentRuntime):
 
     def supports_complete_session_inventory(self) -> bool:
         return self.native_runtime.supports_complete_session_inventory()
+
+    async def get_session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        usage = await self.native_runtime.get_session_context_usage(
+            session_id,
+            detail=detail,
+        )
+        return replace(usage, runtime_id=self.instance.runtime_id)
 
     async def get_session_snapshot(
         self,

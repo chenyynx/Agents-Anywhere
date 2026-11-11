@@ -22,7 +22,7 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files
+        case notices, details, files, contextUsage
         /// The SubAgent panel: the anchor card id plus its entry point. The
         /// capsule (entry A) lists every active card; a timeline card (entry B)
         /// shows that one card's detail alone (pp 2026-10-08).
@@ -39,6 +39,7 @@ struct SessionChatView: View, Equatable {
             case .notices: "notices"
             case .details: "details"
             case .files: "files"
+            case .contextUsage: "contextUsage"
             case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
@@ -48,6 +49,15 @@ struct SessionChatView: View, Equatable {
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
+    /// The trailing slot shows the context ring once any reading exists
+    /// (live, connector cache, or timeline estimate); until then the folder
+    /// occupies it and opens the file manager.
+    private var showsContextRing: Bool { model.displayedContextUsage != nil }
+
+    private func trailingSlotAction() {
+        sheet = showsContextRing ? .contextUsage : .files
+    }
+
     /// The welcome line shows only for a settled, genuinely empty page — a
     /// queued message counts as content even before its timeline rows exist,
     /// and a window with older items is not empty: it is a partial window the
@@ -103,6 +113,39 @@ struct SessionChatView: View, Equatable {
         }
     }
 
+    /// The page's layering, in its own method: the `GeometryReader` closure's
+    /// overlays, safe-area bar and background are the last big view-builder
+    /// block that used to sit inside `body` (same budget as `timelineView`).
+    private func pageContent(geometry: GeometryProxy) -> some View {
+        Group {
+            if hasStartedLoading {
+                timelineView()
+            } else {
+                Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+            .overlay {
+                if showsEmptyState {
+                    VStack(spacing: 12) {
+                        Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
+                    }.allowsHitTesting(false)
+                }
+            }
+            .overlay { if model.showsOpeningMask { openingMask } }
+            // [E] The official composer is a bottom bar over a full-screen
+            // transcript, not a list footer (chrome-composer.md §2–§3).
+            // `safeAreaBar` keeps it over the content while the list
+            // scrolls beneath the glass.
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
+            }
+            // [E] chrome-composer.md §4 — Code page background
+            // `#F9F9F7` / `#151515`, edge to edge.
+            .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+                .ignoresSafeArea())
+            .overlay(alignment: .topLeading) { statusOverlay }
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
@@ -125,7 +168,6 @@ struct SessionChatView: View, Equatable {
                 isBusy: model.isWorking || !model.isOpeningReady, placeholder: composerPlaceholder,
                 isLoadingSettings: model.isLoadingSettings,
                 settingsError: model.settingsError, sessionChat: model,
-                contextUsage: model.contextUsage,
                 // A defaulted parameter is not part of a function's type: the
                 // two-argument `send` cannot stand in for `(String) async -> Void`.
                 onSend: { await model.send($0) }, onStop: model.interrupt, onLoadSettings: model.loadSettings,
@@ -147,6 +189,7 @@ struct SessionChatView: View, Equatable {
         switch destination {
         case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
         case .details: SessionDetailsSheet(chat: model, service: detailService)
+        case .contextUsage: ContextUsageSheet(chat: model, sessionID: session.id)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
                 initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
@@ -240,66 +283,7 @@ struct SessionChatView: View, Equatable {
     }
     var body: some View {
         GeometryReader { geometry in
-            Group {
-                if hasStartedLoading {
-                    timelineView()
-                } else {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-                .overlay {
-                    if showsEmptyState {
-                        VStack(spacing: 12) {
-                            Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
-                        }.allowsHitTesting(false)
-                    }
-                }
-                .overlay { if model.showsOpeningMask { openingMask } }
-                // [E] The official composer is a bottom bar over a full-screen
-                // transcript, not a list footer (chrome-composer.md §2–§3).
-                // `safeAreaBar` keeps it over the content while the list
-                // scrolls beneath the glass.
-                .safeAreaBar(edge: .bottom, spacing: 0) {
-                    composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
-                }
-                // [E] chrome-composer.md §4 — Code page background
-                // `#F9F9F7` / `#151515`, edge to edge.
-                .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
-                    .ignoresSafeArea())
-                .overlay(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        // Metadata can arrive after history. Transient controls
-                        // float below the header instead of resizing its inset.
-                        if requiresTakeover {
-                            takeoverPill.frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        // The queue's own failure surface: first under the takeover
-                        // pill, above the general error toasts, so a paused queue
-                        // never duplicates its reason as a toast (§7.6) and stays
-                        // the only place the queue resumes from.
-                        SendQueueBanner(model: model)
-                            .traceChatLayout("send-queue-banner")
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
-                            onRetry: { _ in await session.refresh() },
-                            onDismiss: { source in
-                                // A closed notification is one-shot for this open
-                                // episode: record the acknowledgement so the same
-                                // notice cannot replay on the next visit. A later
-                                // episode at the same id (after it resolves and
-                                // re-opens) surfaces again.
-                                guard let notification = toasts.notification(for: source) else { return }
-                                session.acknowledgeNotification(noticeId: notification.id)
-                            })
-                        if let success = model.commandSuccess {
-                            CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        if let switched = model.switchFeedback {
-                            CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                    }.padding(.top, 8)
-                }
+            pageContent(geometry: geometry)
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
@@ -312,24 +296,7 @@ struct SessionChatView: View, Equatable {
         // system's soft scroll-edge effect blurs the rows underneath (the
         // official device screenshots show body text through the bar).
         .toolbarBackgroundVisibility(.automatic, for: .navigationBar)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { sheet = .files } label: { AppSymbol("folder") }
-                    .accessibilityLabel(String(localized: "文件管理"))
-                    .disabled(session.metadata?.cwd?.isEmpty != false)
-                Menu {
-                    Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
-                    Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
-#if AA_TIMELINE_PROBE
-                    Divider()
-                    Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
-                        diagnosticsHUDVisible.toggle()
-                    }
-#endif
-                } label: { AppSymbol("ellipsis") }
-                .accessibilityLabel(String(localized: "会话菜单"))
-            }
-        }
+        .toolbar { trailingToolbar }
         .modifier(SessionTakeoverConfirmation(pending: $pendingTakeover, isDsh: model.isDsh) { enabled in
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
@@ -342,6 +309,17 @@ struct SessionChatView: View, Equatable {
             current > previous && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
         }
+        // Context usage is asked for, not derived: once when the page opens,
+        // again on every authoritative turn ending, and on a capability or
+        // selection change. Kept in an extension so this `body` expression
+        // stays inside the type checker's budget (same reason as the
+        // extracted toolbar and status overlay).
+        .contextUsageRefresh(
+            model: model,
+            sessionID: session.id,
+            turnEnds: session.runtime.authoritativeTurnEnds,
+            capabilities: session.runtime.capabilities,
+            selections: session.runtime.state?.selections)
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
             guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed
@@ -363,16 +341,12 @@ struct SessionChatView: View, Equatable {
             // below, which only return when the view goes away.
             await model.completeQueuedUploads()
             guard !Task.isCancelled else { return }
-            // The context ring observes the same repository stream as the
-            // timeline: both loops share this task's lifetime and stop when
+            // The timeline loop shares this task's lifetime and stops when
             // the view's task is cancelled.
             let chat = model
             let timeline = chat.timeline
             let repository = chat.repository
-            let sessionID = session.id
-            async let timelineRun: Void = timeline.run(sessionID: sessionID, repository: repository)
-            async let usageRun: Void = chat.runContextUsage(sessionID: sessionID)
-            _ = await (timelineRun, usageRun)
+            await timeline.run(sessionID: session.id, repository: repository)
         }
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)
@@ -458,6 +432,96 @@ struct SessionChatView: View, Equatable {
         }
     }
 
+    private var contextSlotLabel: String {
+        showsContextRing ? String(localized: "上下文窗口") : String(localized: "文件管理")
+    }
+
+    private var contextSlotAccessibilityValue: String {
+        guard let usage = model.displayedContextUsage else { return "" }
+        return ContextUsageRing.accessibilityValue(usage)
+    }
+
+    /// Split out of `body` on purpose: the page expression sits at the type
+    /// checker's budget (see `showsEmptyState`), and the toolbar slot's
+    /// ring/folder morph pushed the enclosing builder closure past it in CI.
+    @ToolbarContentBuilder
+    private var trailingToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            // The folder is the placeholder occupant of the ring's slot:
+            // before any context reading exists it opens the file manager;
+            // once a reading lands it morphs into the ring (scale + fade)
+            // and the folder entry slides into the overflow menu — the
+            // official toolbar's ring position, without a dead grey ring.
+            Button(action: trailingSlotAction) {
+                ZStack {
+                    if let usage = model.displayedContextUsage {
+                        ContextUsageRing(usage: usage)
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    } else {
+                        AppSymbol("folder")
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    }
+                }
+                .animation(.smooth(duration: 0.28), value: showsContextRing)
+            }
+            .accessibilityLabel(contextSlotLabel)
+            .accessibilityValue(contextSlotAccessibilityValue)
+            .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
+            Menu {
+                if showsContextRing {
+                    Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
+                        .disabled(session.metadata?.cwd?.isEmpty != false)
+                }
+                Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
+                Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+#if AA_TIMELINE_PROBE
+                Divider()
+                Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
+                    diagnosticsHUDVisible.toggle()
+                }
+#endif
+            } label: { AppSymbol("ellipsis") }
+            .accessibilityLabel(String(localized: "会话菜单"))
+        }
+    }
+
+    /// Same reason as `trailingToolbar`: this builder block resolves on its
+    /// own instead of inside the page's single `body` expression.
+    private var statusOverlay: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Metadata can arrive after history. Transient controls
+            // float below the header instead of resizing its inset.
+            if requiresTakeover {
+                takeoverPill.frame(maxWidth: .infinity, alignment: .center)
+            }
+            // The queue's own failure surface: first under the takeover
+            // pill, above the general error toasts, so a paused queue
+            // never duplicates its reason as a toast (§7.6) and stays
+            // the only place the queue resumes from.
+            SendQueueBanner(model: model)
+                .traceChatLayout("send-queue-banner")
+            ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
+                onRetry: { _ in await session.refresh() },
+                onDismiss: { source in
+                    // A closed notification is one-shot for this open
+                    // episode: record the acknowledgement so the same
+                    // notice cannot replay on the next visit. A later
+                    // episode at the same id (after it resolves and
+                    // re-opens) surfaces again.
+                    guard let notification = toasts.notification(for: source) else { return }
+                    session.acknowledgeNotification(noticeId: notification.id)
+                })
+            if let success = model.commandSuccess {
+                CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            if let switched = model.switchFeedback {
+                CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }.padding(.top, 8)
+    }
+
     private var openingMask: some View {
         ZStack {
             Color(uiColor: CodePageTheme.pageBackgroundUIColor)
@@ -537,6 +601,37 @@ struct SessionChatView: View, Equatable {
     private func cleanPreview() {
         if let directory = previewDirectory { try? FileManager.default.removeItem(at: directory) }
         previewDirectory = nil
+    }
+}
+
+private extension View {
+    /// The page's context-usage refresh points. Automatic reads use `summary`;
+    /// the sheet upgrades to `full` when it opens.
+    func contextUsageRefresh(
+        model: SessionChatModel,
+        sessionID: String,
+        turnEnds: Int,
+        capabilities: V2RuntimeCapabilitySnapshot?,
+        selections: [V2RuntimeSelectionScope: V2SelectionID?]?
+    ) -> some View {
+        self
+            .task(id: sessionID) {
+                await model.refreshContextUsage(sessionID: sessionID)
+            }
+            .onChange(of: turnEnds) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
+            // Capabilities arrive after the page's first frame on a cold open;
+            // the initial read can find them missing, so a capability update
+            // is a refresh point too (it also gates the ring's visibility).
+            .onChange(of: capabilities) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
+            // A model switch changes both the live window and the catalog
+            // window the estimate falls back to.
+            .onChange(of: selections) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
     }
 }
 

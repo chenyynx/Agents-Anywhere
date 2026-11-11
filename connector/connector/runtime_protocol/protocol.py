@@ -12,6 +12,7 @@ from connector.runtime_protocol.models import (
     RuntimeCommand,
     RuntimeCommandResult,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeIdentity,
     RuntimeModelCatalog,
     RuntimeOperationResult,
@@ -70,6 +71,22 @@ class AgentRuntime(ABC):
         limit: int = 100,
     ) -> RuntimePermissionCatalog:
         raise RuntimeUnsupportedError("list_permission_catalog")
+
+    async def get_session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        """The runtime's own context-window usage for one live session.
+
+        ``detail`` is a runtime-defined hint (``summary`` / ``full`` for
+        claude); runtimes that cannot answer raise ``RuntimeUnsupportedError``
+        so clients hide the surface instead of showing a stale or guessed
+        number.
+        """
+
+        _ = session_id, detail
+        raise RuntimeUnsupportedError("get_session_context_usage")
 
     async def list_sessions(
         self,

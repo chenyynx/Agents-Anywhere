@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from connector.runtime_protocol import (
     CAPABILITY_CATALOG_EFFORT,
@@ -9,6 +10,7 @@ from connector.runtime_protocol import (
     CAPABILITY_RUNTIME_ATTACHMENT,
     CAPABILITY_RUNTIME_CONFIG,
     CAPABILITY_SESSION_COMMANDS,
+    CAPABILITY_SESSION_CONTEXT_USAGE,
     CAPABILITY_SESSION_INTERACTION_APPROVAL,
     CAPABILITY_SESSION_INTERRUPT,
     CAPABILITY_SESSION_SEND_MESSAGE,
@@ -123,6 +125,21 @@ def codex_session_capabilities(context: CodexCapabilityContext) -> RuntimeCapabi
             ),
             session_capability(
                 context,
+                capability_id=CAPABILITY_SESSION_CONTEXT_USAGE,
+                available=True,
+                metadata={
+                    "source": "codex.capabilities.session",
+                    # Codex reports used tokens and the model window only; the
+                    # client renders the summary without a breakdown section.
+                    "breakdown": False,
+                    "detailLevels": ["summary"],
+                    # Durable last-known summaries answer without a live
+                    # client; this says whether the next read is fresh.
+                    "live": context.client_available,
+                },
+            ),
+            session_capability(
+                context,
                 capability_id=CAPABILITY_CATALOG_MODEL,
                 available=context.client_available,
                 unavailable_reason=client_unavailable_reason(context),
@@ -197,6 +214,7 @@ def session_capability(
     available: bool,
     unavailable_reason: str | None = None,
     supported: bool = True,
+    metadata: dict[str, Any] | None = None,
 ) -> RuntimeCapability:
     return RuntimeCapability(
         capability_id=capability_id,
@@ -207,6 +225,7 @@ def session_capability(
         supported=supported,
         available=available,
         unavailable_reason=unavailable_reason,
+        metadata=metadata or {},
     )
 
 

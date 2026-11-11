@@ -1,0 +1,314 @@
+{
+  "$defs": {
+    "ProtocolContextUsage": {
+      "description": "One runtime's context-window answer.\n\nDetail lists are empty for runtimes that report only used/max (codex); the\nclient renders the summary and hides the breakdown section in that case.",
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/ProtocolContextUsageAgent"
+          },
+          "title": "Agents",
+          "type": "array"
+        },
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/ProtocolContextUsageCategory"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "detail": {
+          "default": "summary",
+          "title": "Detail",
+          "type": "string"
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maxtokens"
+        },
+        "mcpTools": {
+          "items": {
+            "$ref": "#/$defs/ProtocolContextUsageMcpTool"
+          },
+          "title": "Mcptools",
+          "type": "array"
+        },
+        "measuredAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Measuredat"
+        },
+        "memoryFiles": {
+          "items": {
+            "$ref": "#/$defs/ProtocolContextUsageMemoryFile"
+          },
+          "title": "Memoryfiles",
+          "type": "array"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "percentage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Percentage"
+        },
+        "runtime": {
+          "enum": [
+            "codex",
+            "claude",
+            "opencode",
+            "acp",
+            "dsh"
+          ],
+          "title": "Runtime",
+          "type": "string"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/ProtocolContextUsageSkill"
+          },
+          "title": "Skills",
+          "type": "array"
+        },
+        "source": {
+          "default": "runtime",
+          "title": "Source",
+          "type": "string"
+        },
+        "totalTokens": {
+          "title": "Totaltokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runtime",
+        "totalTokens",
+        "model",
+        "maxTokens",
+        "percentage",
+        "detail",
+        "source",
+        "measuredAt",
+        "categories",
+        "mcpTools",
+        "memoryFiles",
+        "agents",
+        "skills"
+      ],
+      "title": "ProtocolContextUsage",
+      "type": "object"
+    },
+    "ProtocolContextUsageAgent": {
+      "properties": {
+        "agentType": {
+          "title": "Agenttype",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "tokens": {
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentType",
+        "tokens",
+        "source"
+      ],
+      "title": "ProtocolContextUsageAgent",
+      "type": "object"
+    },
+    "ProtocolContextUsageCategory": {
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tokens": {
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "tokens",
+        "kind"
+      ],
+      "title": "ProtocolContextUsageCategory",
+      "type": "object"
+    },
+    "ProtocolContextUsageMcpTool": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "serverName": {
+          "title": "Servername",
+          "type": "string"
+        },
+        "tokens": {
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "serverName",
+        "tokens"
+      ],
+      "title": "ProtocolContextUsageMcpTool",
+      "type": "object"
+    },
+    "ProtocolContextUsageMemoryFile": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "tokens": {
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        }
+      },
+      "required": [
+        "path",
+        "tokens",
+        "type"
+      ],
+      "title": "ProtocolContextUsageMemoryFile",
+      "type": "object"
+    },
+    "ProtocolContextUsageSkill": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "pluginName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pluginname"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "tokens": {
+          "title": "Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "tokens",
+        "source",
+        "pluginName"
+      ],
+      "title": "ProtocolContextUsageSkill",
+      "type": "object"
+    }
+  },
+  "$id": "urn:agents-anywhere:protocol:1.0:context-usage-response",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "serverTime": {
+      "title": "Servertime",
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/$defs/ProtocolContextUsage"
+    }
+  },
+  "required": [
+    "usage",
+    "serverTime"
+  ],
+  "title": "ProtocolContextUsageResponse",
+  "type": "object",
+  "x-direction": "egress",
+  "x-protocol-version": "1.0",
+  "x-pydantic-mode": "serialization"
+}

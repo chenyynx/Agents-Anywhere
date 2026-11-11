@@ -9,16 +9,21 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from connector.logging import logger
+from connector.time import utc_now
 from connector.runtime_protocol import (
     RuntimeAttachment,
     RuntimeConfig,
+    RuntimeContextUsage,
     RuntimeTimelineItem,
+    RuntimeUnavailableError,
+    RuntimeUnsupportedError,
     SessionNotice,
     timeline_content_hash,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.claude.catalogs.reader import ClaudeCatalogReader
 from connector.runtimes.claude.domain.context_report import ClaudeContextProbe
+from connector.runtimes.claude.domain.context_usage import context_usage_from_control
 from connector.runtimes.claude.domain.models import model_selection_from_selection_id
 from connector.runtimes.claude.domain.pending_messages import (
     ClaudePendingClientMessageRegistry,
@@ -35,15 +40,18 @@ from connector.runtimes.claude.notifications.projector import (
 from connector.runtimes.claude.sdk.client import (
     ClaudeClientFactory,
     SdkLoader,
+    client_supports_context_usage,
     client_supports_set_model,
     client_supports_set_permission_mode,
     connect_client,
+    get_context_usage_client,
     load_sdk,
     new_sdk_client,
     query_client,
     receive_response_messages,
     set_model_client,
     set_permission_mode_client,
+    sdk_supports_context_usage,
 )
 from connector.runtimes.claude.sdk.connection import (
     ClaudeConnection,
@@ -531,6 +539,9 @@ class ClaudeTurnRunner:
     #: Lazy, cached probe of the loaded SDK's ``stop_task`` presence (the
     #: ``session.subagent_control`` supported fact). None until first read.
     _subagent_control_supported: bool | None = field(default=None, init=False)
+    #: Lazy, cached probe of the loaded SDK's context-usage call (the
+    #: ``session.context_usage`` supported fact). None until first read.
+    _context_usage_supported: bool | None = field(default=None, init=False)
     # B: terminal frames the start gate refused to settle this turn on. Read by
     # the post-deploy observation window alongside `ClaudeConnection
     # .absorbed_terminal_frames`: the two are the same leak seen at its two
@@ -2411,6 +2422,51 @@ class ClaudeTurnRunner:
 
         connection = self.connections.get(session_id)
         return connection is not None and not connection.closing
+
+    def context_usage_supported(self) -> bool:
+        """Whether the loaded SDK offers the context-usage control at all.
+
+        Probed once, lazily, fail-soft (no loader / no SDK = no support). The
+        per-connection seam is re-checked on every ask, because a rebuilt
+        transport may run an older CLI than the class promised.
+        """
+
+        if self._context_usage_supported is None:
+            try:
+                sdk = load_sdk(self.sdk_loader)
+            except Exception:  # noqa: BLE001 - fail-soft by contract
+                supported = False
+            else:
+                supported = sdk_supports_context_usage(sdk)
+            self._context_usage_supported = supported
+        return self._context_usage_supported
+
+    async def session_context_usage(
+        self,
+        session_id: str,
+        detail: str = "summary",
+    ) -> RuntimeContextUsage:
+        """Ask this session's live CLI for its context-window usage.
+
+        The answer rides the session's own transport — the CLI computes it
+        from live state (system prompt, tools, memory, messages), so it stays
+        truthful even when the timeline holds no usage rows. No transport (or
+        one being retired) is reported as unsupported rather than guessed.
+        """
+
+        connection = self.connections.get(session_id)
+        if connection is None or connection.closing:
+            raise RuntimeUnsupportedError("session_disconnected")
+        if not client_supports_context_usage(connection.client):
+            raise RuntimeUnsupportedError("not_implemented")
+        payload = await get_context_usage_client(connection.client, detail=detail)
+        if payload is None:
+            raise RuntimeUnavailableError("context_usage_unavailable")
+        return context_usage_from_control(
+            payload,
+            detail=detail,
+            measured_at=utc_now(),
+        )
 
     async def connection_for(
         self,

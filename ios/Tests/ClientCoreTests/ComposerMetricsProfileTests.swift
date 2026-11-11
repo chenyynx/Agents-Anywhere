@@ -13,7 +13,6 @@ import Testing
         #expect(profile.collapsedHeight == 52)
         #expect(profile.touchTarget == 44)
         #expect(profile.sendDiameter == 36)
-        #expect(profile.contextRingDiameter == 16)
         #expect(profile.collapsedLeadingInset == 2)
         #expect(profile.collapsedTrailingInset == 2)
         // 18 + 2 + 44 + 11 = the official 75 pt text origin.
@@ -39,7 +38,6 @@ import Testing
         #expect(profile.collapsedHeight == 48)
         #expect(profile.touchTarget == 44)
         #expect(profile.sendDiameter == 36)
-        #expect(profile.contextRingDiameter == 18)
         #expect(profile.collapsedLeadingInset == 2)
         #expect(profile.collapsedTrailingInset == 2)
         #expect(profile.collapsedCornerRadius == 24)

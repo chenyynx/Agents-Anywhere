@@ -113,6 +113,39 @@ struct SessionChatView: View, Equatable {
         }
     }
 
+    /// The page's layering, in its own method: the `GeometryReader` closure's
+    /// overlays, safe-area bar and background are the last big view-builder
+    /// block that used to sit inside `body` (same budget as `timelineView`).
+    private func pageContent(geometry: GeometryProxy) -> some View {
+        Group {
+            if hasStartedLoading {
+                timelineView()
+            } else {
+                Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+            .overlay {
+                if showsEmptyState {
+                    VStack(spacing: 12) {
+                        Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
+                    }.allowsHitTesting(false)
+                }
+            }
+            .overlay { if model.showsOpeningMask { openingMask } }
+            // [E] The official composer is a bottom bar over a full-screen
+            // transcript, not a list footer (chrome-composer.md §2–§3).
+            // `safeAreaBar` keeps it over the content while the list
+            // scrolls beneath the glass.
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
+            }
+            // [E] chrome-composer.md §4 — Code page background
+            // `#F9F9F7` / `#151515`, edge to edge.
+            .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+                .ignoresSafeArea())
+            .overlay(alignment: .topLeading) { statusOverlay }
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
@@ -250,33 +283,7 @@ struct SessionChatView: View, Equatable {
     }
     var body: some View {
         GeometryReader { geometry in
-            Group {
-                if hasStartedLoading {
-                    timelineView()
-                } else {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-                .overlay {
-                    if showsEmptyState {
-                        VStack(spacing: 12) {
-                            Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
-                        }.allowsHitTesting(false)
-                    }
-                }
-                .overlay { if model.showsOpeningMask { openingMask } }
-                // [E] The official composer is a bottom bar over a full-screen
-                // transcript, not a list footer (chrome-composer.md §2–§3).
-                // `safeAreaBar` keeps it over the content while the list
-                // scrolls beneath the glass.
-                .safeAreaBar(edge: .bottom, spacing: 0) {
-                    composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
-                }
-                // [E] chrome-composer.md §4 — Code page background
-                // `#F9F9F7` / `#151515`, edge to edge.
-                .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
-                    .ignoresSafeArea())
-                .overlay(alignment: .topLeading) { statusOverlay }
+            pageContent(geometry: geometry)
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
@@ -425,9 +432,19 @@ struct SessionChatView: View, Equatable {
         }
     }
 
+    private var contextSlotLabel: String {
+        showsContextRing ? String(localized: "上下文窗口") : String(localized: "文件管理")
+    }
+
+    private var contextSlotAccessibilityValue: String {
+        guard let usage = model.displayedContextUsage else { return "" }
+        return ContextUsageRing.accessibilityValue(usage)
+    }
+
     /// Split out of `body` on purpose: the page expression sits at the type
     /// checker's budget (see `showsEmptyState`), and the toolbar slot's
     /// ring/folder morph pushed the enclosing builder closure past it in CI.
+    @ToolbarContentBuilder
     private var trailingToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             // The folder is the placeholder occupant of the ring's slot:
@@ -447,14 +464,8 @@ struct SessionChatView: View, Equatable {
                 }
                 .animation(.smooth(duration: 0.28), value: showsContextRing)
             }
-            .accessibilityLabel(
-                showsContextRing
-                    ? String(localized: "上下文窗口")
-                    : String(localized: "文件管理")
-            )
-            .accessibilityValue(
-                model.displayedContextUsage.map(ContextUsageRing.accessibilityValue) ?? ""
-            )
+            .accessibilityLabel(contextSlotLabel)
+            .accessibilityValue(contextSlotAccessibilityValue)
             .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
             Menu {
                 if showsContextRing {

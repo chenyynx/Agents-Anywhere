@@ -222,6 +222,28 @@ def test_get_context_usage_client_prefers_detail_capable_sender() -> None:
             await get_context_usage_client(_Silent(), timeout=0.01) is None
         )
 
+        # A private sender that refuses the request (an older CLI rejecting
+        # `detail`) falls back to the public method instead of reporting a
+        # missing answer.
+        class _BrokenQuery:
+            async def _send_control_request(self, request: dict[str, Any]) -> Any:
+                raise RuntimeError("unknown subtype")
+
+        class _Fallback:
+            def __init__(self) -> None:
+                self._query = _BrokenQuery()
+                self.calls = 0
+
+            async def get_context_usage(self) -> dict[str, Any]:
+                self.calls += 1
+                return {"totalTokens": 9}
+
+        fallback = _Fallback()
+        assert await get_context_usage_client(fallback, detail="full") == {
+            "totalTokens": 9
+        }
+        assert fallback.calls == 1
+
     asyncio.run(run())
 
 

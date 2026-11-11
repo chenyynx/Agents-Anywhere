@@ -934,6 +934,13 @@ class CodexRuntime(AgentRuntime):
         )
         if snapshot is None:
             return
+        previous = self._context_usage.get(session_id)
+        if (
+            previous is not None
+            and previous.used_tokens == snapshot.used_tokens
+            and previous.max_tokens == snapshot.max_tokens
+        ):
+            return
         self._context_usage[session_id] = snapshot
         await self._context_usage_cache.write(
             session_id,

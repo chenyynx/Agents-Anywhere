@@ -295,31 +295,49 @@ async def get_context_usage_client(
 
     query = getattr(client, "_query", None)
     sender = getattr(query, "_send_control_request", None)
-    try:
-        if callable(sender):
-            request: dict[str, Any] = {"subtype": "get_context_usage"}
-            if detail:
-                request["detail"] = detail
+    if callable(sender):
+        request: dict[str, Any] = {"subtype": "get_context_usage"}
+        if detail:
+            request["detail"] = detail
+        try:
             result = sender(request)
             if inspect.isawaitable(result):
                 result = await asyncio.wait_for(result, timeout=timeout)
             if isinstance(result, Mapping):
                 return result
-        method = getattr(client, "get_context_usage", None)
-        if callable(method):
+        except (TimeoutError, asyncio.TimeoutError):
+            # A wedged CLI costs the whole budget once; retrying the public
+            # method would double it.
+            logger.warning(
+                "Claude context usage timed out detail={} timeout_s={}",
+                detail,
+                timeout,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - try the public seam next
+            logger.warning(
+                "Claude context usage control failed detail={}: {}; "
+                "falling back to the public method",
+                detail,
+                exc,
+            )
+
+    method = getattr(client, "get_context_usage", None)
+    if callable(method):
+        try:
             result = method()
             if inspect.isawaitable(result):
                 result = await asyncio.wait_for(result, timeout=timeout)
             if isinstance(result, Mapping):
                 return result
-    except (TimeoutError, asyncio.TimeoutError):
-        logger.warning(
-            "Claude context usage timed out detail={} timeout_s={}",
-            detail,
-            timeout,
-        )
-    except Exception as exc:  # noqa: BLE001 - fail-soft by contract
-        logger.warning("Claude context usage failed detail={}: {}", detail, exc)
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(
+                "Claude context usage timed out detail={} timeout_s={}",
+                detail,
+                timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-soft by contract
+            logger.warning("Claude context usage failed detail={}: {}", detail, exc)
     return None
 
 

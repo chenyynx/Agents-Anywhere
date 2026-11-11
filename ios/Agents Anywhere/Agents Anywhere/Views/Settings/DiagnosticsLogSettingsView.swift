@@ -145,27 +145,33 @@ struct DiagnosticsLogSettingsView: View {
 
 /// One daily file opened like an attachment: the raw text fills the page and
 /// the navigation bar carries copy and share. No actions live at the bottom.
+///
+/// A day may hold up to 5 MB, so the file is read off the main thread and
+/// rendered by TextKit 2, which lays out only what is on screen. Reading it
+/// in `init` and handing the whole string to a SwiftUI `Text` made the push
+/// wait for every glyph and land on a white page (device 2026-11-11); the
+/// OpenMinis reader this follows does the same lazy-layout trick.
 struct DiagnosticsDayView: View {
     let day: DiagnosticsDay
-    @State private var text: String
+    @State private var text: String?
     @State private var copied = false
 
-    init(day: DiagnosticsDay) {
-        self.day = day
-        // Read while the destination is being built, not after it appears.
-        // The file is local and at most 5 MB; a deferred `.task` rendered one
-        // frame of the empty state ("暂无记录") during the push transition,
-        // which read as a one-second blank even though the read was instant.
-        _text = State(initialValue: ClientDiagnosticsLog.shared.rawText(for: day))
-    }
-
     var body: some View {
-        ScrollView {
-            Text(text.isEmpty ? String(localized: "No entries") : text)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+        Group {
+            if let text {
+                if text.isEmpty {
+                    Text(String(localized: "No entries"))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding()
+                } else {
+                    DiagnosticsLogTextView(text: text)
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .settingsPage(day.fileURL.lastPathComponent)
         .toolbar {
@@ -176,7 +182,7 @@ struct DiagnosticsDayView: View {
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 }
-                .disabled(text.isEmpty)
+                .disabled(text?.isEmpty != false)
                 .accessibilityLabel(String(localized: "Copy log"))
 
                 ShareLink(item: day.fileURL) {
@@ -184,6 +190,37 @@ struct DiagnosticsDayView: View {
                 }
                 .accessibilityLabel(String(localized: "Share log file"))
             }
+        }
+        .task {
+            let day = self.day
+            let loaded = await Task.detached(priority: .userInitiated) {
+                ClientDiagnosticsLog.shared.rawText(for: day)
+            }.value
+            text = loaded
+        }
+    }
+}
+
+/// TextKit 2 backs the log page: it lays out the visible portion only, so a
+/// multi-megabyte day opens at once and scrolls without a first-frame stall.
+private struct DiagnosticsLogTextView: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView(usingTextLayoutManager: true)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.backgroundColor = .clear
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textColor = .label
+        textView.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        textView.dataDetectorTypes = []
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != text {
+            textView.text = text
         }
     }
 }

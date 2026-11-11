@@ -2,14 +2,13 @@ import CoreGraphics
 
 /// Geometry shared by the "添加到会话" sheet and the pages it pushes.
 ///
-/// The values are measured from the official 3x screenshots and compared
-/// against the screen edge, not the sheet edge: iOS 26 insets a presented
-/// sheet by 8 pt per side, while the official sheet is full width. A 16 pt
-/// margin inside our inset sheet would land 24 pt from the screen edge, so
-/// the in-sheet margin is 16 − 8 = 8 pt to keep the capsules flush with the
-/// official ones.
+/// The values are measured from the official 3x screenshots: a 16 pt content
+/// margin and a 53.7 pt row. iOS 26 insets a sheet only while it sits below
+/// its largest detent, so at rest (full width) the margin lands 16 pt from
+/// the screen edge exactly like the official sheet; the system inset is not
+/// compensated here.
 nonisolated enum ChatSheetMetrics {
-    static let horizontalInset: CGFloat = 8
+    static let horizontalInset: CGFloat = 16
     /// Official row: 53.7 pt total with 15 pt text (~17 pt line box), so the
     /// vertical padding is 18 pt on each side.
     static let rowVerticalPadding: CGFloat = 18

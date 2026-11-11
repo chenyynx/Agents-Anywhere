@@ -61,7 +61,9 @@ struct AddToChatSheet: View {
                     card {
                         VStack(spacing: 0) {
                             row(icon: "anthropicon.agent", title: String(localized: "模型"),
-                                value: settings.modelLabel,
+                                // The effort has its own row now; the model row
+                                // shows the model name only.
+                                value: settings.model?.option.title ?? String(localized: "默认模型"),
                                 enabled: canSelectModel && !settings.catalog.models.isEmpty) {
                                 path.append(.models)
                             }

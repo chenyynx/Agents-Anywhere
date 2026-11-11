@@ -59,7 +59,7 @@ struct ContextUsageSheet: View {
     @State private var showsInfo = false
 
     private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
     }
 
     var body: some View {

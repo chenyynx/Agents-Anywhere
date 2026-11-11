@@ -276,40 +276,7 @@ struct SessionChatView: View, Equatable {
                 // `#F9F9F7` / `#151515`, edge to edge.
                 .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
                     .ignoresSafeArea())
-                .overlay(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        // Metadata can arrive after history. Transient controls
-                        // float below the header instead of resizing its inset.
-                        if requiresTakeover {
-                            takeoverPill.frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        // The queue's own failure surface: first under the takeover
-                        // pill, above the general error toasts, so a paused queue
-                        // never duplicates its reason as a toast (§7.6) and stays
-                        // the only place the queue resumes from.
-                        SendQueueBanner(model: model)
-                            .traceChatLayout("send-queue-banner")
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
-                            onRetry: { _ in await session.refresh() },
-                            onDismiss: { source in
-                                // A closed notification is one-shot for this open
-                                // episode: record the acknowledgement so the same
-                                // notice cannot replay on the next visit. A later
-                                // episode at the same id (after it resolves and
-                                // re-opens) surfaces again.
-                                guard let notification = toasts.notification(for: source) else { return }
-                                session.acknowledgeNotification(noticeId: notification.id)
-                            })
-                        if let success = model.commandSuccess {
-                            CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                        if let switched = model.switchFeedback {
-                            CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-                    }.padding(.top, 8)
-                }
+                .overlay(alignment: .topLeading) { statusOverlay }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
@@ -322,51 +289,7 @@ struct SessionChatView: View, Equatable {
         // system's soft scroll-edge effect blurs the rows underneath (the
         // official device screenshots show body text through the bar).
         .toolbarBackgroundVisibility(.automatic, for: .navigationBar)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                // The folder is the placeholder occupant of the ring's slot:
-                // before any context reading exists it opens the file manager;
-                // once a reading lands it morphs into the ring (scale + fade)
-                // and the folder entry slides into the overflow menu — the
-                // official toolbar's ring position, without a dead grey ring.
-                Button(action: trailingSlotAction) {
-                    ZStack {
-                        if let usage = model.displayedContextUsage {
-                            ContextUsageRing(usage: usage)
-                                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                        } else {
-                            AppSymbol("folder")
-                                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                        }
-                    }
-                    .animation(.smooth(duration: 0.28), value: showsContextRing)
-                }
-                .accessibilityLabel(
-                    showsContextRing
-                        ? String(localized: "上下文窗口")
-                        : String(localized: "文件管理")
-                )
-                .accessibilityValue(
-                    model.displayedContextUsage.map(ContextUsageRing.accessibilityValue) ?? ""
-                )
-                .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
-                Menu {
-                    if showsContextRing {
-                        Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
-                            .disabled(session.metadata?.cwd?.isEmpty != false)
-                    }
-                    Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
-                    Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
-#if AA_TIMELINE_PROBE
-                    Divider()
-                    Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
-                        diagnosticsHUDVisible.toggle()
-                    }
-#endif
-                } label: { AppSymbol("ellipsis") }
-                .accessibilityLabel(String(localized: "会话菜单"))
-            }
-        }
+        .toolbar { trailingToolbar }
         .modifier(SessionTakeoverConfirmation(pending: $pendingTakeover, isDsh: model.isDsh) { enabled in
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
@@ -379,26 +302,17 @@ struct SessionChatView: View, Equatable {
             current > previous && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
         }
-        // Context usage is asked for, not derived: once when the page opens and
-        // again on every authoritative turn ending. Both reads use `summary`;
-        // the sheet upgrades to `full` when it opens.
-        .task(id: session.id) {
-            await model.refreshContextUsage(sessionID: session.id)
-        }
-        .onChange(of: session.runtime.authoritativeTurnEnds) { _, _ in
-            Task { await model.refreshContextUsage(sessionID: session.id) }
-        }
-        // Capabilities arrive after the page's first frame on a cold open;
-        // the initial read can find them missing, so a capability update is a
-        // refresh point too (it also gates the ring's visibility).
-        .onChange(of: session.runtime.capabilities) { _, _ in
-            Task { await model.refreshContextUsage(sessionID: session.id) }
-        }
-        // A model switch changes both the live window and the catalog window
-        // the estimate falls back to.
-        .onChange(of: session.runtime.state?.selections) { _, _ in
-            Task { await model.refreshContextUsage(sessionID: session.id) }
-        }
+        // Context usage is asked for, not derived: once when the page opens,
+        // again on every authoritative turn ending, and on a capability or
+        // selection change. Kept in an extension so this `body` expression
+        // stays inside the type checker's budget (same reason as the
+        // extracted toolbar and status overlay).
+        .contextUsageRefresh(
+            model: model,
+            sessionID: session.id,
+            turnEnds: session.runtime.authoritativeTurnEnds,
+            capabilities: session.runtime.capabilities,
+            selections: session.runtime.state?.selections)
         .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
             guard !hasStartedLoading, settled else { return }
             // Show feedback immediately, but let the drawer's completed
@@ -511,6 +425,92 @@ struct SessionChatView: View, Equatable {
         }
     }
 
+    /// Split out of `body` on purpose: the page expression sits at the type
+    /// checker's budget (see `showsEmptyState`), and the toolbar slot's
+    /// ring/folder morph pushed the enclosing builder closure past it in CI.
+    private var trailingToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            // The folder is the placeholder occupant of the ring's slot:
+            // before any context reading exists it opens the file manager;
+            // once a reading lands it morphs into the ring (scale + fade)
+            // and the folder entry slides into the overflow menu — the
+            // official toolbar's ring position, without a dead grey ring.
+            Button(action: trailingSlotAction) {
+                ZStack {
+                    if let usage = model.displayedContextUsage {
+                        ContextUsageRing(usage: usage)
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    } else {
+                        AppSymbol("folder")
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    }
+                }
+                .animation(.smooth(duration: 0.28), value: showsContextRing)
+            }
+            .accessibilityLabel(
+                showsContextRing
+                    ? String(localized: "上下文窗口")
+                    : String(localized: "文件管理")
+            )
+            .accessibilityValue(
+                model.displayedContextUsage.map(ContextUsageRing.accessibilityValue) ?? ""
+            )
+            .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
+            Menu {
+                if showsContextRing {
+                    Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
+                        .disabled(session.metadata?.cwd?.isEmpty != false)
+                }
+                Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
+                Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+#if AA_TIMELINE_PROBE
+                Divider()
+                Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
+                    diagnosticsHUDVisible.toggle()
+                }
+#endif
+            } label: { AppSymbol("ellipsis") }
+            .accessibilityLabel(String(localized: "会话菜单"))
+        }
+    }
+
+    /// Same reason as `trailingToolbar`: this builder block resolves on its
+    /// own instead of inside the page's single `body` expression.
+    private var statusOverlay: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Metadata can arrive after history. Transient controls
+            // float below the header instead of resizing its inset.
+            if requiresTakeover {
+                takeoverPill.frame(maxWidth: .infinity, alignment: .center)
+            }
+            // The queue's own failure surface: first under the takeover
+            // pill, above the general error toasts, so a paused queue
+            // never duplicates its reason as a toast (§7.6) and stays
+            // the only place the queue resumes from.
+            SendQueueBanner(model: model)
+                .traceChatLayout("send-queue-banner")
+            ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
+                onRetry: { _ in await session.refresh() },
+                onDismiss: { source in
+                    // A closed notification is one-shot for this open
+                    // episode: record the acknowledgement so the same
+                    // notice cannot replay on the next visit. A later
+                    // episode at the same id (after it resolves and
+                    // re-opens) surfaces again.
+                    guard let notification = toasts.notification(for: source) else { return }
+                    session.acknowledgeNotification(noticeId: notification.id)
+                })
+            if let success = model.commandSuccess {
+                CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            if let switched = model.switchFeedback {
+                CommandSuccessToast(feedback: switched) { model.switchFeedback = nil }
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }.padding(.top, 8)
+    }
+
     private var openingMask: some View {
         ZStack {
             Color(uiColor: CodePageTheme.pageBackgroundUIColor)
@@ -590,6 +590,37 @@ struct SessionChatView: View, Equatable {
     private func cleanPreview() {
         if let directory = previewDirectory { try? FileManager.default.removeItem(at: directory) }
         previewDirectory = nil
+    }
+}
+
+private extension View {
+    /// The page's context-usage refresh points. Automatic reads use `summary`;
+    /// the sheet upgrades to `full` when it opens.
+    func contextUsageRefresh(
+        model: SessionChatModel,
+        sessionID: String,
+        turnEnds: Int,
+        capabilities: V2RuntimeCapabilitySnapshot?,
+        selections: [V2RuntimeSelectionScope: V2SelectionID?]?
+    ) -> some View {
+        self
+            .task(id: sessionID) {
+                await model.refreshContextUsage(sessionID: sessionID)
+            }
+            .onChange(of: turnEnds) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
+            // Capabilities arrive after the page's first frame on a cold open;
+            // the initial read can find them missing, so a capability update
+            // is a refresh point too (it also gates the ring's visibility).
+            .onChange(of: capabilities) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
+            // A model switch changes both the live window and the catalog
+            // window the estimate falls back to.
+            .onChange(of: selections) { _, _ in
+                Task { await model.refreshContextUsage(sessionID: sessionID) }
+            }
     }
 }
 

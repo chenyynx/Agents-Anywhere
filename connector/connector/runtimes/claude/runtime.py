@@ -239,20 +239,24 @@ class ClaudeRuntime(AgentRuntime):
             usage = await self._turns.session_context_usage(
                 session_id, detail=detail
             )
-        except RuntimeUnsupportedError as exc:
-            if exc.method != "session_disconnected":
-                raise
+        except RuntimeUnsupportedError:
+            # Disconnected or no SDK seam: the durable summary is still a
+            # truthful last-known answer, so serve it instead of hiding.
             return await self._cached_context_usage(session_id)
         except RuntimeUnavailableError:
             return await self._cached_context_usage(session_id)
-        await self._context_usage_cache.write(session_id, usage)
+        await self._context_usage_cache.write(
+            self._context_usage_cache_id(session_id), usage
+        )
         return usage
 
     async def _cached_context_usage(
         self,
         session_id: str,
     ) -> RuntimeContextUsage:
-        cached = await self._context_usage_cache.read(session_id)
+        cached = await self._context_usage_cache.read(
+            self._context_usage_cache_id(session_id)
+        )
         if cached is None:
             raise RuntimeUnavailableError("context_usage_unavailable")
         return cached
@@ -382,6 +386,19 @@ class ClaudeRuntime(AgentRuntime):
             "subagent_control_supported": self._turns.subagent_control_supported(),
             "connection_online": self._turns.has_live_connection(session_id),
         }
+
+    def _context_usage_cache_id(self, session_id: str) -> str:
+        """Cache slot per session and selected model.
+
+        A later model switch must not replay the old window through the cache.
+        The selection id is opaque but stable for one model+effort pair.
+        """
+
+        session = self._session_store.get(session_id)
+        selection = (
+            session.selections.get("model") if session is not None else None
+        )
+        return f"{session_id}@{selection or 'default'}"
 
     def _context_usage_context(self) -> dict[str, bool]:
         """The SDK fact behind ``session.context_usage`` support."""

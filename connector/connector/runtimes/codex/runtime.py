@@ -67,6 +67,7 @@ from connector.runtimes.codex.ipc import desktop_app
 from connector.runtimes.codex.lifecycle.runtime_lifecycle import CodexRuntimeLifecycle
 from connector.runtimes.codex.notifications import CodexNotificationProjector
 from connector.runtimes.codex.notifications.projector import notification_event
+from connector.runtimes.codex.sdk.command_notifications import notification_parts
 from connector.runtimes.codex.sdk.runtime_client import (
     CodexModelListResult,
     CodexRuntimeClient,
@@ -527,7 +528,9 @@ class CodexRuntime(AgentRuntime):
             # A connector restart loses the in-memory event; the persisted
             # summary keeps the ring alive (marked cached) until the next
             # `thread/tokenUsage/updated` lands.
-            cached = await self._context_usage_cache.read(session_id)
+            cached = await self._context_usage_cache.read(
+                self._context_usage_cache_id(session_id)
+            )
             if cached is not None:
                 return cached
             raise RuntimeUnavailableError("context_usage_unavailable")
@@ -891,27 +894,34 @@ class CodexRuntime(AgentRuntime):
     async def _handle_notification(self, message: Any) -> None:
         await self._lifecycle.handle_notification(message)
 
+    def _context_usage_cache_id(self, session_id: str) -> str:
+        """Cache slot per session and selected model (a switch changes it)."""
+
+        state = self._session_states.get(session_id)
+        selection = state.selections.get("model") if state is not None else None
+        return f"{session_id}@{selection or 'default'}"
+
     async def _capture_context_usage(self, message: Any) -> None:
         """Record the newest token-usage figures off the notification stream.
 
         Capture is deliberately before projection and best-effort: the
         notification also feeds the timeline, and a malformed frame must never
-        break that path. Resolution mirrors the projector (platform session id,
-        then the thread's cached binding, then the stable synthetic id).
+        break that path. `notification_parts` (the command-turn transport's
+        parser) understands the SDK's typed `Notification` dataclasses as well
+        as dict frames — the type-only `notification_event` path drops this
+        notification because its payload is not in the projection union.
+        Resolution mirrors the projector (platform session id, then the
+        thread's cached binding, then the stable synthetic id).
         """
 
         try:
-            event = notification_event(message)
+            method, params = notification_parts(message)
         except Exception:  # noqa: BLE001 - best effort by contract
             return
-        if event.event_type != "thread/tokenUsage/updated":
+        if method != "thread/tokenUsage/updated":
             return
-        thread_id = event.thread_id or codex_sessions.thread_id_from_result(
-            event.params
-        )
-        session_id = event.platform_session_id or (
-            codex_sessions.session_id_from_notification(event.params)
-        )
+        thread_id = codex_sessions.thread_id_from_result(params)
+        session_id = codex_sessions.session_id_from_notification(params)
         if session_id is None and thread_id is not None:
             cached_state = self._session_states.get_by_external_session_id(thread_id)
             session_id = (
@@ -929,7 +939,7 @@ class CodexRuntime(AgentRuntime):
         if session_id is None:
             return
         snapshot = context_usage_from_notification(
-            event.params,
+            params,
             measured_at=utc_now(),
         )
         if snapshot is None:
@@ -943,7 +953,7 @@ class CodexRuntime(AgentRuntime):
             return
         self._context_usage[session_id] = snapshot
         await self._context_usage_cache.write(
-            session_id,
+            self._context_usage_cache_id(session_id),
             RuntimeContextUsage(
                 runtime="codex",
                 total_tokens=snapshot.used_tokens,

@@ -302,12 +302,13 @@ def test_rpc_dispatches_session_context_usage() -> None:
 
 
 def test_claude_real_cli_payload_regression() -> None:
-    """Golden shape captured live from the bundled CLI (2.1.321, 2026-11-12).
+    """Golden shape verified against the bundled CLI 2.1.321 (2026-11-12).
 
-    The categories carry the CLI's own names and the derived kinds; `skills`
-    arrives nested under `skillFrontmatter` with plugin/path extras that the
-    mapper drops. Keeping this exact shape here is the guard against a CLI
-    field rename silently emptying the sheet.
+    Field names and nesting were checked against the CLI's own response
+    builder; the numbers come from a live run and are not expected to be
+    self-consistent (summary totals and the breakdown use different
+    accounting). Keep this shape as the guard against a CLI field rename
+    silently emptying the sheet.
     """
 
     payload = {
@@ -442,5 +443,120 @@ def test_context_usage_cache_write_failure_is_soft() -> None:
             RuntimeContextUsage(runtime="claude", total_tokens=1),
         )
         # No exception escaped; the live answer is unaffected.
+
+    asyncio.run(run())
+
+
+def test_codex_typed_notification_reaches_the_capture() -> None:
+    """The real SDK delivers a typed `Notification`, not a dict frame.
+
+    This is the seam the first review round caught: the projection-only parser
+    returns the class name for typed payloads, so capture must go through
+    `notification_parts`.
+    """
+
+    from openai_codex.generated.v2_all import (
+        ThreadTokenUsageUpdatedNotification,
+        TokenUsageBreakdown,
+    )
+    from openai_codex.models import Notification
+
+    from connector.runtime_protocol import RuntimeConfig
+    from connector.runtimes.codex.runtime import CodexRuntime
+
+    class _Host(_CacheHost):
+        connector_id = "connector-1"
+        session_namespace = "connector-1"
+
+    async def run() -> None:
+        runtime = CodexRuntime(
+            config=RuntimeConfig(runtime="codex", revision=1, values={}),
+            host=_Host(),  # type: ignore[arg-type]
+        )
+        payload = ThreadTokenUsageUpdatedNotification.model_validate(
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "last": TokenUsageBreakdown(
+                        cachedInputTokens=0,
+                        inputTokens=9_000,
+                        outputTokens=500,
+                        reasoningOutputTokens=0,
+                        totalTokens=9_500,
+                    ).model_dump(by_alias=True),
+                    "total": TokenUsageBreakdown(
+                        cachedInputTokens=0,
+                        inputTokens=12_000,
+                        outputTokens=900,
+                        reasoningOutputTokens=0,
+                        totalTokens=12_900,
+                    ).model_dump(by_alias=True),
+                    "modelContextWindow": 200_000,
+                },
+            }
+        )
+
+        await runtime._capture_context_usage(
+            Notification(method="thread/tokenUsage/updated", payload=payload)
+        )
+
+        snapshots = list(runtime._context_usage.values())
+        assert len(snapshots) == 1
+        assert snapshots[0].used_tokens == 9_500
+        assert snapshots[0].max_tokens == 200_000
+        assert runtime._context_usage_cache._host.data  # persisted
+
+    asyncio.run(run())
+
+
+def test_codex_zero_reading_is_not_a_measurement() -> None:
+    assert (
+        context_usage_from_notification(
+            {"tokenUsage": {"last": {"totalTokens": 0}, "total": {"totalTokens": 0}}},
+            measured_at="t",
+        )
+        is None
+    )
+
+
+def test_context_usage_cache_persists_through_the_real_host(tmp_path) -> None:
+    from connector.runtimes.context_usage_cache import ContextUsageCache
+    from connector.server.runtime_host import ConnectorRuntimeHost
+    from connector.server.sync_state import JsonSyncStateStore
+
+    state_path = tmp_path / "connector-state.json"
+
+    def host() -> ConnectorRuntimeHost:
+        return ConnectorRuntimeHost(
+            "connector-1",
+            notifier=object(),  # type: ignore[arg-type]
+            attachment_downloader=object(),  # type: ignore[arg-type]
+            sync_state_store=JsonSyncStateStore(state_path),
+        )
+
+    async def run() -> None:
+        first = host()
+        cache = ContextUsageCache(first, "claude")
+        await cache.write(
+            "session-1",
+            RuntimeContextUsage(
+                runtime="claude",
+                total_tokens=1234,
+                max_tokens=200_000,
+                percentage=0.6,
+                detail="summary",
+                source="claude.control",
+                measured_at="2026-11-12T00:00:00Z",
+            ),
+        )
+        first._sync_state_store.flush()
+
+        # A fresh host (a connector restart) reads the same durable entry.
+        restarted = host()
+        cached = await ContextUsageCache(restarted, "claude").read("session-1")
+        assert cached is not None
+        assert cached.total_tokens == 1234
+        assert cached.source == "claude.control.cache"
 
     asyncio.run(run())

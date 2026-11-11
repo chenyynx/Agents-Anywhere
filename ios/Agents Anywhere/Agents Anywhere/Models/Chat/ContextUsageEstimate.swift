@@ -11,31 +11,36 @@ import Foundation
 enum ContextUsageEstimate {
     /// Newest item with a real measurement over its own reported window (the
     /// connector stamps the calibrated window on each usage row); the catalog
-    /// window is the fallback when the row has none. A missing window yields
-    /// nil — a ring must never draw a guessed denominator.
+    /// window is the fallback when the row has none.
+    ///
+    /// A measurement without any window still yields a value: the ring keeps
+    /// its slot and draws only the neutral track (no arc), matching the old
+    /// "unknown window" state instead of making the ring disappear. The
+    /// denominator is never guessed.
     static func resolve(
         items: [V2TimelineItem],
         catalogWindow: Int?
     ) -> V2ContextUsage? {
-        // Sort instead of trusting the caller's order: the projection keeps
-        // rows ascending today, but the old ring's tests proved the rule must
-        // hold for any input order.
-        let latest = items.sorted { $0.orderSeq > $1.orderSeq }
-            .lazy.compactMap { item -> V2MessageUsage? in
-                guard let usage = item.usage, usage.contextTokens > 0 else { return nil }
-                return usage
-            }.first
-        guard let latest else { return nil }
-        guard let window = latest.contextWindow ?? catalogWindow, window > 0 else {
-            return nil
+        // One pass, not a sort: this runs on every body evaluation while the
+        // transcript streams. Order-independence is kept by comparing orderSeq
+        // rather than trusting the array order.
+        var newest: (order: Int, usage: V2MessageUsage)?
+        for item in items {
+            guard let usage = item.usage, usage.contextTokens > 0 else { continue }
+            if newest == nil || item.orderSeq > newest!.order {
+                newest = (item.orderSeq, usage)
+            }
         }
+        guard let latest = newest?.usage else { return nil }
         let used = latest.contextTokens
+        let rawWindow = latest.contextWindow ?? catalogWindow
+        let window = rawWindow.flatMap { $0 > 0 ? $0 : nil }
         return V2ContextUsage(
             runtime: "runtime",
             totalTokens: used,
             model: latest.model,
             maxTokens: window,
-            percentage: Double(used) / Double(window) * 100,
+            percentage: window.map { Double(used) / Double($0) * 100 },
             detail: "estimate",
             source: "timeline.estimate"
         )

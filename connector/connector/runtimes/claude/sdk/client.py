@@ -300,9 +300,18 @@ async def get_context_usage_client(
         if detail:
             request["detail"] = detail
         try:
-            result = sender(request)
-            if inspect.isawaitable(result):
-                result = await asyncio.wait_for(result, timeout=timeout)
+            # The SDK's own sender takes the timeout and runs its pending-map
+            # cleanup on expiry; an external wait_for would skip that cleanup
+            # and strand a full response in the pending table.
+            try:
+                result = sender(request, timeout=timeout)
+            except TypeError:
+                result = sender(request)
+                if inspect.isawaitable(result):
+                    result = await asyncio.wait_for(result, timeout=timeout)
+            else:
+                if inspect.isawaitable(result):
+                    result = await result
             if isinstance(result, Mapping):
                 return result
         except (TimeoutError, asyncio.TimeoutError):

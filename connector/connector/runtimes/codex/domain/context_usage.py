@@ -65,7 +65,9 @@ def context_usage_from_notification(
     used = _breakdown_total(usage.get("last"))
     if used is None:
         used = _breakdown_total(usage.get("total"))
-    if used is None:
+    # Zero is not a measurement (the old ring treated all-zero carriers as
+    # "no measurement"); a zero frame must not overwrite a real snapshot.
+    if used is None or used <= 0:
         return None
     window = _int(usage.get("modelContextWindow"))
     if window is None:

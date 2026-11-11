@@ -51,10 +51,15 @@ import Testing
         #expect(estimate?.percentUsed == 1)
     }
 
-    @Test func missingWindowYieldsNoEstimate() throws {
+    @Test func missingWindowKeepsTheRingWithNoArc() throws {
         let row = try item(id: "row", order: 1, usage: ["inputTokens": 1_000])
 
-        #expect(ContextUsageEstimate.resolve(items: [row], catalogWindow: nil) == nil)
+        let estimate = ContextUsageEstimate.resolve(items: [row], catalogWindow: nil)
+
+        #expect(estimate?.totalTokens == 1_000)
+        #expect(estimate?.maxTokens == nil)
+        #expect(estimate?.percentUsed == nil)
+        #expect(estimate?.fraction == nil)
     }
 
     @Test func zeroUsageIsNotAMeasurement() throws {

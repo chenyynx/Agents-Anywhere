@@ -73,9 +73,9 @@ struct ContextUsageSheet: View {
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(String(localized: "上下文"))
-                                .font(.system(size: 15))
+                                .font(.system(size: 13))
                                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-                                .padding(.leading, 16)
+                                .padding(.leading, 20)
                             if let usage = chat.displayedContextUsage {
                                 contextCard(usage)
                             } else {
@@ -102,7 +102,7 @@ struct ContextUsageSheet: View {
                 SheetCloseToolbar { dismiss() }
                 ToolbarItem(placement: .principal) {
                     Text(String(localized: "用量"))
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -153,17 +153,17 @@ struct ContextUsageSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(String(localized: "上下文窗口"))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 Spacer(minLength: 8)
                 if let percent = usage.percentUsed {
                     Text(String(format: String(localized: "已使用 %lld%%"), percent))
-                        .font(.system(size: 15))
+                        .font(.system(size: 13))
                         .monospacedDigit()
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 } else {
                     Text(String(localized: "用量未知"))
-                        .font(.system(size: 15))
+                        .font(.system(size: 13))
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
             }
@@ -193,7 +193,7 @@ struct ContextUsageSheet: View {
                 statusLine(String(localized: "该 Runtime 只提供总体用量，暂无分类明细"))
             }
         }
-        .padding(16)
+        .padding(20)
         .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
     }
 
@@ -201,7 +201,7 @@ struct ContextUsageSheet: View {
         HStack(spacing: 8) {
             if spinner { ProgressView().controlSize(.mini) }
             Text(text)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }
     }
@@ -217,7 +217,7 @@ struct ContextUsageSheet: View {
             text = String(format: String(localized: "%@ / %@ 个 token"), used, total)
         }
         return Text(text)
-            .font(.system(size: 13))
+            .font(.system(size: 12))
             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             .monospacedDigit()
     }
@@ -324,15 +324,15 @@ private struct ContextUsageRow: View {
                 .fill(tone)
                 .frame(width: 8, height: 8)
             Text(label)
-                .font(.system(size: 15))
+                .font(.system(size: 13))
                 .lineLimit(1)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             Text(share)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 46, alignment: .trailing)
@@ -401,11 +401,11 @@ private struct ContextUsageGroups: View {
         } label: {
             HStack {
                 Text(title)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                 Spacer()
                 Text("\(ContextTokenFormat.wan(tokens))")
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .monospacedDigit()
                     .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
             }
@@ -416,12 +416,12 @@ private struct ContextUsageGroups: View {
     private func item(label: String, tokens: Int, isPath: Bool = false) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 15, design: isPath ? .monospaced : .default))
+                .font(.system(size: 13, design: isPath ? .monospaced : .default))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             Text(ContextTokenFormat.wan(tokens))
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .monospacedDigit()
                 .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
         }

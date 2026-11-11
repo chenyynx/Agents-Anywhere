@@ -5,20 +5,21 @@ struct AccentSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        List {
-            Section {
-                ForEach(AppAccent.allCases) { accent in
-                    Button { accentValue = accent.rawValue } label: {
-                        HStack(spacing: 14) {
-                            Circle().fill(AppTheme.accentBackground(accent, colorScheme)).frame(width: 24, height: 24)
-                            Text(accent.title).foregroundStyle(.primary)
-                            Spacer()
-                            if accentValue == accent.rawValue { AppSymbol("checkmark") }
-                        }.padding(.vertical, 6)
+        SettingsScreen(title: String(localized: "Accent color")) {
+            SettingsSection {
+                ForEach(Array(AppAccent.allCases.enumerated()), id: \.element.id) { index, accent in
+                    if index > 0 {
+                        SettingsRowDivider()
                     }
-                    .accessibilityAddTraits(accentValue == accent.rawValue ? .isSelected : [])
+                    SettingsSelectRow(
+                        leadingColor: AppTheme.accentBackground(accent, colorScheme),
+                        title: String(localized: accent.title),
+                        isSelected: accentValue == accent.rawValue
+                    ) {
+                        accentValue = accent.rawValue
+                    }
                 }
             }
-        }.settingsPage(String(localized: "Accent color"))
+        }
     }
 }

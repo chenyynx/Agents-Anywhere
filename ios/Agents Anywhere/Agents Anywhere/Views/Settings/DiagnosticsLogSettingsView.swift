@@ -22,6 +22,7 @@ struct DiagnosticsStatusDot: View {
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = false
+    @Environment(\.colorScheme) private var colorScheme
     @State private var days: [DiagnosticsDay] = []
     @State private var didLoad = false
     @State private var shareItems: [Any] = []
@@ -29,71 +30,60 @@ struct DiagnosticsLogSettingsView: View {
     @State private var confirmsClear = false
 
     var body: some View {
-        List {
-            Section {
-                Toggle(isOn: $enabled) {
-                    Label(String(localized: "Record diagnostics"),
-                          appSymbol: "doc.text.magnifyingglass")
-                        .labelStyle(.titleAndIcon)
-                }
-                .tint(.green)
-            } footer: {
-                Text(String(localized: "Diagnostics stay on this device, never include message content, and are kept for 7 days."))
+        SettingsScreen(title: String(localized: "Diagnostics log")) {
+            SettingsSection(footer: String(localized: "Diagnostics stay on this device, never include message content, and are kept for 7 days.")) {
+                SettingsToggleRow(icon: "doc.text.magnifyingglass",
+                                  title: String(localized: "Record diagnostics"),
+                                  isOn: $enabled)
             }
 
-            Section {
+            SettingsSection(String(localized: "Log files")) {
                 if !didLoad {
                     // A spinner, not "No diagnostics yet": the directory read
                     // is fast but still finishes after the first frame, and the
                     // false empty state read as a flash of missing files.
-                    ProgressView()
-                } else if days.isEmpty {
-                    Text(String(localized: "No diagnostics yet"))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(days) { day in
-                        NavigationLink {
-                            DiagnosticsDayView(day: day)
-                        } label: {
-                            HStack(spacing: 10) {
-                                if day.hasEntries {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                }
-                                Text(day.fileURL.lastPathComponent)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer()
-                                Text(DiagnosticsFormat.bytes(day.size))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                    SettingsRowContainer {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
                     }
-                    .onDelete { offsets in
-                        for day in offsets.map({ days[$0] }) {
-                            ClientDiagnosticsLog.shared.delete(day)
+                } else if days.isEmpty {
+                    SettingsRowContainer {
+                        Text(String(localized: "No diagnostics yet"))
+                            .font(.system(size: 17))
+                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
+                        if index > 0 {
+                            SettingsRowDivider()
                         }
-                        reload()
+                        dayRow(day)
                     }
                 }
-            } header: {
-                Text(String(localized: "Log files"))
             }
 
-            Section {
+            SettingsSection {
                 Button(role: .destructive) {
                     confirmsClear = true
                 } label: {
-                    Label(String(localized: "Clear diagnostics"),
-                          appSymbol: "trash")
-                        .labelStyle(.titleAndIcon)
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("trash", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                        Text(String(localized: "Clear diagnostics"))
+                            .font(.system(size: 17))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .disabled(days.isEmpty)
             }
         }
-        .settingsPage(String(localized: "Diagnostics log"))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -138,6 +128,48 @@ struct DiagnosticsLogSettingsView: View {
         }
     }
 
+    private func dayRow(_ day: DiagnosticsDay) -> some View {
+        NavigationLink {
+            DiagnosticsDayView(day: day)
+        } label: {
+            HStack(spacing: SettingsStyle.iconGap) {
+                AppSymbol("doc.text", size: 18)
+                    .frame(width: SettingsStyle.iconFrame)
+                    .foregroundStyle(SettingsStyle.icon(colorScheme))
+                Text(day.fileURL.lastPathComponent)
+                    .font(.system(size: 17))
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                if day.hasEntries {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text(DiagnosticsFormat.bytes(day.size))
+                    .font(.system(size: 15))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+            }
+            .padding(.horizontal, SettingsStyle.rowPadding)
+            .padding(.vertical, 12)
+            .frame(minHeight: SettingsStyle.rowMinHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) {
+                ClientDiagnosticsLog.shared.delete(day)
+                reload()
+            } label: {
+                Label(String(localized: "Delete"), systemImage: "trash")
+            }
+        }
+    }
+
     private func reload() {
         days = ClientDiagnosticsLog.shared.days()
     }
@@ -155,6 +187,7 @@ struct DiagnosticsDayView: View {
     let day: DiagnosticsDay
     @State private var text: String?
     @State private var copied = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -162,7 +195,7 @@ struct DiagnosticsDayView: View {
                 if text.isEmpty {
                     Text(String(localized: "No entries"))
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding()
                 } else {
@@ -173,7 +206,9 @@ struct DiagnosticsDayView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .settingsPage(day.fileURL.lastPathComponent)
+        .background(SettingsStyle.background(colorScheme).ignoresSafeArea())
+        .navigationTitle(day.fileURL.lastPathComponent)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {

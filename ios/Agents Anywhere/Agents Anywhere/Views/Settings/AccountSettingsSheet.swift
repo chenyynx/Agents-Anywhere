@@ -3,6 +3,7 @@ import SwiftUI
 struct AccountSettingsSheet: View {
     let appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppAppearance.storageKey) private var appearanceValue = AppAppearance.system.rawValue
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -11,8 +12,6 @@ struct AccountSettingsSheet: View {
     private var renderModeRaw = TimelineRenderMode.code.rawValue
     @AppStorage(LocalCachePolicy.key)
     private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
-    @State private var timelineLastActive: Date?
-
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .code
     }
@@ -27,146 +26,25 @@ struct AccountSettingsSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            SettingsScreen(title: String(localized: "Settings"),
+                           close: close, closeDisabled: isWorking) {
                 if let me = appState.me {
-                    Section {
-                        HStack(spacing: 16) {
-                            AccountAvatarView(displayName: me.accountLabel, source: appState.accountAvatarSource, size: 60)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(me.accountLabel).font(.title3.weight(.semibold))
-                                if let email = me.email { Text(email).font(.subheadline).foregroundStyle(.secondary) }
-                                Text(me.role == .admin ? String(localized: "Administrator") : String(localized: "Member"))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                        }.padding(.vertical, 12)
-                    }.listRowSeparator(.hidden)
-
-                    Section(String(localized: "Account")) {
-                        NavigationLink { AccountIdentitySettingsView(mode: .nickname, draft: $drafts.nickname) } label: {
-                            SettingsRow(title: String(localized: "Nickname"), symbol: "person.text.rectangle", value: me.displayName)
-                        }
-                        NavigationLink { AccountIdentitySettingsView(mode: .email, draft: $drafts.email) } label: {
-                            SettingsRow(title: String(localized: "Email"), symbol: "envelope", value: me.email)
-                        }
-                        NavigationLink { AvatarSettingsView(draft: $drafts.avatar) } label: {
-                            SettingsRow(title: String(localized: "Profile photo"), symbol: "person.crop.circle")
-                        }
-                        NavigationLink { PasswordSettingsView(draft: $drafts.password) } label: {
-                            SettingsRow(title: String(localized: "Password"), symbol: "key")
-                        }
-                    }
+                    accountCard(me)
+                    accountSection(me)
                 }
-
-                Section(String(localized: "App")) {
-                    NavigationLink { AppearanceSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Appearance"), symbol: "circle.lefthalf.filled",
-                            value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title))
-                    }
-                    NavigationLink { AccentSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Accent color"), symbol: "paintpalette",
-                            value: String(localized: AppAccent.resolve(accentValue).title))
-                    }
-                    NavigationLink { SettingsLanguageView() } label: {
-                        SettingsRow(title: String(localized: "Language"), symbol: "globe", value: SettingsLanguageView.currentLanguage)
-                    }
-                    NavigationLink { CacheSettingsView() } label: {
-                        SettingsRow(title: String(localized: "Cache"), symbol: "internaldrive",
-                                    value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title)
-                    }
-                    Toggle(isOn: Binding(
-                        get: { !showsSessionList },
-                        set: { showsSessionList = !$0 }
-                    )) {
-                        Label(String(localized: "Project mode"), appSymbol: "folder")
-                            .labelStyle(.titleAndIcon)
-                    }.tint(.green)
-                    Toggle(isOn: $compactSessionList) {
-                        Label(String(localized: "Single-line sessions"), appSymbol: "sidebar.left")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .tint(.green)
-                    .disabled(!showsSessionList)
-                }
-                Section {
-                    NavigationLink {
-                        TimelineRenderModeSettingsView()
-                    } label: {
-                        HStack {
-                            Label(String(localized: "步骤展示"), appSymbol: "rectangle.stack")
-                                .labelStyle(.titleAndIcon)
-                            Spacer()
-                            Text(renderMode.title)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } footer: {
-                    if let timelineLastActive {
-                        Text(renderMode.detail + "\n"
-                            + String(localized: "上次生效：\(timelineLastActive.formatted(date: .abbreviated, time: .shortened))"))
-                    } else {
-                        Text(renderMode.detail)
-                    }
-                }
-                Section(String(localized: "Help & diagnostics")) {
-                    NavigationLink {
-                        DiagnosticsLogSettingsView()
-                    } label: {
-                        HStack {
-                            Label(String(localized: "Diagnostics log"),
-                                  appSymbol: "doc.text.magnifyingglass")
-                                .labelStyle(.titleAndIcon)
-                            Spacer()
-                            DiagnosticsStatusDot()
-                        }
-                    }
-                }
-                Section(String(localized: "Workspace")) {
-                    NavigationLink { SettingsServerView() } label: {
-                        SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)
-                    }
-                }
+                appSection
+                connectionSection
+                supportSection
+                signOutSection
 #if AA_TIMELINE_PROBE
-                Section(String(localized: "开发者")) {
-                    Button {
-                        diagnosticsPresented = true
-                    } label: {
-                        SettingsRow(title: String(localized: "诊断与日志"), symbol: "stethoscope",
-                                    value: "b\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")")
-                    }
-                    .foregroundStyle(.primary)
-                }
+                developerSection
 #endif
-                Section {
-                    NavigationLink {
-                        PrivacyPolicyContent().settingsPage(String(localized: "privacyPolicy.title"))
-                    } label: {
-                        SettingsRow(title: String(localized: "privacyPolicy.title"), symbol: "hand.raised")
-                    }
-                    NavigationLink { SettingsAboutView() } label: {
-                        SettingsRow(title: String(localized: "About"), symbol: "info.circle")
-                    }
-                }
-                Section {
-                    Button(role: .destructive) { confirmsSignOut = true } label: {
-                        SettingsRow(title: String(localized: "Sign out"), symbol: "rectangle.portrait.and.arrow.forward")
-                            .foregroundStyle(.red)
-                    }.disabled(appState.isAccountWorking)
-                } footer: {
-                    Text("Agents Anywhere · \(SettingsAboutView.version)")
-                        .font(.footnote).frame(maxWidth: .infinity).padding(.top, 16)
-                }
+                Text("Agents Anywhere · \(SettingsAboutView.version) (\(buildLabel))")
+                    .font(.footnote)
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
             }
-            .listStyle(.insetGrouped)
-            .onAppear { refreshTimelineMarker() }
-            .onChange(of: renderModeRaw) { _, _ in
-                // A mode change must not inherit the previous run's timestamp:
-                // clear it so the next session proves this mode ran.
-                UserDefaults.standard.removeObject(forKey: TimelineCollectionSwitch.lastActiveKey)
-                timelineLastActive = nil
-            }
-            .navigationTitle(String(localized: "Settings")).navigationBarTitleDisplayMode(.inline)
-            .toolbar { SheetCloseToolbar(disabled: isWorking, action: close) }
             .refreshable { _ = await appState.refreshAccount() }
             .alert(String(localized: "Sign out?"), isPresented: $confirmsSignOut) {
                 Button(String(localized: "Cancel"), role: .cancel) {}
@@ -184,7 +62,6 @@ struct AccountSettingsSheet: View {
             toasts.update(source: "account", failure: .init(kind: .rejected, message: error))
             appState.dismissAccountError()
         }
-        .environment(\.closeSettings, close)
         // Native sheet presentation can create a new hosting boundary on Mac.
         // Use the caller's store here and provide it to every settings subpage.
         .environment(appState)
@@ -196,14 +73,161 @@ struct AccountSettingsSheet: View {
 #endif
     }
 
-    private var isWorking: Bool { appState.isAccountWorking || drafts.isWorking }
+    // MARK: - Sections
 
-    /// The controller stamps this on first appearance. Showing the timestamp
-    /// (not just the switch value) is the C4 step-0 proof that a session really
-    /// rendered through the collection container.
-    private func refreshTimelineMarker() {
-        timelineLastActive = UserDefaults.standard.object(forKey: TimelineCollectionSwitch.lastActiveKey) as? Date
+    private func accountCard(_ me: AuthMe) -> some View {
+        let role = me.role == .admin
+            ? String(localized: "Administrator")
+            : String(localized: "Member")
+        let detail = [me.email, role].compactMap { $0 }.joined(separator: " · ")
+        return HStack(spacing: 14) {
+            AccountAvatarView(displayName: me.accountLabel,
+                              source: appState.accountAvatarSource, size: 36)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(me.accountLabel)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                Text(detail)
+                    .font(.system(size: 15))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, SettingsStyle.rowPadding)
+        .padding(.vertical, 14)
+        .background(SettingsStyle.card(colorScheme),
+                    in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius, style: .continuous))
     }
+
+    private func accountSection(_ me: AuthMe) -> some View {
+        SettingsSection(String(localized: "Account")) {
+            SettingsNavigationRow(icon: "person.text.rectangle",
+                                  title: String(localized: "Nickname"),
+                                  value: me.displayName,
+                                  destination: AccountIdentitySettingsView(mode: .nickname, draft: $drafts.nickname))
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "envelope",
+                                  title: String(localized: "Email"),
+                                  value: me.email,
+                                  destination: AccountIdentitySettingsView(mode: .email, draft: $drafts.email))
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "person.crop.circle",
+                                  title: String(localized: "Profile photo"),
+                                  destination: AvatarSettingsView(draft: $drafts.avatar))
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "key",
+                                  title: String(localized: "Password"),
+                                  destination: PasswordSettingsView(draft: $drafts.password))
+        }
+    }
+
+    private var appSection: some View {
+        SettingsSection(String(localized: "App")) {
+            SettingsNavigationRow(icon: "circle.lefthalf.filled",
+                                  title: String(localized: "Appearance"),
+                                  value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title),
+                                  destination: AppearanceSettingsView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "paintpalette",
+                                  title: String(localized: "Accent color"),
+                                  value: String(localized: AppAccent.resolve(accentValue).title),
+                                  destination: AccentSettingsView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "globe",
+                                  title: String(localized: "Language"),
+                                  value: SettingsLanguageView.currentLanguage,
+                                  destination: SettingsLanguageView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "archivebox",
+                                  title: String(localized: "Cache"),
+                                  value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title,
+                                  destination: CacheSettingsView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "arrow.down.document",
+                                  title: String(localized: "步骤展示"),
+                                  value: renderMode.title,
+                                  destination: TimelineRenderModeSettingsView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "doc.text.magnifyingglass",
+                                  title: String(localized: "Diagnostics log"),
+                                  showsStatusDot: true,
+                                  destination: DiagnosticsLogSettingsView())
+            SettingsRowDivider()
+            SettingsToggleRow(icon: "folder",
+                              title: String(localized: "Project mode"),
+                              isOn: Binding(get: { !showsSessionList }, set: { showsSessionList = !$0 }))
+            SettingsRowDivider()
+            SettingsToggleRow(icon: "sidebar.left",
+                              title: String(localized: "Single-line sessions"),
+                              isOn: $compactSessionList,
+                              isEnabled: showsSessionList)
+        }
+    }
+
+    private var connectionSection: some View {
+        SettingsSection(String(localized: "Workspace")) {
+            SettingsNavigationRow(icon: "server.rack",
+                                  title: String(localized: "Server"),
+                                  value: appState.serverURL?.host,
+                                  destination: SettingsServerView())
+        }
+    }
+
+    private var supportSection: some View {
+        SettingsSection {
+            SettingsNavigationRow(icon: "hand.raised",
+                                  title: String(localized: "privacyPolicy.title"),
+                                  destination: PrivacyPolicyContent())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "info.circle",
+                                  title: String(localized: "About"),
+                                  value: SettingsAboutView.version,
+                                  destination: SettingsAboutView())
+        }
+    }
+
+    private var signOutSection: some View {
+        SettingsSection {
+            Button {
+                confirmsSignOut = true
+            } label: {
+                HStack(spacing: SettingsStyle.iconGap) {
+                    AppSymbol("rectangle.portrait.and.arrow.forward", size: 18)
+                        .frame(width: SettingsStyle.iconFrame)
+                    Text(String(localized: "Sign out"))
+                        .font(.system(size: 17))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, SettingsStyle.rowPadding)
+                .padding(.vertical, 12)
+                .frame(minHeight: SettingsStyle.rowMinHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isAccountWorking)
+        }
+    }
+
+#if AA_TIMELINE_PROBE
+    private var developerSection: some View {
+        SettingsSection(String(localized: "开发者")) {
+            SettingsDisclosureRow(icon: "gearshape",
+                                  title: String(localized: "诊断与日志"),
+                                  value: buildLabel) {
+                diagnosticsPresented = true
+            }
+        }
+    }
+#endif
+
+    private var buildLabel: String {
+        "b\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")"
+    }
+
+    private var isWorking: Bool { appState.isAccountWorking || drafts.isWorking }
 
     private func close() {
         guard !isWorking else { return }

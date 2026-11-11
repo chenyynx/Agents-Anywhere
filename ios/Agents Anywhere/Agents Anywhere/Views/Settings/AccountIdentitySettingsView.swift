@@ -6,6 +6,7 @@ struct AccountIdentitySettingsView: View {
     @Binding var draft: AccountIdentityDraft
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var config: AuthConfig?
     @State private var isLoadingConfig = false
     @State private var cooldown = 0
@@ -13,7 +14,7 @@ struct AccountIdentitySettingsView: View {
     @State private var error: String?
 
     private var normalized: String { draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var title: String { mode == .nickname ? String(localized: "Nickname") : String(localized: "Email") }
+    private var title: LocalizedStringResource { mode == .nickname ? "Nickname" : "Email" }
     private var validEmail: Bool { normalized.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil }
     private var verificationRequired: Bool { config?.emailVerificationRequired == true }
     private var canSave: Bool {
@@ -22,44 +23,77 @@ struct AccountIdentitySettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section(title) {
-                TextField(title, text: $draft.text)
-                    .textContentType(mode == .nickname ? .nickname : .emailAddress)
-                    .keyboardType(mode == .email ? .emailAddress : .default)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .onChange(of: draft.text) { _, _ in draft.code = ""; codeSent = false }
+        SettingsScreen(title: String(localized: title)) {
+            SettingsSection(String(localized: title)) {
+                SettingsRowContainer(verticalPadding: 14) {
+                    TextField(String(localized: title), text: $draft.text)
+                        .textContentType(mode == .nickname ? .nickname : .emailAddress)
+                        .keyboardType(mode == .email ? .emailAddress : .default)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .font(.system(size: 17))
+                        .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        .onChange(of: draft.text) { _, _ in draft.code = ""; codeSent = false }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+
             if mode == .email {
                 if draft.text == draft.initialText && !draft.initialText.isEmpty {
-                    Section {
-                        LabeledContent(String(localized: "Email status"),
-                            value: appState.me?.emailVerified == true ? String(localized: "Verified") : String(localized: "Not verified"))
+                    SettingsSection {
+                        SettingsRowLabelContent(icon: "envelope",
+                                                title: String(localized: "Email status"),
+                                                value: appState.me?.emailVerified == true
+                                                    ? String(localized: "Verified")
+                                                    : String(localized: "Not verified"),
+                                                showsChevron: false)
                     }
                 }
-                Section {
+                SettingsSection(footer: config.map { !$0.emailVerificationRequired }
+                                == true ? String(localized: "This service accepts email without a verification code.") : nil) {
                     if isLoadingConfig {
-                        ProgressView(String(localized: "Loading email settings…"))
+                        SettingsRowContainer {
+                            ProgressView(String(localized: "Loading email settings…"))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else if config == nil {
-                        Button(String(localized: "Retry loading email settings")) { Task { await loadConfig() } }
+                        SettingsDisclosureRow(icon: "arrow.clockwise",
+                                              title: String(localized: "Retry loading email settings"),
+                                              showsChevron: false) {
+                            Task { await loadConfig() }
+                        }
                     } else if verificationRequired {
-                        TextField(String(localized: "Email verification code"), text: $draft.code)
-                            .textContentType(.oneTimeCode).keyboardType(.numberPad)
-                            .onChange(of: draft.code) { _, _ in draft.code = String(draft.code.filter(\.isNumber).prefix(6)) }
-                        Button(cooldown > 0 ? String(localized: "Resend in \(cooldown) s") : String(localized: "Send verification code"), action: sendCode)
-                            .disabled(!validEmail || cooldown > 0 || draft.isWorking)
-                        if codeSent { Text(String(localized: "Code sent. Check your inbox.")).foregroundStyle(.secondary) }
-                    }
-                } footer: {
-                    if let config, !config.emailVerificationRequired {
-                        Text(String(localized: "This service accepts email without a verification code."))
+                        SettingsRowContainer(verticalPadding: 14) {
+                            TextField(String(localized: "Email verification code"), text: $draft.code)
+                                .textContentType(.oneTimeCode).keyboardType(.numberPad)
+                                .font(.system(size: 17))
+                                .foregroundStyle(SettingsStyle.ink(colorScheme))
+                                .onChange(of: draft.code) { _, _ in draft.code = String(draft.code.filter(\.isNumber).prefix(6)) }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        SettingsRowDivider()
+                        SettingsDisclosureRow(icon: "arrow.up.right",
+                                              title: cooldown > 0
+                                                  ? String(localized: "Resend in \(cooldown) s")
+                                                  : String(localized: "Send verification code"),
+                                              showsChevron: false,
+                                              isEnabled: validEmail && cooldown == 0 && !draft.isWorking) {
+                            sendCode()
+                        }
+                        if codeSent {
+                            SettingsRowDivider()
+                            SettingsRowContainer {
+                                Text(String(localized: "Code sent. Check your inbox."))
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                     }
                 }
             }
         }
         .textFieldStyle(.plain)
         .disabled(draft.isWorking)
-        .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
         .toolbar { SheetSaveToolbar(isWorking: draft.isWorking, saveDisabled: !canSave, onSave: save) }
         .task {
             if !draft.didInitialize {

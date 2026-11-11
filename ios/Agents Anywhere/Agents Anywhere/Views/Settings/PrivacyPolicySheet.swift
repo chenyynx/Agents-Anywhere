@@ -7,8 +7,6 @@ struct PrivacyPolicySheet: View {
     var body: some View {
         NavigationStack {
             PrivacyPolicyContent()
-                .navigationTitle(String(localized: "privacyPolicy.title"))
-                .navigationBarTitleDisplayMode(.inline)
                 .toolbar { SheetCloseToolbar { dismiss() } }
         }
         .appSheetPresentation(.expanded)
@@ -17,51 +15,62 @@ struct PrivacyPolicySheet: View {
 
 /// Settings pushes the same content inside its existing navigation stack.
 struct PrivacyPolicyContent: View {
-    var body: some View {
-        List {
-            Section {
-                paragraph("privacyPolicy.introduction")
-            } header: {
-                Text(verbatim: "Agents Anywhere")
-            } footer: {
-                Text(String(localized: "privacyPolicy.updated"))
-            }
+    @Environment(\.colorScheme) private var colorScheme
 
-            Section(String(localized: "privacyPolicy.server.title")) {
+    var body: some View {
+        SettingsScreen(title: String(localized: "privacyPolicy.title")) {
+            SettingsSection(String(verbatim: "Agents Anywhere"),
+                            footer: String(localized: "privacyPolicy.updated")) {
+                paragraph("privacyPolicy.introduction")
+            }
+            SettingsSection(String(localized: "privacyPolicy.server.title")) {
                 paragraph("privacyPolicy.server.body")
             }
-
-            Section(String(localized: "privacyPolicy.agents.title")) {
+            SettingsSection(String(localized: "privacyPolicy.agents.title")) {
                 paragraph("privacyPolicy.agents.body")
+                SettingsRowDivider(leading: SettingsStyle.rowPadding)
                 paragraph("privacyPolicy.externalContent.body")
             }
-
-            Section(String(localized: "privacyPolicy.localStorage.title")) {
+            SettingsSection(String(localized: "privacyPolicy.localStorage.title")) {
                 paragraph("privacyPolicy.localStorage.body")
             }
-
-            Section(String(localized: "privacyPolicy.permissions.title")) {
+            SettingsSection(String(localized: "privacyPolicy.permissions.title")) {
                 paragraph("privacyPolicy.permissions.body")
             }
-
-            Section(String(localized: "privacyPolicy.retention.title")) {
+            SettingsSection(String(localized: "privacyPolicy.retention.title")) {
                 paragraph("privacyPolicy.retention.body")
             }
-
-            Section(String(localized: "privacyPolicy.contact.title")) {
+            SettingsSection(String(localized: "privacyPolicy.contact.title")) {
                 paragraph("privacyPolicy.contact.body")
+                SettingsRowDivider(leading: SettingsStyle.rowPadding)
                 Link(destination: URL(string: "https://github.com/anywhere-labs/Agents-Anywhere")!) {
-                    Label(String(localized: "privacyPolicy.projectSupport"), appSymbol: "arrow.up.right")
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("arrow.up.right", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                        Text(String(localized: "privacyPolicy.projectSupport"))
+                            .font(.system(size: 17))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SettingsStyle.controlTint(colorScheme))
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
                 }
             }
         }
-        .listStyle(.insetGrouped)
     }
 
     private func paragraph(_ text: LocalizedStringResource) -> some View {
-        Text(text)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
+        SettingsRowContainer(verticalPadding: 16) {
+            Text(text)
+                .font(.system(size: 15))
+                .foregroundStyle(SettingsStyle.ink(colorScheme))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

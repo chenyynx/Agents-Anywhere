@@ -2,29 +2,34 @@ import SwiftUI
 
 struct PasswordSettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var colorScheme
 
     @Binding var draft: AccountPasswordDraft
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            Section(String(localized: "New password")) {
-                SecureField(String(localized: "New password"), text: $draft.password)
-                    .textContentType(.newPassword)
+        SettingsScreen(title: String(localized: "Password")) {
+            SettingsSection(String(localized: "New password")) {
+                SettingsRowContainer(verticalPadding: 14) {
+                    SecureField(String(localized: "New password"), text: $draft.password)
+                        .textContentType(.newPassword)
+                        .font(.system(size: 17))
+                        .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            Section {
-                SecureField(String(localized: "Confirm password"), text: $draft.confirmation)
-                    .textContentType(.newPassword)
-            } header: {
-                Text(String(localized: "Confirm password"))
-            } footer: {
-                Text(String(localized: "Use at least 8 characters. Changing the password does not sign out this device."))
+            SettingsSection(String(localized: "Confirm password"),
+                            footer: String(localized: "Use at least 8 characters. Changing the password does not sign out this device.")) {
+                SettingsRowContainer(verticalPadding: 14) {
+                    SecureField(String(localized: "Confirm password"), text: $draft.confirmation)
+                        .textContentType(.newPassword)
+                        .font(.system(size: 17))
+                        .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-
         }
         .textFieldStyle(.plain)
-        .navigationTitle(String(localized: "Password"))
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             SheetSaveToolbar(isWorking: appState.isAccountWorking,
                 saveDisabled: draft.password.count < 8 || draft.password != draft.confirmation,

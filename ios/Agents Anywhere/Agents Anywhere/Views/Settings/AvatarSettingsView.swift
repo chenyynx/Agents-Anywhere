@@ -4,48 +4,77 @@ import SwiftUI
 struct AvatarSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     @Binding var draft: AccountAvatarDraft
     @State private var localError: String?
 
     var body: some View {
-        Form {
-            Section {
-                AvatarEditorPreview(
-                    displayName: appState.me?.accountLabel ?? "?",
-                    currentSource: appState.accountAvatarSource,
-                    selectedImage: draft.selectedImage,
-                    zoom: $draft.zoom,
-                    offset: $draft.offset
-                )
-                .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
+        SettingsScreen(title: String(localized: "Profile photo")) {
+            SettingsSection {
+                SettingsRowContainer(verticalPadding: 16) {
+                    AvatarEditorPreview(
+                        displayName: appState.me?.accountLabel ?? "?",
+                        currentSource: appState.accountAvatarSource,
+                        selectedImage: draft.selectedImage,
+                        zoom: $draft.zoom,
+                        offset: $draft.offset
+                    )
+                    .frame(maxWidth: .infinity)
+                }
             }
 
-            Section {
+            SettingsSection {
                 PhotosPicker(selection: $draft.selectedItem, matching: .images) {
-                    Label(String(localized: "Choose photo"), appSymbol: "photo.on.rectangle")
-                }
-
-                if draft.selectedImage != nil {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(String(localized: "Zoom"))
-                            .font(.subheadline)
-                        Slider(value: $draft.zoom, in: 1 ... 3)
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("photo.on.rectangle", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                            .foregroundStyle(SettingsStyle.icon(colorScheme))
+                        Text(String(localized: "Choose photo"))
+                            .font(.system(size: 17))
+                            .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        Spacer(minLength: 8)
                     }
-
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
+                }
+                if draft.selectedImage != nil {
+                    SettingsRowDivider()
+                    SettingsRowContainer(verticalPadding: 14) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(String(localized: "Zoom"))
+                                .font(.subheadline)
+                                .foregroundStyle(SettingsStyle.ink(colorScheme))
+                            Slider(value: $draft.zoom, in: 1 ... 3)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
 
             if appState.me?.avatar != nil {
-                Section {
-                    Button(String(localized: "Remove profile photo"), role: .destructive, action: removeAvatar)
-                        .disabled(appState.isAccountWorking)
+                SettingsSection {
+                    Button(role: .destructive, action: removeAvatar) {
+                        HStack(spacing: SettingsStyle.iconGap) {
+                            AppSymbol("trash", size: 18)
+                                .frame(width: SettingsStyle.iconFrame)
+                            Text(String(localized: "Remove profile photo"))
+                                .font(.system(size: 17))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, SettingsStyle.rowPadding)
+                        .padding(.vertical, 12)
+                        .frame(minHeight: SettingsStyle.rowMinHeight)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(appState.isAccountWorking)
                 }
             }
         }
-        .navigationTitle(String(localized: "Profile photo"))
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             SheetSaveToolbar(isWorking: appState.isAccountWorking, saveDisabled: draft.selectedImage == nil, onSave: uploadAvatar)
         }

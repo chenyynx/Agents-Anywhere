@@ -7,30 +7,21 @@ struct TimelineRenderModeSettingsView: View {
     private var renderModeRaw = TimelineRenderMode.code.rawValue
 
     var body: some View {
-        List {
-            ForEach(TimelineRenderMode.allCases) { mode in
-                Button {
-                    renderModeRaw = mode.rawValue
-                } label: {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(mode.title)
-                                .foregroundStyle(.primary)
-                            Text(mode.detail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if mode.rawValue == renderModeRaw {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(.tint)
-                        }
+        SettingsScreen(title: String(localized: "步骤展示")) {
+            SettingsSection {
+                ForEach(Array(TimelineRenderMode.allCases.enumerated()), id: \.element.id) { index, mode in
+                    if index > 0 {
+                        SettingsRowDivider()
+                    }
+                    SettingsSelectRow(
+                        title: mode.title,
+                        subtitle: mode.detail,
+                        isSelected: mode.rawValue == renderModeRaw
+                    ) {
+                        renderModeRaw = mode.rawValue
                     }
                 }
-                .buttonStyle(.plain)
             }
         }
-        .navigationTitle(String(localized: "步骤展示"))
-        .navigationBarTitleDisplayMode(.inline)
     }
 }

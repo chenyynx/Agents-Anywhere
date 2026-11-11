@@ -5,6 +5,7 @@ import SwiftUI
 /// and pinned sessions.
 struct CacheSettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var usage: LocalCacheUsage?
     @State private var limit = LocalCachePolicy.current
     @State private var confirmsClear = false
@@ -27,65 +28,71 @@ struct CacheSettingsView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                LabeledContent(String(localized: "Used"), value: usageText)
-                ProgressView(value: progress)
-                    .tint(.accentColor)
-                if let usage {
-                    Text(String(localized: "\(usage.sessions) sessions cached"))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text(String(localized: "Cached message rows, SubAgent activity and attachment previews."))
-            }
-
-            Section {
-                ForEach(LocalCacheLimit.allCases) { option in
-                    Button {
-                        choose(option)
-                    } label: {
-                        HStack {
-                            Text(option.title).foregroundStyle(.primary)
-                            Spacer()
-                            if option == limit {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.tint)
-                            }
+        SettingsScreen(title: String(localized: "Cache")) {
+            SettingsSection(footer: String(localized: "Cached message rows, SubAgent activity and attachment previews.")) {
+                SettingsRowContainer(verticalPadding: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Text(String(localized: "Used"))
+                                .font(.system(size: 17))
+                                .foregroundStyle(SettingsStyle.ink(colorScheme))
+                            Spacer(minLength: 8)
+                            Text(usageText)
+                                .font(.system(size: 17))
+                                .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                        }
+                        ProgressView(value: progress)
+                            .tint(SettingsStyle.controlTint(colorScheme))
+                        if let usage {
+                            Text(String(localized: "\(usage.sessions) sessions cached"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         }
                     }
-                    .accessibilityAddTraits(option == limit ? .isSelected : [])
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } header: {
-                Text(String(localized: "Cache limit"))
-            } footer: {
-                Text(String(localized: "Fixed sessions are never cleared. Unlimited still respects the device's free space."))
             }
 
-            Section {
-                Toggle(isOn: Binding(
-                    get: { LocalTimelineStore.appEnabled },
-                    set: { LocalTimelineStore.appEnabled = $0 }
-                )) {
-                    Label(String(localized: "Local transcript cache (Beta)"), systemImage: "cylinder.split.1x2")
+            SettingsSection(String(localized: "Cache limit"),
+                            footer: String(localized: "Fixed sessions are never cleared. Unlimited still respects the device's free space.")) {
+                ForEach(Array(LocalCacheLimit.allCases.enumerated()), id: \.element.id) { index, option in
+                    if index > 0 {
+                        SettingsRowDivider()
+                    }
+                    SettingsSelectRow(title: option.title, isSelected: option == limit) {
+                        choose(option)
+                    }
                 }
-            } footer: {
-                Text(String(localized: "Takes effect on the next app launch. Turn off to fall back to the JSON archive."))
             }
 
-            Section {
+            SettingsSection(footer: String(localized: "Takes effect on the next app launch. Turn off to fall back to the JSON archive.")) {
+                SettingsToggleRow(icon: "archivebox",
+                                  title: String(localized: "Local transcript cache (Beta)"),
+                                  isOn: Binding(get: { LocalTimelineStore.appEnabled },
+                                                set: { LocalTimelineStore.appEnabled = $0 }))
+            }
+
+            SettingsSection(footer: String(localized: "Drafts, queued messages and notification state are kept.")) {
                 Button(role: .destructive) {
                     confirmsClear = true
                 } label: {
-                    Label(String(localized: "Clear cache"), systemImage: "trash")
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("trash", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                        Text(String(localized: "Clear cache"))
+                            .font(.system(size: 17))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .disabled(isWorking || service == nil)
-            } footer: {
-                Text(String(localized: "Drafts, queued messages and notification state are kept."))
             }
         }
-        .settingsPage(String(localized: "Cache"))
         .task { await refresh() }
         .confirmationDialog(String(localized: "Clear cached session content?"),
                             isPresented: $confirmsClear, titleVisibility: .visible) {

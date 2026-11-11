@@ -35,7 +35,7 @@ struct AddToChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    private enum Page: Hashable { case models, permissions }
+    private enum Page: Hashable { case models, efforts, permissions }
     private let tile: CGFloat = 100
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -43,6 +43,10 @@ struct AddToChatSheet: View {
 
     private var recent: RecentPhotosLoader {
         sharedRecentPhotos ?? localRecentPhotos
+    }
+
+    private var showsEffortRow: Bool {
+        settings.model != nil && !(settings.model?.reasoning.isEmpty ?? true)
     }
 
     var body: some View {
@@ -55,10 +59,25 @@ struct AddToChatSheet: View {
                             value: nil, enabled: canAttach, action: onFiles)
                     }
                     card {
-                        row(icon: "anthropicon.agent", title: String(localized: "模型"),
-                            value: settings.modelLabel,
-                            enabled: canSelectModel && !settings.catalog.models.isEmpty) {
-                            path.append(.models)
+                        VStack(spacing: 0) {
+                            row(icon: "anthropicon.agent", title: String(localized: "模型"),
+                                value: settings.modelLabel,
+                                enabled: canSelectModel && !settings.catalog.models.isEmpty) {
+                                path.append(.models)
+                            }
+                            // Official puts the reasoning effort on its own row
+                            // under the model row, separated by a hairline.
+                            if showsEffortRow {
+                                Divider()
+                                    .padding(.leading, ChatSheetMetrics.dividerLeadingInset)
+                                    .padding(.trailing, ChatSheetMetrics.dividerTrailingInset)
+                                row(icon: "anthropicon.extendedThinking",
+                                    title: String(localized: "思考强度"),
+                                    value: settings.reasoning?.title ?? String(localized: "默认"),
+                                    enabled: canSelectModel) {
+                                    path.append(.efforts)
+                                }
+                            }
                         }
                     }
                     card {
@@ -87,7 +106,7 @@ struct AddToChatSheet: View {
                         }
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, ChatSheetMetrics.horizontalInset)
                 .padding(.top, 8)
                 .padding(.bottom, 24)
             }
@@ -119,6 +138,13 @@ struct AddToChatSheet: View {
                         onReload: onReload, onApply: onApply, applyError: applyError,
                         onFinished: { dismiss() })
                         .navigationTitle(String(localized: "选择模型"))
+                        .navigationBarTitleDisplayMode(.inline)
+                case .efforts:
+                    EffortSelectionList(settings: settings,
+                        canSelectModel: canSelectModel,
+                        onApply: onApply, applyError: applyError,
+                        onFinished: { dismiss() })
+                        .navigationTitle(String(localized: "思考强度"))
                         .navigationBarTitleDisplayMode(.inline)
                 case .permissions: permissionsPage
                 }
@@ -286,7 +312,7 @@ struct AddToChatSheet: View {
             }
             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, ChatSheetMetrics.rowVerticalPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -361,7 +387,7 @@ struct AddToChatSheet: View {
                             Spacer(minLength: 8)
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, ChatSheetMetrics.rowVerticalPadding)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -370,7 +396,8 @@ struct AddToChatSheet: View {
                 }
             }
             .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
-            .padding(16)
+            .padding(.horizontal, ChatSheetMetrics.horizontalInset)
+            .padding(.vertical, 16)
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.composerSheetBackground(colorScheme).ignoresSafeArea())

@@ -42,6 +42,9 @@ enum AppSymbolAssets {
         "anthropicon.fileAdd": "anthropicon-fileAdd",
         "anthropicon.fastforward": "anthropicon-fastforward",
         "anthropicon.connectors": "anthropicon-connectors",
+        // This artwork ships under its dotted asset name, unlike the
+        // hyphenated group above (`anthropicon-fileAdd`).
+        "anthropicon.extendedThinking": "anthropicon.extendedThinking",
         "curlybraces": "aa-Braces",
         "desktopcomputer": "aa-Monitor",
         "desktopcomputer.and.arrow.down": "aa-MonitorDown",

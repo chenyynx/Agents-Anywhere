@@ -172,10 +172,6 @@ struct ContextUsageSheet: View {
                         .font(.system(size: 13))
                         .monospacedDigit()
                         .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-                } else {
-                    Text(String(localized: "用量未知"))
-                        .font(.system(size: 13))
-                        .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
                 }
             }
             ContextUsageMeter(usage: usage)
@@ -196,8 +192,6 @@ struct ContextUsageSheet: View {
                 ContextUsageGroups(usage: usage)
             } else if chat.isRefreshingContextUsage {
                 statusLine(String(localized: "正在读取分类明细…"), spinner: true)
-            } else if usage.isEstimate, usage.maxTokens == nil {
-                statusLine(String(localized: "该会话没有可用的上下文窗口标定；连接会话后会重新测量"))
             } else if usage.isEstimate {
                 statusLine(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
             } else if usage.isCached {
@@ -221,13 +215,19 @@ struct ContextUsageSheet: View {
 
     private func caption(_ usage: V2ContextUsage) -> some View {
         let used = ContextTokenFormat.wan(usage.totalTokens)
-        let total = usage.maxTokens.map(ContextTokenFormat.wan) ?? "—"
         let text: String
-        if let measured = Self.measuredTime(usage.measuredAt) {
-            text = String(format: String(localized: "%@/%@ 个 token · 更新时间：%@"),
-                          used, total, measured)
+        if let total = usage.maxTokens.map(ContextTokenFormat.wan) {
+            if let measured = Self.measuredTime(usage.measuredAt) {
+                text = String(format: String(localized: "%@/%@ 个 token · 更新时间：%@"),
+                              used, total, measured)
+            } else {
+                text = String(format: String(localized: "%@ / %@ 个 token"), used, total)
+            }
         } else {
-            text = String(format: String(localized: "%@ / %@ 个 token"), used, total)
+            // Old rows predate the window calibration; the used count is
+            // still a real measurement, so show it alone rather than a
+            // dangling denominator.
+            text = String(format: String(localized: "已用 %@ token"), used)
         }
         return Text(text)
             .font(.system(size: 12))

@@ -20412,19 +20412,19 @@
         }
       }
     },
-    "该会话没有可用的上下文窗口标定；连接会话后会重新测量": {
+    "已用 %@ token": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This session has no calibrated context window yet; it will be measured again once connected."
+            "value": "Used %@ tokens"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该会话没有可用的上下文窗口标定；连接会话后会重新测量"
+            "value": "已用 %@ token"
           }
         }
       }

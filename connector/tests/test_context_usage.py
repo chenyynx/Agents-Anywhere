@@ -5,7 +5,15 @@ from typing import Any
 
 import pytest
 
-from connector.runtime_protocol import RuntimeContextUsage, RuntimeIdentity
+from connector.runtime_protocol import (
+    RuntimeContextUsage,
+    RuntimeContextUsageAgent,
+    RuntimeContextUsageCategory,
+    RuntimeContextUsageMcpTool,
+    RuntimeContextUsageMemoryFile,
+    RuntimeContextUsageSkill,
+    RuntimeIdentity,
+)
 from connector.runtimes.claude.domain.context_usage import context_usage_from_control
 from connector.runtimes.claude.sdk.client import (
     client_supports_context_usage,
@@ -391,6 +399,22 @@ def test_context_usage_cache_round_trip_marks_cached() -> None:
             detail="full",
             source="claude.control",
             measured_at="2026-11-12T00:00:00Z",
+            categories=(
+                RuntimeContextUsageCategory(name="System prompt", tokens=10),
+                RuntimeContextUsageCategory(name="Free space", tokens=90, kind="free"),
+            ),
+            mcp_tools=(
+                RuntimeContextUsageMcpTool(name="search", server_name="firecrawl", tokens=7),
+            ),
+            memory_files=(
+                RuntimeContextUsageMemoryFile(path="CLAUDE.md", tokens=5, type="User"),
+            ),
+            agents=(
+                RuntimeContextUsageAgent(agent_type="reviewer", tokens=3, source="User"),
+            ),
+            skills=(
+                RuntimeContextUsageSkill(name="code-review", tokens=2, source="User"),
+            ),
         )
         await cache.write("s1", usage)
 
@@ -407,7 +431,34 @@ def test_context_usage_cache_round_trip_marks_cached() -> None:
         assert cached.detail == "cached"
         assert cached.source == "claude.control.cache"
         assert cached.measured_at == "2026-11-12T00:00:00Z"
-        assert cached.categories == ()
+        # The full breakdown survives the restart, so opening the sheet after
+        # a transport drop does not lose the category rows.
+        assert [row.name for row in cached.categories] == ["System prompt", "Free space"]
+        assert cached.categories[1].kind == "free"
+        assert cached.mcp_tools[0].server_name == "firecrawl"
+        assert cached.memory_files[0].path == "CLAUDE.md"
+        assert cached.agents[0].agent_type == "reviewer"
+        assert cached.skills[0].name == "code-review"
+
+        # A later summary read updates the figures but keeps the breakdown
+        # until the next full read replaces it.
+        await cache.write(
+            "s1",
+            RuntimeContextUsage(
+                runtime="claude",
+                total_tokens=120,
+                max_tokens=200,
+                percentage=60.0,
+                detail="summary",
+                source="claude.control",
+            ),
+        )
+        refreshed = await cache.read("s1")
+        assert refreshed is not None
+        assert refreshed.total_tokens == 120
+        assert refreshed.percentage == 60.0
+        assert len(refreshed.categories) == 2
+        assert refreshed.mcp_tools[0].name == "search"
 
     asyncio.run(run())
 

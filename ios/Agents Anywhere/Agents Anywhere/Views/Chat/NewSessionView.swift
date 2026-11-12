@@ -40,13 +40,9 @@ struct NewSessionView: View, Equatable {
             GeometryReader { viewport in
                 ScrollView {
                     NewSessionContentLayout(viewportHeight: max(0, viewport.size.height - 48)) {
-                        VStack(alignment: .center, spacing: 26) {
-                            ClawdWelcomeArt()
-                                .frame(maxWidth: .infinity)
-                            NewSessionWelcomeView(deviceName: model.connector?.name,
-                                agentName: model.runtime?.sessionDisplayName,
-                                onChooseTarget: chooseTarget)
-                        }
+                        NewSessionWelcomeView(deviceName: model.connector?.name,
+                            agentName: model.runtime?.sessionDisplayName,
+                            onChooseTarget: chooseTarget)
                         statusContent
                     }
                         .padding(24)

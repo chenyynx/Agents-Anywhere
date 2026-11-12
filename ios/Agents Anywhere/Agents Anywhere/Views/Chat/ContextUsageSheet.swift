@@ -75,18 +75,10 @@ struct ContextUsageSheet: View {
                         ProgressView()
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 48)
+                    } else if let usage = chat.displayedContextUsage {
+                        contextCard(usage)
                     } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(String(localized: "上下文"))
-                                .font(.system(size: 13))
-                                .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
-                                .padding(.leading, 20)
-                            if let usage = chat.displayedContextUsage {
-                                contextCard(usage)
-                            } else {
-                                emptyCard
-                            }
-                        }
+                        emptyCard
                     }
                     // A cold session with no live transport and no durable
                     // summary answers runtime_unavailable; the timeline

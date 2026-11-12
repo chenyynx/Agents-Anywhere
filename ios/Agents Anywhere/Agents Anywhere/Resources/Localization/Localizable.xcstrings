@@ -20361,23 +20361,6 @@
         }
       }
     },
-    "上下文": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Context"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "上下文"
-          }
-        }
-      }
-    },
     "说明": {
       "extractionState": "manual",
       "localizations": {

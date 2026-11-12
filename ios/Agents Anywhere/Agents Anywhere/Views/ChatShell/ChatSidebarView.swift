@@ -44,12 +44,9 @@ struct ChatSidebarView: View {
                     selectedDeviceId: selectedDeviceId,
                     isLoading: isLoadingDevices,
                     onOpen: onOpenDevice,
-                    onCopyId: onCopyDeviceId
+                    onCopyId: onCopyDeviceId,
+                    onPair: startPairing
                 )
-                ChatSidebarPairDeviceButton {
-                    agentSetup?.pairingFormPresented = true
-                    isShowingPairing = true
-                }
 
                 if let setup = agentSetup {
                     ForEach(setup.requests) { request in
@@ -149,6 +146,11 @@ struct ChatSidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
+    private func startPairing() {
+        agentSetup?.pairingFormPresented = true
+        isShowingPairing = true
+    }
+
     /// Web's flat-list second line: project first, then the device, which
     /// collapses to `^` when it repeats the row above.
     private func sessionContext(_ session: ChatSidebarSession, after previous: ChatSidebarSession?) -> String? {
@@ -206,37 +208,24 @@ struct ChatSidebarHeaderView: View {
     }
 }
 
-private struct ChatSidebarPairDeviceButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(String(localized: "Pair device"), appSymbol: "plus")
-                .font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 46)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 private struct ChatSidebarDeviceSection: View {
     let devices: [ChatSidebarDevice]
     let selectedDeviceId: V2ConnectorID?
     let isLoading: Bool
     let onOpen: (V2ConnectorID) -> Void
     let onCopyId: (V2ConnectorID) -> Void
+    let onPair: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ChatSidebarSectionLabel(title: "Devices")
+            header
 
             if isLoading {
                 ChatSidebarLoadingRow(title: "Loading devices...")
             } else if devices.isEmpty {
-                ChatSidebarEmptyRow(title: "No devices")
+                // Nothing to list: the pairing action keeps the full row so
+                // the section does not read as an empty dead end.
+                pairRow
             } else {
                 ForEach(devices) { device in
                     ChatSidebarDeviceRow(
@@ -248,6 +237,56 @@ private struct ChatSidebarDeviceSection: View {
                 }
             }
         }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text(String(localized: "Devices"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 8)
+            if !isLoading && !devices.isEmpty {
+                Button(action: onPair) {
+                    // SF Symbols has the two-device glyph; the app's own
+                    // icon set does not ship one, so this single action uses
+                    // the system symbol.
+                    Image(systemName: "laptopcomputer.and.iphone")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, height: 36)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Pair device"))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 14)
+        .padding(.bottom, 0)
+    }
+
+    private var pairRow: some View {
+        Button(action: onPair) {
+            HStack(spacing: 12) {
+                Image(systemName: "laptopcomputer.and.iphone")
+                    .font(.system(size: 16, weight: .regular))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(String(localized: "Pair device")).font(.body.weight(.medium))
+                    Text(String(localized: "Connect the desktop app or CLI"))
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.8))
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 56)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }
 

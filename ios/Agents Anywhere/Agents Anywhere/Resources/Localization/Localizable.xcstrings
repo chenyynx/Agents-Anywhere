@@ -1860,6 +1860,23 @@
         }
       }
     },
+    "Connect the desktop app or CLI": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect the desktop app or CLI"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接桌面应用或命令行"
+          }
+        }
+      }
+    },
     "Connect this device to your workspace.": {
       "extractionState": "manual",
       "localizations": {

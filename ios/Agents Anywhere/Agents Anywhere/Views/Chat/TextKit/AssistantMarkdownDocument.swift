@@ -1242,29 +1242,32 @@ enum AssistantMarkdownDocumentParser {
     /// the tag can only be markup, so draw a real line break instead
     /// (pp 2026-11-13). Code blocks and inline code never reach this path.
     private static func replacingHTMLBreaks(_ text: String) -> String {
-        guard text.range(of: "<br", options: .caseInsensitive) != nil else {
-            return text
-        }
+        let characters = Array(text)
+        let lowercased = Array(text.lowercased())
+        guard lowercased.count == characters.count else { return text }
         var result = ""
-        var index = text.startIndex
-        while let open = text.range(of: "<br", options: .caseInsensitive,
-                                    range: index..<text.endIndex) {
-            result += text[index..<open.lowerBound]
-            let rest = text[open.upperBound...]
-            if let close = rest.firstIndex(of: ">"),
-               text.distance(from: open.upperBound, to: close) <= 3 {
-                let body = String(rest[..<close])
-                    .trimmingCharacters(in: .whitespaces)
-                if body.isEmpty || body == "/" {
-                    result += "\n"
-                    index = text.index(after: close)
+        var index = 0
+        while index < characters.count {
+            if index + 3 < characters.count,
+               lowercased[index] == "<",
+               lowercased[index + 1] == "b",
+               lowercased[index + 2] == "r" {
+                var close = index + 3
+                if close < characters.count, characters[close] == " " {
+                    close += 1
+                }
+                if close < characters.count, characters[close] == "/" {
+                    close += 1
+                }
+                if close < characters.count, characters[close] == ">" {
+                    result.append("\n")
+                    index = close + 1
                     continue
                 }
             }
-            result += text[open.lowerBound]
-            index = text.index(after: open.lowerBound)
+            result.append(characters[index])
+            index += 1
         }
-        result += text[index...]
         return result
     }
 

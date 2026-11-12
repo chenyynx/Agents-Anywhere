@@ -20259,23 +20259,6 @@
         }
       }
     },
-    "显示上次测量结果，连接会话后会自动更新": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Showing the last measurement. It updates automatically once the session is connected."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "显示上次测量结果，连接会话后会自动更新"
-          }
-        }
-      }
-    },
     "读取上下文用量失败": {
       "extractionState": "manual",
       "localizations": {

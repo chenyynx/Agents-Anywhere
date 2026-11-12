@@ -182,16 +182,11 @@ struct ContextUsageSheet: View {
                 }
                 .padding(.top, 2)
                 ContextUsageGroups(usage: usage)
-                if usage.isCached {
-                    statusLine(String(localized: "显示上次测量结果，连接会话后会自动更新"))
-                }
             } else if chat.isRefreshingContextUsage {
                 statusLine(String(localized: "正在读取分类明细…"), spinner: true)
             } else if usage.isEstimate {
                 statusLine(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
-            } else if usage.isCached {
-                statusLine(String(localized: "显示上次测量结果，连接会话后会自动更新"))
-            } else {
+            } else if !usage.isCached {
                 statusLine(String(localized: "该 Runtime 只提供总体用量，暂无分类明细"))
             }
         }

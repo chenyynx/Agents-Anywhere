@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The device is the title and the Agent leads the detail. Both names are
-/// underlined and open the target picker.
+/// The Agent's name is the title and opens the target picker; the copy below
+/// describes what the agent does, centred under Clawd like the official Code
+/// screen.
 struct NewSessionWelcomeView: View {
     let deviceName: String?
     let agentName: String?
@@ -11,8 +12,7 @@ struct NewSessionWelcomeView: View {
     private static var phraseInterval: Duration { .milliseconds(200) }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 40
-    @State private var copy = NewSessionWelcomeCopy.allCases.randomElement() ?? .start
+    @ScaledMetric(relativeTo: .headline) private var titleSize: CGFloat = 17
     @State private var titlePhraseCount = 0
     @State private var detailPhraseCount = 0
     @State private var hasStarted = false
@@ -22,9 +22,10 @@ struct NewSessionWelcomeView: View {
     @State private var titleLedger = GlyphRevealLedger(duration: NewSessionWelcomeView.revealDuration)
     @State private var detailLedger = GlyphRevealLedger(duration: NewSessionWelcomeView.revealDuration)
 
-    private var title: String { deviceName ?? String(localized: "选择设备") }
-    private var agent: String { agentName ?? String(localized: "Agent") }
-    private var detail: String { copy.detail(agent: agent) }
+    private var title: String { agentName ?? String(localized: "选择 Agent") }
+    private var detail: String {
+        String(localized: "直接在您的代码库中与您协作，添加功能、修复 bug 并解释代码。")
+    }
 
     var body: some View {
         welcomeText
@@ -40,8 +41,7 @@ struct NewSessionWelcomeView: View {
     }
 
     private var welcomeText: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AppSymbol("sparkles", size: 28).foregroundStyle(.primary)
+        VStack(alignment: .center, spacing: 14) {
             Button(action: onChooseTarget) {
                 streamingText(title, underlined: title.startIndex..<title.endIndex,
                               revealedPhrases: titlePhraseCount, ledger: titleLedger)
@@ -50,23 +50,18 @@ struct NewSessionWelcomeView: View {
                     .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.45)
             }
             .buttonStyle(.plain)
-            // Left aligned, but kept clear of the trailing edge.
-            .padding(.trailing, 24)
-            .padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
             .accessibilityHint(String(localized: "选择设备和 Agent"))
-            .accessibilityIdentifier("chat.new.device")
-            Button(action: onChooseTarget) {
-                streamingText(detail, underlined: detail.range(of: agent),
-                              revealedPhrases: detailPhraseCount, ledger: detailLedger)
-                    .font(.body).foregroundStyle(.secondary)
-                    .lineLimit(2...)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(String(localized: "选择设备和 Agent"))
             .accessibilityIdentifier("chat.new.agent")
+            streamingText(detail, underlined: nil,
+                          revealedPhrases: detailPhraseCount, ledger: detailLedger)
+                .font(.subheadline).foregroundStyle(.secondary)
+                .lineLimit(2...)
+                .frame(maxWidth: 300)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("chat.new.detail")
         }
+        .frame(maxWidth: .infinity)
     }
 
     private func streamingText(_ text: String, underlined: Range<String.Index>?, revealedPhrases: Int,
@@ -76,7 +71,7 @@ struct NewSessionWelcomeView: View {
         StreamingTextPhrase.text(text, underlined: underlined)
             .modifier(StreamingGlyphReveal(ledger: ledger, revealedPhraseCount: revealedPhrases))
             .environment(\.streamingGlyphAnimation, isRevealing)
-            .multilineTextAlignment(.leading)
+            .multilineTextAlignment(.center)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text)
     }
@@ -132,20 +127,4 @@ struct NewSessionWelcomeView: View {
 private struct WelcomeRevealKey: Equatable {
     let reduceMotion: Bool
     let frame: CGRect
-}
-
-/// Chosen once for this page presentation, independently of network updates,
-/// target selection, typing, or opening and closing a sheet.
-private enum NewSessionWelcomeCopy: CaseIterable {
-    case start, issue, nextStep, feature, review
-
-    func detail(agent: String) -> String {
-        switch self {
-        case .start: String(localized: "使用 \(agent) 构建接下来的内容。")
-        case .issue: String(localized: "使用 \(agent) 排查一个问题。")
-        case .nextStep: String(localized: "使用 \(agent) 推进下一步。")
-        case .feature: String(localized: "使用 \(agent) 实现一个新功能。")
-        case .review: String(localized: "使用 \(agent) 审查最近的改动。")
-        }
-    }
 }

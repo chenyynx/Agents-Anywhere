@@ -20411,6 +20411,23 @@
           }
         }
       }
+    },
+    "该会话没有可用的上下文窗口标定；连接会话后会重新测量": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This session has no calibrated context window yet; it will be measured again once connected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该会话没有可用的上下文窗口标定；连接会话后会重新测量"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

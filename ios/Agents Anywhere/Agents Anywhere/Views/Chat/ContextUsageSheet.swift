@@ -17,10 +17,15 @@ struct ContextUsageRing: View {
         ZStack {
             Circle()
                 .stroke(Color.secondary.opacity(0.22), lineWidth: lineWidth)
-            Circle()
-                .trim(from: 0, to: max(fraction, 0.02))
-                .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+            // An unknown window has no fraction; the old ring's neutral track
+            // is the whole signal. A measurement with a known window keeps the
+            // 2% minimum so a true zero still reads as a ring, not a hole.
+            if usage.fraction != nil {
+                Circle()
+                    .trim(from: 0, to: max(fraction, 0.02))
+                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
         }
         .frame(width: diameter, height: diameter)
         .animation(.smooth(duration: 0.35), value: fraction)
@@ -83,7 +88,13 @@ struct ContextUsageSheet: View {
                             }
                         }
                     }
-                    if let error = chat.contextUsageError {
+                    // A cold session with no live transport and no durable
+                    // summary answers runtime_unavailable; the timeline
+                    // estimate above is the intended fallback, so the failure
+                    // is not an error the reader needs to see. Only surface it
+                    // when there is no card at all.
+                    if chat.displayedContextUsage == nil,
+                       let error = chat.contextUsageError {
                         Text(error)
                             .font(.system(size: 12))
                             .foregroundStyle(AppTheme.composerSecondaryGlyph(colorScheme))
@@ -185,6 +196,8 @@ struct ContextUsageSheet: View {
                 ContextUsageGroups(usage: usage)
             } else if chat.isRefreshingContextUsage {
                 statusLine(String(localized: "正在读取分类明细…"), spinner: true)
+            } else if usage.isEstimate, usage.maxTokens == nil {
+                statusLine(String(localized: "该会话没有可用的上下文窗口标定；连接会话后会重新测量"))
             } else if usage.isEstimate {
                 statusLine(String(localized: "当前为 timeline 估算值，连接会话后可获取精确分类明细"))
             } else if usage.isCached {

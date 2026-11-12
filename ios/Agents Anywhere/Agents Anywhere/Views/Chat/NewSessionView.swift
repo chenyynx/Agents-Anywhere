@@ -40,8 +40,7 @@ struct NewSessionView: View, Equatable {
             GeometryReader { viewport in
                 ScrollView {
                     NewSessionContentLayout(viewportHeight: max(0, viewport.size.height - 48)) {
-                        NewSessionWelcomeView(deviceName: model.connector?.name,
-                            agentName: model.runtime?.sessionDisplayName,
+                        NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
                             onChooseTarget: chooseTarget)
                         statusContent
                     }
@@ -75,6 +74,10 @@ struct NewSessionView: View, Equatable {
                 .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
             }
         }
+        // Same page ink as the session transcript, so the welcome page and the
+        // chat it opens do not flash between white and #F9F9F7.
+        .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+            .ignoresSafeArea())
         .modifier(ChatPageToolbar(title: "", onMenu: onMenu))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

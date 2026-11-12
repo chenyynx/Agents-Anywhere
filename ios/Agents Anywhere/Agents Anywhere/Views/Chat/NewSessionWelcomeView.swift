@@ -1,18 +1,19 @@
 import SwiftUI
 
-/// The device is the title and the Agent leads the detail. Both names are
-/// underlined and open the target picker.
+/// The new-session empty state: the Creed crystal globe with the official
+/// "build with {runtime}" copy underneath. The copy names the selected runtime
+/// instead of a fixed provider; tapping the title or the body opens the
+/// device & agent picker, like the old welcome text did (pp 2026-11-13).
 struct NewSessionWelcomeView: View {
-    let deviceName: String?
     let agentName: String?
     let onChooseTarget: () -> Void
+
     private static var revealDuration: Double { 0.4 }
     /// Known copy cascades: each phrase starts before the previous one ends.
     private static var phraseInterval: Duration { .milliseconds(200) }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 40
-    @State private var copy = NewSessionWelcomeCopy.allCases.randomElement() ?? .start
+    @ScaledMetric(relativeTo: .largeTitle) private var globeSize: CGFloat = 220
     @State private var titlePhraseCount = 0
     @State private var detailPhraseCount = 0
     @State private var hasStarted = false
@@ -22,12 +23,18 @@ struct NewSessionWelcomeView: View {
     @State private var titleLedger = GlyphRevealLedger(duration: NewSessionWelcomeView.revealDuration)
     @State private var detailLedger = GlyphRevealLedger(duration: NewSessionWelcomeView.revealDuration)
 
-    private var title: String { deviceName ?? String(localized: "选择设备") }
     private var agent: String { agentName ?? String(localized: "Agent") }
-    private var detail: String { copy.detail(agent: agent) }
+    private var title: String { String(localized: "使用 \(agent) 进行构建") }
+    private var detail: String {
+        String(localized: "\(agent) 直接在您的代码库中与您协作，帮助您添加功能、修复 bug 和解释代码。")
+    }
 
     var body: some View {
-        welcomeText
+        VStack(spacing: 18) {
+            CrystalGlobeView(diameter: min(globeSize, 280))
+            welcomeText
+        }
+        .frame(maxWidth: .infinity)
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
             // Observe real layout without locking its width or height. Once
             // drawing begins, geometry updates must not cancel the reveal task.
@@ -40,43 +47,40 @@ struct NewSessionWelcomeView: View {
     }
 
     private var welcomeText: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AppSymbol("sparkles", size: 28).foregroundStyle(.primary)
+        VStack(spacing: 8) {
             Button(action: onChooseTarget) {
-                streamingText(title, underlined: title.startIndex..<title.endIndex,
-                              revealedPhrases: titlePhraseCount, ledger: titleLedger)
-                    .font(.system(size: titleSize, weight: .bold))
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.45)
+                streamingText(title, revealedPhrases: titlePhraseCount, ledger: titleLedger)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.8)
             }
             .buttonStyle(.plain)
-            // Left aligned, but kept clear of the trailing edge.
-            .padding(.trailing, 24)
-            .padding(.bottom, 4)
             .accessibilityAddTraits(.isHeader)
             .accessibilityHint(String(localized: "选择设备和 Agent"))
             .accessibilityIdentifier("chat.new.device")
             Button(action: onChooseTarget) {
-                streamingText(detail, underlined: detail.range(of: agent),
-                              revealedPhrases: detailPhraseCount, ledger: detailLedger)
-                    .font(.body).foregroundStyle(.secondary)
-                    .lineLimit(2...)
+                streamingText(detail, revealedPhrases: detailPhraseCount, ledger: detailLedger)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .buttonStyle(.plain)
             .accessibilityHint(String(localized: "选择设备和 Agent"))
             .accessibilityIdentifier("chat.new.agent")
         }
+        .frame(maxWidth: .infinity)
+        .multilineTextAlignment(.center)
     }
 
-    private func streamingText(_ text: String, underlined: Range<String.Index>?, revealedPhrases: Int,
+    private func streamingText(_ text: String, revealedPhrases: Int,
                                ledger: GlyphRevealLedger) -> some View {
         // Future phrases take part in line breaking from the first
         // frame. The shared renderer alone controls their visibility and reveal.
-        StreamingTextPhrase.text(text, underlined: underlined)
+        StreamingTextPhrase.text(text, underlined: nil)
             .modifier(StreamingGlyphReveal(ledger: ledger, revealedPhraseCount: revealedPhrases))
             .environment(\.streamingGlyphAnimation, isRevealing)
-            .multilineTextAlignment(.leading)
+            .multilineTextAlignment(.center)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text)
     }
@@ -132,20 +136,4 @@ struct NewSessionWelcomeView: View {
 private struct WelcomeRevealKey: Equatable {
     let reduceMotion: Bool
     let frame: CGRect
-}
-
-/// Chosen once for this page presentation, independently of network updates,
-/// target selection, typing, or opening and closing a sheet.
-private enum NewSessionWelcomeCopy: CaseIterable {
-    case start, issue, nextStep, feature, review
-
-    func detail(agent: String) -> String {
-        switch self {
-        case .start: String(localized: "使用 \(agent) 构建接下来的内容。")
-        case .issue: String(localized: "使用 \(agent) 排查一个问题。")
-        case .nextStep: String(localized: "使用 \(agent) 推进下一步。")
-        case .feature: String(localized: "使用 \(agent) 实现一个新功能。")
-        case .review: String(localized: "使用 \(agent) 审查最近的改动。")
-        }
-    }
 }

@@ -16,12 +16,13 @@ struct DiagnosticsStatusDot: View {
     }
 }
 
-/// Opt-in daily client diagnostics: a toggle and the retained daily files.
+/// Daily client diagnostics: a toggle (on by default) and the retained daily
+/// files.
 /// Each row is a file; tapping it opens the raw log exactly as stored, with
 /// copy and share in the navigation bar. It does not reuse the developer
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
-    @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = false
+    @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var days: [DiagnosticsDay] = []
     @State private var didLoad = false

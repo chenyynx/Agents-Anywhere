@@ -575,6 +575,23 @@
         }
       }
     },
+    "About & support": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About & support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于与支持"
+          }
+        }
+      }
+    },
     "Accent color": {
       "extractionState": "manual",
       "localizations": {
@@ -1046,6 +1063,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "外观"
+          }
+        }
+      }
+    },
+    "Appearance & display": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance & display"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外观与显示"
           }
         }
       }
@@ -4585,6 +4619,23 @@
         }
       }
     },
+    "How thinking and tool calls are shown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How thinking and tool calls are shown"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考与工具调用的显示方式"
+          }
+        }
+      }
+    },
     "Project mode": {
       "extractionState": "manual",
       "localizations": {
@@ -5477,6 +5528,23 @@
         }
       }
     },
+    "Session list": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Session list"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话列表"
+          }
+        }
+      }
+    },
     "Session title": {
       "extractionState": "manual",
       "localizations": {
@@ -5785,6 +5853,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在启动…"
+          }
+        }
+      }
+    },
+    "Process display": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Process display"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "过程展示"
+          }
+        }
+      }
+    },
+    "Storage & diagnostics": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Storage & diagnostics"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储与诊断"
           }
         }
       }
@@ -8984,13 +9086,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The server forwards your tasks to the device and agent you select. Depending on their configuration, agents may send messages, attachments and workspace content to model providers or a custom gateway. Those services process information under their own policies."
+            "value": "The server hands tasks to your paired work devices and agents. Depending on their configuration, agents may send messages, attachments and workspace content to model providers or a custom gateway; those services process information under their own privacy policies."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "服务器会将任务转交给你选中的设备和 Agent。Agent 可能根据配置，将消息、附件及工作目录中的相关内容发送给模型供应商或自定义 Gateway。这些服务按各自的政策处理信息。"
+            "value": "服务器将任务转交给你配对的工作设备和 Agent。Agent 根据配置，可能将消息、附件及工作目录中的相关内容发送给模型供应商或自定义 Gateway；这些服务按各自的隐私政策处理信息。"
           }
         }
       }
@@ -9020,13 +9122,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "For questions about the client's handling of information, use the project's support channels. For access to, correction or deletion of information held by a server or model service, contact its operator. Policy updates will be reflected in the date above."
+            "value": "If you have questions about how the client handles information, reach us through the project's support channels. To access, correct or delete information held by a server or model service, contact its operator. When this policy changes, we update the date at the top of this page."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "如对客户端的信息处理有疑问，可以通过项目支持渠道联系我们。如需访问、更正或删除服务器、模型服务保存的信息，请联系其运营者。政策更新时会同步修改上方日期。"
+            "value": "如对本客户端的信息处理有疑问，可以通过项目支持渠道联系我们。如需访问、更正或删除服务器、模型服务保存的信息，请联系其运营者。政策更新时我们会修改页首的更新日期。"
           }
         }
       }
@@ -9049,6 +9151,42 @@
         }
       }
     },
+    "privacyPolicy.diagnostics.body": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To diagnose stutter and display problems, the app keeps a diagnostics log on this device: one file per day, retained for seven days, containing only metadata such as session IDs, row IDs and event kinds — never message content. It is on by default and is never uploaded automatically. You can turn it off, read, copy or export it, and clear it at any time in Settings → Diagnostics log."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为了排查卡顿和显示问题，客户端在本机记录诊断日志：每天一个文件，保留 7 天，只包含会话 ID、行 ID、事件类型等元数据，不包含消息正文。日志默认开启，不会自动上传；你可以在「设置 → 诊断日志」中关闭、查看、复制或导出，也可以随时清空。"
+          }
+        }
+      }
+    },
+    "privacyPolicy.diagnostics.title": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics log"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "诊断日志"
+          }
+        }
+      }
+    },
     "privacyPolicy.externalContent.body": {
       "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
       "extractionState": "manual",
@@ -9067,6 +9205,24 @@
         }
       }
     },
+    "privacyPolicy.externalContent.title": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External content and links"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部内容与链接"
+          }
+        }
+      }
+    },
     "privacyPolicy.introduction": {
       "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
       "extractionState": "manual",
@@ -9074,13 +9230,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This policy explains how the Agents Anywhere app for iPhone, iPad and Mac handles information. The server you connect to, connected devices and model services may be operated by different parties and have their own privacy policies."
+            "value": "This policy explains how the Agents Anywhere app for iPhone, iPad and Mac handles information. The client is open-source software; the server you connect to, the paired work devices, agents and model services may be operated by different people or organizations, each with its own privacy policy."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本政策说明 Agents Anywhere 的 iPhone、iPad 和 Mac 客户端如何处理信息。你连接的服务器、设备和模型服务可能由不同主体运营，并有各自的隐私政策。"
+            "value": "本政策说明 Agents Anywhere 的 iPhone、iPad 和 Mac 客户端如何处理信息。客户端是开源软件；你连接的服务器、配对的工作设备、Agent 与模型服务可能由不同的个人或组织运营，并各自适用其隐私政策。"
           }
         }
       }
@@ -9092,13 +9248,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sign-in tokens are stored in the system Keychain. The app also saves preferences, account details and cached project and session data on this device to restore your workspace and display previously loaded content offline. Previewing files may create temporary downloads."
+            "value": "Sign-in tokens are stored in the system Keychain. The app keeps preferences (appearance, icon, language, step display and so on), account details, and cached projects, sessions, messages and attachments on this device to restore your workspace, show previously loaded content offline and return quickly. Drafts you are editing and temporary downloads created when previewing files also stay on this device. You can clear caches in Settings; signing out removes the sign-in token and clears the current account's local session cache."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "登录令牌保存在系统钥匙串中。客户端也会在本设备保存偏好设置、账户资料及已加载的项目和会话数据，用于恢复工作区和离线显示内容。预览文件时可能生成临时下载。"
+            "value": "登录令牌保存在系统钥匙串。客户端在本设备保存偏好设置（外观、图标、语言、步骤展示等）、账户资料，以及已加载的项目、会话、消息和附件缓存，用于恢复工作区、离线查看和快速返回。编辑中的草稿和预览文件生成的临时下载也留在本机。你可以在设置中清理缓存；退出登录会移除登录令牌，并清理当前账号的本地会话缓存。"
           }
         }
       }
@@ -9128,13 +9284,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Local network access is used to connect to servers on your local network. Camera access is used to scan login QR codes. You choose photos and files through system pickers. You can manage granted permissions in system settings."
+            "value": "Camera access is used to scan login QR codes and to take photos as attachments; photo access shows recent photos in the attachment picker. Local network access connects to a self-hosted server on your local network. The app does not request microphone, location or ad-tracking permission. You can revoke granted permissions at any time in system settings."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本地网络权限用于连接局域网中的服务器，相机权限用于扫描登录二维码。照片和文件由你通过系统选择器选取。你可以在系统设置中管理已授予的权限。"
+            "value": "相机权限用于扫描登录二维码，也可以拍摄照片作为附件；照片权限用于在附件选择器中显示最近照片。本地网络权限用于连接局域网中的自托管服务器。客户端不申请麦克风、定位或广告追踪权限。你可以在系统设置中随时收回已授予的权限。"
           }
         }
       }
@@ -9182,13 +9338,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Signing out removes the app's saved sign-in credentials from this device and clears the current account's local session cache. It does not delete your account or content already stored on servers, connected devices or model services. Retention and deletion of that content depend on the relevant operator or provider; contact them to request deletion."
+            "value": "Signing out removes the sign-in token stored on this device and clears the current account's local session cache. It does not delete your account or content already stored on servers, work devices or model services. Retention and deletion of that content are decided by the relevant operator or provider; contact them to delete an account or content. Diagnostics logs and caches can be cleared at any time in Settings."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "退出登录会移除 App 在本设备保存的登录凭据，并清理当前账号的本地会话缓存。这不会删除你的账号，也不会删除已保存在服务器、连接设备或模型服务中的内容。这些内容的保存期限与删除方式由相应运营者或服务商决定；如需删除，请联系他们。"
+            "value": "退出登录会移除本机保存的登录令牌，并清理当前账号的本地会话缓存；这不会删除你的账号，也不会删除已保存在服务器、工作设备或模型服务中的内容。这些内容的保存期限与删除方式由相应运营者或服务商决定，删除账号或内容需要联系他们。诊断日志和各类缓存可以在设置中随时清空。"
           }
         }
       }
@@ -9211,6 +9367,42 @@
         }
       }
     },
+    "privacyPolicy.security.body": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign-in tokens live in the system Keychain. Traffic to internet servers uses HTTPS; for a self-hosted server on your local network, whether HTTPS is enabled is decided by that server. The app contains no ad or third-party analytics SDK and never uploads diagnostics automatically. Connect only to servers you trust, and keep server addresses and sign-in credentials safe."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录令牌存放在系统钥匙串。连接公网服务器时使用 HTTPS 传输；连接局域网中的自托管服务器时，是否启用 HTTPS 由该服务器决定。客户端不内置广告或第三方分析 SDK，也不会自动上传诊断日志。请只连接你信任的服务器，并妥善保管服务器地址和登录凭据。"
+          }
+        }
+      }
+    },
+    "privacyPolicy.security.title": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How information is protected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "我们如何保护信息"
+          }
+        }
+      }
+    },
     "privacyPolicy.server.body": {
       "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
       "extractionState": "manual",
@@ -9218,13 +9410,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "To sign in and use the service, the app exchanges account details, authorization credentials, device and project information, messages and attachments with the server you choose. Agent settings, including API keys you enter, are also sent to that server to configure your agents. The server receives connection information such as your IP address."
+            "value": "To sign in and use the service, the app exchanges account details, authorization credentials, device and project data, messages and attachments with the server you choose. Agent settings you save, which may contain API keys, are also sent to that server to configure your agents. Requests to browse or download workspace files are forwarded through the server as well. The server receives connection information such as your IP address; how it stores and processes that information is decided by its operator."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "登录与使用服务时，客户端会与你选择的服务器交换账户资料、登录授权信息、设备和项目数据、消息及附件。你保存的 Agent 配置（可能包含 API Key）也会发送到该服务器，用于配置相应 Agent。服务器还会接收到 IP 地址等连接信息。"
+            "value": "登录和使用服务时，客户端会与你选择的服务器交换账户资料、登录授权信息、设备和项目数据、消息及附件。你保存的 Agent 配置（可能包含 API Key）也会发送到该服务器，用于配置相应 Agent。浏览或下载工作目录中的文件时，请求同样由服务器转发。服务器会接收到 IP 地址等连接信息；它如何保存和处理这些信息由该服务器的运营者决定。"
           }
         }
       }
@@ -9243,6 +9435,78 @@
           "stringUnit": {
             "state": "translated",
             "value": "发送到服务器的信息"
+          }
+        }
+      }
+    },
+    "privacyPolicy.summary.local": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Messages, attachments and caches stay on this device; the sign-in token lives in the system Keychain."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "消息、附件和缓存保存在本机；登录令牌存在系统钥匙串。"
+          }
+        }
+      }
+    },
+    "privacyPolicy.summary.server": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Information goes only to the server you choose, which forwards it to your paired work devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信息只发送到你选择的服务器，再由它转给你配对的工作设备。"
+          }
+        }
+      }
+    },
+    "privacyPolicy.summary.title": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "At a glance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一眼看懂"
+          }
+        }
+      }
+    },
+    "privacyPolicy.summary.tracking": {
+      "comment": "Privacy policy for the native iOS and Mac Catalyst client.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No ads, and no third-party analytics or tracking SDKs."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有广告，也没有第三方分析或追踪 SDK。"
           }
         }
       }
@@ -9272,13 +9536,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Last updated: September 7, 2026"
+            "value": "Last updated: November 13, 2026"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "更新日期：2026 年 9 月 7 日"
+            "value": "更新日期：2026 年 11 月 13 日"
           }
         }
       }
@@ -12414,6 +12678,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "推理强度"
+          }
+        }
+      }
+    },
+    "思考和每次工具调用各占一条，执行中实时刷新，结束后收成一行摘要。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking and each tool call get their own line, updating live during the run; when it ends they collapse into one summary."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考和每次工具调用各占一条，执行中实时刷新，结束后收成一行摘要。"
+          }
+        }
+      }
+    },
+    "思考合并成一段「思考过程」；工具调用按类别归组、默认收起。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thinking is merged into a single “Thinking process” block; tool calls are grouped by kind and collapsed by default."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "思考合并成一段「思考过程」；工具调用按类别归组、默认收起。"
+          }
+        }
+      }
+    },
+    "只改变显示方式，不影响消息内容和 Agent 的执行。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This only changes how the conversation is displayed; message content and what the agent does are unaffected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只改变显示方式，不影响消息内容和 Agent 的执行。"
+          }
+        }
+      }
+    },
+    "分步": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step by step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分步"
+          }
+        }
+      }
+    },
+    "合并": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merged"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "合并"
+          }
+        }
+      }
+    },
+    "分步展示": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step by step"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分步展示"
           }
         }
       }

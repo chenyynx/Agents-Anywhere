@@ -27,9 +27,9 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .chat:
-            return String(localized: "思考与工具调用按发生顺序逐步显示，实时更新，结束后汇总成一行")
+            return String(localized: "思考和每次工具调用各占一条，执行中实时刷新，结束后收成一行摘要。")
         case .code:
-            return String(localized: "思考合并为一段「思考过程」，工具调用按类别归组")
+            return String(localized: "思考合并成一段「思考过程」；工具调用按类别归组、默认收起。")
         }
     }
 }
@@ -41,7 +41,7 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
 /// gone, so:
 /// - a device that had the Bool set keeps its visual choice (`true` → code,
 ///   `false` → the new chat mode);
-/// - a fresh install gets `.code`, the shape pp uses day to day.
+/// - a fresh install gets `.chat` (pp 2026-11-13).
 enum TimelineRenderModeSwitch {
     static let key = "aa.timeline.renderMode"
     static let legacyCollectionKey = TimelineCollectionSwitch.key
@@ -61,7 +61,7 @@ enum TimelineRenderModeSwitch {
         guard defaults.string(forKey: key) == nil else { return }
         let mode: TimelineRenderMode
         if defaults.object(forKey: legacyCollectionKey) == nil {
-            mode = .code
+            mode = .chat
         } else {
             mode = defaults.bool(forKey: legacyCollectionKey) ? .code : .chat
         }

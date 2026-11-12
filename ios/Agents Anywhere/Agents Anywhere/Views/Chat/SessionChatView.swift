@@ -214,9 +214,9 @@ struct SessionChatView: View, Equatable {
     /// step-group live row, `.code` keeps the official Code page. Both run on
     /// the collection engine; only the row presentation differs.
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.code.rawValue
+    private var renderModeRaw = TimelineRenderMode.chat.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .code
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
     }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The

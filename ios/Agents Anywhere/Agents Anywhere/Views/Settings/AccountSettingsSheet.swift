@@ -9,11 +9,11 @@ struct AccountSettingsSheet: View {
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.code.rawValue
+    private var renderModeRaw = TimelineRenderMode.chat.rawValue
     @AppStorage(LocalCachePolicy.key)
     private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .code
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
     }
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
@@ -32,8 +32,10 @@ struct AccountSettingsSheet: View {
                     accountCard(me)
                     accountSection(me)
                 }
-                appSection
                 connectionSection
+                displaySection
+                sessionListSection
+                storageSection
                 supportSection
                 signOutSection
 #if AA_TIMELINE_PROBE
@@ -123,8 +125,8 @@ struct AccountSettingsSheet: View {
         }
     }
 
-    private var appSection: some View {
-        SettingsSection(String(localized: "App")) {
+    private var displaySection: some View {
+        SettingsSection(String(localized: "Appearance & display")) {
             SettingsNavigationRow(icon: "circle.lefthalf.filled",
                                   title: String(localized: "Appearance"),
                                   value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title),
@@ -144,21 +146,16 @@ struct AccountSettingsSheet: View {
                                   value: SettingsLanguageView.currentLanguage,
                                   destination: SettingsLanguageView())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "archivebox",
-                                  title: String(localized: "Cache"),
-                                  value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title,
-                                  destination: CacheSettingsView())
-            SettingsRowDivider()
             SettingsNavigationRow(icon: "arrow.down.document",
-                                  title: String(localized: "步骤展示"),
+                                  title: String(localized: "Process display"),
+                                  subtitle: String(localized: "How thinking and tool calls are shown"),
                                   value: renderMode.title,
                                   destination: TimelineRenderModeSettingsView())
-            SettingsRowDivider()
-            SettingsNavigationRow(icon: "doc.text.magnifyingglass",
-                                  title: String(localized: "Diagnostics log"),
-                                  showsStatusDot: true,
-                                  destination: DiagnosticsLogSettingsView())
-            SettingsRowDivider()
+        }
+    }
+
+    private var sessionListSection: some View {
+        SettingsSection(String(localized: "Session list")) {
             SettingsToggleRow(icon: "folder",
                               title: String(localized: "Project mode"),
                               isOn: Binding(get: { !showsSessionList }, set: { showsSessionList = !$0 }))
@@ -170,8 +167,22 @@ struct AccountSettingsSheet: View {
         }
     }
 
+    private var storageSection: some View {
+        SettingsSection(String(localized: "Storage & diagnostics")) {
+            SettingsNavigationRow(icon: "archivebox",
+                                  title: String(localized: "Cache"),
+                                  value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title,
+                                  destination: CacheSettingsView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "doc.text.magnifyingglass",
+                                  title: String(localized: "Diagnostics log"),
+                                  showsStatusDot: true,
+                                  destination: DiagnosticsLogSettingsView())
+        }
+    }
+
     private var connectionSection: some View {
-        SettingsSection(String(localized: "Workspace")) {
+        SettingsSection(String(localized: "Connection")) {
             SettingsNavigationRow(icon: "server.rack",
                                   title: String(localized: "Server"),
                                   value: appState.serverURL?.host,
@@ -180,7 +191,7 @@ struct AccountSettingsSheet: View {
     }
 
     private var supportSection: some View {
-        SettingsSection {
+        SettingsSection(String(localized: "About & support")) {
             SettingsNavigationRow(icon: "hand.raised",
                                   title: String(localized: "privacyPolicy.title"),
                                   destination: PrivacyPolicyContent())

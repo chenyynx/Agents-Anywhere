@@ -21,7 +21,8 @@ nonisolated struct DiagnosticsDay: Sendable, Identifiable, Equatable {
     var id: String { fileURL.lastPathComponent }
 }
 
-/// Daily, opt-in client diagnostics with a seven-day rotation.
+/// Daily client diagnostics with a seven-day rotation, recording by default
+/// (pp 2026-11-13).
 ///
 /// A disabled logger does no work: `record` returns before touching the disk.
 /// Enabled, one JSON object per line is appended to
@@ -113,8 +114,12 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         self.calendar = calendar
     }
 
+    /// On unless the reader turned it off (pp 2026-11-13). Only the settings
+    /// toggle writes this key, so an absent key is a fresh install, which
+    /// records by default.
     var isEnabled: Bool {
-        defaults.bool(forKey: Self.enabledKey)
+        defaults.object(forKey: Self.enabledKey) == nil
+            || defaults.bool(forKey: Self.enabledKey)
     }
 
     /// The server shown in a day's header. The app sets it once the configured

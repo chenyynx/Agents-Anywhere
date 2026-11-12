@@ -22,6 +22,7 @@ struct DeviceManagementView: View {
 
     @State private var model = DeviceManagementModel()
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showsToolbarTitle = false
     @State private var toasts = ChatToastStore()
     @State private var isRenaming = false
@@ -54,7 +55,7 @@ struct DeviceManagementView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
                     header
                     DeviceAgentSection(model: agents, showsConnectionNotice: false) { report($0, source: "agents") }
                     if showsSessionList {
@@ -174,20 +175,26 @@ struct DeviceManagementView: View {
         }
     }
 
-    /// Large name with the connection state beside it, like Web and Android.
+    /// Large name with the connection state beside it, in the settings type.
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(connector.name).font(.largeTitle.weight(.bold)).lineLimit(2)
+            Text(connector.name)
+                .font(SettingsStyle.text(28, weight: .semibold))
+                .foregroundStyle(SettingsStyle.ink(colorScheme))
+                .lineLimit(2)
                 .accessibilityAddTraits(.isHeader)
             HStack(spacing: 6) {
                 if connector.status == .online {
                     AppSymbol("checkmark.circle.fill", size: 15).foregroundStyle(.green)
                 } else {
-                    Circle().fill(.secondary.opacity(0.4)).frame(width: 9, height: 9).frame(width: 15)
+                    Circle().fill(SettingsStyle.secondary(colorScheme).opacity(0.4))
+                        .frame(width: 9, height: 9)
+                        .frame(width: 15)
                 }
                 Text(connectionDescription)
             }
-            .font(.subheadline).foregroundStyle(.secondary)
+            .font(SettingsStyle.text(15))
+            .foregroundStyle(SettingsStyle.secondary(colorScheme))
         }
         .accessibilityElement(children: .combine)
     }

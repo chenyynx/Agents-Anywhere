@@ -2667,10 +2667,14 @@ async def _exercise_dedicated_turn_end_notification() -> None:
     ]
     assert notifications[1][1]["turnId"] == "turn_1"
     assert [item["id"] for item in notifications[2][1]["items"]] == ["message_1"]
-    encoded_without_turn_end = json.dumps([notifications[0], notifications[2]])
-    assert "turnId" not in encoded_without_turn_end
-    assert "turn_id" not in encoded_without_turn_end
-    assert notifications[2][1]["items"][0]["content"]["turn"] == "left"
+    # `source.turnId` is the timeline wire contract (the Server stores it and
+    # clients decode it for turn boundaries); no other slot may carry it.
+    timeline_item = notifications[2][1]["items"][0]
+    assert timeline_item["source"]["turnId"] == "turn_1"
+    assert "turnId" not in json.dumps(notifications[0])
+    assert "turnId" not in json.dumps(timeline_item["content"])
+    assert "turn_id" not in json.dumps(notifications[2])
+    assert timeline_item["content"]["turn"] == "left"
 
 
 async def wait_for_ws_response(

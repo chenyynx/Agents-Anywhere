@@ -117,6 +117,12 @@ struct DeviceFilterTags<Value: Hashable & Identifiable>: View {
                 Button { selection = value } label: {
                     Text(title(value))
                         .font(SettingsStyle.text(13, weight: selected ? .semibold : .regular))
+                        // A filter name never wraps or squeezes: at 13 pt the
+                        // narrow chip was breaking 「已归档」 onto two lines
+                        // (pp 2026-11-13). The row's ViewThatFits fallback moves
+                        // the scope menu instead of shrinking the tags.
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(selected
                             ? SettingsStyle.controlTint(colorScheme)
                             : SettingsStyle.secondary(colorScheme))

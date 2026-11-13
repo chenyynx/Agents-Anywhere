@@ -86,6 +86,12 @@ class ClaudeSession:
     # usage-stamped item reads it to carry `contextWindow`/`model` without a
     # model-name guess. None until a probe lands.
     context_probe: ClaudeContextProbe | None = None
+    # Turns this process saw the user stop. The transcript marker is the
+    # durable source, but it can land a moment after the stop; until then a
+    # history sync would republish the turn's rows without the interrupted
+    # flag. The in-process set lets that sync stamp them anyway (the marker
+    # covers every later process).
+    interrupted_turn_ids: set[str] = field(default_factory=set)
 
     @property
     def active_turn_id(self) -> str | None:

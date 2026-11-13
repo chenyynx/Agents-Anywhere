@@ -859,11 +859,22 @@ import Testing
         let connection = try await connect(session)
         defer { connection.cancel() }
 
+        // `TestRealtimeAPI.yield` writes to `streams.last`; an event injected
+        // before the subscription exists is silently dropped. Waiting for the
+        // stream is what makes the capability frame below actually apply —
+        // without it the snapshot (which carries no `session.interrupt`)
+        // closes the gate for the wrong reason, the first `eventually` passes
+        // immediately, and the final assertion fails (CI 1157: the probe that
+        // used to sit here printed `capability=nil`).
+        try await eventually { !realtime.streams.isEmpty }
         // A contradictory capability frame (DG-2a: state says running, the
         // capability says idle) makes the stop gate close while fresh…
         let idleShape = capabilitiesJSON(sendAvailable: true, interruptAvailable: false)
         realtime.yield(try event("runtime.capability.updated", seq: 11,
             payload: ["capabilitySet": idleShape["capabilitySet"]!]))
+        try await eventually {
+            session.runtime.capabilities?.capability(id: "session.interrupt") != nil
+        }
         try await eventually { !session.runtime.permitsInterruptAttempt() }
 
         // …and staleness must not leave it closed: that is the dead grey the
@@ -871,16 +882,6 @@ import Testing
         running.failLiveState = true
         try await repo.setTakeover(sessionId: "session", enabled: true)
         #expect(!session.runtime.isFresh)
-        // One-shot diagnostic: name the capability triple and the freshness
-        // gate at the failing assertion so the CI log settles which guard
-        // actually closed. Removed once the flake's mechanism is known.
-        if let capability = session.runtime.capabilities?.capability(id: "session.interrupt") {
-            print("PROBE874 fresh=\(session.runtime.isFresh)"
-                + " supported=\(capability.supported) allowed=\(capability.allowed)"
-                + " available=\(capability.available)")
-        } else {
-            print("PROBE874 fresh=\(session.runtime.isFresh) capability=nil")
-        }
         #expect(session.runtime.permitsInterruptAttempt())
     }
 }

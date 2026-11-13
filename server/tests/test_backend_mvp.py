@@ -3873,6 +3873,61 @@ def test_connector_ingest_isolates_turn_marker_violation(tmp_path):
     assert "item-turn-end" not in item_ids
 
 
+def test_connector_ingest_keeps_source_turn_id_on_timeline_items(tmp_path):
+    """Timeline sources are the wire contract; business params stay stripped.
+
+    `source.turnId` is the client-visible turn boundary (the interrupted-turn
+    notice dedupes by it, and a scheduled turn has no user row to recover it
+    from), so the legacy business-handler sanitizer must not touch timeline
+    item payloads. Every other notification keeps the old stripping rule.
+    """
+
+    client = make_client(tmp_path)
+    _, access_token, session_id, headers = create_connector_and_session(client)
+    ingest_headers = {"Authorization": f"Bearer {access_token}"}
+
+    response = client.post(
+        "/connector/ingest",
+        headers=ingest_headers,
+        json={
+            "notifications": [
+                {
+                    "method": "timeline.itemUpsert",
+                    "params": {
+                        "sessionId": session_id,
+                        "item": _ok_timeline_item("item-source-turn", session_id, 1),
+                    },
+                },
+                {
+                    "method": "session.state.updated",
+                    "params": {
+                        "sessionId": session_id,
+                        "runtime": "codex",
+                        "status": "idle",
+                        "metadata": {
+                            "source": "test.business",
+                            "turnId": "legacy-camel",
+                            "turn_id": "legacy-snake",
+                        },
+                    },
+                },
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    state = session_view_for_assertions(client, session_id, headers)
+    stored = next(item for item in state["items"] if item["id"] == "item-source-turn")
+    assert stored["source"]["turnId"] == "turn_1"
+
+    runtime_state = client.get(
+        f"/sessions/{session_id}/runtime/state", headers=headers
+    ).json()["state"]
+    assert runtime_state["metadata"]["source"] == "test.business"
+    assert "turnId" not in runtime_state["metadata"]
+    assert "turn_id" not in runtime_state["metadata"]
+
+
 def test_connector_ingest_request_level_errors_stay_transport_level(tmp_path):
     client = make_client(tmp_path)
     _, access_token, _, _ = create_connector_and_session(client)

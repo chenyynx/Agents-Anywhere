@@ -36,14 +36,16 @@ from test_claude_runtime import (
     _wait_until,
 )
 
-from connector.runtime_protocol import timeline_content_hash
+from connector.runtime_protocol import (
+    TURN_INTERRUPTED_CONTENT_KEY,
+    timeline_content_hash,
+)
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_turn_id,
 )
 from connector.runtimes.claude.timeline.messages import (
-    TURN_INTERRUPTED_CONTENT_KEY,
     stable_message_item_id,
     stable_tool_item_id,
 )

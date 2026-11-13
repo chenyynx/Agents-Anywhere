@@ -44,6 +44,9 @@ from connector.runtimes.codex.sessions.history_index import (
 )
 from connector.runtimes.codex.sessions.inventory import list_all_codex_threads
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
+from connector.runtimes.codex.timeline.interrupts import (
+    mark_interrupted_codex_turns,
+)
 
 ListModelCatalog = Callable[[str | None, int], Awaitable[RuntimeModelCatalog]]
 ListPermissionCatalog = Callable[[str | None, int], Awaitable[RuntimePermissionCatalog]]
@@ -544,6 +547,11 @@ class CodexSessionReader:
                 limit=limit,
                 pending_messages=self.pending_messages,
             )
+        # The typed SDK branch above builds projections directly (it bypasses
+        # the accumulator's snapshot wrapper), so the stopped-turn fact is
+        # applied here once for every projection route. Stamping is
+        # idempotent, so the routes that already applied it are no-ops.
+        items = mark_interrupted_codex_turns(tuple(items), result.thread)
         project_elapsed_ms = (time.monotonic() - project_started_at) * 1000
         logger.info(
             "codex session snapshot built session_id={} external_session_id={} limit={} items={} read_elapsed_ms={:.1f} project_elapsed_ms={:.1f}",

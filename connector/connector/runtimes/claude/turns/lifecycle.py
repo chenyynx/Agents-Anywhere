@@ -18,6 +18,8 @@ from connector.runtime_protocol import (
     RuntimeUnavailableError,
     RuntimeUnsupportedError,
     SessionNotice,
+    is_main_timeline_item,
+    mark_turn_interrupted,
     timeline_content_hash,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
@@ -99,9 +101,7 @@ from connector.runtimes.claude.timeline.markers import (
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
-    is_main_timeline_item,
     is_synthetic_control_message,
-    mark_turn_interrupted,
     message_id,
     message_model,
     message_role,

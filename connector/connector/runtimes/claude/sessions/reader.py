@@ -19,6 +19,8 @@ from connector.runtime_protocol import (
     RuntimeTimelineSnapshot,
     SessionMeta,
     SessionState,
+    is_main_timeline_item,
+    mark_turn_interrupted,
     timeline_content_hash,
 )
 from connector.runtime_protocol.host import RuntimeHostClient
@@ -88,10 +90,8 @@ from connector.runtimes.claude.timeline.messages import (
     is_compact_summary_text,
     is_hidden_tool_name,
     is_interrupted_request_message,
-    is_main_timeline_item,
     is_synthetic_control_message,
     is_task_notification_message,
-    mark_turn_interrupted,
     message_id,
     message_model,
     message_role,

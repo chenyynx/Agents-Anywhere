@@ -165,6 +165,13 @@ from connector.runtime_protocol.timeline import (
     complete_tool_content,
     timeline_content_hash,
 )
+from connector.runtime_protocol.turn_flags import (
+    TURN_INTERRUPTED_CONTENT_KEY,
+    interrupted_turn_ids_from_rows,
+    is_main_timeline_item,
+    mark_interrupted_turns,
+    mark_turn_interrupted,
+)
 
 __all__ = [
     "CAPABILITY_CATALOG_EFFORT",
@@ -297,6 +304,7 @@ __all__ = [
     "TurnEndSystemContent",
     "TurnEndTimelineItem",
     "TurnStartSystemContent",
+    "TURN_INTERRUPTED_CONTENT_KEY",
     "TurnStartTimelineItem",
     "UnknownArtifactContent",
     "UnknownSystemContent",
@@ -306,7 +314,11 @@ __all__ = [
     "attachments_root",
     "complete_agent_call_content",
     "complete_tool_content",
+    "interrupted_turn_ids_from_rows",
+    "is_main_timeline_item",
     "legacy_runtime_scope",
+    "mark_interrupted_turns",
+    "mark_turn_interrupted",
     "session_attachments_dir",
     "timeline_content_hash",
 ]

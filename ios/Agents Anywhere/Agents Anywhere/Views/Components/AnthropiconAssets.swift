@@ -49,11 +49,6 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.expand": [size(13, 13), size(15, 15), size(18, 18)],
         "anthropicon.check": [size(13, 9), size(15, 10), size(17, 12)],
         "anthropicon.warning": [size(15, 13), size(17, 15), size(20, 18)],
-        // R-S status glyph — official `anthropicon.stopCircle` point sizes
-        // from `anthropicon-map.tsv` (14/16/19). The artwork is the large
-        // optical variant from the 26110919 Assets.car, so at the row's
-        // `.small` slot its stroke weight matches `anthropicon.warning`.
-        "anthropicon.stopCircle": [size(14, 14), size(16, 16), size(19, 19)],
         "anthropicon.play": [size(13, 15), size(15, 17), size(18, 20)],
         "anthropicon.speaker": [size(15, 15), size(17, 17), size(20, 20)],
         "anthropicon.thumbsUp": [size(13, 14), size(15, 16), size(17, 19)],

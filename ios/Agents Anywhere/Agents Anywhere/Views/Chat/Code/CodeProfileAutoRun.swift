@@ -1177,11 +1177,6 @@ final class CodeProfileAutoRunModel {
                                                     failureExtent: nil)
                 == .statusIcon(CodePageTheme.statusWarningIconName),
               "collapsedRows rule: the failed status icon was removed")
-        check(CodeCollapsedStepsRow.statusGlyphKind(status: .failed,
-                                                    failureExtent: nil,
-                                                    interrupted: true)
-                == .statusIcon(CodePageTheme.statusStopIconName),
-              "collapsedRows rule: the interrupted status icon lost the stop glyph")
         check(CodePageTheme.failureGlyphSize == .small,
               "collapsedRows rule: FailureGlyph size"
                 + " \(CodePageTheme.failureGlyphSize), expected .small")

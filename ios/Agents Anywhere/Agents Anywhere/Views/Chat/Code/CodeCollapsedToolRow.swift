@@ -129,10 +129,6 @@ struct CodeCollapsedStepsRow: View {
     var text: Text
     var status: CodeToolStatus
     var failureExtent: CodeFailureExtent?
-    /// True when the terminal cause was an interrupt, not a failure: the
-    /// official status table draws `stopCircle` for it, which must stay
-    /// distinguishable from the `failed` warning (pp 2026-11-14).
-    var interrupted: Bool = false
     var hasDetails: Bool
     var diffIndicator: CodeDiffStat?
     var workingMark: WorkingMarkBody?
@@ -176,8 +172,7 @@ struct CodeCollapsedStepsRow: View {
                 }
 
                 CodeTimelineStatusGlyph(status: status,
-                                        failureExtent: failureExtent,
-                                        interrupted: interrupted)
+                                        failureExtent: failureExtent)
 
                 if let diffIndicator, diffIndicator.hasCounts {
                     CodeDiffIndicator(stat: diffIndicator)
@@ -214,18 +209,10 @@ struct CodeCollapsedStepsRow: View {
     ///   jump table `0x105b88070`): running/complete/unreadable → nil,
     ///   waiting → `anthropicon.clock`, failed → `anthropicon.warning`,
     ///   interrupted/denied → `anthropicon.stopCircle`.
-    ///
-    /// `interrupted` wins over `failed` because AA folds interrupt into the
-    /// `.failed` display status (`CodeToolStatus.init`); the flag carries the
-    /// cause so the glyph can still tell the two apart (pp 2026-11-14).
     static func statusGlyphKind(status: CodeToolStatus,
-                                failureExtent: CodeFailureExtent?,
-                                interrupted: Bool = false) -> CodeStatusGlyphKind? {
+                                failureExtent: CodeFailureExtent?) -> CodeStatusGlyphKind? {
         if status != .running, let failureExtent {
             return .failure(failureExtent)
-        }
-        if interrupted, status != .running {
-            return .statusIcon(CodePageTheme.statusStopIconName)
         }
         if status == .failed {
             return .statusIcon(CodePageTheme.statusWarningIconName)
@@ -345,7 +332,7 @@ nonisolated enum CodeStatusGlyphKind: Equatable {
     case failure(CodeFailureExtent)
     /// The non-failure status icon, drawn at `Icon.Size.small`
     /// (`anthropicon.clock` / `anthropicon.warning` /
-    /// `anthropicon.stopCircle`); AA reaches the warning and stop cases.
+    /// `anthropicon.stopCircle`); AA reaches the warning case only.
     case statusIcon(String)
 }
 
@@ -358,14 +345,12 @@ nonisolated enum CodeStatusGlyphKind: Equatable {
 struct CodeTimelineStatusGlyph: View {
     let status: CodeToolStatus
     let failureExtent: CodeFailureExtent?
-    var interrupted: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         switch CodeCollapsedStepsRow.statusGlyphKind(status: status,
-                                                     failureExtent: failureExtent,
-                                                     interrupted: interrupted) {
+                                                     failureExtent: failureExtent) {
         case let .failure(extent):
             CodeFailureGlyph(extent: extent)
         case let .statusIcon(name):

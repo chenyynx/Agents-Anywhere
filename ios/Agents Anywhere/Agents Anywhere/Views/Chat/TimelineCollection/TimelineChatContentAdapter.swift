@@ -103,8 +103,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // idle makes a late `running` row stale (pp 2026-11-14).
         hasher.combine(model.isTurnStreaming)
         hasher.combine(model.session.runtime.isFresh)
-        hasher.combine(model.session.runtime.isPredictedIdle)
-        hasher.combine(model.session.awaitingReplyID)
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
@@ -159,15 +157,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// step that still reports `running`; a previous turn's stale snapshot
     /// must not (pp 2026-11-14).
     private var chatRunningPoseGroupIDs: Set<String> = []
-    /// The step group the user stopped. Row statuses cannot carry that cause:
-    /// the connector records an interrupted tool as `failed` and an
-    /// interrupted thinking block as `done`. The adapter freezes the trailing
-    /// group of the stopped turn and paints the stop glyph on it
-    /// (pp 2026-11-14 device report).
-    private var lastInterruptedGroupID: String?
-    /// Rising-edge detector so one stop captures once, never on every refresh
-    /// inside the prediction window.
-    private var observedPredictedIdle = false
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -1234,8 +1223,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail,
                                                     allowsRunningPose: chatAllowsRunningPose
-                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id),
-                                                    endedByUserInterrupt: stepGroup.id == lastInterruptedGroupID) { [weak self] in
+                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id)) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1730,33 +1718,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // prompt; admitting it would open settled groups at the bottom
             // (review 2026-11-10).
             chatRunningTurnGroupIDs = model.isRunning ? turnGroupIDs : []
-            // Freeze the stopped turn's trailing group on the accepted stop.
-            // `predictedIdle` is the client's own proof the turn ended; the
-            // connector's row statuses arrive later and call the same work
-            // `failed`/`done`. The newest group after the last user message is
-            // that turn's work (`turnGroupIDs`), independent of whether the
-            // runtime has already reported idle.
-            func captureStoppedGroup() {
-                let stopped = chatUnits.last { unit in
-                    guard case let .stepGroup(group, _) = unit else { return false }
-                    return turnGroupIDs.contains(group.id)
-                }
-                if case let .stepGroup(group, _)? = stopped {
-                    lastInterruptedGroupID = group.id
-                }
-            }
-            let predictedIdle = model.session.runtime.isPredictedIdle
-            if predictedIdle, !observedPredictedIdle { captureStoppedGroup() }
-            observedPredictedIdle = predictedIdle
-            // A cold open never sees the prediction; the idle state still
-            // names the interrupt as its source, and the newest step group is
-            // that stopped turn's work.
-            if lastInterruptedGroupID == nil,
-               model.session.runtime.state?.status == .idle,
-               model.session.runtime.state?.metadata["source"]?.stringValue
-                   == "claude.session.interrupt" {
-                captureStoppedGroup()
-            }
         } else {
             chatRunningTurnGroupIDs = []
             chatUnits = []
@@ -2456,12 +2417,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let summary = group.summary
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
-        settled.combine(group.settledStatus == .failed ? 1 : 0)
-        // Both interrupt and failure settle to `.failed`, but they draw
-        // different glyphs; hash the cause so the icon updates in place. A
-        // user-stopped turn carries the cause only in the adapter's frozen id.
-        let interrupted = group.hasInterrupted || group.id == lastInterruptedGroupID
-        settled.combine(interrupted ? 1 : 0)
+        settled.combine(group.hasFailure ? 1 : 0)
         settled.combine(summary.thinkingCount)
         settled.combine(summary.readFiles)
         settled.combine(summary.ranCommands)

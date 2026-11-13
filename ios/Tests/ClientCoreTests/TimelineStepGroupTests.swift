@@ -256,24 +256,6 @@ struct TimelineStepGroupLiveMarkTests {
         #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
         #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
     }
-
-    @Test func settledStatusNeverLooksCompleteAfterAStop() {
-        for status in [V2TimelineItemStatus.interrupted, .cancelled, .failed] {
-            #expect(group([.thinking(id: "r", text: "think", status: status)])
-                .settledStatus == .failed)
-        }
-        #expect(group([.thinking(id: "r", text: "think", status: .done)])
-            .settledStatus == .complete)
-    }
-
-    @Test func interruptIsReportedSeparatelyFromFailure() {
-        #expect(group([.thinking(id: "r", text: "think", status: .interrupted)])
-            .hasInterrupted)
-        #expect(!group([.thinking(id: "r", text: "think", status: .failed)])
-            .hasInterrupted)
-        #expect(!group([.thinking(id: "r", text: "think", status: .cancelled)])
-            .hasInterrupted)
-    }
 }
 
 @Suite("Step sheet tail follow")

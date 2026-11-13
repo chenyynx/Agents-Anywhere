@@ -24,11 +24,6 @@ struct CodeStepGroupRowView: View {
     /// stop's optimistic window); late row snapshots must not keep the row
     /// spinning (pp 2026-11-14).
     var allowsRunningPose: Bool = true
-    /// The turn that produced this group ended by a user stop. The row's own
-    /// statuses cannot tell: the connector records an interrupted tool as
-    /// `failed` and an interrupted thinking block as `done`, so the adapter
-    /// freezes the group it saw stop and passes the cause in (pp 2026-11-14).
-    var endedByUserInterrupt: Bool = false
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -86,9 +81,8 @@ struct CodeStepGroupRowView: View {
                 icon: summaryIcon,
                 iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
-                status: group.settledStatus,
+                status: group.hasFailure ? .failed : .complete,
                 failureExtent: nil,
-                interrupted: group.hasInterrupted || endedByUserInterrupt,
                 hasDetails: true,
                 diffIndicator: nil,
                 workingMark: nil,

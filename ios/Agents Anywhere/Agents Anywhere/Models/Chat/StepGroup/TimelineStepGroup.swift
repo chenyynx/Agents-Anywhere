@@ -124,19 +124,14 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
         turnIsRunning || canCarryLiveMark
     }
 
-    /// Whether an interrupt (not a failure) ended the group. Kept separate
-    /// from `hasTerminalFailure` so the settled row can draw the official
-    /// `stopCircle` instead of the warning (pp 2026-11-14).
-    var hasInterrupted: Bool {
-        steps.contains { $0.status == .interrupted }
-    }
-
-    /// The settled summary row's status. Cancelled and interrupted steps fold
-    /// into `.failed` the same way `CodeToolStatus.init` does, so a stopped
-    /// turn never looks like a completed one; `hasInterrupted` then selects
-    /// the stop glyph over the warning.
-    var settledStatus: CodeToolStatus {
-        hasTerminalFailure ? .failed : .complete
+    /// The settled row's failure icon: only a genuinely failed step draws it
+    /// (pp 2026-11-14 decided the interrupt cause does not need its own glyph;
+    /// a stopped tool already lands as `failed`).
+    var hasFailure: Bool {
+        steps.contains {
+            if case .failed = $0.status { return true }
+            return false
+        }
     }
 
     /// Whether the row may draw the live pose. A step that still reports

@@ -179,14 +179,6 @@ nonisolated enum CodePageTheme {
     /// `FailureGlyph`; waiting/interrupted/denied use `clock`/`stopCircle`.
     static let statusWarningIconName = "anthropicon.warning"
 
-    /// [E] R-S §4 — the 7-way status table maps interrupted/denied to
-    /// `anthropicon.stopCircle` (`0x105b88070`). The artwork is the official
-    /// large optical variant decoded from the 26110919
-    /// `ClaudeDesignSystem_ClaudeIcons.bundle/Assets.car`; it keeps the same
-    /// `text500` status ink as `statusWarningIconName`, so the two terminal
-    /// causes differ by shape rather than alarming colour (pp 2026-11-14).
-    static let statusStopIconName = "anthropicon.stopCircle"
-
     /// [E] R-A E5 — square frame side `16 + 4 × Icon.Size.raw`
     /// (`0x100d8e6c8` loads 16.0, `0x100d8e6cc` adds `size << 50`;
     /// `_FrameLayout` gets width = height, `.center`). The official size

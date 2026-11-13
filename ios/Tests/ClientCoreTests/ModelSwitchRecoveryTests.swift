@@ -112,6 +112,11 @@ import Testing
         var failLiveState = false
         var interruptSupported = true
         var interruptAllowed = true
+        /// The interrupt capability a recovery snapshot rebuild reports.
+        /// Starts in the healthy turn-window shape; a test that injects a
+        /// contradictory capability frame flips it so a rebuild during the
+        /// stale phase preserves the last-known contradiction.
+        var snapshotInterruptAvailable = true
         /// Live-state reads with an index greater than this block on
         /// `overflowGate`.
         var blockReadsAbove: Int?
@@ -152,6 +157,23 @@ import Testing
                     sendAvailable: !active, interruptAvailable: active,
                     interruptSupported: running.interruptSupported,
                     interruptAllowed: running.interruptAllowed))
+            }
+            if call.path.hasSuffix("snapshot") {
+                // A recovery rebuild replaces the projection from this
+                // snapshot. The shared fixture carries only `send_message`,
+                // so a rebuild would erase the last-known interrupt
+                // capability and close the stop gate for a reason the test
+                // is not about. Keep the same contradictory capability the
+                // live frame carried.
+                var object = try fixtureObject("snapshot")
+                let lastKnown = self.capabilitiesJSON(
+                    sendAvailable: true,
+                    interruptAvailable: running.snapshotInterruptAvailable,
+                    interruptSupported: running.interruptSupported,
+                    interruptAllowed: running.interruptAllowed)["capabilitySet"]!
+                object["effectiveCapabilities"] = lastKnown
+                object["runtimeCapabilities"] = lastKnown
+                return try running.json(object)
             }
             if call.path.hasSuffix("catalogs/model") { return try running.json(self.catalogJSON()) }
             if call.path.hasSuffix("selections") {
@@ -879,6 +901,7 @@ import Testing
 
         // …and staleness must not leave it closed: that is the dead grey the
         // relaxation exists for.
+        running.snapshotInterruptAvailable = false
         running.failLiveState = true
         try await repo.setTakeover(sessionId: "session", enabled: true)
         #expect(!session.runtime.isFresh)

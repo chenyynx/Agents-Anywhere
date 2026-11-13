@@ -103,6 +103,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // idle makes a late `running` row stale (pp 2026-11-14).
         hasher.combine(model.isTurnStreaming)
         hasher.combine(model.session.runtime.isFresh)
+        hasher.combine(model.session.runtime.isPredictedIdle)
+        hasher.combine(model.session.awaitingReplyID)
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
@@ -150,11 +152,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
-    /// Whether a step row that still reports `running` may be drawn in the
-    /// live pose. Fresh live facts say yes only while the turn streams; after
-    /// a stop ack or an authoritative idle, those row snapshots lag the turn
-    /// and must not keep the row spinning (pp 2026-11-14).
-    private var chatAllowsRunningPose = true
+    /// Live facts are not fresh (cold load): draw the running pose from the
+    /// row status, because nothing better is known yet.
+    private var chatAllowsRunningPose = false
+    /// The groups of the actively streaming turn. Only these may animate a
+    /// step that still reports `running`; a previous turn's stale snapshot
+    /// must not (pp 2026-11-14).
+    private var chatRunningPoseGroupIDs: Set<String> = []
+    /// The step group the user stopped. Row statuses cannot carry that cause:
+    /// the connector records an interrupted tool as `failed` and an
+    /// interrupted thinking block as `done`. The adapter freezes the trailing
+    /// group of the stopped turn and paints the stop glyph on it
+    /// (pp 2026-11-14 device report).
+    private var lastInterruptedGroupID: String?
+    /// Rising-edge detector so one stop captures once, never on every refresh
+    /// inside the prediction window.
+    private var observedPredictedIdle = false
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -1220,7 +1233,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail,
-                                                    allowsRunningPose: chatAllowsRunningPose) { [weak self] in
+                                                    allowsRunningPose: chatAllowsRunningPose
+                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id),
+                                                    endedByUserInterrupt: stepGroup.id == lastInterruptedGroupID) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1715,6 +1730,33 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // prompt; admitting it would open settled groups at the bottom
             // (review 2026-11-10).
             chatRunningTurnGroupIDs = model.isRunning ? turnGroupIDs : []
+            // Freeze the stopped turn's trailing group on the accepted stop.
+            // `predictedIdle` is the client's own proof the turn ended; the
+            // connector's row statuses arrive later and call the same work
+            // `failed`/`done`. The newest group after the last user message is
+            // that turn's work (`turnGroupIDs`), independent of whether the
+            // runtime has already reported idle.
+            func captureStoppedGroup() {
+                let stopped = chatUnits.last { unit in
+                    guard case let .stepGroup(group, _) = unit else { return false }
+                    return turnGroupIDs.contains(group.id)
+                }
+                if case let .stepGroup(group, _)? = stopped {
+                    lastInterruptedGroupID = group.id
+                }
+            }
+            let predictedIdle = model.session.runtime.isPredictedIdle
+            if predictedIdle, !observedPredictedIdle { captureStoppedGroup() }
+            observedPredictedIdle = predictedIdle
+            // A cold open never sees the prediction; the idle state still
+            // names the interrupt as its source, and the newest step group is
+            // that stopped turn's work.
+            if lastInterruptedGroupID == nil,
+               model.session.runtime.state?.status == .idle,
+               model.session.runtime.state?.metadata["source"]?.stringValue
+                   == "claude.session.interrupt" {
+                captureStoppedGroup()
+            }
         } else {
             chatRunningTurnGroupIDs = []
             chatUnits = []
@@ -1866,10 +1908,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // message was sent (pp 2026-11-10), and the same window re-opened
             // on the stop ack before the idle frames landed (pp 2026-11-14).
             let turnStreaming = model.isTurnStreaming
+            // A local outgoing message is still on screen (sending, accepted
+            // or awaiting its echo). Every group above it belongs to the
+            // previous turn, so none may inherit the new turn's mark while the
+            // runtime already reports running — that is the send-time flash
+            // (pp 2026-11-14). The new turn's own rows animate from their own
+            // running steps.
+            let hasPendingSend = !model.session.pendingMessages.isEmpty
+                || !model.timeline.pendingMessages.isEmpty
+            let turnActive = turnStreaming && !hasPendingSend
             // A fresh idle — or the accepted stop's optimistic idle — proves
-            // every still-`running` step snapshot is stale. Keep drawing from
-            // row status only while live facts are not fresh (cold load).
-            chatAllowsRunningPose = !model.session.runtime.isFresh || turnStreaming
+            // every still-`running` step snapshot is stale. Only the group of
+            // the actively streaming turn may animate; keep drawing from row
+            // status only while live facts are not fresh (cold load).
+            chatAllowsRunningPose = !model.session.runtime.isFresh
+            chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
             // While the turn streams, a failed tool in the group is not
             // residue — the agent moves on and the row must keep the live
             // pose through the next gap (pp 2026-11-10: a mid-turn ⚠️ settled
@@ -1877,8 +1930,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // the residue rule, so an interrupted group cannot regain it.
             let lastStepGroup = lastStepGroupID.flatMap { stepGroupsByID[$0] }
             let canCarryLiveMark = lastStepGroup?
-                .canCarryLiveMark(turnIsRunning: turnStreaming) ?? false
-            chatLiveTailGroupID = (turnStreaming && lastUnitIsStepGroup && canCarryLiveMark)
+                .canCarryLiveMark(turnIsRunning: turnActive) ?? false
+            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup && canCarryLiveMark)
                 ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil
@@ -2377,8 +2430,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // for the whole live turn, even between steps; the signature must
         // follow that drawn state, not only the running steps.
         let isLiveTail = group.id == chatLiveTailGroupID
-        let showsLivePose = group.showsRunningPose(isLiveTail: isLiveTail,
-                                                   allowsRunningPose: chatAllowsRunningPose)
+        let showsLivePose = group.showsRunningPose(
+            isLiveTail: isLiveTail,
+            allowsRunningPose: chatAllowsRunningPose
+                || chatRunningPoseGroupIDs.contains(group.id))
         if let live = group.liveStep, showsLivePose {
             var hasher = TimelineStableHasher()
             hasher.combine(live.id)
@@ -2403,8 +2458,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         settled.combine(group.steps.count)
         settled.combine(group.settledStatus == .failed ? 1 : 0)
         // Both interrupt and failure settle to `.failed`, but they draw
-        // different glyphs; hash the cause so the icon updates in place.
-        settled.combine(group.hasInterrupted ? 1 : 0)
+        // different glyphs; hash the cause so the icon updates in place. A
+        // user-stopped turn carries the cause only in the adapter's frozen id.
+        let interrupted = group.hasInterrupted || group.id == lastInterruptedGroupID
+        settled.combine(interrupted ? 1 : 0)
         settled.combine(summary.thinkingCount)
         settled.combine(summary.readFiles)
         settled.combine(summary.ranCommands)

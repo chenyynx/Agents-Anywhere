@@ -247,9 +247,13 @@ struct TimelineStepGroupLiveMarkTests {
     }
 
     @Test func theLiveTailStillDrawsTheBetweenStepsPose() {
+        // A settled group draws the live pose only because it is the tail;
+        // `allowsRunningPose` alone cannot animate a group with no running
+        // step (the adapter sets the tail while the turn streams).
         let settled = group([.thinking(id: "r", text: "think", status: .done)])
+        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: true))
         #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
-        #expect(settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
         #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
     }
 

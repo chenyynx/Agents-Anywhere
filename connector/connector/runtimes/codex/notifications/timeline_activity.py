@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from connector.logging import logger
 from connector.runtime_protocol import RuntimeSessionStateCache, RuntimeTimelineItem
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.codex.domain import sessions as codex_sessions
 from connector.runtimes.codex.sdk.events import CodexSdkEvent
 from connector.runtimes.codex.timeline.accumulator import CodexTimelineAccumulator
+
+_INTERRUPTED_TURN_EVENTS = frozenset({"turn/interrupted", "turn/cancelled"})
 
 
 @dataclass(slots=True)
@@ -28,7 +31,42 @@ class CodexTimelineActivityHandler:
         for item in self.timeline.finish_compaction_items(
             session_id, thread_id, turn_id, event.event_type
         ):
+            self.timeline.record_published_item(item)
             await self.host.timeline_item_upsert(item)
+
+    async def publish_interrupted_turn_stamp(
+        self,
+        session_id: str,
+        thread_id: str,
+        event: CodexSdkEvent,
+    ) -> None:
+        """Publish the durable interrupted-turn fact before the turn releases.
+
+        Called by the projector while the terminal event is still inside the
+        lifecycle window; ``end_turn`` drops the accumulator's last-row index,
+        so this is the only moment the live anchor exists. History restamps
+        the same row from the persisted turn status, so a rebuild cannot lose
+        it. Display-only: a failed upsert is logged and never fails the turn.
+        """
+
+        if event.event_type not in _INTERRUPTED_TURN_EVENTS:
+            return
+        turn_id = (
+            event.turn_id
+            or codex_sessions.turn_id_from_result(event.params)
+            or self.active_turn_ids.get(session_id)
+        )
+        stamped = self.timeline.interrupted_turn_stamp(session_id, turn_id)
+        if stamped is None:
+            return
+        try:
+            await self.host.timeline_item_upsert(stamped)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Codex interrupted-turn stamp failed session_id={} turn_id={}",
+                session_id,
+                turn_id,
+            )
 
     async def publish_item_activity(
         self,
@@ -48,6 +86,7 @@ class CodexTimelineActivityHandler:
         turn_id = event.turn_id or self.active_turn_ids.get(session_id)
         if event.is_running_item_event and turn_id is not None:
             self.active_turn_ids[session_id] = turn_id
+        self.timeline.record_published_item(item)
         cached = self.session_states.get(session_id)
         if cached is not None and cached.status in {
             "waiting_approval",

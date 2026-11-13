@@ -6,7 +6,11 @@ from typing import Any
 
 from openai_codex.generated.v2_all import Thread
 
-from connector.runtime_protocol import RuntimeTimelineItem
+from connector.runtime_protocol import (
+    RuntimeTimelineItem,
+    is_main_timeline_item,
+    mark_turn_interrupted,
+)
 from connector.runtimes.codex import timeline as codex_timeline
 from connector.runtimes.codex.domain import sessions as codex_sessions
 from connector.runtimes.codex.domain.pending_messages import (
@@ -19,6 +23,9 @@ from connector.runtimes.codex.timeline.identity import (
     turn_item_lane,
     turn_position_item_id,
     uses_turn_position_identity,
+)
+from connector.runtimes.codex.timeline.interrupts import (
+    mark_interrupted_codex_turns,
 )
 
 
@@ -43,6 +50,10 @@ class CodexTimelineAccumulator:
         self._next_order = 0
         self._pending_messages = pending_messages
         self._active_turn_positions: dict[tuple[str, str], ActiveTurnPositions] = {}
+        # The last published main row per turn, kept only while the turn is
+        # live. A user stop anchors its durable notice fact on this row; once
+        # the turn settles the transcript status is the source of truth.
+        self._last_item_by_turn: dict[tuple[str, str], RuntimeTimelineItem] = {}
 
     def begin_turn(self, external_session_id: str, turn_id: str) -> None:
         """Start bounded live-item position tracking for one active turn."""
@@ -52,7 +63,35 @@ class CodexTimelineAccumulator:
 
     def end_turn(self, external_session_id: str, turn_id: str | None) -> None:
         """Release all live-item position state owned by a terminal turn."""
+        if turn_id is not None:
+            self._last_item_by_turn.pop((external_session_id, turn_id), None)
         self._release_turn(external_session_id, turn_id)
+
+    def record_published_item(self, item: RuntimeTimelineItem) -> None:
+        """Remember the turn's newest main row for a later interrupt stamp."""
+
+        if (
+            item.turn_id is None
+            or item.type in {"turn.start", "turn.end"}
+            or not is_main_timeline_item(item)
+        ):
+            return
+        self._last_item_by_turn[(item.session_id, item.turn_id)] = item
+
+    def interrupted_turn_stamp(
+        self,
+        session_id: str,
+        turn_id: str | None,
+    ) -> RuntimeTimelineItem | None:
+        """The stopped turn's last main row, stamped with the durable fact."""
+
+        if turn_id is None:
+            return None
+        item = self._last_item_by_turn.get((session_id, turn_id))
+        if item is None:
+            return None
+        stamped = mark_turn_interrupted(item)
+        return None if stamped is item else stamped
 
     def finish_compaction_items(
         self,
@@ -214,11 +253,12 @@ class CodexTimelineAccumulator:
             if turn_position is not None:
                 projection = projection.with_turn_position(turn_position)
             projections.append(projection)
-        return self.items_from_snapshot_projections(
+        items = self.items_from_snapshot_projections(
             session_id=session_id,
             external_session_id=external_session_id,
             projections=tuple(projections),
         )
+        return mark_interrupted_codex_turns(items, thread)
 
     def items_from_sdk_thread_snapshot(
         self,
@@ -231,11 +271,12 @@ class CodexTimelineAccumulator:
             thread=thread,
             limit=limit,
         )
-        return self.items_from_snapshot_projections(
+        items = self.items_from_snapshot_projections(
             session_id=session_id,
             external_session_id=external_session_id,
             projections=projections,
         )
+        return mark_interrupted_codex_turns(items, thread)
 
     def items_from_snapshot_projections(
         self,

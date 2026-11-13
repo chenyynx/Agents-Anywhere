@@ -155,6 +155,11 @@ class CodexNotificationProjector:
                 event=event,
             )
         elif event.is_terminal_turn:
+            # The stamp must land before the lifecycle releases the turn:
+            # `end_turn` drops the accumulator's last-row index.
+            await self.timeline_activity.publish_interrupted_turn_stamp(
+                session_id, thread_id, event
+            )
             await self.turn_lifecycle.handle_turn_completed(
                 session_id=session_id,
                 thread_id=thread_id,

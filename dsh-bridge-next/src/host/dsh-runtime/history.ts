@@ -8,7 +8,9 @@ import { enrichToolResult, parentToolItem, resultContent, toolContent } from './
 import { json, record, wellFormedJson, type Data, type ItemStatus, type ItemType, type TimelineItem } from './types.js'
 
 // Bump when replay semantics change so old checkpoints rebuild their timeline.
-export const PROJECTION_VERSION = 3
+// v4: a user-stopped turn carries `content.turnInterrupted` on its last main
+// item, so the interrupted-response notice is a durable turn fact.
+export const PROJECTION_VERSION = 4
 
 // Older persisted logs and fixtures can still carry the pre-rc.1 chunk vocabulary.
 type LegacyChunk = { type: 'assistant/chunk', seq: SessionEvent['seq'], time: number,
@@ -140,8 +142,9 @@ export function createProjection(externalId: string, platformId: string, fingerp
       put('turn.start', String(turnStart), event, 'turn.start', 'done', 'system', { kind: 'turn_start', turn: event.data.turn })
     } else if (event.type === 'turn/end') {
       const reason = event.data.reason
+      const interrupted = ['aborted', 'interrupted'].includes(String(reason.kind))
       const status: ItemStatus = reason.kind === 'error' ? 'failed' :
-        ['aborted', 'interrupted'].includes(reason.kind) ? 'interrupted' : 'done'
+        interrupted ? 'interrupted' : 'done'
       for (const [id, item] of items) {
         if (item.turnId !== turnId || item.status !== 'running') continue
         const closed = { ...item, status: status === 'done' ? 'interrupted' as const : status,
@@ -149,6 +152,25 @@ export function createProjection(externalId: string, platformId: string, fingerp
         needsHash.add(id)
         items.set(id, closed)
         changed.set(id, closed)
+      }
+      // The notice's durable anchor: the turn-level fact rides the turn's
+      // last main row, not a row status. A rebuild replays this same event,
+      // so a later history sync reproduces the flag instead of losing it.
+      if (interrupted) {
+        let anchor: TimelineItem | undefined
+        for (const item of items.values()) {
+          if (item.turnId !== turnId || item.type === 'turn.start' || item.type === 'turn.end') continue
+          if (record(item.content).parentItemId !== undefined) continue
+          if (!anchor || item.orderSeq > anchor.orderSeq) anchor = item
+        }
+        if (anchor) {
+          const stamped: TimelineItem = { ...anchor, revision: Number(event.seq) + 1,
+            content: { ...anchor.content, turnInterrupted: true },
+            source: { ...anchor.source, lastSeq: Number(event.seq) } }
+          needsHash.add(stamped.id)
+          items.set(stamped.id, stamped)
+          changed.set(stamped.id, stamped)
+        }
       }
       put('turn.end', String(turnStart), event, 'turn.end', status, 'system', { kind: 'turn_end', reason: json(reason) })
       turnId = null

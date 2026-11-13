@@ -336,3 +336,49 @@ test('rc.1 failed attempts discard provisional blocks before the next attempt', 
   projection.stream(1, 1, { type: 'text-delta', index: 0, text: 'retry' }, 1003, 2)
   assert.ok(projection.drain().items.some(item => item.content.text === 'retry'))
 })
+
+test('a user-stopped turn carries the durable notice flag on its last main item', () => {
+  for (const kind of ['interrupted', 'aborted']) {
+    const snapshot = log([
+      ...start,
+      { type: 'user/message', data: { id: 'user', role: 'user', source: { kind: 'user' },
+        content: [{ type: 'text', text: 'go' }] } },
+      assistant([{ type: 'text', text: 'partial answer' }], true),
+      { type: 'turn/end', data: { reason: { kind } } },
+    ])
+    const items = projectHistory(snapshot, 'platform')
+    const flagged = items.filter(item => item.content.turnInterrupted === true)
+    assert.equal(flagged.length, 1)
+    assert.equal(flagged[0]?.type, 'message')
+    assert.equal(flagged[0]?.content.text, 'partial answer')
+    assert.equal(flagged[0]?.id, items.filter(item => item.type === 'message').at(-1)?.id)
+  }
+})
+
+test('the live turn/end drain carries the same interrupted flag', () => {
+  const snapshot = log([
+    ...start,
+    assistant([{ type: 'text', text: 'live partial' }], true),
+    { type: 'turn/end', data: { reason: { kind: 'interrupted' } } },
+  ])
+  const projection = createProjection('native', 'platform')
+  for (const event of snapshot.events.slice(0, -1)) {
+    projection.apply(event)
+    projection.drain()
+  }
+  projection.apply(snapshot.events.at(-1)!)
+  const flagged = projection.drain().items.filter(item => item.content.turnInterrupted === true)
+  assert.equal(flagged.length, 1)
+  assert.equal(flagged[0]?.content.text, 'live partial')
+  assert.equal(flagged[0]?.contentHash, contentHash(flagged[0]!))
+  assert.equal(projection.snapshot().filter(item => item.content.turnInterrupted === true).length, 1)
+})
+
+test('a completed turn has no interrupted flag', () => {
+  const snapshot = log([
+    ...start,
+    assistant([{ type: 'text', text: 'done' }]),
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  ])
+  assert.equal(projectHistory(snapshot, 'platform').filter(item => item.content.turnInterrupted === true).length, 0)
+})

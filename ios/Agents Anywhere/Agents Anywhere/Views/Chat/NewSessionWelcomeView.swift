@@ -30,7 +30,7 @@ struct NewSessionWelcomeView: View {
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 Text(detail)
-                    .font(.system(size: 16))
+                    .font(.system(size: 15))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }

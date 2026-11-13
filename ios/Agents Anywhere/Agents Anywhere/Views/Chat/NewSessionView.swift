@@ -50,10 +50,10 @@ struct NewSessionView: View, Equatable {
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        // No transition for the edit-state move: the video
-                        // layer and the copy must not animate on different
-                        // clocks (pp 2026-11-13).
-                        .transaction { $0.animation = nil }
+                        // The globe size is fixed, so animating the page move
+                        // is safe: only the welcome block's position changes,
+                        // never the video layer's size (pp 2026-11-13).
+                        .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)

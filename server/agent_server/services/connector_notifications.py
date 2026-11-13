@@ -103,7 +103,16 @@ class ConnectorNotificationService:
         method: str,
         params: dict[str, Any],
     ) -> IngestEffect:
-        if method != "session.turnEnded":
+        # Timeline item sources are the wire contract, not a business input:
+        # `source.turnId` is the client-visible turn boundary (the interrupted
+        # notice dedupes by it, and a scheduled turn has no user row to
+        # recover it from). `session.turnEnded` already owns the dedicated turn
+        # channel. The legacy sanitizer stays on every other notification.
+        if method not in {
+            "session.turnEnded",
+            "timeline.itemUpsert",
+            "timeline.sync",
+        }:
             params = _without_runtime_turn_ids(params)
         if method == "approval.requested":
             raise NotificationValidationError(

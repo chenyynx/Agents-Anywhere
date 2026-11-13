@@ -243,6 +243,12 @@ final class V2SessionModel: Identifiable {
     var isPerformingAction = false
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var awaitingReplyID: String?
+    /// Stops this client observed itself, anchored to the last main-agent row
+    /// it held at the ack. Restored from the session archive so the notice
+    /// survives a relaunch (pp 2026-11-14). Server-derived markers (the
+    /// connector's `content.turnInterrupted` flag) win over these when both
+    /// name the same turn — see `interruptedTurns`.
+    private(set) var localInterruptedTurns: [V2InterruptedTurnMarker] = []
     /// Set when the composer's text came back from an unresolved send record;
     /// the next send from that draft replaces the record once it is confirmed.
     @ObservationIgnored private(set) var draftRestoredFromPendingID: String?
@@ -407,6 +413,60 @@ final class V2SessionModel: Identifiable {
     }
 
     func localWorkDidChange() { repository?.localWorkDidChange(sessionID: id) }
+
+    /// Every turn whose reply was stopped, anchored to the row its notice
+    /// follows. Local ack markers are merged with the durable markers the
+    /// connector stamps on the stopped turn's last main row
+    /// (`content.turnInterrupted`); the server-derived marker wins the anchor
+    /// when both name the same turn, because it is the one every device and
+    /// every relaunch sees.
+    var interruptedTurns: [V2InterruptedTurnMarker] {
+        InterruptedTurnMarkers.merge(local: localInterruptedTurns,
+                                     timeline: timeline.rows.map(\.value))
+    }
+
+    /// Freezes the just-stopped turn on its last main-agent row. Called on the
+    /// accepted interrupt; the archive write makes the notice survive a
+    /// relaunch (an older connector that never stamps the turn still shows it
+    /// on this device).
+    func recordInterruptedTurn() {
+        guard let last = lastMainAgentItem(),
+              !hasInterruptedMarker(for: last)
+        else { return }
+        localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
+                                                             turnID: last.turnId))
+        repository?.draftDidChange(sessionID: id)
+    }
+
+    /// Cold-open recovery: the runtime still names the interrupt as the reason
+    /// it is idle, so the newest turn can be recovered even though the live
+    /// ack happened on a previous launch.
+    func noteAuthoritativeInterruptIfNeeded() {
+        guard runtime.state?.status == .idle,
+              runtime.state?.metadata["source"]?.stringValue
+                  == "claude.session.interrupt",
+              let last = lastMainAgentItem(),
+              !hasInterruptedMarker(for: last)
+        else { return }
+        localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
+                                                             turnID: last.turnId))
+        repository?.draftDidChange(sessionID: id)
+    }
+
+    private func hasInterruptedMarker(for item: V2TimelineItem) -> Bool {
+        interruptedTurns.contains {
+            $0.anchorItemID == item.id
+                || ($0.turnID != nil && $0.turnID == item.turnId)
+        }
+    }
+
+    private func lastMainAgentItem() -> V2TimelineItem? {
+        // Sub-agent child rows live in the same array but not in the chat
+        // timeline; anchoring on one would never find a row to sit after.
+        timeline.last {
+            $0.value.raw["content"]?["parentItemId"] == nil
+        }?.value
+    }
 
     /// Cheap gate before spawning a drain: nothing to do, or still paused, and
     /// no task is started. Otherwise a single-flight drain runs in the
@@ -828,6 +888,9 @@ final class V2SessionModel: Identifiable {
         // raced the disk read, so the panel can show it offline. The rows are
         // already decoded by the store actor.
         if !cachedActivity.isEmpty { subAgentActivity.restore(cachedActivity) }
+        // The notice list is read-only history, not local work; restore it
+        // even when a draft/queue write raced the disk read.
+        localInterruptedTurns = archive.interruptedTurns ?? []
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
         draft = archive.draft; composer.attachments = archive.draftAttachments
@@ -864,7 +927,7 @@ final class V2SessionModel: Identifiable {
         queueDrainTask?.cancel(); queueDrainTask = nil
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
-        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
+        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; localInterruptedTurns = []; draft = ""; draftAttachmentIDs = []
         draftRestoredFromPendingID = nil; blockedSendPendingID = nil
         activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()
@@ -908,5 +971,36 @@ final class V2SessionModel: Identifiable {
            composer.attachments.map(\.id) == pending.localAttachmentIDs {
             composer.clear(); draftAttachmentIDs = []
         }
+    }
+}
+
+/// Merges the two sources of "this turn was stopped": a marker this client
+/// recorded from the live ack, and the durable flag the connector stamps on
+/// the turn's last main row (`content.turnInterrupted`). The server one wins
+/// on a shared turn id because it is what a relaunched app, another device and
+/// a history rebuild will read; the local one remains the fallback for turns
+/// produced before the connector learned to stamp them.
+nonisolated enum InterruptedTurnMarkers {
+    static let contentKey = "turnInterrupted"
+
+    static func merge(local: [V2InterruptedTurnMarker],
+                      timeline: [V2TimelineItem]) -> [V2InterruptedTurnMarker] {
+        var merged = local
+        var indexByTurn: [String: Int] = [:]
+        for (index, marker) in merged.enumerated() {
+            if let turnID = marker.turnID { indexByTurn[turnID] = index }
+        }
+        for item in timeline where item.raw["content"]?[contentKey]?.boolValue == true {
+            let marker = V2InterruptedTurnMarker(anchorItemID: item.id, turnID: item.turnId)
+            if let turnID = marker.turnID, let index = indexByTurn[turnID] {
+                merged[index] = marker
+                continue
+            }
+            if !merged.contains(where: { $0.anchorItemID == marker.anchorItemID }) {
+                if let turnID = marker.turnID { indexByTurn[turnID] = merged.count }
+                merged.append(marker)
+            }
+        }
+        return merged
     }
 }

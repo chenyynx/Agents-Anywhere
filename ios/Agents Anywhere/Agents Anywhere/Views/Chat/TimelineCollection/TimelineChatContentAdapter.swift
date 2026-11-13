@@ -1251,7 +1251,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                         || chatRunningPoseGroupIDs.contains(stepGroup.id),
                                                     showsInterruptedNotice:
                                                         chatInterruptedItemIDs.contains(
-                                                            TimelineListItem.group(stepGroup.id).itemID)) { [weak self] in
+                                                            TimelineListItem.group(stepGroup.id).itemID),
+                                                    interruptedAgentName: model.agentName) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1277,6 +1278,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     showsInterruptedNotice: renderMode == .chat
                         && chatInterruptedItemIDs.contains(
                             TimelineListItem.group(group.id).itemID),
+                    interruptedAgentName: model.agentName,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     },

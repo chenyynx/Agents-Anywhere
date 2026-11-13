@@ -28,6 +28,8 @@ struct CodeStepGroupRowView: View {
     /// profile's stopped turn is anchored to this group when it produced no
     /// partial answer text (pp 2026-11-14).
     var showsInterruptedNotice: Bool = false
+    /// The session's configured agent name for the notice copy.
+    var interruptedAgentName: String = "Claude"
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -54,7 +56,7 @@ struct CodeStepGroupRowView: View {
         VStack(alignment: .leading, spacing: 0) {
             row
             if showsInterruptedNotice {
-                ChatInterruptedNoticeCard()
+                ChatInterruptedNoticeCard(agentName: interruptedAgentName)
                     .padding(.top, 8)
             }
         }

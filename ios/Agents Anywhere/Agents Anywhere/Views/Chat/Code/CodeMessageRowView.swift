@@ -62,6 +62,8 @@ struct CodeMessageRowView: View {
     /// Draw the official interrupted-response notice under this message. The
     /// chat profile anchors it to the stopped turn's last row (pp 2026-11-14).
     var showsInterruptedNotice: Bool = false
+    /// The session's configured agent name for the notice copy.
+    var interruptedAgentName: String = "Claude"
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -92,6 +94,7 @@ struct CodeMessageRowView: View {
          columnWidth: CGFloat? = nil,
          turnActionCopyText: String? = nil,
          showsInterruptedNotice: Bool = false,
+         interruptedAgentName: String = "Claude",
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
          attachmentResolver: @escaping ([V2AttachmentContent], String?) -> [ChatMessageAttachment] = { contents, _ in
@@ -117,6 +120,7 @@ struct CodeMessageRowView: View {
         self.columnWidth = columnWidth
         self.turnActionCopyText = turnActionCopyText
         self.showsInterruptedNotice = showsInterruptedNotice
+        self.interruptedAgentName = interruptedAgentName
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
         self.attachmentResolver = attachmentResolver
@@ -136,7 +140,9 @@ struct CodeMessageRowView: View {
                 // interrupted notice is this turn's footer too.
                 if showsInterruptedNotice || turnActionCopyText != nil {
                     VStack(alignment: .leading, spacing: CodePageTheme.interMessageSpacing) {
-                        if showsInterruptedNotice { ChatInterruptedNoticeCard() }
+                        if showsInterruptedNotice {
+                            ChatInterruptedNoticeCard(agentName: interruptedAgentName)
+                        }
                         if let turnActionCopyText {
                             CodeTurnActionBar(copyText: turnActionCopyText)
                         }
@@ -161,7 +167,9 @@ struct CodeMessageRowView: View {
                             blockStack(row)
                         }
                     }
-                    if showsInterruptedNotice { ChatInterruptedNoticeCard() }
+                    if showsInterruptedNotice {
+                        ChatInterruptedNoticeCard(agentName: interruptedAgentName)
+                    }
                     if let turnActionCopyText {
                         CodeTurnActionBar(copyText: turnActionCopyText)
                     }

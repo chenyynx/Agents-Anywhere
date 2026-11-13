@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// Decompiled shape (26110919 Claude.app): `ChatMessageBanner` — one
 /// `RoundedRectangle`-bordered line, a leading `info.circle` glyph and the
-/// localized sentence 「Claude 的回复已中断。」. The official variant also
+/// sentence 「<Agent> 的回复已中断。」. The official variant also
 /// carries an optional Retry capsule; pp 2026-11-14 chose the notice-only
 /// variant until the runtime gains a regenerate path.
 ///
@@ -16,6 +16,11 @@ import SwiftUI
 /// - 13pt text, `info.circle` drawn at 16pt (the official 4px ring at @3x);
 /// - #52514E ink, ~10% black hairline, 12pt continuous corners.
 struct ChatInterruptedNoticeCard: View {
+    /// The session's configured agent name ("Claude", "Codex", …). The
+    /// official copy names the agent; AA must not hardcode Claude for
+    /// non-Claude runtimes (pp 2026-11-14).
+    let agentName: String
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
 
@@ -28,7 +33,7 @@ struct ChatInterruptedNoticeCard: View {
             AppSymbol("info.circle", size: 16)
                 .frame(width: 20, height: 20)
 
-            Text(String(localized: "Claude 的回复已中断。"))
+            Text("\(agentName) 的回复已中断。")
                 .font(.custom(CodePageTheme.sansFontName,
                               size: 13,
                               relativeTo: .caption))

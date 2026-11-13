@@ -29,7 +29,7 @@ struct SessionTimelineGroupView: View, Equatable {
             content
                 .traceChatLayout("group-content:\(group.id)")
             if showsInterruptedNotice {
-                ChatInterruptedNoticeCard()
+                ChatInterruptedNoticeCard(agentName: chat.agentName)
                     // The group's own 4pt spacing already separates this
                     // footer; 4 more matches the official card's top gap.
                     .padding(.top, 4)

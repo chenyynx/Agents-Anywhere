@@ -12,6 +12,15 @@ nonisolated struct V2DashboardArchive: Codable {
     var projectMemberships: [Membership]? = nil
 }
 
+/// One turn the user stopped, anchored to its last main-agent row. Persisted
+/// in the session archive so the interrupted-response notice survives a
+/// relaunch (pp 2026-11-14); the wire rows cannot carry the cause (an
+/// interrupted tool lands `failed`, an interrupted thinking block `done`).
+nonisolated struct V2InterruptedTurnMarker: Codable, Equatable, Sendable {
+    let anchorItemID: String
+    let turnID: String?
+}
+
 nonisolated struct V2SessionArchive: Codable {
     struct Pending: Codable {
         let id: String
@@ -74,6 +83,10 @@ nonisolated struct V2SessionArchive: Codable {
     /// bounded by `SubAgentActivityLimits`. Optional: archives written before
     /// this field existed decode without it.
     var subAgentActivity: [String: [JSONValue]]? = nil
+    /// The turns the user stopped, so their interrupted-response notices
+    /// survive a relaunch. Optional: archives written before this field
+    /// existed decode without it.
+    var interruptedTurns: [V2InterruptedTurnMarker]? = nil
     /// The unresolved record the current draft was restored from, so a
     /// relaunched app still retires it when the edited retry is confirmed.
     /// Optional: archives written before this field existed decode without it.
@@ -119,6 +132,10 @@ nonisolated struct V2SessionArchive: Codable {
         }
         pending = storedPending
         queued = storedQueued.isEmpty ? nil : storedQueued
+        // Only the markers this client observed itself. Server-derived
+        // markers come back from the timeline on every open, and persisting
+        // them would resurrect a notice after a server-side correction.
+        interruptedTurns = model.localInterruptedTurns.isEmpty ? nil : model.localInterruptedTurns
         draftOriginPendingID = model.draft.isEmpty ? nil : model.draftRestoredFromPendingID
     }
 

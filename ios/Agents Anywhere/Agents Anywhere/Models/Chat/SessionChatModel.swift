@@ -123,51 +123,14 @@ final class SessionChatModel {
     /// optimistic window the send key is already usable.
     var isComposerStreaming: Bool { isTurnStreaming }
 
-    /// The turn the user stopped, anchored to its last timeline row.
-    ///
-    /// The wire records a user-interrupted tool as `failed` and an interrupted
-    /// thinking block as `done`, so rows alone can never carry the cause. The
-    /// stop ack (or, on a cold open, the runtime state's
-    /// `metadata.source == claude.session.interrupt`) freezes the anchor and
-    /// the chat timeline draws the official interrupted notice after it.
-    struct InterruptedTurnMarker: Equatable, Sendable {
-        let anchorItemID: String
-        let turnID: String?
-    }
+    /// The turns this client saw the user stop, anchored to their last
+    /// main-agent rows. Stored on the session so the archive restores them
+    /// across relaunches (pp 2026-11-14).
+    var interruptedTurns: [V2InterruptedTurnMarker] { session.interruptedTurns }
 
-    /// Every turn this screen saw stopped by the user. The official app keeps
-    /// one notice per stopped turn (the capture shows two cards in one
-    /// conversation), so this is a list, newest last.
-    private(set) var interruptedTurns: [InterruptedTurnMarker] = []
-
-    /// Called once the runtime names an interrupt as the reason it went idle.
-    /// Only the newest turn can be recovered this way (the state moves on with
-    /// the next turn); markers captured live always win.
+    /// Cold-open recovery from the runtime state's interrupt source.
     func noteAuthoritativeInterruptIfNeeded() {
-        guard session.runtime.state?.status == .idle,
-              session.runtime.state?.metadata["source"]?.stringValue
-                  == "claude.session.interrupt",
-              let last = lastMainAgentItem(),
-              !interruptedTurns.contains(where: { $0.anchorItemID == last.id })
-        else { return }
-        interruptedTurns.append(InterruptedTurnMarker(anchorItemID: last.id,
-                                                      turnID: last.turnId))
-    }
-
-    private func captureInterruptedTurn() {
-        guard let last = lastMainAgentItem(),
-              !interruptedTurns.contains(where: { $0.anchorItemID == last.id })
-        else { return }
-        interruptedTurns.append(InterruptedTurnMarker(anchorItemID: last.id,
-                                                      turnID: last.turnId))
-    }
-
-    private func lastMainAgentItem() -> V2TimelineItem? {
-        // Sub-agent child rows live in the same array but not in the chat
-        // timeline; anchoring on one would never find a row to sit after.
-        session.timeline.last {
-            $0.value.raw["content"]?["parentItemId"] == nil
-        }?.value
+        session.noteAuthoritativeInterruptIfNeeded()
     }
     /// The configured instance name, like Web, then its runtime type. Status
     /// copy names the Agent the user chose instead of a generic "Agent".
@@ -848,7 +811,7 @@ final class SessionChatModel {
         // The accepted stop is the client's proof that this turn ended by the
         // user's request; freeze its anchor before any later turn can move
         // the tail.
-        if accepted { captureInterruptedTurn() }
+        if accepted { session.recordInterruptedTurn() }
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

@@ -40,7 +40,7 @@ struct NewSessionView: View, Equatable {
         GeometryReader { geometry in
             GeometryReader { viewport in
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: keyboardVisible
+                    NewSessionContentLayout(viewportHeight: isEditing
                         ? 0
                         : max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
@@ -50,7 +50,7 @@ struct NewSessionView: View, Equatable {
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        .animation(.easeInOut(duration: 0.25), value: keyboardVisible)
+                        .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -120,6 +120,12 @@ struct NewSessionView: View, Equatable {
             keyboardVisible = false
         }
     }
+
+    /// Carrying the keyboard in from another page fires no willShow, so the
+    /// composer's own first-responder flag is the source of truth; the
+    /// notifications cover the case where focus was lost but the keyboard is
+    /// still up.
+    private var isEditing: Bool { model.draft.isFocused || keyboardVisible }
 
     private var statusContent: some View {
         VStack(alignment: .leading, spacing: 28) {

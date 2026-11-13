@@ -44,14 +44,16 @@ struct NewSessionView: View, Equatable {
                         ? 0
                         : max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
-                            onChooseTarget: chooseTarget,
-                            compact: isEditing)
+                            onChooseTarget: chooseTarget)
                         statusContent
                     }
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        .animation(.easeInOut(duration: 0.25), value: isEditing)
+                        // No transition for the edit-state move: the video
+                        // layer and the copy must not animate on different
+                        // clocks (pp 2026-11-13).
+                        .transaction { $0.animation = nil }
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)

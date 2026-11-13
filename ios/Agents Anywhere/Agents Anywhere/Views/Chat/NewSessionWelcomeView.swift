@@ -7,11 +7,10 @@ import SwiftUI
 struct NewSessionWelcomeView: View {
     let agentName: String?
     let onChooseTarget: () -> Void
-    /// While the composer is editing the page keeps the globe small, so the
-    /// copy fits above the workspace button and keyboard instead of sliding
-    /// under them.
-    var compact = false
-    @ScaledMetric(relativeTo: .largeTitle) private var globeSize: CGFloat = 220
+    /// Fixed, not scaled on edit: the copy must fit above the workspace
+    /// button and keyboard even with the composer focused, and any size
+    /// transition let the video layer lag the copy (pp 2026-11-13).
+    private let globeDiameter: CGFloat = 150
 
     private var agent: String { agentName ?? String(localized: "Agent") }
     private var title: AttributedString {
@@ -25,9 +24,8 @@ struct NewSessionWelcomeView: View {
     }
 
     var body: some View {
-        VStack(spacing: compact ? 12 : 18) {
-            CrystalGlobeView(diameter: compact ? min(globeSize * 0.45, 110)
-                                                : min(globeSize, 280))
+        VStack(spacing: 18) {
+            CrystalGlobeView(diameter: globeDiameter)
             VStack(spacing: 10) {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))

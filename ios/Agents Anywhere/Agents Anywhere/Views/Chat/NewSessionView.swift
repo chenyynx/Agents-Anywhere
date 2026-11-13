@@ -45,14 +45,22 @@ struct NewSessionView: View, Equatable {
                         : max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
                             onChooseTarget: chooseTarget)
+                            // The globe is an AVPlayerLayer-backed leaf: left to
+                            // itself it resolves its frame on the next layout while
+                            // the Text leaves interpolate their own, so on the way
+                            // up the copy was drawn over the ball's old position
+                            // (pp 2026-11-13). The group makes the parent resolve
+                            // and animate this block's geometry once, then pass the
+                            // interpolated frame down to every child.
+                            .geometryGroup()
                         statusContent
                     }
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        // The globe size is fixed, so animating the page move
-                        // is safe: only the welcome block's position changes,
-                        // never the video layer's size (pp 2026-11-13).
+                        // The globe size is fixed, so the 0.25 s move only changes
+                        // positions; the geometry group above keeps the video and
+                        // the copy on one clock (pp 2026-11-13).
                         .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }

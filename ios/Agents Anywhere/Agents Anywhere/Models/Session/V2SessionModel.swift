@@ -422,7 +422,7 @@ final class V2SessionModel: Identifiable {
     /// every relaunch sees.
     var interruptedTurns: [V2InterruptedTurnMarker] {
         InterruptedTurnMarkers.merge(local: localInterruptedTurns,
-                                     timeline: timeline.rows.map(\.value))
+                                     timeline: timeline.map(\.value))
     }
 
     /// Freezes the just-stopped turn on its last main-agent row. Called on the

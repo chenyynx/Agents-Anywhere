@@ -70,6 +70,12 @@ private struct LoopingVideoLayer: UIViewRepresentable {
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         guard let url else { return view }
+        // The clip carries a silent AAC track. A plain AVPlayer still takes the
+        // app's audio session (soloAmbient), which pauses the user's music when
+        // this page opens; an ambient session mixes with it instead.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+        try? session.setActive(true)
         let player = AVQueuePlayer()
         player.isMuted = true
         player.preventsDisplaySleepDuringVideoPlayback = false

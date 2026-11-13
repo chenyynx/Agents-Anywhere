@@ -17,6 +17,7 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
+    @State private var keyboardVisible = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
 
@@ -39,7 +40,9 @@ struct NewSessionView: View, Equatable {
         GeometryReader { geometry in
             GeometryReader { viewport in
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: max(0, viewport.size.height - 48)) {
+                    NewSessionContentLayout(viewportHeight: keyboardVisible
+                        ? 0
+                        : max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
                             onChooseTarget: chooseTarget)
                         statusContent
@@ -47,6 +50,7 @@ struct NewSessionView: View, Equatable {
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
+                        .animation(.easeInOut(duration: 0.25), value: keyboardVisible)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -105,6 +109,15 @@ struct NewSessionView: View, Equatable {
         .confirmationDialog(String(localized: "创建结果仍未确认，再次创建可能产生重复会话。"), isPresented: $confirmsRetry, titleVisibility: .visible) {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
+        }
+        // With the keyboard up the welcome is centered in a viewport that the
+        // composer inset shrinks; top-aligning it keeps the copy above the
+        // composer instead of behind it (pp 2026-11-13).
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
         }
     }
 

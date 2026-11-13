@@ -23,7 +23,7 @@ from connector.server.runtime_rpc_payloads import (
     capability_set_payload,
     model_catalog_payload,
     permission_catalog_payload,
-    server_payload_without_turn_data,
+    server_notification_payload,
     session_notice_payload,
     session_source_observation_payload,
 )
@@ -138,7 +138,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
             if notice.get("method") not in allowed or not isinstance(notice.get("params"), dict):
                 raise ValueError("Invalid runtime notification")
             params = {**notice["params"], "runtime": runtime, "runtimeId": runtime_id or runtime}
-            bound.append({"method": notice["method"], "params": server_payload_without_turn_data(params)})
+            bound.append({"method": notice["method"], "params": server_notification_payload(notice["method"], params)})
         kwargs = {"on_progress": on_progress} if on_progress is not None else {}
         await self._ingest_notifications(bound, **kwargs)
 
@@ -394,7 +394,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         elif self._defer_payload_projection:
             server_payload = DeferredServerPayload(payload)
         else:
-            server_payload = server_payload_without_turn_data(payload)
+            server_payload = server_notification_payload(method, payload)
         await self._notifier(method, server_payload)
 
     async def attachment_download(

@@ -14,14 +14,14 @@ def test_projection_runs_after_coalescing_and_before_http_fallback(monkeypatch):
     async def exercise():
         sent = []
         projections = 0
-        original = client_module.server_payload_without_turn_data
+        original = client_module.server_notification_payload
 
-        def project(payload):
+        def project(method, payload):
             nonlocal projections
             projections += 1
-            return original(payload)
+            return original(method, payload)
 
-        monkeypatch.setattr(client_module, "server_payload_without_turn_data", project)
+        monkeypatch.setattr(client_module, "server_notification_payload", project)
 
         async def enqueue(method, params):
             sent.append((method, params))

@@ -7,7 +7,10 @@ from collections.abc import Iterable
 from typing import Any, BinaryIO
 
 from connector.core.unicode import UTF8_REPLACE_LONE_SURROGATES
-from connector.server.runtime_rpc_payloads import server_payload_without_turn_data
+from connector.server.runtime_rpc_payloads import (
+    server_payload_without_turn_data,
+    server_timeline_payload,
+)
 
 # A complete snapshot larger than this is split into pages at item boundaries,
 # so no single request body has to clear a proxy's size limit.
@@ -34,19 +37,22 @@ def snapshot_pages(
     binding = {"runtime": runtime, "runtimeId": runtime_id, "sessionId": session_id}
     pages: list[BinaryIO] = []
 
-    def encode(value: Any) -> bytes:
-        return "".join(encoder.iterencode(server_payload_without_turn_data(value))).encode("utf-8", UTF8_REPLACE_LONE_SURROGATES)
+    def encode(value: Any, *, timeline: bool) -> bytes:
+        # Timeline items keep `source.turnId` (the Server stores it and clients
+        # decode it); everything else walks the legacy turn-data ban.
+        projected = server_timeline_payload(value) if timeline else server_payload_without_turn_data(value)
+        return "".join(encoder.iterencode(projected)).encode("utf-8", UTF8_REPLACE_LONE_SURROGATES)
 
     def open_page(first: bool) -> BinaryIO:
         body = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115 - ownership transfers to the uploader
         try:
             body.write(b'{"notifications":[')
             if first:
-                body.write(encode({"method": "session.meta.upsert", "params": {**meta, **binding}}))
+                body.write(encode({"method": "session.meta.upsert", "params": {**meta, **binding}}, timeline=False))
                 body.write(b",")
             head = encode({"method": "timeline.sync", "params": {
                 **binding, "externalSessionId": meta["externalSessionId"], "complete": first,
-            }})
+            }}, timeline=True)
             # Leave the params object open to stream the items one at a time.
             body.write(head[:-2] + b',"items":[')
         except BaseException:
@@ -63,7 +69,7 @@ def snapshot_pages(
     count = 0
     try:
         for item in items:
-            encoded = encode(item)
+            encoded = encode(item, timeline=True)
             if page_bytes is not None and count and body.tell() + len(encoded) + len(b",]}}]}") > page_bytes:
                 close_page(body)
                 body = open_page(first=False)

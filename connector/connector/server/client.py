@@ -41,7 +41,7 @@ from connector.server.rpc import ConnectorRpcChannel, ConnectorWebSocketFrameToo
 from connector.server.runtime_host import ConnectorRuntimeHost
 from connector.server.runtime_rpc_payloads import (
     DeferredServerPayload,
-    server_payload_without_turn_data,
+    server_notification_payload,
 )
 from connector.server.runtime_sync import RuntimeSyncRunner
 from connector.server.sync_state import JsonSyncStateStore, SyncStateStore
@@ -360,7 +360,7 @@ class BackendRpcClient:
         # Project only snapshots that survive coalescing. Doing this in the
         # Host recursively copied every intermediate message's entire body.
         if isinstance(params, DeferredServerPayload):
-            params = server_payload_without_turn_data(params)
+            params = server_notification_payload(method, params)
         if notification_requires_ingest(method):
             await self._ingest.enqueue(method, params)
             return

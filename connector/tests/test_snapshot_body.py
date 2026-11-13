@@ -98,6 +98,20 @@ def test_snapshot_pages_split_at_item_boundaries_and_rebuild_the_same_timeline()
     assert all(size <= 4096 for size in sizes[1:-1]), "middle pages stay within the limit"
 
 
+def test_snapshot_keeps_the_timeline_source_turn_id_only():
+    items = [
+        {
+            "id": "i",
+            "content": {"text": "x", "turnId": "business"},
+            "source": {"runtime": "dsh", "turnId": "turn_1"},
+        }
+    ]
+    with snapshot_body("dsh", "instance", "session", {"externalSessionId": "native"}, iter(items)) as body:
+        raw = body.read()
+    assert b'"turnId":"turn_1"' in raw
+    assert b'"turnId":"business"' not in raw
+
+
 def test_single_page_body_is_the_unpaged_snapshot():
     items = [{"id": "a", "content": {"text": "x"}}, {"id": "b", "content": {"text": "y"}}]
     with snapshot_body("dsh", "instance", "session", {"externalSessionId": "native"}, iter(items)) as whole:

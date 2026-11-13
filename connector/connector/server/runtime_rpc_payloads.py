@@ -177,6 +177,36 @@ class DeferredServerPayload(dict[str, Any]):
     """Owned notification snapshot awaiting projection after coalescing."""
 
 
+TIMELINE_NOTIFICATION_METHODS = frozenset({"timeline.sync", "timeline.itemUpsert"})
+
+
+def server_notification_payload(method: str, value: Any) -> Any:
+    """Project one notification for the Server, per its method's contract.
+
+    Timeline rows are the exception to the turn-data ban: the Server model
+    stores ``TimelineSource.turnId`` and clients decode ``source.turnId`` (the
+    interrupted notice dedupes by it). Everything else keeps the legacy
+    sanitizer.
+    """
+
+    if method in TIMELINE_NOTIFICATION_METHODS:
+        return server_timeline_payload(value)
+    return server_payload_without_turn_data(value)
+
+
+def server_timeline_payload(value: Any) -> Any:
+    """Project a timeline payload, keeping the Runtime's declared turn boundary.
+
+    The walker below strips every ``turnId``/``turn_id`` key. That is right for
+    business metadata but wrong for ``source.turnId``, which is the timeline
+    wire contract: the Server stores it and clients decode it. Only a ``source``
+    mapping keeps the key; a ``turnId`` anywhere else (message content, tool
+    input, metadata) is still removed.
+    """
+
+    return _server_payload(value, keep_source_turn_id=True)
+
+
 def server_payload_without_turn_data(value: Any) -> Any:
     """Remove runtime-owned turn details from data crossing into Server.
 
@@ -185,16 +215,33 @@ def server_payload_without_turn_data(value: Any) -> Any:
     Server's database.
     """
 
+    return _server_payload(value, keep_source_turn_id=False)
+
+
+def _server_payload(value: Any, *, keep_source_turn_id: bool) -> Any:
     if isinstance(value, str):
         return replace_lone_surrogates(value)
     if isinstance(value, Mapping):
-        return {
-            replace_lone_surrogates(key): server_payload_without_turn_data(item)
+        projected = {
+            replace_lone_surrogates(key): _server_payload(
+                item, keep_source_turn_id=keep_source_turn_id
+            )
             for key, item in value.items()
             if key not in {"turnId", "turn_id"}
         }
+        if keep_source_turn_id:
+            source = value.get("source")
+            if isinstance(source, Mapping) and isinstance(source.get("turnId"), str):
+                projected["source"] = {
+                    **projected["source"],
+                    "turnId": replace_lone_surrogates(source["turnId"]),
+                }
+        return projected
     if isinstance(value, (list, tuple)):
-        return [server_payload_without_turn_data(item) for item in value]
+        return [
+            _server_payload(item, keep_source_turn_id=keep_source_turn_id)
+            for item in value
+        ]
     return value
 
 

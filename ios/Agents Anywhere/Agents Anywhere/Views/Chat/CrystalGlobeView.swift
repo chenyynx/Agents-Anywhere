@@ -30,6 +30,10 @@ struct CrystalGlobeView: View {
             }
         }
         .frame(width: diameter, height: diameter)
+        // The AVPlayerLayer animates its own size; clipping keeps the video
+        // inside the current frame instead of bleeding over the copy during
+        // the compact transition.
+        .clipped()
         .mask {
             // Creed's veil leaves a hole that is transparent out to 44 % and
             // opaque by 86 % of the farthest-side radius; the same proportion

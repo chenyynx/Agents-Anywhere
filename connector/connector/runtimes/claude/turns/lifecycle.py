@@ -99,7 +99,9 @@ from connector.runtimes.claude.timeline.markers import (
 )
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
+    is_main_timeline_item,
     is_synthetic_control_message,
+    mark_turn_interrupted,
     message_id,
     message_model,
     message_role,
@@ -3863,7 +3865,13 @@ class ClaudeTurnRunner:
                     "Claude reasoning flush failed session_id={}",
                     session.session_id,
                 )
-            if settled_batch:
+            # The stamp is written after the flush because the flush can add
+            # the turn's new last row; anchoring before it would put the
+            # notice under an older unit of the same turn.
+            interrupted_stamped = await self.publish_interrupted_turn_stamp(
+                session, execution, turn_id
+            )
+            if settled_batch or interrupted_stamped:
                 # L3b, second half (red team F4). The first request for this
                 # session's refresh went out from `finish_execution`, which runs
                 # BEFORE this block — so the snapshot it asked for could not
@@ -3871,8 +3879,9 @@ class ClaudeTurnRunner:
                 # batch L3b was raised for (12:24: a dozen rows formed at settle
                 # and shipped on the next global beat) still waited a whole
                 # interval. Ask again now that they are out. Only when there is
-                # a batch: a turn that published nothing extra must not pay for
-                # a second transcript read.
+                # something extra to carry (a reasoning batch or the
+                # interrupted-turn stamp): a turn that published nothing extra
+                # must not pay for a second transcript read.
                 await self._request_settled_session_sync(session)
             if connection is not None:
                 # The turn is fully settled (terminal state published, rows
@@ -4094,6 +4103,54 @@ class ClaudeTurnRunner:
             await self.notifications.timeline_activity.timeline_item_upsert(item)
             if counted:
                 execution.published_items += 1
+
+    async def publish_interrupted_turn_stamp(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+        turn_id: str,
+    ) -> bool:
+        """Mark the stopped turn's last main row with the durable notice fact.
+
+        Only a user stop (``claude.session.interrupt``) stamps: a runtime
+        shutdown or an internal stop is not the ``Claude 的回复已中断。``
+        notice the official UI shows, and a connector restart must not leave a
+        banner behind on every turn it owned. The history rebuild stamps the
+        same key from the CLI's marker, so a later resync cannot lose it; the
+        live stamp exists only so clients that never read that transcript still
+        learn the fact in the turn's own push.
+
+        Display-only and never allowed to fail a settle: an upsert failure is
+        logged and reported as "not stamped".
+        """
+
+        if execution.interrupt_source != "claude.session.interrupt":
+            return False
+        # Recorded even when there is no row to stamp yet: a history sync that
+        # lands before the CLI's marker message must still know this turn was
+        # stopped, or its projection would republish the row unstamped.
+        session.interrupted_turn_ids.add(turn_id)
+        candidates = [
+            item
+            for item in session.timeline_items.values()
+            if item.turn_id == turn_id and is_main_timeline_item(item)
+        ]
+        if not candidates:
+            return False
+        last = max(candidates, key=lambda item: item.order_seq)
+        stamped = mark_turn_interrupted(last)
+        if stamped is last:
+            return False
+        try:
+            await self.publish_items(execution, (stamped,))
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude interrupted-turn stamp failed session_id={} turn_id={}",
+                session.session_id,
+                turn_id,
+            )
+            return False
+        return True
 
     async def open_command_compact_marker(
         self,

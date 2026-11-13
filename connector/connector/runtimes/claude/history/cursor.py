@@ -31,7 +31,13 @@ from typing import Any
 # the full import published. Every stored v5 cursor must rebuild once so the
 # rows already past it carry `source.turnId` at all (the field was previously
 # random live and window-dependent in history).
-HISTORY_PROJECTION_VERSION = 6
+#
+# v7 (2026-11-14): an interrupted turn's last main row carries
+# `content.turnInterrupted`, derived from the CLI's own
+# `[Request interrupted by user]` marker. A v6 cursor must rebuild once so
+# rows published before this projection gain the flag (and with it the official
+# interrupted-response notice) without waiting for the session's next turn.
+HISTORY_PROJECTION_VERSION = 7
 
 
 @dataclass(frozen=True, slots=True)

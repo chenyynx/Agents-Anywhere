@@ -806,14 +806,14 @@ async def _test_command_turn_live_id_is_opaque_and_not_repeatable() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_projection_version_is_six_and_v5_cursors_rebase() -> None:
-    assert HISTORY_PROJECTION_VERSION == 6
+def test_projection_version_is_seven_and_older_cursors_rebase() -> None:
+    assert HISTORY_PROJECTION_VERSION == 7
     stale = ClaudeHistoryCursor(
         last_modified=1,
         file_size=2,
         message_count=3,
         last_message_uuid="m3",
-        projector_version=5,
+        projector_version=6,
     )
     window = messages_after_cursor((object(),), stale)
     assert window.rebased is True

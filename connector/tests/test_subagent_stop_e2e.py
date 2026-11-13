@@ -400,9 +400,23 @@ _RECEIPT_TEXT = WIRE_DISPATCH_RECEIPT["message"]["content"][0]["content"][0]["te
 #: fallback arm folds the bound subagent as killed — the pre-A3 reporting,
 #: which assumed the CLI's own all-stop had killed it — then the turn settles
 #: to idle. Nothing else: no ``claude.agent.stopped`` sweep, no
-#: ``stoppedWithoutTask`` field, no second item.
+#: ``stoppedWithoutTask`` field, no second fold.
+#:
+#: The leading user row is the interrupted-turn stamp every user stop now
+#: publishes (`content.turnInterrupted`, pp 2026-11-14): it is the notice's
+#: durable anchor, not part of the A3 stop machinery, and it precedes the
+#: fold because the stamp is written while the turn task settles.
 LEGACY_STOP_FRAMES: tuple[Any, ...] = (
     (
+        (
+            "message",
+            "done",
+            "claude.turn.user",
+            "user",
+            "markdown",
+            "wait",
+            (),
+        ),
         (
             "tool",
             "interrupted",
@@ -800,15 +814,30 @@ def test_arm_c_counter_the_digest_sees_a_stop_that_touches_a_card() -> None:
             await runtime.stop()
 
         assert result["interrupted"] is True
-        # The plain stop publishes no item at all; the owning stop publishes
-        # the killed fold. That difference is the digest's sensitivity.
-        assert plain_stop_frames[0] == ()
-        assert len(agent_stop_frames[0]) == 1
-        assert agent_stop_frames[0][0][:3] == (
-            "tool",
-            "interrupted",
-            "claude.agent.task",
+        # Both stops publish the interrupted-turn stamp (the durable notice
+        # fact); only the owning stop publishes the killed fold. That fold is
+        # the digest's sensitivity.
+        assert len(plain_stop_frames[0]) == 1
+        assert plain_stop_frames[0][0][:4] == (
+            "message",
+            "done",
+            "claude.turn.user",
+            "user",
         )
+        assert [
+            item for item in agent_stop_frames[0] if item[0] == "tool"
+        ] == [
+            (
+                "tool",
+                "interrupted",
+                "claude.agent.task",
+                "tool",
+                "agent_call",
+                _RECEIPT_TEXT,
+                ((TASK_ID, "killed"),),
+            ),
+        ]
+        assert len(agent_stop_frames[0]) == len(plain_stop_frames[0]) + 1
         assert agent_stop_frames != plain_stop_frames
         # … and everything else about the two stops is the same shape.
         assert agent_stop_frames[1] == plain_stop_frames[1]
@@ -970,7 +999,15 @@ def test_arm_e_counter_the_switch_gates_real_behavior() -> None:
         )
         assert declared.client.stopped == [TASK_ID]  # attempted, refused
         assert declared.connection.per_task_stop_declared is True
-        assert declared.frames[0] == ()  # nothing was killed …
+        # Nothing was killed: the only item is the interrupted-turn stamp
+        # every user stop publishes, not a fold.
+        assert len(declared.frames[0]) == 1
+        assert declared.frames[0][0][:4] == (
+            "message",
+            "done",
+            "claude.turn.user",
+            "user",
+        )
         assert declared.card.status == "running"
         assert declared.agents[TASK_ID]["status"] == "running"
         assert TASK_ID in declared.connection.background.active_ids

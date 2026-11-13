@@ -35,6 +35,7 @@ from connector.runtimes.claude.sessions.reader import (
     _history_tool_call_context,
     _history_turn_ids,
     _match_history_client_messages,
+    interrupted_turn_ids_from_messages,
     _read_raw_transcript_scan,
     _sdk_session_metadata,
     _session_title,
@@ -327,6 +328,16 @@ class ClaudeHistorySyncer:
             pending_messages=self.pending_messages,
             prefer_latest=rebased,
         )
+        # The stopped-turn set is computed over the full chain and widened by
+        # the process's own live stops: an incremental window can hold a
+        # stopped turn's last row without the marker that explains it, and
+        # republishing it unstamped would erase the live stamp the client is
+        # already showing.
+        interrupted_turns = interrupted_turn_ids_from_messages(
+            visible_messages, turn_ids
+        )
+        if local_session is not None:
+            interrupted_turns |= local_session.interrupted_turn_ids
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,
             sync_messages,
@@ -335,6 +346,7 @@ class ClaudeHistorySyncer:
             hidden_tool_use_ids=hidden_tool_use_ids,
             raw_scan=raw_scan,
             turn_ids=turn_ids,
+            interrupted_turns=interrupted_turns,
             oracle=self.oracle,
             live_task_ids=(
                 self.live_task_ids(session) if self.live_task_ids else frozenset()

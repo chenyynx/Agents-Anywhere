@@ -87,8 +87,11 @@ from connector.runtimes.claude.timeline.messages import (
     enrich_usage,
     is_compact_summary_text,
     is_hidden_tool_name,
+    is_interrupted_request_message,
+    is_main_timeline_item,
     is_synthetic_control_message,
     is_task_notification_message,
+    mark_turn_interrupted,
     message_id,
     message_model,
     message_role,
@@ -545,6 +548,9 @@ class ClaudeSessionReader:
             raw_scan=raw_scan,
             oracle=self.oracle,
             live_task_ids=self.live_task_ids(session) if self.live_task_ids else frozenset(),
+            interrupted_turns=(
+                live_session.interrupted_turn_ids if live_session is not None else None
+            ),
         )
         if limit is not None:
             items = items[-limit:] if limit > 0 else ()
@@ -589,12 +595,19 @@ def _history_items_from_messages(
     live_task_ids: frozenset[str] = frozenset(),
     window_origin_uuid: str | None = None,
     turn_ids: Mapping[str, str] | None = None,
+    interrupted_turns: set[str] | None = None,
 ) -> tuple[RuntimeTimelineItem, ...]:
     """Project one transcript window into timeline items.
 
     ``raw_lines`` (tests) and ``raw_scan`` (production, already cached) are
     alternative ways to supply the raw transcript facts; ``raw_scan`` wins when
     both are given.
+
+    ``interrupted_turns`` carries the turns already known to be user-stopped
+    (the session's in-process set, or markers found over the FULL chain). An
+    incremental window can contain a stopped turn's last row without its
+    marker; without this set the row would be republished unstamped and a
+    concurrent live stamp would be lost.
     """
 
     if raw_scan is None and raw_lines:
@@ -640,6 +653,7 @@ def _history_items_from_messages(
     )
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
+    stopped_turns = set(interrupted_turns or ())
     for index, message in enumerate(messages):
         role = message_role(message)
         text = message_text(message)
@@ -654,6 +668,11 @@ def _history_items_from_messages(
                 session.session_id,
                 _history_user_turn_seed(message) or f"{session.session_id}:initial",
             )
+        if is_interrupted_request_message(message):
+            # The marker inherits the preceding prompt's turn id (synthetic
+            # control never starts a turn), so the fact lands on the turn the
+            # user actually stopped.
+            stopped_turns.add(turn_id)
         items.extend(
             projector.tool_items_for_message(
                 session=session,
@@ -735,36 +754,64 @@ def _history_items_from_messages(
             )
     resequenced = _resequence_history_items(_dedupe_history_items(items))
     if oracle is None:
-        return resequenced
-    raw_participation = participation_times_ms(raw_scan) if raw_scan else {}
-    return _apply_oracle_closures(
-        session,
-        resequenced,
-        messages=messages,
-        raw_notices=raw_notices,
-        # R1 P1-1: the newest survival evidence, not the dispatch receipt alone.
-        # A SendMessage resume leaves the receipt sitting at the original
-        # dispatch, so anchoring there makes the history rebuild close a task
-        # that was re-driven five minutes ago (the P9 false close the live
-        # sweep already avoids). `participation_times_ms` is the live side's
-        # own helper, so both sides now judge the same engine facts the same
-        # way, and the anchor only ever moves newer — the conservative
-        # direction for a ceiling.
-        raw_receipt_times=raw_participation,
-        # R1c R3-2: which of those anchors the scan can tie to a real dispatch
-        # call. Only those keep the fold from overruling them with the message
-        # view; a bare `tool_result` anchor (F5) is still an anchor, it just is
-        # not the engine's word about which call it answered.
-        verified_dispatch_roots=(
-            verified_dispatch_tasks(raw_scan) if raw_scan else frozenset()
-        ),
-        # ...and the ceiling reads the raw transcript's own times, with no
-        # message-view supplement at all: for a hard closure a newer mention
-        # from free text is not a tie to be broken, it is the closure deferred.
-        raw_ceiling_times=raw_participation,
-        oracle=oracle,
-        live_task_ids=live_task_ids,
-    )
+        result = resequenced
+    else:
+        raw_participation = participation_times_ms(raw_scan) if raw_scan else {}
+        result = _apply_oracle_closures(
+            session,
+            resequenced,
+            messages=messages,
+            raw_notices=raw_notices,
+            # R1 P1-1: the newest survival evidence, not the dispatch receipt alone.
+            # A SendMessage resume leaves the receipt sitting at the original
+            # dispatch, so anchoring there makes the history rebuild close a task
+            # that was re-driven five minutes ago (the P9 false close the live
+            # sweep already avoids). `participation_times_ms` is the live side's
+            # own helper, so both sides now judge the same engine facts the same
+            # way, and the anchor only ever moves newer — the conservative
+            # direction for a ceiling.
+            raw_receipt_times=raw_participation,
+            # R1c R3-2: which of those anchors the scan can tie to a real dispatch
+            # call. Only those keep the fold from overruling them with the message
+            # view; a bare `tool_result` anchor (F5) is still an anchor, it just is
+            # not the engine's word about which call it answered.
+            verified_dispatch_roots=(
+                verified_dispatch_tasks(raw_scan) if raw_scan else frozenset()
+            ),
+            # ...and the ceiling reads the raw transcript's own times, with no
+            # message-view supplement at all: for a hard closure a newer mention
+            # from free text is not a tie to be broken, it is the closure deferred.
+            raw_ceiling_times=raw_participation,
+            oracle=oracle,
+            live_task_ids=live_task_ids,
+        )
+    return _mark_interrupted_history_turns(result, stopped_turns)
+
+
+def _mark_interrupted_history_turns(
+    items: tuple[RuntimeTimelineItem, ...],
+    interrupted_turns: set[str],
+) -> tuple[RuntimeTimelineItem, ...]:
+    """Stamp each stopped turn's last main row with the turn-level flag.
+
+    The CLI's marker message produces no item of its own (it is synthetic
+    control), so the fact has to ride a row that a rebuild will keep writing.
+    The last main-agent row is both that carrier and the notice's anchor; a
+    child row is skipped because the chat timeline never draws it.
+    """
+
+    if not items or not interrupted_turns:
+        return items
+    last_index_by_turn: dict[str, int] = {}
+    for index, item in enumerate(items):
+        if item.turn_id in interrupted_turns and is_main_timeline_item(item):
+            last_index_by_turn[item.turn_id] = index
+    if not last_index_by_turn:
+        return items
+    marked = list(items)
+    for index in last_index_by_turn.values():
+        marked[index] = mark_turn_interrupted(marked[index])
+    return tuple(marked)
 
 
 def _apply_oracle_closures(
@@ -2296,6 +2343,28 @@ def _history_turn_ids(
             session.session_id, turn_seed
         )
     return turn_ids
+
+
+def interrupted_turn_ids_from_messages(
+    messages: Sequence[Any],
+    turn_ids: Mapping[str, str],
+) -> set[str]:
+    """The turn ids whose transcript carries the CLI's user-stop marker.
+
+    Computed over the FULL chain, never the sync window: an incremental pass
+    can start after the stopped turn and still needs to know its rows are
+    already stamped. ``turn_ids`` must be the full-chain mapping for the same
+    reason.
+    """
+
+    stopped: set[str] = set()
+    for message in messages:
+        if not is_interrupted_request_message(message):
+            continue
+        turn_id = turn_ids.get(_history_turn_key(message))
+        if turn_id is not None:
+            stopped.add(turn_id)
+    return stopped
 
 
 def _timestamp_from_epoch(value: int | None) -> str | None:

@@ -15,25 +15,28 @@ struct NewSessionWelcomeView: View {
              base: .primary, name: agent, nameColor: .primary)
     }
     private var detail: AttributedString {
-        copy(String(localized: "\(agent) 直接在您的代码库中与您协作，帮助您添加功能、修复 bug 和解释代码。"),
-             base: ChatPalette.iconSecondary.color,
-             name: agent,
-             nameColor: ChatPalette.iconSecondary.color)
+        let ink = ChatPalette.text.color.opacity(0.72)
+        return copy(String(localized: "\(agent) 直接在您的代码库中与您协作，帮助您添加功能、修复 bug 和解释代码。"),
+                    base: ink, name: agent, nameColor: ink)
     }
 
     var body: some View {
         VStack(spacing: 18) {
             CrystalGlobeView(diameter: min(globeSize, 280))
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 Text(title)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 Text(detail)
-                    .font(.system(size: 15))
+                    .font(.system(size: 13))
+                    .lineSpacing(4)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Official text column: about 291 pt of copy, so the body wraps
+            // after “添加” like the reference (pp 2026-11-13).
+            .frame(maxWidth: 300)
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity)

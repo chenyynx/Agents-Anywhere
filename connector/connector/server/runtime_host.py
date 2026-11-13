@@ -505,6 +505,11 @@ def _timeline_source_payload(item: RuntimeTimelineItem) -> dict[str, Any]:
             "runtimeType": source.get("runtimeType"),
             "runtimeId": source.get("runtimeId"),
             "sessionId": source.get("sessionId") or source.get("threadId"),
+            # The Runtime's own turn identity. The server model carries it and
+            # clients decode `source.turnId` (the interrupted-turn marker
+            # dedupes by it), but this serializer used to drop it — every
+            # stored row lost the turn boundary the connector had declared.
+            "turnId": source.get("turnId"),
             "itemId": source.get("itemId") or item.id,
             "itemType": source.get("itemType") or source.get("rawType"),
             "event": source.get("event"),

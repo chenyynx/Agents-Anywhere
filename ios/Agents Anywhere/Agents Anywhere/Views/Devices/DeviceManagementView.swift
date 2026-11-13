@@ -56,7 +56,7 @@ struct DeviceManagementView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
-                    header
+                    deviceCard
                     DeviceAgentSection(model: agents, showsConnectionNotice: false) { report($0, source: "agents") }
                     if showsSessionList {
                         DeviceWorkspaceList(workspaces: workspaceChoices, canReadFiles: canReadFiles,
@@ -91,6 +91,10 @@ struct DeviceManagementView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The settings cards are white; without the paper page colour the
+        // whole page reads as a flat list on white (pp 2026-11-13).
+        .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+            .ignoresSafeArea())
         .scrollIndicators(.hidden).scrollEdgeEffectStyle(.soft, for: .all)
         .refreshable { await dashboard.refresh(); await agents.refresh() }
         .modifier(ChatPageToolbar(title: showsToolbarTitle ? connector.name : "",
@@ -175,27 +179,46 @@ struct DeviceManagementView: View {
         }
     }
 
-    /// Large name with the connection state beside it, in the settings type.
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(connector.name)
-                .font(SettingsStyle.text(28, weight: .semibold))
-                .foregroundStyle(SettingsStyle.ink(colorScheme))
-                .lineLimit(2)
-                .accessibilityAddTraits(.isHeader)
-            HStack(spacing: 6) {
-                if connector.status == .online {
-                    AppSymbol("checkmark.circle.fill", size: 15).foregroundStyle(.green)
-                } else {
-                    Circle().fill(SettingsStyle.secondary(colorScheme).opacity(0.4))
-                        .frame(width: 9, height: 9)
-                        .frame(width: 15)
+    /// Device identity as a settings account card: icon, name, connection
+    /// state. The sections below are the page's content, like Settings.
+    private var deviceCard: some View {
+        HStack(spacing: 14) {
+            AppSymbol("server.rack", size: 19)
+                .foregroundStyle(SettingsStyle.icon(colorScheme))
+                .frame(width: 36, height: 36)
+                .background(SettingsStyle.background(colorScheme),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 0.5)
                 }
-                Text(connectionDescription)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connector.name)
+                    .font(SettingsStyle.text(16, weight: .semibold))
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityAddTraits(.isHeader)
+                HStack(spacing: 6) {
+                    if connector.status == .online {
+                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                    } else {
+                        Circle().fill(SettingsStyle.secondary(colorScheme).opacity(0.4))
+                            .frame(width: 7, height: 7)
+                    }
+                    Text(connectionDescription)
+                        .lineLimit(1)
+                }
+                .font(SettingsStyle.text(15))
+                .foregroundStyle(SettingsStyle.secondary(colorScheme))
             }
-            .font(SettingsStyle.text(15))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, SettingsStyle.rowPadding)
+        .padding(.vertical, 14)
+        .background(SettingsStyle.card(colorScheme),
+                    in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius,
+                                         style: .continuous))
         .accessibilityElement(children: .combine)
     }
 

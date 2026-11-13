@@ -44,7 +44,8 @@ struct NewSessionView: View, Equatable {
                         ? 0
                         : max(0, viewport.size.height - 48)) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
-                            onChooseTarget: chooseTarget)
+                            onChooseTarget: chooseTarget,
+                            compact: isEditing)
                         statusContent
                     }
                         .padding(24)

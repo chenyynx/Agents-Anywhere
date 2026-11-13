@@ -7,6 +7,10 @@ import SwiftUI
 struct NewSessionWelcomeView: View {
     let agentName: String?
     let onChooseTarget: () -> Void
+    /// While the composer is editing the page keeps the globe small, so the
+    /// copy fits above the workspace button and keyboard instead of sliding
+    /// under them.
+    var compact = false
     @ScaledMetric(relativeTo: .largeTitle) private var globeSize: CGFloat = 220
 
     private var agent: String { agentName ?? String(localized: "Agent") }
@@ -21,8 +25,9 @@ struct NewSessionWelcomeView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
-            CrystalGlobeView(diameter: min(globeSize, 280))
+        VStack(spacing: compact ? 12 : 18) {
+            CrystalGlobeView(diameter: compact ? min(globeSize * 0.45, 110)
+                                                : min(globeSize, 280))
             VStack(spacing: 10) {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))

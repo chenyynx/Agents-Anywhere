@@ -19,6 +19,11 @@ struct CodeStepGroupRowView: View {
     /// this row for the whole live turn — including between steps, before any
     /// body text (pp 2026-10-29 device observation).
     let isLiveTail: Bool
+    /// Whether a step that still reports `running` may be drawn live. False
+    /// once fresh live facts prove the turn stopped (idle, or an accepted
+    /// stop's optimistic window); late row snapshots must not keep the row
+    /// spinning (pp 2026-11-14).
+    var allowsRunningPose: Bool = true
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -45,7 +50,10 @@ struct CodeStepGroupRowView: View {
     /// covers both a running step and the gap between steps while the turn is
     /// still live (`isLiveTail`), so the dots never hop to a separate row
     /// before the reply body.
-    private var showsMark: Bool { isLiveTail || group.isRunning }
+    private var showsMark: Bool {
+        group.showsRunningPose(isLiveTail: isLiveTail,
+                               allowsRunningPose: allowsRunningPose)
+    }
 
     @ViewBuilder
     private var row: some View {
@@ -73,8 +81,9 @@ struct CodeStepGroupRowView: View {
                 icon: summaryIcon,
                 iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
-                status: group.hasFailure ? .failed : .complete,
+                status: group.settledStatus,
                 failureExtent: nil,
+                interrupted: group.hasInterrupted,
                 hasDetails: true,
                 diffIndicator: nil,
                 workingMark: nil,

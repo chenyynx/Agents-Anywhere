@@ -113,18 +113,39 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// The runtime's own turn state wins: while the turn really runs, a failed
     /// tool inside the group is just a failed tool — the agent moved on and
     /// the row must keep the live pose through the next gap, otherwise a
-    /// mid-turn ⚠️ settles the row while the turn still runs. Only the
-    /// optimistic send window (`turnIsRunning == false`, placeholder active)
-    /// falls back to the residue rule.
+    /// mid-turn ⚠️ settles the row while the turn still runs. Only a stopped
+    /// turn (`turnIsRunning == false`) falls back to the residue rule.
+    ///
+    /// Callers must pass "streaming", not the raw in-flight status: inside an
+    /// accepted stop's optimistic idle the runtime is still reported as
+    /// running, yet the turn is over and an interrupted group must not regain
+    /// the mark (pp 2026-11-14).
     func canCarryLiveMark(turnIsRunning: Bool) -> Bool {
         turnIsRunning || canCarryLiveMark
     }
 
-    var hasFailure: Bool {
-        steps.contains {
-            if case .failed = $0.status { return true }
-            return false
-        }
+    /// Whether an interrupt (not a failure) ended the group. Kept separate
+    /// from `hasTerminalFailure` so the settled row can draw the official
+    /// `stopCircle` instead of the warning (pp 2026-11-14).
+    var hasInterrupted: Bool {
+        steps.contains { $0.status == .interrupted }
+    }
+
+    /// The settled summary row's status. Cancelled and interrupted steps fold
+    /// into `.failed` the same way `CodeToolStatus.init` does, so a stopped
+    /// turn never looks like a completed one; `hasInterrupted` then selects
+    /// the stop glyph over the warning.
+    var settledStatus: CodeToolStatus {
+        hasTerminalFailure ? .failed : .complete
+    }
+
+    /// Whether the row may draw the live pose. A step that still reports
+    /// `running` is stale whenever fresh live facts say the turn stopped
+    /// (idle, or an accepted stop's optimistic idle); only a truly streaming
+    /// turn may animate it. This is the stop-tap half of the 2026-11-14 fix:
+    /// the stop ack proves the turn is over even while row snapshots lag.
+    func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
+        isLiveTail || (isRunning && allowsRunningPose)
     }
 
     /// The step the live row shows: the trailing-most running step, else the

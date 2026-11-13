@@ -235,6 +235,41 @@ struct TimelineStepGroupLiveMarkTests {
         #expect(failed.canCarryLiveMark(turnIsRunning: true))
         #expect(!failed.canCarryLiveMark(turnIsRunning: false))
     }
+
+    @Test func aFreshIdleSuppressesTheStaleRunningPose() {
+        // The stop ack proves the turn is over; a step snapshot that still
+        // says `running` is stale data and must not keep animating
+        // (pp 2026-11-14: the row spun for ~2.4 s after the interrupt while
+        // the connector was still publishing the settled rows).
+        let running = group([.thinking(id: "r", text: "think", status: .running)])
+        #expect(running.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        #expect(!running.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+    }
+
+    @Test func theLiveTailStillDrawsTheBetweenStepsPose() {
+        let settled = group([.thinking(id: "r", text: "think", status: .done)])
+        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
+        #expect(settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+    }
+
+    @Test func settledStatusNeverLooksCompleteAfterAStop() {
+        for status in [V2TimelineItemStatus.interrupted, .cancelled, .failed] {
+            #expect(group([.thinking(id: "r", text: "think", status: status)])
+                .settledStatus == .failed)
+        }
+        #expect(group([.thinking(id: "r", text: "think", status: .done)])
+            .settledStatus == .complete)
+    }
+
+    @Test func interruptIsReportedSeparatelyFromFailure() {
+        #expect(group([.thinking(id: "r", text: "think", status: .interrupted)])
+            .hasInterrupted)
+        #expect(!group([.thinking(id: "r", text: "think", status: .failed)])
+            .hasInterrupted)
+        #expect(!group([.thinking(id: "r", text: "think", status: .cancelled)])
+            .hasInterrupted)
+    }
 }
 
 @Suite("Step sheet tail follow")

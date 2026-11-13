@@ -111,12 +111,17 @@ final class SessionChatModel {
     var isRunning: Bool {
         session.runtime.state?.status.isTurnInFlight == true
     }
-    /// The composer's view of the turn window. It equals `isRunning` except
-    /// inside an accepted interrupt's optimistic window, where the send key is
-    /// already usable — before the frames that report the idle turn land.
-    var isComposerStreaming: Bool {
+    /// The transcript's view of the turn window: the runtime reports a turn
+    /// in flight and no accepted stop is being predicted. Everything that
+    /// paints "the agent is working" reads this instead of `isRunning`, so a
+    /// stop tap settles the UI on the ack rather than waiting for the frames
+    /// that report the idle turn (pp 2026-11-14).
+    var isTurnStreaming: Bool {
         isRunning && !session.runtime.isPredictedIdle
     }
+    /// The composer's view of the same window: inside an accepted interrupt's
+    /// optimistic window the send key is already usable.
+    var isComposerStreaming: Bool { isTurnStreaming }
     /// The configured instance name, like Web, then its runtime type. Status
     /// copy names the Agent the user chose instead of a generic "Agent".
     var agentName: String {

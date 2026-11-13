@@ -98,6 +98,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.responseRevision)
         hasher.combine(model.disclosures.revision)
         hasher.combine(model.isRunning)
+        // The drawn posing reads streaming (not raw in-flight): a stop ack
+        // flips `predictedIdle` while `isRunning` is still true, and a fresh
+        // idle makes a late `running` row stale (pp 2026-11-14).
+        hasher.combine(model.isTurnStreaming)
+        hasher.combine(model.session.runtime.isFresh)
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
@@ -145,6 +150,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
+    /// Whether a step row that still reports `running` may be drawn in the
+    /// live pose. Fresh live facts say yes only while the turn streams; after
+    /// a stop ack or an authoritative idle, those row snapshots lag the turn
+    /// and must not keep the row spinning (pp 2026-11-14).
+    private var chatAllowsRunningPose = true
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -1209,7 +1219,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // that body text follows is still the turn's work
                 // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
-                                                    isLiveTail: isLiveTail) { [weak self] in
+                                                    isLiveTail: isLiveTail,
+                                                    allowsRunningPose: chatAllowsRunningPose) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1848,23 +1859,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 if case .stepGroup = last { return true }
                 return false
             }()
-            // The live tail follows the whole running turn, not just the
-            // optimistic send window: `sendingPlaceholder` alone clears while
-            // the turn is still running (stopping/blocked, or a stale status),
-            // and a tap in that gap opened the sheet at the top
-            // (pp 2026-11-03). Keep the old window as the fallback for the
-            // frames before the runtime reports the turn.
-            let turnActive = model.isRunning || model.sendingPlaceholder != nil
-            // While the runtime reports the turn running, a failed tool in the
-            // group is not residue — the agent moves on and the row must keep
-            // the live pose through the next gap (pp 2026-11-10: a mid-turn
-            // ⚠️ settled the row while the turn still ran). The residue rule
-            // only backs the optimistic send window, where a settled turn's
-            // interrupted group must not regain the mark.
+            // The live tail exists only while the turn really streams. The
+            // optimistic send window is deliberately excluded: it used to
+            // keep the dots on the previous turn's group, which is what made
+            // an interrupted row flash back to running the moment a new
+            // message was sent (pp 2026-11-10), and the same window re-opened
+            // on the stop ack before the idle frames landed (pp 2026-11-14).
+            let turnStreaming = model.isTurnStreaming
+            // A fresh idle — or the accepted stop's optimistic idle — proves
+            // every still-`running` step snapshot is stale. Keep drawing from
+            // row status only while live facts are not fresh (cold load).
+            chatAllowsRunningPose = !model.session.runtime.isFresh || turnStreaming
+            // While the turn streams, a failed tool in the group is not
+            // residue — the agent moves on and the row must keep the live
+            // pose through the next gap (pp 2026-11-10: a mid-turn ⚠️ settled
+            // the row while the turn still ran). A stopped turn falls back to
+            // the residue rule, so an interrupted group cannot regain it.
             let lastStepGroup = lastStepGroupID.flatMap { stepGroupsByID[$0] }
             let canCarryLiveMark = lastStepGroup?
-                .canCarryLiveMark(turnIsRunning: model.isRunning) ?? false
-            chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup && canCarryLiveMark)
+                .canCarryLiveMark(turnIsRunning: turnStreaming) ?? false
+            chatLiveTailGroupID = (turnStreaming && lastUnitIsStepGroup && canCarryLiveMark)
                 ? lastStepGroupID : nil
         } else {
             chatLiveTailGroupID = nil
@@ -2363,7 +2377,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // for the whole live turn, even between steps; the signature must
         // follow that drawn state, not only the running steps.
         let isLiveTail = group.id == chatLiveTailGroupID
-        if let live = group.liveStep, group.isRunning || isLiveTail {
+        let showsLivePose = group.showsRunningPose(isLiveTail: isLiveTail,
+                                                   allowsRunningPose: chatAllowsRunningPose)
+        if let live = group.liveStep, showsLivePose {
             var hasher = TimelineStableHasher()
             hasher.combine(live.id)
             hasher.combine(live.status.rawValue)
@@ -2385,7 +2401,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let summary = group.summary
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
-        settled.combine(group.hasFailure ? 1 : 0)
+        settled.combine(group.settledStatus == .failed ? 1 : 0)
+        // Both interrupt and failure settle to `.failed`, but they draw
+        // different glyphs; hash the cause so the icon updates in place.
+        settled.combine(group.hasInterrupted ? 1 : 0)
         settled.combine(summary.thinkingCount)
         settled.combine(summary.readFiles)
         settled.combine(summary.ranCommands)

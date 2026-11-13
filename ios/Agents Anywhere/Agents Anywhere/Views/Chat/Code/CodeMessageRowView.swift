@@ -59,6 +59,9 @@ struct CodeMessageRowView: View {
     /// The turn's copy text when this message group ends a finished turn.
     /// Non-nil draws the official turn action bar after the message.
     var turnActionCopyText: String?
+    /// Draw the official interrupted-response notice under this message. The
+    /// chat profile anchors it to the stopped turn's last row (pp 2026-11-14).
+    var showsInterruptedNotice: Bool = false
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
     /// owned by this row would sit inside a hosting cell that every streaming
     /// reconfigure rebuilds, and could dismiss an open detail.
@@ -88,6 +91,7 @@ struct CodeMessageRowView: View {
          typography: TimelineTypographySnapshot? = nil,
          columnWidth: CGFloat? = nil,
          turnActionCopyText: String? = nil,
+         showsInterruptedNotice: Bool = false,
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
          attachmentResolver: @escaping ([V2AttachmentContent], String?) -> [ChatMessageAttachment] = { contents, _ in
@@ -112,6 +116,7 @@ struct CodeMessageRowView: View {
         self.typography = typography
         self.columnWidth = columnWidth
         self.turnActionCopyText = turnActionCopyText
+        self.showsInterruptedNotice = showsInterruptedNotice
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
         self.attachmentResolver = attachmentResolver
@@ -127,11 +132,17 @@ struct CodeMessageRowView: View {
                 // A message whose only blocks are reasoning contributes no
                 // height at all; the turn's working status is its own row.
                 // The turn action bar is still the turn's final row, so it
-                // renders even when the last message drew no blocks.
-                if let turnActionCopyText {
-                    CodeTurnActionBar(copyText: turnActionCopyText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, CodePageTheme.rowMarginTop)
+                // renders even when the last message drew no blocks. The
+                // interrupted notice is this turn's footer too.
+                if showsInterruptedNotice || turnActionCopyText != nil {
+                    VStack(alignment: .leading, spacing: CodePageTheme.interMessageSpacing) {
+                        if showsInterruptedNotice { ChatInterruptedNoticeCard() }
+                        if let turnActionCopyText {
+                            CodeTurnActionBar(copyText: turnActionCopyText)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, CodePageTheme.rowMarginTop)
                 } else {
                     Color.clear.frame(height: 0)
                 }
@@ -150,6 +161,7 @@ struct CodeMessageRowView: View {
                             blockStack(row)
                         }
                     }
+                    if showsInterruptedNotice { ChatInterruptedNoticeCard() }
                     if let turnActionCopyText {
                         CodeTurnActionBar(copyText: turnActionCopyText)
                     }

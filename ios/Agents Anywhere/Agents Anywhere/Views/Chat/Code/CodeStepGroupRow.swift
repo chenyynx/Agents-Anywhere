@@ -24,6 +24,10 @@ struct CodeStepGroupRowView: View {
     /// stop's optimistic window); late row snapshots must not keep the row
     /// spinning (pp 2026-11-14).
     var allowsRunningPose: Bool = true
+    /// Draw the official interrupted-response notice under the row. The chat
+    /// profile's stopped turn is anchored to this group when it produced no
+    /// partial answer text (pp 2026-11-14).
+    var showsInterruptedNotice: Bool = false
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -41,9 +45,20 @@ struct CodeStepGroupRowView: View {
             + 2 * CodePageTheme.rowMarginTop
     }
 
+    /// One notice card plus its top gap; used by the collection's estimate.
+    static var interruptedNoticeExtraHeight: CGFloat {
+        ChatInterruptedNoticeCard.estimatedHeight + 8
+    }
+
     var body: some View {
-        row
-            .padding(.vertical, CodePageTheme.rowMarginTop)
+        VStack(alignment: .leading, spacing: 0) {
+            row
+            if showsInterruptedNotice {
+                ChatInterruptedNoticeCard()
+                    .padding(.top, 8)
+            }
+        }
+        .padding(.vertical, CodePageTheme.rowMarginTop)
     }
 
     /// The live pose: the mark plus the current step's one-line text. It

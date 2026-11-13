@@ -13,17 +13,27 @@ struct SessionTimelineGroupView: View, Equatable {
     /// Interaction cards targeting rows of this group. Passing the subset keeps
     /// unrelated groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
+    /// The official interrupted-response notice sits under this group (pp
+    /// 2026-11-14): the group holds the stopped turn's last row.
+    var showsInterruptedNotice: Bool = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.group == rhs.group && lhs.chat === rhs.chat && lhs.turnAction == rhs.turnAction
             && (lhs.onSubAgent == nil) == (rhs.onSubAgent == nil)
             && lhs.inlineNotices.elementsEqual(rhs.inlineNotices, by: ===)
+            && lhs.showsInterruptedNotice == rhs.showsInterruptedNotice
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             content
                 .traceChatLayout("group-content:\(group.id)")
+            if showsInterruptedNotice {
+                ChatInterruptedNoticeCard()
+                    // The group's own 4pt spacing already separates this
+                    // footer; 4 more matches the official card's top gap.
+                    .padding(.top, 4)
+            }
             if let turnAction {
                 SessionTurnReviewFooter(action: turnAction, root: chat.session.metadata?.cwd,
                     hasOlderItems: chat.session.hasOlderItems, onFile: onFile)

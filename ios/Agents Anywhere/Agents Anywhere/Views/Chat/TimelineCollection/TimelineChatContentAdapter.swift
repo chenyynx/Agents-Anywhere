@@ -103,6 +103,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // idle makes a late `running` row stale (pp 2026-11-14).
         hasher.combine(model.isTurnStreaming)
         hasher.combine(model.session.runtime.isFresh)
+        hasher.combine(model.interruptedTurns.map(\.anchorItemID).joined(separator: ","))
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
@@ -157,6 +158,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// step that still reports `running`; a previous turn's stale snapshot
     /// must not (pp 2026-11-14).
     private var chatRunningPoseGroupIDs: Set<String> = []
+    /// The top-level items the interrupted-turn notices follow (the units
+    /// that hold each stopped turn's last row). Empty when no stop is known
+    /// for this session, or when the anchor rows are outside the window.
+    private var chatInterruptedItemIDs: Set<String> = []
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -384,7 +389,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var hasher = TimelineStableHasher()
         hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [],
                                         width: width,
-                                        hasActionBar: actionBarCopyText(for: id) != nil))
+                                        hasActionBar: actionBarCopyText(for: id) != nil,
+                                        hasInterruptedNotice:
+                                            interruptedNoticeExtraHeight(for: id) > 0))
         if let streaming {
             for rowID in streaming.textsByRowID.keys.sorted() {
                 hasher.combine(rowID)
@@ -436,9 +443,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
             // The chat profile's step-group row is always one line; its live
-            // text changes but never its height.
+            // text changes but never its height. A stopped turn adds the fixed
+            // notice card under it.
             if stepGroupsByID[id] != nil {
-                return .fixed(CodeStepGroupRowView.estimatedHeight)
+                let extra = chatInterruptedItemIDs.contains(
+                    TimelineListItem.group(id).itemID)
+                    ? CodeStepGroupRowView.interruptedNoticeExtraHeight : 0
+                return .fixed(CodeStepGroupRowView.estimatedHeight + extra)
             }
             // A Code message group has no folds: its estimate is the message's
             // body text plus one line per collapsed tool row (W7 §3.6 / §6).
@@ -674,8 +685,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return nil
         }
         let hasActionBar = actionBarCopyText(for: id) != nil
+        let noticeExtra = interruptedNoticeExtraHeight(for: id)
         let digest = codeHeightDigest(rows: rows, width: width,
-                                      hasActionBar: hasActionBar)
+                                      hasActionBar: hasActionBar,
+                                      hasInterruptedNotice: noticeExtra > 0)
         if let cached = codeHeightCache[id], cached.digest == digest {
             return cached.height
         }
@@ -686,7 +699,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             traits: controller?.traitCollection,
             measured: true,
             hasActionBar: hasActionBar,
-            pixelSize: attachmentPixelSize)
+            pixelSize: attachmentPixelSize) + noticeExtra
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
     }
@@ -734,7 +747,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // A row that was measured before (reconnect/recovery re-streams the
         // same message) never seeds below the height the reader last saw.
         let previous = codeHeightCache[groupID]?.height ?? 0
-        return max(estimate, previous)
+        return max(estimate + interruptedNoticeExtraHeight(for: groupID), previous)
+    }
+
+    /// Height the interrupted-turn notice adds to a message row: the card plus
+    /// the row stack's inter-block spacing. Zero outside the chat profile and
+    /// away from the stopped turn's anchor.
+    private func interruptedNoticeExtraHeight(for groupID: String) -> CGFloat {
+        guard renderMode == .chat,
+              chatInterruptedItemIDs.contains(
+                TimelineListItem.group(groupID).itemID) else { return 0 }
+        return ChatInterruptedNoticeCard.estimatedHeight + CodePageTheme.interMessageSpacing
     }
 
     private struct CachedCodeHeight {
@@ -745,7 +768,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private func codeHeightDigest(rows: [CodeMessageRow],
                                   width: CGFloat,
-                                  hasActionBar: Bool = false) -> Int {
+                                  hasActionBar: Bool = false,
+                                  hasInterruptedNotice: Bool = false) -> Int {
         var hasher = TimelineStableHasher()
         for row in rows {
             hasher.combine(row.role.rawValue)
@@ -782,6 +806,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let scale = controller?.traitCollection.displayScale ?? 2
         hasher.combine(Int((scale * 100).rounded()))
         hasher.combine(hasActionBar)
+        hasher.combine(hasInterruptedNotice)
         return hasher.revision
     }
 
@@ -1223,7 +1248,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail,
                                                     allowsRunningPose: chatAllowsRunningPose
-                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id)) { [weak self] in
+                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id),
+                                                    showsInterruptedNotice:
+                                                        chatInterruptedItemIDs.contains(
+                                                            TimelineListItem.group(stepGroup.id).itemID)) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1246,6 +1274,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     typography: codeTypography,
                     columnWidth: width,
                     turnActionCopyText: actionBarCopyText(for: id),
+                    showsInterruptedNotice: renderMode == .chat
+                        && chatInterruptedItemIDs.contains(
+                            TimelineListItem.group(group.id).itemID),
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     },
@@ -1280,7 +1311,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onFile: onFile,
                 turnAction: turnActions[group.id],
                 onSubAgent: onSubAgent,
-                inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] }))
+                inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
+                showsInterruptedNotice:
+                    chatInterruptedItemIDs.contains(
+                        TimelineListItem.group(group.id).itemID)))
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else { return AnyView(EmptyView()) }
             // The same row margins as a Code message row: these rows report 0
@@ -1956,6 +1990,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowToItem[row.id] = item
             }
         }
+        // The interrupted-turn notice is a footer of the unit that carries the
+        // stopped turn's last row (a message group when there is a partial
+        // answer, otherwise the step group). A cold open can recover the
+        // marker from the runtime state's interrupt source.
+        model.noteAuthoritativeInterruptIfNeeded()
+        chatInterruptedItemIDs = Set(model.interruptedTurns.compactMap {
+            rowToItem[$0.anchorItemID]?.itemID
+        })
         var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
         for notice in visibleNotices where notice.notice.type == "interaction" {
             guard let target = notice.timelineTargetID else { continue }
@@ -2281,8 +2323,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // row is signed by its published text instead; every row that is
             // not streaming keeps the wire signature untouched, so non-Code
             // and settled rows do not change their refresh semantics.
-            return TimelineGroupContentSignature(
-                rows: group.rows.map { row in
+            var signatureRows = group.rows.map { row -> TimelineRowContentSignature in
                     // Reasoning streams a new wire revision per delta, but the
                     // row is invisible until it settles. Sign it by its
                     // rendered state so a thinking run does not reconfigure
@@ -2317,7 +2358,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     return TimelineRowContentSignature(id: row.id,
                                                        revision: row.value.revision,
                                                        updatedSeq: row.value.updatedSeq)
-                },
+            }
+            // The interrupted notice is part of this row's drawn height; a
+            // synthetic row makes the collection reconfigure when it appears
+            // even though the wire rows did not change.
+            if renderMode == .chat,
+               chatInterruptedItemIDs.contains(TimelineListItem.group(group.id).itemID) {
+                signatureRows.append(TimelineRowContentSignature(
+                    id: group.id + ":interrupted", revision: 1, updatedSeq: 0))
+            }
+            return TimelineGroupContentSignature(
+                rows: signatureRows,
                 disclosureExpanded: false,
                 expandedRowIDs: [],
                 revealingRowIDs: [],
@@ -2418,6 +2469,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
         settled.combine(group.hasFailure ? 1 : 0)
+        settled.combine(chatInterruptedItemIDs.contains(
+            TimelineListItem.group(group.id).itemID) ? 1 : 0)
         settled.combine(summary.thinkingCount)
         settled.combine(summary.readFiles)
         settled.combine(summary.ranCommands)

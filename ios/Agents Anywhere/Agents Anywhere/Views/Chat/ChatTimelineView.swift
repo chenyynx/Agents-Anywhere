@@ -708,7 +708,13 @@ private struct ChatTimelineContent: View, Equatable {
                                     removal: .opacity))
                         }
                     }
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
+                    // No implicit animation for the queue block: the row that drains at
+                    // echo time sits inside the tail (the last measured cell), and
+                    // animating its removal made the bottom-pinned offset follow a
+                    // 0.25 s shrink while the echoed row was still landing — the
+                    // page slid down by one bubble height (device 2026-11-14).
+                    // Appearing and disappearing are single-layout-pass events.
+                    .animation(nil, value: queueRoster)
                 }
 
                 Group {

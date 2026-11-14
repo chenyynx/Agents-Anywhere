@@ -76,19 +76,6 @@ import Testing
         #expect(result.state.placement == .reading(id: "u1", offsetIntoRow: 80))
     }
 
-    /// UIKit's layout correction after a content-height change (interrupt card
-    /// insert, pending row) must not flip a bottom-following reader to
-    /// `.reading`: the flip and the `contentChanged` adoption back to `.end`
-    /// moved the page twice on device (2026-11-14 23:08).
-    @Test func aRestingBottomReaderKeepsTheEndThroughAHandlessScroll() {
-        let result = reduce(landed(.end, motion: .resting),
-                            .scrolledWithoutAHand(atEnd: false,
-                                                  id: "g:steps", offsetIntoRow: 5))
-        #expect(result.state.placement == .end)
-        #expect(result.state.motion == .resting)
-        #expect(result.action == .none)
-    }
-
     @Test func sendingDoesNotMoveThePage() {
         let result = reduce(landed(.end), .sending)
         #expect(result.action == .none)

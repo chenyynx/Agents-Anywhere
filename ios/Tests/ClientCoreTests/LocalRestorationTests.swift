@@ -238,6 +238,34 @@ import Testing
         restored.reset()
     }
 
+    @Test func restoredInFlightQueueDoesNotDuplicateItsStagedPending() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)
+        _ = try await first.load(sessionId: "session")
+        let session = first.session(id: "session")
+        session.draft = "on the wire"
+        let flying = try #require(session.enqueueDraft())
+        // The drain's shape: the queue row is awaiting its echo and the same
+        // id owns the normal pending bubble.
+        session.stage(.init(id: flying.id, content: flying.content,
+                            attachmentIDs: flying.attachmentIDs))
+        flying.update(.awaitingEcho)
+        await first.flushCache(); first.reset()
+
+        let http = TestHTTPTransport(); let restored = repo(http, local: V2LocalStore(directory: url))
+        restored.updateConnectivity(.init(availability: .offline)); _ = try await restored.load(sessionId: "session")
+        let model = restored.session(id: "session")
+        // The pending owns the durable copy; the queue row must not restore a
+        // second bubble with the same id.
+        #expect(model.sendQueue.isEmpty)
+        #expect(model.pendingMessages.filter { $0.id == flying.id }.count == 1)
+        guard case .uncertain = model.pendingMessages.first?.delivery else {
+            Issue.record("An in-flight queued message must restore as one uncertain pending"); return
+        }
+        #expect(http.calls.isEmpty)
+        restored.reset()
+    }
+
     @Test func restoredQueuedAttachmentKeepsItsUploadedReference() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)

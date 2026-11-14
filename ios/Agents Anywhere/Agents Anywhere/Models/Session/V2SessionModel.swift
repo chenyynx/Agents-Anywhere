@@ -571,14 +571,23 @@ final class V2SessionModel: Identifiable {
     func demoteStaleAwaitingEcho(now: Date) {
         guard let since = awaitingEchoSince, now.timeIntervalSince(since) >= Self.awaitingEchoTimeout,
               let head = sendQueue.head, head.state == .awaitingEcho else { return }
-        let pending = V2PendingMessage(id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
-            localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
-        // Same construction as a restored uncertain record, so the bubble, its
-        // duplicate warning and the late-echo reconciliation all behave alike.
+        // The drain already staged this record's pending bubble, so the stale
+        // path upgrades that same record instead of minting a second bubble
+        // with the same id. The fallback covers a queue item restored without
+        // its pending (e.g. a record written by an older client).
+        let pending: V2PendingMessage
+        if let existing = pendingMessages.first(where: { $0.id == head.id }) {
+            pending = existing
+        } else {
+            pending = V2PendingMessage(id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
+                localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
+            // Same construction as a restored uncertain record, so the bubble, its
+            // duplicate warning and the late-echo reconciliation all behave alike.
+            attachmentPreviews.remember(head.attachments, clientID: head.id)
+            pendingMessages.append(pending)
+        }
         let failure = V2ClientFailure(kind: .unavailable, message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))
         pending.update(.uncertain(failure))
-        attachmentPreviews.remember(head.attachments, clientID: head.id)
-        pendingMessages.append(pending)
         awaitingEchoSince = nil
         if awaitingReplyID == head.id { awaitingReplyID = nil }
         sendQueue.remove(id: head.id)
@@ -588,9 +597,16 @@ final class V2SessionModel: Identifiable {
 
     /// Sends the queue's head when every gate is open, then stops — the next
     /// message waits for this one's echo. Returns whether a send was issued.
-    /// Deliberately avoids `sendDraft`: the queue row stands in for the pending
-    /// bubble, and a failure must *not* refill the composer (the content is
-    /// still in the queue), so this calls `repository.send` directly.
+    ///
+    /// The queue row is the pre-send shape only. From the moment the message
+    /// takes the wire it is the same optimistic `V2PendingMessage` a normal
+    /// send uses (id = the queue row's id), so the echo upgrades one row in
+    /// place; the queue row stops drawing once that pending row exists. The
+    /// earlier "the queue row stands in for the pending bubble" split made the
+    /// echo row and the bubble two objects laid out in different passes — the
+    /// page dropped one bubble height when the queue released it (device
+    /// 2026-11-14). A failure still never refills the composer: the content
+    /// remains in the queue.
     @discardableResult func drainSendQueueIfPossible() async -> Bool {
         guard let repository, isValid, !Task.isCancelled else { return false }
         guard !sendQueue.items.isEmpty, !isSendQueuePaused else { return false }
@@ -599,32 +615,57 @@ final class V2SessionModel: Identifiable {
         guard canSend else { return false }
         guard let head = sendQueue.head, head.state == .queued, head.isUploadComplete else { return false }
         head.update(.sending)
+        let pending = V2PendingMessage(
+            id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
+            localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
+        pending.supersededPendingIDs = head.supersededPendingIDs
+        attachmentPreviews.remember(head.attachments, clientID: head.id)
+        pendingMessages.append(pending)
+        awaitingReplyID = head.id
         do {
             await repository.flushCache()
-            guard isValid, head.state == .sending else { return false }
+            guard isValid, head.state == .sending else {
+                discardStagedPending(id: head.id)
+                return false
+            }
             // A cancelled drain (the session went away mid-flush) must not leave
             // the head marked as on-the-wire, or the queue would hold forever.
-            guard !Task.isCancelled else { head.update(.queued); return false }
-            // Set the placeholder link immediately before the write, so a frame
-            // arriving during the flush cannot clear a promise not yet made.
-            awaitingReplyID = head.id
+            guard !Task.isCancelled else {
+                discardStagedPending(id: head.id)
+                head.update(.queued)
+                return false
+            }
             _ = try await repository.send(sessionId: id, content: head.content, attachmentIDs: head.attachmentIDs, clientMessageID: head.id)
             guard isValid else { return true }
-            // The send is on the wire; the echo removes the row. Until then no
-            // further message is drained, and this stamp arms the echo window.
-            head.update(.awaitingEcho)
-            awaitingEchoSince = Date()
+            // The send is on the wire; the echo upgrades this same pending
+            // row. Until then no further message is drained, and this stamp
+            // arms the echo window. An echo can win the race against the HTTP
+            // response: confirmEcho already removed the head, so this branch
+            // must not re-arm the window on a detached row.
+            pending.update(.accepted)
+            if sendQueue.head === head {
+                head.update(.awaitingEcho)
+                awaitingEchoSince = Date()
+            }
             return true
         } catch {
             guard isValid else { return false }
             // A failure leaves the message queued and pauses the whole queue:
             // the banner is the only notice, and the only way back is retry.
+            discardStagedPending(id: head.id)
             head.update(.queued)
-            if awaitingReplyID == head.id { awaitingReplyID = nil }
             sendQueue.pause(.failure(V2ClientFailure(error).message))
             repository.localWorkDidChange(sessionID: id)
             return false
         }
+    }
+
+    /// Drops the optimistic bubble staged by a drain that never reached its
+    /// echo. A confirmed record is owned by the presentation until its echo
+    /// row is published, so it is never touched here.
+    private func discardStagedPending(id: String) {
+        pendingMessages.removeAll { $0.id == id && $0.delivery != .confirmed }
+        if awaitingReplyID == id { awaitingReplyID = nil }
     }
 
     func connect() async {

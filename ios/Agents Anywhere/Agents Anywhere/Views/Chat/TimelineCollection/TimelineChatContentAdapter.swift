@@ -3038,7 +3038,14 @@ private struct TimelineCollectionTailRow: View {
             guard row.value.role == .user else { return nil }
             return row.value.source["clientMessageId"]?.stringValue
         })
-        return model.session.sendQueue.items.filter { !echoed.contains($0.id) }
+        // The drain stages the normal pending bubble for the head (same id).
+        // The queue row is only the pre-send shape, so it must stop drawing
+        // in the same apply that presents that pending row — one message, one
+        // visual object, from queue to echo.
+        let pending = Set(model.timeline.pendingMessages.map(\.id))
+        return model.session.sendQueue.items.filter {
+            !echoed.contains($0.id) && !pending.contains($0.id)
+        }
     }
 
     private var queueRoster: String {

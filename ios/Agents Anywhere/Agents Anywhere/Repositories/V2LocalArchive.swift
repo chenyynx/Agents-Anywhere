@@ -123,7 +123,11 @@ nonisolated struct V2SessionArchive: Codable {
                 storedQueued.append(Queued(id: item.id, content: item.content,
                     attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() },
                     superseded: item.supersededPendingIDs.isEmpty ? nil : item.supersededPendingIDs))
-            } else {
+            } else if !storedPending.contains(where: { $0.id == item.id }) {
+                // The drain stages the same id as a pending bubble; that
+                // record already owns the durable "may have reached the
+                // server" copy. Writing the queue row too would restore two
+                // bubbles with one id after a relaunch.
                 storedPending.append(Pending(id: item.id, content: item.content,
                     attachmentIDs: item.attachmentIDs, attachments: item.attachments.map { $0.archived() },
                     error: nil, rejected: false,

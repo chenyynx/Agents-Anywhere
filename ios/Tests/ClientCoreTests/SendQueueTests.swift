@@ -178,7 +178,26 @@ import Testing
         #expect(http.count("messages") == 1)
     }
 
-    @Test func bulkReadReconcilesAQueueEchoWithNoPendingBubble() async throws {
+    @Test func drainPromotesTheQueuedMessageToTheNormalPendingBubble() async throws {
+        let http = TestHTTPTransport()
+        let (repo, model) = makeSession(http)
+        defer { repo.reset() }
+        let item = try enqueueWhileRunning(model, "hello")
+        try applyLive(model, status: .idle, sendAvailable: true)
+        #expect(await model.drainSendQueueIfPossible())
+        // From the moment the message takes the wire it owns the same pending
+        // bubble a normal send uses; the queue row is only the pre-send shape.
+        #expect(model.pendingMessages.map(\.id) == [item.id])
+        guard case .accepted = model.pendingMessages.first?.delivery else {
+            Issue.record("The drained message must own the normal accepted pending bubble")
+            return
+        }
+        // The queue row still holds the single-flight gate until the echo.
+        #expect(model.sendQueue.items.map(\.id) == [item.id])
+        #expect(item.state == .awaitingEcho)
+    }
+
+    @Test func bulkReadReconcilesAQueueEchoWithItsPendingBubble() async throws {
         let http = TestHTTPTransport()
         let (repo, model) = makeSession(http)
         defer { repo.reset() }
@@ -186,30 +205,32 @@ import Testing
         try applyLive(model, status: .idle, sendAvailable: true)
         #expect(await model.drainSendQueueIfPossible())
         #expect(item.state == .awaitingEcho)
-        // A queued message in flight has a queue row but no pending bubble, so
-        // the echo gate keys on the queue too. Deliver the echo only through a
-        // bulk read (as a reconnect catch-up or snapshot rebuild would): the
-        // item rides in the observation's data, never through confirmEcho.
-        #expect(model.pendingMessages.isEmpty)
+        // The drain staged the normal pending bubble for the head.
+        #expect(model.pendingMessages.map(\.id) == [item.id])
+        // Deliver the echo only through a bulk read (as a reconnect catch-up
+        // or snapshot rebuild would): the item rides in the observation's
+        // data, never through confirmEcho.
         var data = V2SessionData(snapshot: try decode(try fixtureObject("snapshot")))
         data.items = [try echo(clientID: item.id)]
         model.update(V2SessionObservation(sessionId: "session", data: data, connection: .connected, error: nil),
                      network: V2NetworkStatus(availability: .online))
         #expect(model.sendQueue.isEmpty)
+        #expect(model.pendingMessages.isEmpty)
         #expect(model.awaitingReplyID == nil)
     }
 
-    @Test func echoReconcilesAQueuedMessageWithoutAPendingBubble() async throws {
+    @Test func echoReconcilesAQueuedMessageThroughItsPendingBubble() async throws {
         let http = TestHTTPTransport()
         let (repo, model) = makeSession(http)
         defer { repo.reset() }
         let item = try enqueueWhileRunning(model, "hello")
         try applyLive(model, status: .idle, sendAvailable: true)
         #expect(await model.drainSendQueueIfPossible())
-        // The queue row stands in for the pending bubble; no pending is built.
-        #expect(model.pendingMessages.isEmpty)
+        // The drain staged the same pending bubble a normal send uses.
+        #expect(model.pendingMessages.map(\.id) == [item.id])
         model.confirmEcho(try echo(clientID: item.id))
         #expect(model.sendQueue.isEmpty)
+        #expect(model.pendingMessages.isEmpty)
         #expect(model.awaitingReplyID == nil)
     }
 
@@ -240,6 +261,9 @@ import Testing
         guard case .uncertain = model.pendingMessages.first?.delivery else {
             Issue.record("A stale in-flight message must surface as an uncertain pending"); return
         }
+        // The drain already staged this id; demotion upgrades that record
+        // instead of minting a second bubble with the same id.
+        #expect(model.pendingMessages.filter { $0.id == first.id }.count == 1)
         #expect(model.pendingMessages.first?.id == first.id)
         #expect(model.draft.isEmpty)
 
@@ -263,8 +287,9 @@ import Testing
             return try http.defaultResponse(call)
         }
         #expect(await model.drainSendQueueIfPossible() == false)
-        // The message stays queued; the failure never becomes a pending bubble
-        // nor refills the composer (the content is still in the queue).
+        // The message stays queued; the optimistic bubble staged for the
+        // attempt is discarded, and the failure never refills the composer
+        // (the content is still in the queue).
         #expect(model.sendQueue.count == 1)
         #expect(item.state == .queued)
         #expect(model.pendingMessages.isEmpty)

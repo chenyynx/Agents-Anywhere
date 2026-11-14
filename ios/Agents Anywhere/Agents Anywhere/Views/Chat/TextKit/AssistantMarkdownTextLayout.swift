@@ -642,7 +642,12 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     // MARK: - Interaction
 
     /// Body text: links tap, long press selects, and the edit menu copies.
-    func enableTextInteraction() {
+    ///
+    /// `allowsSelection: false` keeps the link taps and skips the selection
+    /// layer entirely — no long press, no handles, no edit menu. The thinking
+    /// detail uses it: selecting there squared the iOS 26 sheet's corners
+    /// (pp 2026-11-15), and the page forbids selection instead.
+    func enableTextInteraction(allowsSelection: Bool = true) {
         guard !textInteractionEnabled else { return }
         textInteractionEnabled = true
         isUserInteractionEnabled = true
@@ -669,6 +674,7 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
         tap.require(toFail: doubleTapGate)
         addGestureRecognizer(tap)
         linkTapRecognizer = tap
+        guard allowsSelection else { return }
         // The official selectable leaf is this view plus
         // `UITextInteraction` and its own `UITextInput`
         // (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §1.4); the interaction

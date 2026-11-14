@@ -28,6 +28,10 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     /// views while the cell is still offscreen (configured ahead of its first
     /// layout) instead of in the frame that draws the row.
     var columnWidth: CGFloat?
+    /// Whether body text takes the system selection layer (long press, drag
+    /// handles, edit menu). The thinking detail turns it off: selecting there
+    /// squared the iOS 26 sheet's corners (pp 2026-11-15).
+    var allowsSelection = true
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -35,10 +39,11 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     init(text: String, typography: TimelineTypographySnapshot?,
-         columnWidth: CGFloat? = nil) {
+         columnWidth: CGFloat? = nil, allowsSelection: Bool = true) {
         self.text = text
         self.typography = typography
         self.columnWidth = columnWidth
+        self.allowsSelection = allowsSelection
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -197,6 +202,7 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         let view = CodeMarkdownTextStackView()
         view.backgroundColor = .clear
         view.isOpaque = false
+        view.allowsSelection = allowsSelection
         return view
     }
 
@@ -255,6 +261,9 @@ final class CodeMarkdownTextStackView: UIView {
     }
 
     private var records: [Record] = []
+    /// Whether body blocks take the system selection layer. Set before the
+    /// first document is installed; block views are built with it.
+    var allowsSelection = true
     private var document: AssistantMarkdownDocument?
     private var documentKey = ""
     private var displayScale: CGFloat = 2
@@ -465,7 +474,7 @@ final class CodeMarkdownTextStackView: UIView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
-            textView.enableTextInteraction()
+            textView.enableTextInteraction(allowsSelection: allowsSelection)
         }
         for subview in view.subviews {
             enableTextInteraction(in: subview)

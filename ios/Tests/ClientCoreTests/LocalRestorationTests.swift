@@ -314,6 +314,7 @@ import Testing
         let file = ChatAttachment(id: "local-image", name: "photo.png", data: Data([1]), mediaType: "image/png", previewData: Data([2]))
         let submission = NewSessionSubmission(project: project, runtime: runtime, text: "看看这个", attachments: [file])
         store.stageCreation(submission)
+        let staged = store.session(id: submission.session.id)
         let observation = Task { for await _ in store.observe(sessionId: submission.session.id) { if Task.isCancelled { return } } }
         await Task.yield()
         #expect(http.calls.isEmpty)
@@ -321,11 +322,52 @@ import Testing
         response.attachments = [.init(fileId: "remote-image", name: "photo.png", mediaType: "image/png", size: 1, sha256: "sha")]
         store.bindCreation(submission, response: response)
         let model = store.session(id: "session")
+        // The bind renames the staged entry in place: the page mounted on the
+        // local id keeps this model object and its view identity, so nothing
+        // re-mounts (pp 2026-11-15: the send's entrance replayed twice).
+        #expect(model === staged)
+        #expect(model.presentationKey == submission.session.id)
         #expect(model.pendingMessages.first === submission.pending)
         #expect(model.pendingMessages.first?.attachmentIDs == ["remote-image"])
         #expect(model.attachmentPreviews.resolve(submission.pending.attachments.map(\.content), clientID: submission.pending.id).first?.previewData == Data([2]))
         #expect(!store.cachedSessionIDs.contains(submission.session.id))
         observation.cancel(); await observation.value
+        store.reset(); await local.close(removing: true)
+    }
+
+    /// The creation handoff renames the staged entry instead of replacing it,
+    /// and the retired local id keeps resolving to the live entry. The chat
+    /// page keys its identity on `presentationKey`, which the rename never
+    /// touches, so binding the server id cannot re-mount the page — the
+    /// re-mount is what replayed the send's entrance (pp 2026-11-15).
+    @Test func bindingACreationRenamesTheStagedSessionInPlace() async throws {
+        let http = TestHTTPTransport(); let local = V2LocalStore(directory: location())
+        let store = repo(http, local: local)
+        let project = try fixture("project", as: V2ProjectResponse.self).project
+        let runtime: V2DeviceRuntime = try fixture("runtime")
+        let submission = NewSessionSubmission(project: project, runtime: runtime, text: "第一条", attachments: [])
+        store.stageCreation(submission)
+        let staged = store.session(id: submission.session.id)
+        #expect(staged.presentationKey == submission.session.id)
+        let response: V2SessionCreateResponse = try fixture("session")
+        store.bindCreation(submission, response: response)
+
+        // Same object under the server key; the view identity never moves.
+        #expect(store.session(id: "session") === staged)
+        #expect(staged.id == "session")
+        #expect(staged.presentationKey == submission.session.id)
+        #expect(staged.pendingMessages.first === submission.pending)
+        // A late holder of the creation id (a subscription, a closure built at
+        // model init) lands on the live entry, not on a fresh empty one.
+        #expect(store.session(id: submission.session.id) === staged)
+        #expect(store.cached(sessionId: submission.session.id)?.session.id == "session")
+        #expect(!store.cachedSessionIDs.contains(submission.session.id))
+        // Reads still name the server session on the wire, and nothing after
+        // the bind ever asks the server for the retired creation id.
+        _ = try await store.loadSubAgentChildren(
+            sessionId: submission.session.id, parentItemId: "call_1", limit: 5)
+        #expect(http.calls.contains { $0.path == "/sessions/session/timeline" })
+        #expect(!http.calls.contains { $0.path.contains("local") })
         store.reset(); await local.close(removing: true)
     }
 }

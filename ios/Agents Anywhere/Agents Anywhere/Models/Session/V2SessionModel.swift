@@ -224,7 +224,17 @@ final class V2PendingMessage: Identifiable {
 /// a view .task; cancellation releases that view's subscription. DTOs never own I/O.
 @MainActor @Observable
 final class V2SessionModel: Identifiable {
-    let id: V2SessionID
+    /// The client-side key. A creation handoff renames this in place
+    /// (`V2SessionRepository.bindCreation`): the staged local entry becomes the
+    /// server session instead of being replaced, so the page that already
+    /// mounted keeps this model object. Late holders of the retired id resolve
+    /// through the repository's rename map.
+    private(set) var id: V2SessionID
+    /// The identity views key on. It never changes, including through the
+    /// creation rename: `.id(session.id)` remounted the chat page when the
+    /// local creation was bound, and the re-mounted page played the send's
+    /// entrance a second time (pp 2026-11-15).
+    let presentationKey: V2SessionID
     let scope: V2ClientScope
     let runtime = V2SessionRuntimeModel()
     let notices = SessionNoticeStore()
@@ -335,7 +345,8 @@ final class V2SessionModel: Identifiable {
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository,
          echoWatchdogDelay: Duration = .seconds(30),
          echoHealAttempts: Int = 3) {
-        self.id = id; self.scope = scope; self.repository = repository
+        self.id = id; self.presentationKey = id
+        self.scope = scope; self.repository = repository
         self.echoWatchdogDelay = echoWatchdogDelay
         self.echoHealAttempts = max(1, echoHealAttempts)
         // The repository holds this model through its entries; the closures
@@ -357,6 +368,15 @@ final class V2SessionModel: Identifiable {
         composer.onTextBecameEmpty = { [weak self] in
             self?.draftRestoredFromPendingID = nil
         }
+    }
+
+    /// Renames the client-side key for a creation handoff. Only the repository's
+    /// `bindCreation` calls this, together with re-keying its entry map; the
+    /// model object (and therefore the page's view state) survives, and
+    /// `presentationKey` keeps the identity stable.
+    func rebind(to newID: V2SessionID) {
+        guard id != newID else { return }
+        id = newID
     }
 
     var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }

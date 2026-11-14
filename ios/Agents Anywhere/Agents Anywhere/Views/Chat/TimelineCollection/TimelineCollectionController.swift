@@ -2727,6 +2727,13 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
+    /// Keeps the bottom follow through UIKit layout corrections for a short
+    /// window after a send (working row → tool row swaps must not leave the
+    /// page short of the new bottom).
+    func beginSendFollowWindow() {
+        anchorDriver?.beginFollowWindow()
+    }
+
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
     func requestBottom(animated: Bool, forced: Bool = true) {

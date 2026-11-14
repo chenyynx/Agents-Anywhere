@@ -200,6 +200,12 @@ struct TimelineChatTimelineView: View {
                           added.contains(pending.id)
                               && (pending.delivery == .sending || pending.delivery == .accepted)
                       }) else { return }
+                // The new turn's rows (working row, then tool rows) land
+                // during the next few seconds; a UIKit layout correction in
+                // that window must keep the bottom follow (device
+                // 2026-11-15 02:00:53: a -30 pt correction left the page
+                // 76 pt short of the new bottom for 2 s).
+                bridge.controller?.beginSendFollowWindow()
                 if model.session.hasNewerItems {
                     bridge.noteComposerSend()
                 } else if model.isOpeningReady, !hasInteractions,

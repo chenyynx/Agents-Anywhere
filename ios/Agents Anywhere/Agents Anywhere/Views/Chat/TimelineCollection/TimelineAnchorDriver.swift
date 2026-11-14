@@ -80,6 +80,12 @@ final class TimelineAnchorDriver {
     /// same insert, not a new layout.
     private var lastContentTarget: CGFloat?
     private var lastContentTargetAt: CFTimeInterval = 0
+    /// Until this instant, a UIKit layout correction while following `.end`
+    /// re-places the follow instead of flipping to `.reading`. Set by a send:
+    /// the reader is waiting for the new turn's rows, and the working-row →
+    /// tool-row swap is exactly the correction that must not stop the page
+    /// short of the new bottom (device 2026-11-15 02:00:53).
+    private var followThroughUntil: CFTimeInterval = 0
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
@@ -501,6 +507,15 @@ final class TimelineAnchorDriver {
             // stayed at the new page's top).
             return
         }
+        if state.placement == .end, CACurrentMediaTime() < followThroughUntil {
+            // Inside the send window the reader is waiting for the new turn's
+            // rows; a UIKit correction (working row → tool row, estimated
+            // heights) must re-place the follow instead of flipping to
+            // `.reading` and waiting for an explicit return.
+            pendingContentMove = true
+            startMover()
+            return
+        }
         guard let anchor = currentAnchor() else { return }
         perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
@@ -512,6 +527,12 @@ final class TimelineAnchorDriver {
         if state.motion == .easing || state.motion == .flying {
             state.motion = .resting
         }
+    }
+
+    /// Opens the short post-send window in which layout corrections keep the
+    /// bottom follow instead of flipping to `.reading`.
+    func beginFollowWindow(seconds: TimeInterval = 5) {
+        followThroughUntil = CACurrentMediaTime() + seconds
     }
 
     func requestEnd(animated: Bool) {

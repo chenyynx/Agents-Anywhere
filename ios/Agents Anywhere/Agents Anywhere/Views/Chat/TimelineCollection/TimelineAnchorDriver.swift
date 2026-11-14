@@ -466,12 +466,23 @@ final class TimelineAnchorDriver {
             ])
         }
         lastObservedOffset = liveOffset
-        lastObservedContentHeight = inputs.contentHeight()
+        let contentHeight = inputs.contentHeight()
+        let contentHeightChanged = lastObservedContentHeight.map {
+            abs(contentHeight - $0) > 0.5
+        } ?? false
+        lastObservedContentHeight = contentHeight
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
             // the live position; the next tick continues from there.
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
+            return
+        }
+        if contentHeightChanged, state.placement == .end {
+            // The content grew/shrank under a following reader. This scroll
+            // is UIKit's correction, not a hand; `contentChanged` starts the
+            // follow. Flipping to `.reading` here lost the bottom follow
+            // right after a send (device 2026-11-14).
             return
         }
         if isHistoryPaging {
@@ -482,19 +493,6 @@ final class TimelineAnchorDriver {
             // apply's correction a no-op (device 2026-10-31 13:46: a 37→57
             // page prepended 49,859 pt above the anchor and the viewport
             // stayed at the new page's top).
-            return
-        }
-        if state.placement == .end {
-            // A following reader cannot leave the bottom without a hand:
-            // dragging/coasting flip the placement at their own events. So a
-            // handless scroll here is UIKit's layout correction from a
-            // content-height or inset change. Re-place the follow now instead
-            // of leaving placement and offset disagreeing — that disagreement
-            // let a later responseRevision return fly the page from the
-            // corrected offset back to the bottom (device 2026-11-15: a
-            // 402 pt jump + fly-back right after a send).
-            pendingContentMove = true
-            startMover()
             return
         }
         guard let anchor = currentAnchor() else { return }
@@ -636,19 +634,10 @@ final class TimelineAnchorDriver {
             // a stream flush. This must outrank the dead band below, where a
             // live stream keeps a sub-pixel gap while the motion stays alive.
             if contentMove, moverIsContent {
-                // A second height change inside the same insert (row insert
-                // then group remeasure, ~13 ms apart on device 2026-11-15)
-                // must keep the crisp 0.2 s content spring: retargeting it to
-                // the 0.4 s catch-up made the first tool row after a send read
-                // soft and arrive ~0.5 s late. Only a stream whose next chunk
-                // arrives later than this window earns the catch-up.
-                let continuingStream = CACurrentMediaTime() - moverStartedAt > 0.1
-                let wanted: TimelineSpringFollow.Spring =
-                    continuingStream ? .ease : .content
-                let changed = mover.spring != wanted
-                mover.retarget(spring: wanted, usesPace: false)
+                let changed = mover.spring != .ease
+                mover.retarget(spring: .ease, usesPace: false)
                 if changed {
-                    reportMover("retarget", spring: wanted, target: target,
+                    reportMover("retarget", spring: .ease, target: target,
                                 position: mover.position, contentMove: contentMove)
                 }
             } else if !contentMove {

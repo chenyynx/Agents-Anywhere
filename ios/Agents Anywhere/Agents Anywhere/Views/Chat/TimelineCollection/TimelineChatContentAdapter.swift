@@ -2940,7 +2940,14 @@ private struct TimelineCollectionTailRow: View {
                         QueuedMessageRow(item: item, model: model,
                                          onAttachment: onAttachment)
                             .id(item.id)
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            // In on the bottom edge, out by fading in place: a drained
+                                // queued bubble used to slide *down* toward the
+                                // composer while disappearing, which read as
+                                // "the bubble jumped under the input box"
+                                // (device 2026-11-14).
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .opacity))
                     }
                 }
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)

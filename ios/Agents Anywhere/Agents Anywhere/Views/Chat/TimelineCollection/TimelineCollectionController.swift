@@ -295,17 +295,26 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    /// Applies the page inset only once the view is in a window.
+    /// Whether the page inset has been installed once.
+    private var hasAppliedInsets = false
+    /// The page has finished appearing (fallback for devices whose scroll
+    /// view safe area stays zero, e.g. no home indicator).
+    private var hasAppeared = false
+
+    /// Applies the page inset only once the scroll view has its own safe area.
     ///
-    /// Before that the scroll view has no safe area of its own, so the
-    /// home-indicator portion cannot be subtracted yet and the driver lays the
-    /// page out 34 pt short. Correcting it after mounting moved the whole page
-    /// by ~113 pt right as the opening content appeared — the "page glides up
-    /// when a session opens" report (pp 2026-11-15). `applyInsets` is
-    /// idempotent, so the first mounted layout pass installs the one true
-    /// value and later passes are no-ops.
+    /// The window alone is not enough: UIKit installs the scroll view's safe
+    /// area a pass later, and until then the home-indicator portion cannot be
+    /// subtracted — the driver lays the page out 34 pt short and its later
+    /// correction glides the visible page by ~113 pt (the "page moves up when
+    /// a session opens" report, pp 2026-11-15; b1221 still applied 0→94 then
+    /// 94→60 on every open). `applyInsets` is idempotent, so the first
+    /// correctly-derivable pass installs the one true value and later passes
+    /// are no-ops.
     private func applySafeAreaInsetsIfMounted() {
         guard isViewLoaded, view.window != nil else { return }
+        guard hasAppliedInsets || collectionView?.safeAreaInsets != .zero || hasAppeared else { return }
+        hasAppliedInsets = true
         anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
     }
 
@@ -612,6 +621,10 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Bounded fallback: a device whose scroll view safe area stays zero
+        // must still get its one page inset.
+        hasAppeared = true
+        applySafeAreaInsetsIfMounted()
         guard !didMarkActivation else { return }
         didMarkActivation = true
         UserDefaults.standard.set(Date(), forKey: TimelineCollectionSwitch.lastActiveKey)
@@ -3398,10 +3411,12 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidChangeAdjustedContentInset(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        // UIKit can install its own safe area after the first inset write; the
-        // official formula subtracts it from the page proxy, so recompute here
-        // or the proxy is counted twice (new session, 2026-10-28). Our own
-        // writes land here too and are a no-op (the value already matches).
+        // This is the pass where UIKit installs the scroll view's own safe
+        // area: install the deferred page inset first, then let the driver
+        // recompute (it subtracts that safe area — counting it twice is the
+        // new-session 2026-10-28 bug). Our own writes land here too and are
+        // no-ops (the value already matches).
+        applySafeAreaInsetsIfMounted()
         anchorDriver?.containerInsetsChanged()
     }
 

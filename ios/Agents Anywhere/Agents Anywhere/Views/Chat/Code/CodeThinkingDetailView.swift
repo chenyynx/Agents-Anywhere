@@ -73,11 +73,6 @@ struct CodeThinkingDetailView: View {
             // stream; a settled row keeps the top (pp 2026-11-03).
             .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .initialOffset)
             .defaultScrollAnchor(startsAtBottom ? UnitPoint.bottom : nil, for: .sizeChanges)
-            .background {
-                CodePageTheme.pageBackgroundColor
-                    .resolved(for: colorScheme)
-                    .ignoresSafeArea()
-            }
             .navigationTitle(Text(String(localized: "thought_process")))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -85,6 +80,14 @@ struct CodeThinkingDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
+        // The sheet background belongs to the presentation, not to the
+        // content: on iOS 26 a detent sheet draws a content `.background`
+        // above its own chrome, and a text selection's re-layout reorders
+        // that — the corner radius vanished and the page rendered square
+        // (pp 2026-11-15, screenshot: 思考过程 with a selection menu).
+        .presentationBackground {
+            CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
+        }
     }
 }
 

@@ -473,12 +473,24 @@ final class V2SessionModel: Identifiable {
     /// relaunch (an older connector that never stamps the turn still shows it
     /// on this device). `anchor` is the row captured before the request left
     /// (`stopAnchor()`); without it the ack's own "last row" is used.
-    func recordInterruptedTurn(anchor: V2TimelineItem? = nil) {
+    @discardableResult
+    func recordInterruptedTurn(anchor: V2TimelineItem? = nil) -> Bool {
         guard let last = anchor ?? lastMainAgentItem(),
               !hasInterruptedMarker(for: last)
-        else { return }
+        else { return false }
         localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
                                                              turnID: last.turnId))
+        cachedInterruptedTurns = nil
+        repository?.draftDidChange(sessionID: id)
+        return true
+    }
+
+    /// Rolls back a tap-time marker when the stop request was refused.
+    func discardInterruptedTurn(anchor: V2TimelineItem) {
+        guard let index = localInterruptedTurns.firstIndex(where: {
+            $0.anchorItemID == anchor.id && $0.turnID == anchor.turnId
+        }) else { return }
+        localInterruptedTurns.remove(at: index)
         cachedInterruptedTurns = nil
         repository?.draftDidChange(sessionID: id)
     }

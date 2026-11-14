@@ -128,6 +128,15 @@ final class SessionChatModel {
     var isTranscriptStreaming: Bool {
         isTurnStreaming && !session.runtime.stopRequested
     }
+    /// A step still reporting `running` after the user stopped the turn did
+    /// not finish: draw its failure mark with the interrupted notice instead
+    /// of waiting for the connector's terminal row (device 2026-11-14: the
+    /// ⚠️ trailed the card by seconds). Keyed on the accepted stop, so the
+    /// mark appears the moment the notice does; the server's own status
+    /// replaces it as soon as it lands.
+    var treatsRunningStepsAsFailed: Bool {
+        session.runtime.predictedIdle || session.runtime.stopRequested
+    }
     /// The composer's view of the same window: inside an accepted interrupt's
     /// optimistic window the send key is already usable.
     var isComposerStreaming: Bool { isTurnStreaming }
@@ -817,21 +826,21 @@ final class SessionChatModel {
         // the user has already sent the next prompt, and the timeline's tail
         // would then belong to that prompt, not to the turn being stopped.
         let anchor = session.stopAnchor()
-        // Settle the transcript's working pose at the tap: the ack has to
-        // reach the connector and wait for the SDK to stop the turn, and until
-        // it landed the step row kept its live pose after the user stopped it
-        // (device 2026-11-14). Only the transcript reads this flag — the
-        // composer's send window still waits for the accepted ack.
+        // Settle the transcript at the tap: the ack has to reach the connector
+        // and wait for the SDK to stop the turn (seconds), and until it landed
+        // the step row kept its live pose and its card trailed the tap
+        // (device 2026-11-14). The notice and the running step's failure mark
+        // are the user's own decision made visible; the composer's send
+        // window still waits for the accepted ack. A refused stop rolls the
+        // notice back.
         session.runtime.beginStopRequest()
+        let marked = session.recordInterruptedTurn(anchor: anchor)
         let accepted = await perform {
             try await self.repository.interrupt(sessionId: self.session.id,
                                                 preserveBackground: true)
         }
         session.runtime.endStopRequest()
-        // The accepted stop is the client's proof that this turn ended by the
-        // user's request; freeze its anchor before any later turn can move
-        // the tail.
-        if accepted { session.recordInterruptedTurn(anchor: anchor) }
+        if !accepted, marked { session.discardInterruptedTurn(anchor: anchor) }
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

@@ -1253,6 +1253,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                     isLiveTail: isLiveTail,
                                                     allowsRunningPose: chatAllowsRunningPose
                                                         || chatRunningPoseGroupIDs.contains(stepGroup.id),
+                                                    treatsRunningAsFailed: model.treatsRunningStepsAsFailed,
                                                     showsInterruptedNotice:
                                                         chatInterruptedItemIDs.contains(
                                                             TimelineListItem.group(stepGroup.id).itemID),

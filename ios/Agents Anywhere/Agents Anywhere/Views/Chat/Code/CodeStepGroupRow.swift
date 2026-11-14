@@ -24,6 +24,13 @@ struct CodeStepGroupRowView: View {
     /// stop's optimistic window); late row snapshots must not keep the row
     /// spinning (pp 2026-11-14).
     var allowsRunningPose: Bool = true
+    /// Draw a step that still reports `running` with the failure mark.
+    ///
+    /// True once the user stopped the turn: the tool that was running did not
+    /// finish, and the connector's terminal row is a round trip plus settle
+    /// away (device 2026-11-14: the ⚠️ trailed the notice by seconds). Display
+    /// only — the server's own status replaces this as soon as it lands.
+    var treatsRunningAsFailed: Bool = false
     /// Draw the official interrupted-response notice under the row. The chat
     /// profile's stopped turn is anchored to this group when it produced no
     /// partial answer text (pp 2026-11-14).
@@ -98,7 +105,8 @@ struct CodeStepGroupRowView: View {
                 icon: summaryIcon,
                 iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
-                status: group.hasFailure ? .failed : .complete,
+                status: group.hasFailure || (treatsRunningAsFailed && group.isRunning)
+                    ? .failed : .complete,
                 failureExtent: nil,
                 hasDetails: true,
                 diffIndicator: nil,

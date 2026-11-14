@@ -164,4 +164,19 @@ enum TimelineTurnActions {
         }
         return actions
     }
+
+    /// Whether a pending delivery still opens the new turn for the footer gate.
+    ///
+    /// `confirmed` records outlive the session model until their echo row is
+    /// published (`SessionTimelinePresentation.synchronizePending`). Excluding
+    /// them from the turn-opening set made the previous turn's footer vanish
+    /// for that one refresh — the group lost its 30 pt action bar, the bottom
+    /// clamped -30, and the working-row follow started from the corrected
+    /// offset ("jump then scroll", pp 2026-11-15).
+    static func opensTurn(_ delivery: V2PendingMessage.Delivery) -> Bool {
+        switch delivery {
+        case .sending, .accepted, .confirmed: return true
+        case .uncertain, .rejected: return false
+        }
+    }
 }

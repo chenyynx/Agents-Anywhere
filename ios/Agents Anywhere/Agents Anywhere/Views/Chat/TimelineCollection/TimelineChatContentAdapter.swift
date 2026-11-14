@@ -2126,11 +2126,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // The one-footer-per-turn rule waits for the turn to close. The
         // runtime status alone flaps across tool steps, so the gate keys on
         // the turn's opening user message and the authoritative end count.
-        let submittingPendingID = model.timeline.pendingMessages.last { pending in
-            switch pending.delivery {
-            case .sending, .accepted: return true
-            case .confirmed, .uncertain, .rejected: return false
-            }
+        // A `confirmed` record is retained by the presentation until its echo
+        // row publishes; it is still the new turn in that gap. Dropping it
+        // here made the gate fall back to the previous user row, suppress the
+        // previous footer for one refresh, and start the send's bottom follow
+        // 30 pt low (pp 2026-11-15).
+        let submittingPendingID = model.timeline.pendingMessages.last {
+            TimelineTurnActions.opensTurn($0.delivery)
         }?.id
         let latestUserRowID = model.timeline.rows.last(where: {
             $0.value.type == .message && $0.value.role == .user

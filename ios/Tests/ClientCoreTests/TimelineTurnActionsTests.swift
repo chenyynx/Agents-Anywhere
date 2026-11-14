@@ -126,6 +126,28 @@ import Testing
     }
 }
 
+/// Which pending deliveries still open the new turn for the footer gate.
+///
+/// A `confirmed` record is retained by the presentation until its echo row
+/// publishes (`SessionTimelinePresentation.synchronizePending`). Excluding it
+/// from the turn-opening set made the previous turn's footer vanish for that
+/// one refresh: the group lost its 30 pt action bar, the bottom clamped -30,
+/// and the send's working-row follow started from the corrected offset —
+/// the "jump then scroll" report (pp 2026-11-15).
+@Suite @MainActor struct TurnOpeningDeliveryTests {
+    @Test func aConfirmedPendingStillOpensTheTurnUntilItsEcho() {
+        #expect(TimelineTurnActions.opensTurn(.sending))
+        #expect(TimelineTurnActions.opensTurn(.accepted))
+        #expect(TimelineTurnActions.opensTurn(.confirmed))
+    }
+
+    @Test func failedDeliveriesDoNotOpenTheTurn() {
+        let failure = V2ClientFailure(kind: .transient, message: "boom")
+        #expect(!TimelineTurnActions.opensTurn(.uncertain(failure)))
+        #expect(!TimelineTurnActions.opensTurn(.rejected(failure)))
+    }
+}
+
 @Suite("Turn footer gate")
 struct TurnFooterGateTests {
     @Test func aRestoredFinishedTurnStartsClosed() {

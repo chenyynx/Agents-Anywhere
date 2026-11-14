@@ -86,10 +86,7 @@ nonisolated enum TimelineAnchorEvent: Equatable {
     case arrived
 
     /// Measured content height changed (streaming, measurement, prepend).
-    /// `wasAtBottom` is the pre-change viewport's bottom verdict: a UIKit
-    /// layout correction can flip the placement to `.reading` before this
-    /// event lands, so a reader who was on the bottom adopts `.end` again.
-    case contentChanged(wasAtBottom: Bool)
+    case contentChanged
 
     /// The SwiftUI safe area changed (keyboard, composer bar, rotation).
     case safeAreaChanged
@@ -192,15 +189,7 @@ nonisolated enum TimelineAnchorReducer {
                 next.motion = .resting
             }
 
-        case .contentChanged(let wasAtBottom):
-            // A UIKit layout correction can arrive before this event while
-            // the content is already taller than the offset, flipping `.end`
-            // to `.reading` (keyboard up, pending row insert). The reader was
-            // on the bottom before the change, so adopt it back; a real drag
-            // or coast keeps ownership.
-            if wasAtBottom, next.motion != .dragging, next.motion != .coasting {
-                next.placement = .end
-            }
+        case .contentChanged:
             // The official target follows a growing `.end` automatically; a
             // reading anchor must not move.
             if next.placement == .end {

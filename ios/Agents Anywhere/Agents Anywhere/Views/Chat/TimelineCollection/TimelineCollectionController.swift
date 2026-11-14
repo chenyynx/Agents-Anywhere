@@ -3291,11 +3291,6 @@ extension TimelineCollectionController: TimelineListLayoutHost {
     func layoutDidSettlePull() { settlePulls() }
 
     func layoutDidChangeContentHeight(_ height: CGFloat) {
-        // Pre-change bottom verdict. A UIKit layout correction can publish a
-        // taller content height with the old offset before this callback, so
-        // the driver's own height-delta guard is the primary protection; this
-        // value still covers a placement flip from another edge.
-        let wasAtBottom = lastPublishedViewport.measuredAtBottom
         publishViewport()
         if !didStartAnchorDriver {
             startAnchorDriverIfNeeded()
@@ -3303,7 +3298,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
             if historyPaging || historyAnchorSettling {
                 reanchorHistoryPageIfNeeded()
             }
-            anchorDriver?.contentChanged(wasAtBottom: wasAtBottom)
+            anchorDriver?.contentChanged()
             if historyAnchorSettling, !historyPaging {
                 anchorDriver?.enforceReadingPlacement()
             }

@@ -397,12 +397,7 @@ final class TimelineAnchorDriver {
         startMover()
     }
 
-    /// - Parameter wasAtBottom: the viewport's bottom verdict *before* this
-    ///   content change. A UIKit layout correction can flip the placement to
-    ///   `.reading` before the callback runs while the content is already
-    ///   taller than the offset (keyboard up, pending row insert); a reader
-    ///   who was on the bottom must keep following.
-    func contentChanged(wasAtBottom: Bool = false) {
+    func contentChanged() {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
             "contentChanged", spring: "-",
@@ -419,7 +414,7 @@ final class TimelineAnchorDriver {
         // collection-view insert feel); only an explicit scroll request uses
         // the 0.4 s ease/fly.
         pendingContentMove = true
-        perform(.contentChanged(wasAtBottom: wasAtBottom))
+        perform(.contentChanged)
     }
 
     func readerBeganDragging() {
@@ -466,23 +461,12 @@ final class TimelineAnchorDriver {
             ])
         }
         lastObservedOffset = liveOffset
-        let contentHeight = inputs.contentHeight()
-        let contentHeightChanged = lastObservedContentHeight.map {
-            abs(contentHeight - $0) > 0.5
-        } ?? false
-        lastObservedContentHeight = contentHeight
+        lastObservedContentHeight = inputs.contentHeight()
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
             // the live position; the next tick continues from there.
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
-            return
-        }
-        if contentHeightChanged, state.placement == .end {
-            // The content grew/shrank under a following reader. This scroll
-            // is UIKit's correction, not a hand; `contentChanged` starts the
-            // follow. Flipping to `.reading` here lost the bottom follow
-            // right after a send (device 2026-11-14).
             return
         }
         if isHistoryPaging {

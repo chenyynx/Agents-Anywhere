@@ -140,8 +140,27 @@ nonisolated enum TimelineAnchorReducer {
             }
             action = .halt
 
-        case .coastingEnded(let atEnd, let id, let offsetIntoRow),
-             .scrolledWithoutAHand(let atEnd, let id, let offsetIntoRow):
+        case .coastingEnded(let atEnd, let id, let offsetIntoRow):
+            next.motion = .resting
+            if atEnd {
+                next.placement = .end
+            } else if let id {
+                next.placement = .reading(id: id, offsetIntoRow: offsetIntoRow)
+            }
+
+        case .scrolledWithoutAHand(let atEnd, let id, let offsetIntoRow):
+            // A reader resting on the bottom cannot leave it without a hand:
+            // the drag/coast events already flip the placement themselves, and
+            // the driver only forwards a handless scroll while `motion` is
+            // `.resting`. So a handless scroll that lands short of the bottom
+            // while following `.end` is UIKit's layout correction from a
+            // content-height change (interrupt card insert, pending row).
+            // Adopting `.reading` here and flipping back in `contentChanged`
+            // moved the page twice (device 2026-11-14 23:08:07.878/.914).
+            if !atEnd, next.placement == .end,
+               next.motion != .dragging, next.motion != .coasting {
+                break
+            }
             next.motion = .resting
             if atEnd {
                 next.placement = .end

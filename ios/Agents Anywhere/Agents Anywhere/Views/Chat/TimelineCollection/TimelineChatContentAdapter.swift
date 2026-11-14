@@ -1336,6 +1336,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,
+                                                     onAttachment: onAttachment,
                                                      showsStatusLine: tailStatusLineVisible))
         }
     }
@@ -2890,6 +2891,8 @@ private struct TimelineCollectionLatestPromptRow: View {
 /// in C5, where the controller computes scroll-edge visibility geometrically.
 private struct TimelineCollectionTailRow: View {
     let model: SessionChatModel
+    /// Opens a queued attachment through the same viewer as a sent bubble.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     /// False while a message row already shows the official working status
     /// line: one turn gets one mark, never two (device report 2026-10-23).
     let showsStatusLine: Bool
@@ -2906,7 +2909,8 @@ private struct TimelineCollectionTailRow: View {
             if !model.session.sendQueue.items.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(model.session.sendQueue.items) { item in
-                        QueuedMessageRow(item: item, model: model)
+                        QueuedMessageRow(item: item, model: model,
+                                         onAttachment: onAttachment)
                             .id(item.id)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }

@@ -393,6 +393,32 @@ import Testing
         #expect(http.count("messages") == 1)
     }
 
+    @Test func bindingAQueuedUploadKeepsItsLocalPreviewReachable() throws {
+        let http = TestHTTPTransport()
+        let (repo, model) = makeSession(http)
+        defer { repo.reset() }
+        try applyLive(model, status: .running, sendAvailable: false)
+        let preview = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        model.composer.attachments = [ChatAttachment(id: "local-1", name: "photo.jpg",
+            data: Data([1, 2, 3]), mediaType: "image/jpeg", previewData: preview)]
+        let item = try #require(model.enqueueDraft())
+
+        let before = model.attachmentPreviews.resolve(item.attachments.map(\.content),
+                                                      clientID: item.id)
+        #expect(before.first?.previewData == preview)
+
+        // Binding the upload swaps `local:<uuid>` for the server fileId, which
+        // changes the content's cacheKey. The queued row resolves by that key,
+        // so the preview must be re-remembered or the thumbnail disappears.
+        let uploaded: V2AttachmentUploadResponse = try fixture("upload")
+        let reference = try #require(uploaded.attachments.first)
+        model.bindQueueUpload(itemID: item.id, localID: "local-1", file: reference)
+
+        let after = model.attachmentPreviews.resolve(item.attachments.map(\.content),
+                                                     clientID: item.id)
+        #expect(after.first?.previewData == preview)
+    }
+
     // MARK: - Chat layer
 
     @Test func chatEnqueueCommitsTheComposerDraftAndKeepsTheQueueKeyLive() async throws {

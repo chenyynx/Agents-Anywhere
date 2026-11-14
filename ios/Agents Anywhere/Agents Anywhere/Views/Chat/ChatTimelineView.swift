@@ -695,7 +695,8 @@ private struct ChatTimelineContent: View, Equatable {
                 if !model.session.sendQueue.items.isEmpty {
                     VStack(spacing: 6) {
                         ForEach(model.session.sendQueue.items) { item in
-                            QueuedMessageRow(item: item, model: model)
+                            QueuedMessageRow(item: item, model: model,
+                                             onAttachment: onAttachment)
                                 .id(item.id)
                                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }

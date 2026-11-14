@@ -409,7 +409,13 @@ final class V2SessionModel: Identifiable {
     /// Binds one eager upload to its queued message. Kept on the session so the
     /// chat layer never reaches into the message's storage directly.
     func bindQueueUpload(itemID: String, localID: String, file: V2AttachmentReference) {
-        sendQueue.items.first { $0.id == itemID }?.bindUpload(file, localID: localID)
+        guard let item = sendQueue.items.first(where: { $0.id == itemID }) else { return }
+        item.bindUpload(file, localID: localID)
+        // Binding replaces the content's `local:<uuid>` fileId with the server
+        // id, which changes its cacheKey. Re-key the local preview under the
+        // new key, as the pending upload path does, or the queued thumbnail
+        // vanishes the moment the bytes land.
+        attachmentPreviews.remember(item.attachments, clientID: item.id)
     }
 
     func localWorkDidChange() { repository?.localWorkDidChange(sessionID: id) }

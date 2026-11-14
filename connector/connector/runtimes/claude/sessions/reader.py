@@ -735,7 +735,12 @@ def _history_items_from_messages(
                 usage_model=message_model(message) if role == "assistant" else None,
             )
         )
-    items.extend(projector.missing_history_tool_result_items(session=session))
+    items.extend(
+        projector.missing_history_tool_result_items(
+            session=session,
+            interrupted_turns=stopped_turns,
+        )
+    )
     # The folds come last so the dedupe merge below never lets the synthetic
     # "no tool result was recorded" row — minted for a dispatch whose receipt
     # has not been written yet — clobber the terminal overlay with its
@@ -810,9 +815,34 @@ def _mark_interrupted_history_turns(
         return items
     marked = list(items)
     for indices in indices_by_turn.values():
+        # A stop discards the CLI's aborted `tool_result` frame, so the
+        # transcript can hold a tool_use with no result at all. Projecting that
+        # as `running` would republish the live `failed` row as active on every
+        # resync — the interrupted step row came back to life minutes later
+        # (device 2026-11-14). The turn is known stopped; nothing in it is
+        # running, so the missing result is terminal here too.
+        for index in indices:
+            if marked[index].type == "tool" and marked[index].status == "running":
+                marked[index] = _failed_tool_item(marked[index])
         anchor = _interrupted_anchor_index(items, indices)
         marked[anchor] = mark_turn_interrupted(marked[anchor])
     return tuple(marked)
+
+
+def _failed_tool_item(item: RuntimeTimelineItem) -> RuntimeTimelineItem:
+    """Close a tool row the stopped turn never got a result for."""
+
+    return replace(
+        item,
+        status="failed",
+        revision=item.revision + 1,
+        content_hash=timeline_content_hash(
+            item_type=item.type,  # type: ignore[arg-type]
+            status="failed",  # type: ignore[arg-type]
+            role=item.role,  # type: ignore[arg-type]
+            content=item.content,
+        ),
+    )
 
 
 def _interrupted_anchor_index(

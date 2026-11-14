@@ -184,6 +184,30 @@ def test_history_projection_marks_the_stopped_turns_last_main_row() -> None:
     assert anchor.status == "failed"
 
 
+def test_history_projection_closes_a_tool_without_a_result() -> None:
+    """A stop discards the aborted tool_result; the row must not stay running.
+
+    Device 2026-11-14: after an interrupt, a later resync republished the
+    failed tool row as `running` (the transcript holds the tool_use with no
+    result), so the settled step row came back to life while a queued message
+    was being sent.
+    """
+
+    session = _session()
+    messages = (
+        _user(PROMPT_UUID, "run it"),
+        _assistant_tool("assistant-tool"),
+        _interrupt_marker(INTERRUPT_TOOL_TEXT),
+    )
+    items = _history_items_from_messages(session, messages)
+
+    flagged = _flagged(items)
+    assert len(flagged) == 1, [item.id for item in flagged]
+    assert flagged[0].id == stable_tool_item_id(session, TOOL_USE_ID)
+    assert flagged[0].status == "failed"
+    assert not any(item.status == "running" for item in items)
+
+
 def test_history_projection_anchors_a_text_plus_tool_turn_on_the_tool_row() -> None:
     """The card must follow the step group, not sit between text and tool.
 

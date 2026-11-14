@@ -554,7 +554,18 @@ class ClaudeMessageProjector:
     def missing_history_tool_result_items(
         self,
         session: ClaudeSession,
+        interrupted_turns: set[str] | None = None,
     ) -> tuple[RuntimeTimelineItem, ...]:
+        """Mint the terminal row for calls whose result never reached history.
+
+        A user stop discards the CLI's aborted `tool_result` frame, so a
+        stopped turn's call has no result to read. Minting it as a success
+        republished the live ``failed`` row as ``done`` on every resync — the
+        interrupted row's warning mark vanished and the row looked alive again
+        (device 2026-11-14). A stopped turn's missing result *is* the stop.
+        """
+
+        stopped = interrupted_turns or set()
         items: list[RuntimeTimelineItem] = []
         for pending in tuple(self._tool_calls.values()):
             items.append(
@@ -566,6 +577,7 @@ class ClaudeMessageProjector:
                         tool_use_id=pending.block.tool_use_id,
                         tool_result="No tool result was recorded in Claude history.",
                         is_synthetic=True,
+                        is_error=pending.turn_id in stopped,
                     ),
                 )
             )

@@ -510,12 +510,12 @@ final class TimelineAnchorDriver {
             return
         }
         if state.placement == .end, stickyFollow {
-            // A send pins the page to the bottom; a UIKit correction (working
-            // row → tool row, estimated heights) must re-place the follow
-            // instead of flipping to `.reading` and waiting for an explicit
-            // return.
-            pendingContentMove = true
-            startMover()
+            // A send pins the page to the bottom: a handless layout correction
+            // (working row → tool row, estimated heights) must not flip the
+            // placement to `.reading`. Do not start a motion here —
+            // `contentChanged` owns the follow, and starting one per
+            // correction read as several separate steps instead of one
+            // natural growth (pp 2026-11-15).
             return
         }
         guard let anchor = currentAnchor() else { return }

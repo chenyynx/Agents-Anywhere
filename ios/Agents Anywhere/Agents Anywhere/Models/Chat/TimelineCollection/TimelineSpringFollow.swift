@@ -16,13 +16,10 @@ nonisolated enum TimelineSpringFollow {
         static let ease = Spring(duration: 0.4, bounce: 0)
         static let fly = Spring(duration: 0.36, bounce: 0.15)
         /// Content that grows under a page resting at the bottom. The official
-        /// surface has one follow spring (`ease`, 0.4 s) and tracks a moving
-        /// target with it frame by frame; AA's shorter 0.2 s variant started
-        /// and stopped per height change and read as separate steps beside the
-        /// official continuous curve (pp 2026-11-15). Same values as `ease`,
-        /// kept as a named case so the diagnostics trail still says which
-        /// trigger started the motion.
-        static let content = Spring(duration: 0.4, bounce: 0)
+        /// surface moves it like a collection-view insert (~0.25 s), not with
+        /// the 0.4 s catch-up ease and not as a hard jump: pp 2026-10-28 found
+        /// the 0.4 s chase soft and the instant placement too abrupt.
+        static let content = Spring(duration: 0.2, bounce: 0)
 
         var omega: Double { 2 * Double.pi / duration }
         var zeta: Double { 1 - bounce }

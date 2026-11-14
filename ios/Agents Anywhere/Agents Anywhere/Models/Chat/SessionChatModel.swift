@@ -822,25 +822,20 @@ final class SessionChatModel {
     /// way to be stopped.
     func interrupt() async {
         guard !isWorking else { return }
-        // Freeze the anchor before the request leaves: the ack can land after
-        // the user has already sent the next prompt, and the timeline's tail
-        // would then belong to that prompt, not to the turn being stopped.
-        let anchor = session.stopAnchor()
-        // Settle the transcript at the tap: the ack has to reach the connector
-        // and wait for the SDK to stop the turn (seconds), and until it landed
-        // the step row kept its live pose and its card trailed the tap
-        // (device 2026-11-14). The notice and the running step's failure mark
-        // are the user's own decision made visible; the composer's send
-        // window still waits for the accepted ack. A refused stop rolls the
-        // notice back.
+        // The working pose and the running step's failure mark settle at the
+        // tap — both are the user's own decision made visible. The notice is
+        // deliberately *not* drawn here: its anchor is the stopped turn's last
+        // row, and that row is still being written while the turn unwinds, so
+        // an early card moved down when the final row landed (device
+        // 2026-11-14). It appears once, from the connector's durable stamp, at
+        // its final place. Only the composer's send window waits for the
+        // accepted ack.
         session.runtime.beginStopRequest()
-        let marked = session.recordInterruptedTurn(anchor: anchor)
-        let accepted = await perform {
+        _ = await perform {
             try await self.repository.interrupt(sessionId: self.session.id,
                                                 preserveBackground: true)
         }
         session.runtime.endStopRequest()
-        if !accepted, marked { session.discardInterruptedTurn(anchor: anchor) }
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

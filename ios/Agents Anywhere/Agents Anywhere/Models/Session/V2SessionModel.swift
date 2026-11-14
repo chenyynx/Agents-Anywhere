@@ -474,72 +474,6 @@ final class V2SessionModel: Identifiable {
         return merged
     }
 
-    /// The row a stop must freeze, captured when the stop is requested.
-    ///
-    /// The ack can land after the user has already sent the next prompt, and
-    /// "last row now" would then name that prompt instead of the stopped turn
-    /// (device 2026-11-14: a stop, then a message three seconds later, and
-    /// the notice appeared under the message).
-    func stopAnchor() -> V2TimelineItem? {
-        lastMainAgentItem()
-    }
-
-    /// Freezes the just-stopped turn on its last main-agent row. Called on the
-    /// accepted interrupt; the archive write makes the notice survive a
-    /// relaunch (an older connector that never stamps the turn still shows it
-    /// on this device). `anchor` is the row captured before the request left
-    /// (`stopAnchor()`); without it the ack's own "last row" is used.
-    @discardableResult
-    func recordInterruptedTurn(anchor: V2TimelineItem? = nil) -> Bool {
-        guard let last = anchor ?? lastMainAgentItem(),
-              !hasInterruptedMarker(for: last)
-        else { return false }
-        localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
-                                                             turnID: last.turnId))
-        cachedInterruptedTurns = nil
-        repository?.draftDidChange(sessionID: id)
-        return true
-    }
-
-    /// Rolls back a tap-time marker when the stop request was refused.
-    func discardInterruptedTurn(anchor: V2TimelineItem?) {
-        guard let anchor,
-              let index = localInterruptedTurns.firstIndex(where: {
-                  $0.anchorItemID == anchor.id && $0.turnID == anchor.turnId
-              })
-        else { return }
-        localInterruptedTurns.remove(at: index)
-        cachedInterruptedTurns = nil
-        repository?.draftDidChange(sessionID: id)
-    }
-
-    /// Tripwire for "a stopped turn's tool row moved after the stop".
-    ///
-    /// The visible flash was one symptom of this data path; a late `running`
-    /// write, a status bouncing back, or a row arriving after the card all
-    /// land here. Diagnostics only (the reader keeps that file); every status
-    /// change is recorded with the gates that decide the drawn pose, so a
-    /// recurrence can be told from normal convergence.
-    private func recordPostStopToolChange(
-        _ item: V2TimelineItem,
-        from previous: V2TimelineItemStatus?
-    ) {
-        ClientDiagnosticsLog.shared.record(
-            kind: "timeline.tool.after_stop",
-            sessionID: id,
-            detail: [
-                "item": item.id,
-                "from": previous?.rawValue ?? "none",
-                "to": item.status.rawValue,
-                "revival": item.status == .running ? "1" : "0",
-                "revision": String(item.revision),
-                "updatedSeq": String(item.updatedSeq),
-                "fresh": runtime.isFresh ? "1" : "0",
-                "stopRequested": runtime.stopRequested ? "1" : "0",
-                "predictedIdle": runtime.predictedIdle ? "1" : "0",
-            ])
-    }
-
     /// Cold-open recovery: the runtime still names the interrupt as the reason
     /// it is idle, so the newest turn can be recovered even though the live
     /// ack happened on a previous launch.
@@ -554,7 +488,9 @@ final class V2SessionModel: Identifiable {
         guard let marker = InterruptedTurnMarkers.authoritativeAnchor(
             timeline: timeline.map(\.value),
             existing: interruptedTurns,
-            isIdleInterrupt: runtime.state?.status == .idle
+            isIdleInterrupt: !runtime.stopRequested
+                && !runtime.predictedIdle
+                && runtime.state?.status == .idle
                 && runtime.state?.metadata["source"]?.stringValue
                     == "claude.session.interrupt"
         ) else { return }

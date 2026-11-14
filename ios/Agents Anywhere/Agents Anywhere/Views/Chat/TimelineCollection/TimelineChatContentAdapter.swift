@@ -1958,7 +1958,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // every still-`running` step snapshot is stale. Only the group of
             // the actively streaming turn may animate; keep drawing from row
             // status only while live facts are not fresh (cold load).
+            // A stale projection is only a reason to trust row status when
+            // nothing better is known. A stop tap or its ack is better: the
+            // post-stop stale window revived the old step row's working pose
+            // (diagnostics 2026-11-14 19:22:41: allowsPose=1 fresh=0
+            // stopRequested=1), and that row's live/settled height difference
+            // also moved the bottom — the flash and the jump share this gate.
             chatAllowsRunningPose = !model.session.runtime.isFresh
+                && !model.session.runtime.stopRequested
+                && !model.session.runtime.predictedIdle
             chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
             // While the turn streams, a failed tool in the group is not
             // residue — the agent moves on and the row must keep the live

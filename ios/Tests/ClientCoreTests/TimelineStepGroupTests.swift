@@ -35,13 +35,15 @@ private func toolItem(_ id: String, order: Int, name: String,
                       input: [String: Any] = [:],
                       message: String = "msg-1",
                       turn: String? = "turn-1",
-                      status: String = "done") throws -> V2TimelineItem {
+                      status: String = "done",
+                      interrupted: Bool = false) throws -> V2TimelineItem {
     var source: [String: Any] = ["itemId": id, "nativeMessageId": message,
                                  "blockIndex": order]
     if let turn { source["turnId"] = turn }
+    var content: [String: Any] = ["kind": "tool", "toolName": name, "input": input]
+    if interrupted { content["turnInterrupted"] = true }
     return try stepItem(id: id, order: order, type: "tool", status: status,
-                        content: ["kind": "tool", "toolName": name, "input": input],
-                        source: source)
+                        content: content, source: source)
 }
 
 private func bodyItem(_ id: String, order: Int, text: String,
@@ -155,6 +157,35 @@ struct TimelineStepGroupingTests {
         #expect(group.isRunning)
         #expect(group.liveStep?.id == "t1")
     }
+
+    @Test func anInterruptedRowMarksTheWholeGroupAsResidue() throws {
+        let items = [
+            try thinkingItem("r1", order: 1),
+            try toolItem("t1", order: 2, name: "Bash", status: "failed",
+                         interrupted: true),
+        ]
+        let units = TimelineChatGrouping.units(items: items, profile: .generic,
+                                               interactionTargets: [])
+        guard case let .stepGroup(group, _) = units[0] else {
+            Issue.record("expected a step group")
+            return
+        }
+        #expect(group.hasInterruptedStep)
+    }
+
+    @Test func aPlainFailureDoesNotMarkTheGroupAsInterrupted() throws {
+        let items = [
+            try thinkingItem("r1", order: 1),
+            try toolItem("t1", order: 2, name: "Bash", status: "failed"),
+        ]
+        let units = TimelineChatGrouping.units(items: items, profile: .generic,
+                                               interactionTargets: [])
+        guard case let .stepGroup(group, _) = units[0] else {
+            Issue.record("expected a step group")
+            return
+        }
+        #expect(!group.hasInterruptedStep)
+    }
 }
 
 @Suite("Chat step-group summary")
@@ -234,6 +265,16 @@ struct TimelineStepGroupLiveMarkTests {
         ])
         #expect(failed.canCarryLiveMark(turnIsRunning: true))
         #expect(!failed.canCarryLiveMark(turnIsRunning: false))
+    }
+
+    @Test func interruptedResidueCannotCarryTheMarkWhileANewTurnRuns() {
+        // Device 2026-11-14: a queued send started a new turn while the
+        // previous (interrupted) group was still the last unit; the durable
+        // marker must keep it settled even though the new turn is streaming.
+        var residue = group([.thinking(id: "r", text: "think", status: .done)])
+        residue.hasInterruptedStep = true
+        #expect(!residue.canCarryLiveMark(turnIsRunning: true))
+        #expect(!residue.canCarryLiveMark(turnIsRunning: false))
     }
 
     @Test func aFreshIdleSuppressesTheStaleRunningPose() {

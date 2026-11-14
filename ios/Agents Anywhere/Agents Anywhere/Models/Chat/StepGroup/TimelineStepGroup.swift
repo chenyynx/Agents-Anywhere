@@ -85,6 +85,16 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// cost of a tool row. Same values, computed once at apply time.
     var summary: TimelineStepSummary = TimelineStepSummary()
 
+    /// True when any row of this group carries the connector's durable
+    /// `content.turnInterrupted` marker.
+    ///
+    /// Such a group belongs to a stopped turn and is residue even if a *new*
+    /// turn is already streaming: the adapter can still name it as the live
+    /// tail in the window between the new turn's start and its first own row
+    /// (queued-send handoff, device 2026-11-14). A plain mid-turn tool failure
+    /// has no marker, so it keeps the live pose while the turn runs.
+    var hasInterruptedStep = false
+
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
     /// Whether the chat profile's live mark may seat on this group while a turn
@@ -121,7 +131,13 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// running, yet the turn is over and an interrupted group must not regain
     /// the mark (pp 2026-11-14).
     func canCarryLiveMark(turnIsRunning: Bool) -> Bool {
-        turnIsRunning || canCarryLiveMark
+        // An interrupted group is residue, never the live turn. Without this
+        // guard a new turn's stream start re-seats the mark on the previous
+        // (stopped) group until the new turn's own first row arrives — the
+        // queued-send flash (device 2026-11-14). The mid-turn failure case
+        // carries no `turnInterrupted` marker, so it still falls through.
+        guard !hasInterruptedStep else { return false }
+        return turnIsRunning || canCarryLiveMark
     }
 
     /// The settled row's failure icon: only a genuinely failed step draws it
@@ -288,9 +304,12 @@ nonisolated enum TimelineChatGrouping {
             let steps = stepItems.map { step(for: $0, profile: profile) }
             let firstID = stepItems.first.map(spanID) ?? steps.first?.id ?? "steps"
             units.append(.stepGroup(
-                TimelineStepGroup(id: "steps:\(firstID)", steps: steps,
-                                  summary: TimelineStepSummarizer.summary(
-                                    steps: steps, cwd: cwd)),
+                TimelineStepGroup(
+                    id: "steps:\(firstID)", steps: steps,
+                    summary: TimelineStepSummarizer.summary(steps: steps, cwd: cwd),
+                    hasInterruptedStep: stepItems.contains {
+                        $0.raw["content"]?["turnInterrupted"]?.boolValue == true
+                    }),
                 rowIDs: stepItems.map(\.id)))
             stepItems.removeAll()
         }

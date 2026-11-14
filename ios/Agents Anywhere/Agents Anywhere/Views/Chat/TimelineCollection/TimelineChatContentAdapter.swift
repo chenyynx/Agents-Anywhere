@@ -1861,6 +1861,28 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         } else if lastHasWorkingStatus, !workingStatusIsExiting {
             beginWorkingStatusExit()
         }
+        if hasWorkingStatus != lastHasWorkingStatus {
+            // Which gate decided the standalone working row: this trail is the
+            // only record of the "half second with no working row after a
+            // send" report (device 2026-11-14).
+            let submitting = model.session.pendingMessages.contains {
+                $0.delivery == .sending || $0.delivery == .accepted
+            }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.working.row",
+                sessionID: model.session.id,
+                detail: [
+                    "has": hasWorkingStatus ? "1" : "0",
+                    "submitting": submitting ? "1" : "0",
+                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                    "queue": String(model.session.sendQueue.items.count),
+                    "liveSteps": chatLiveTurnHasSteps ? "1" : "0",
+                    "running": model.isRunning ? "1" : "0",
+                    "fresh": model.session.runtime.isFresh ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
+        }
         lastHasWorkingStatus = hasWorkingStatus
         let showsWorkingStatus = hasWorkingStatus
             || (renderMode != .chat && workingStatusIsExiting)

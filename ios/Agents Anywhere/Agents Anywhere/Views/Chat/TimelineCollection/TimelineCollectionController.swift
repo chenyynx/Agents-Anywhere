@@ -367,6 +367,16 @@ final class TimelineCollectionController: UIViewController {
                     sessionID: self.diagnosticSessionID,
                     detail: ["from": from, "to": to, "event": event],
                     dedupe: false)
+            },
+            onMoverEvent: { [weak self] action, detail in
+                guard let self else { return }
+                var merged = detail
+                merged["action"] = action
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.mover",
+                    sessionID: self.diagnosticSessionID,
+                    detail: merged,
+                    dedupe: false)
             }))
         anchorDriver?.setSuspended(navigationSuspended)
         anchorDriver?.updateSafeAreaInsets(safeAreaInsets)

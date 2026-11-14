@@ -27,6 +27,11 @@ final class TimelineAnchorDriver {
         /// the previous placement, the new placement and the event that
         /// caused it.
         var onPlacementChanged: ((String, String, String) -> Void)?
+        /// Mover transitions for the client diagnostics trail: `start`,
+        /// `retarget` (only when the spring actually changes) and `arrived`.
+        /// The detail carries the spring, target/position/delta and whether
+        /// content growth or an explicit request started the motion.
+        var onMoverEvent: ((String, [String: String]) -> Void)?
     }
 
     private(set) weak var scrollView: UICollectionView?
@@ -594,11 +599,21 @@ final class TimelineAnchorDriver {
             // a stream flush. This must outrank the dead band below, where a
             // live stream keeps a sub-pixel gap while the motion stays alive.
             if contentMove, moverIsContent {
+                let changed = mover.spring != .ease
                 mover.retarget(spring: .ease, usesPace: false)
+                if changed {
+                    reportMover("retarget", spring: .ease, target: target,
+                                position: mover.position, contentMove: contentMove)
+                }
             } else if !contentMove {
+                let changed = mover.spring != spring
                 mover.retarget(spring: spring)
                 if state.motion == .easing, spring == .fly {
                     state.motion = .flying
+                }
+                if changed {
+                    reportMover("retarget", spring: spring, target: target,
+                                position: mover.position, contentMove: contentMove)
                 }
             }
 #if AA_TIMELINE_PROBE
@@ -633,6 +648,8 @@ final class TimelineAnchorDriver {
         mover.start(at: view.contentOffset.y, spring: spring, usesPace: !contentMove)
         moverPlacement = state.placement
         moverIsContent = contentMove
+        reportMover("start", spring: spring, target: target,
+                    position: view.contentOffset.y, contentMove: contentMove)
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
             "start", spring: spring == .fly ? "fly" : "ease",
@@ -644,6 +661,26 @@ final class TimelineAnchorDriver {
 #endif
         state.motion = spring == .fly ? .flying : .easing
         startLink()
+    }
+
+    private func springLabel(_ spring: TimelineSpringFollow.Spring) -> String {
+        if spring == .content { return "content" }
+        if spring == .fly { return "fly" }
+        return "ease"
+    }
+
+    private func reportMover(_ action: String,
+                             spring: TimelineSpringFollow.Spring,
+                             target: CGFloat,
+                             position: CGFloat,
+                             contentMove: Bool) {
+        inputs.onMoverEvent?(action, [
+            "spring": springLabel(spring),
+            "target": String(format: "%.1f", target),
+            "position": String(format: "%.1f", position),
+            "delta": String(format: "%.1f", target - position),
+            "trigger": contentMove ? "content" : "explicit",
+        ])
     }
 
     private func startLink() {
@@ -701,6 +738,11 @@ final class TimelineAnchorDriver {
         // the emergency slack (see `writeOffset`).
         writeOffset(step.position, allowSlack: false)
         if step.arrived {
+            inputs.onMoverEvent?("arrived", [
+                "spring": springLabel(mover.spring),
+                "position": String(format: "%.1f", step.position),
+                "target": String(format: "%.1f", target),
+            ])
             stopMover()
             state.motion = .resting
             perform(.arrived)

@@ -226,6 +226,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var rowToItem: [String: TimelineListItem] = [:]
     private var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
     private var turnActions: [String: TimelineTurnAction] = [:]
+    /// Stable open/closed boundary for the one-footer-per-turn rule; the
+    /// runtime status alone flaps across tool steps (see `TurnFooterGate`).
+    private var turnFooterGate = TurnFooterGate()
     private var signaturesByItem: [TimelineListItem: TimelineContentSignature] = [:]
     private var lastEntries: [TimelineContentEntry] = []
     private var typography: TimelineTypographySnapshot
@@ -2097,11 +2100,39 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             guard let target = notice.timelineTargetID else { continue }
             inlineNoticesByRow[target, default: []].append(notice)
         }
+        // The one-footer-per-turn rule waits for the turn to close. The
+        // runtime status alone flaps across tool steps, so the gate keys on
+        // the turn's opening user message and the authoritative end count.
+        let submittingPendingID = model.timeline.pendingMessages.last { pending in
+            switch pending.delivery {
+            case .sending, .accepted: return true
+            case .confirmed, .uncertain, .rejected: return false
+            }
+        }?.id
+        let latestUserRowID = model.timeline.rows.last(where: {
+            $0.value.type == .message && $0.value.role == .user
+        })?.id
+        // A pending bubble whose echo row is already in the timeline is no
+        // longer opening a new turn; it must not force the previous turn's
+        // commit or the new turn's footer.
+        let submittingPendingHasEcho = submittingPendingID.map { id in
+            model.timeline.rows.contains { row in
+                row.value.role == .user
+                    && row.value.source["clientMessageId"]?.stringValue == id
+            }
+        } ?? false
+        let latestTurnOpen = turnFooterGate.update(
+            userKey: submittingPendingID ?? latestUserRowID,
+            runtimeIsRunning: model.isRunning,
+            authoritativeTurnEnds: model.session.runtime.authoritativeTurnEnds)
         let turnActions = TimelineTurnActions.build(
             groups: groups,
-            suppressLatest: model.isRunning || model.session.hasNewerItems,
+            suppressLatest: latestTurnOpen || model.session.hasNewerItems,
+            // Only an outgoing bubble that has not been echoed starts a new
+            // turn for the previous footer. A confirmed record held by the
+            // presentation until its echo row publishes is not a new turn.
             hasPendingUserMessage: !model.session.hasNewerItems
-                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty),
+                && submittingPendingID != nil && !submittingPendingHasEcho,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact

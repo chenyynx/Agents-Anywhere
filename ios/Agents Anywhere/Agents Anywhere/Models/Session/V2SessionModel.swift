@@ -1008,9 +1008,14 @@ final class V2SessionModel: Identifiable {
 
     var isLocalCreation: Bool { id.hasPrefix("local:") }
     func stage(_ pending: V2PendingMessage) {
-        guard isValid, !pendingMessages.contains(where: { $0.id == pending.id }) else { return }
-        pendingMessages.append(pending)
+        guard isValid else { return }
+        // Remember the previews on every stage, including the re-stage after a
+        // creation's uploads are bound: the store must learn the server file
+        // ids or the bubble loses the preview it already showed while the
+        // entry was local (LocalRestorationTests caught this on the rename).
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
+        guard !pendingMessages.contains(where: { $0.id == pending.id }) else { return }
+        pendingMessages.append(pending)
         repository?.localWorkDidChange(sessionID: id)
     }
     func restoreDraft(from pending: V2PendingMessage) -> Bool {

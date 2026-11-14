@@ -439,23 +439,6 @@ final class V2SessionModel: Identifiable {
         return merged
     }
 
-    /// Cheap fingerprint for the local half of `interruptedTurns`.
-    ///
-    /// The adapter's per-update `updateFingerprint()` must not read the merged
-    /// array: that copies the whole timeline and rescans it on every SwiftUI
-    /// update (`TimelineChatContentAdapter.prepareForUpdate`). Local stop
-    /// markers are the only interrupt input that can change without a timeline
-    /// flush; server-side `turnInterrupted` flags arrive together with a
-    /// `flushRevision` bump, which the fingerprint already hashes.
-    var localInterruptedTurnsSignature: Int {
-        var hasher = Hasher()
-        for marker in localInterruptedTurns {
-            hasher.combine(marker.anchorItemID)
-            hasher.combine(marker.turnID)
-        }
-        return hasher.finalize()
-    }
-
     /// Freezes the just-stopped turn on its last main-agent row. Called on the
     /// accepted interrupt; the archive write makes the notice survive a
     /// relaunch (an older connector that never stamps the turn still shows it

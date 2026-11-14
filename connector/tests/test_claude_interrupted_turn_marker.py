@@ -38,6 +38,7 @@ from test_claude_runtime import (
 
 from connector.runtime_protocol import (
     TURN_INTERRUPTED_CONTENT_KEY,
+    RuntimeTimelineItem,
     timeline_content_hash,
 )
 from connector.runtimes.claude.domain.session import ClaudeSession
@@ -308,6 +309,57 @@ def test_live_user_stop_stamps_the_turn_before_the_history_sync() -> None:
                 for end in host.session_turn_ends
                 if end["turn_id"] == turn_id
             ] == ["interrupted"]
+        finally:
+            release.set()
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+def test_live_user_stop_closes_a_running_tool_in_the_same_push() -> None:
+    """The failure mark must not wait for the post-stop history sync.
+
+    Device 2026-11-14: the notice appeared at the stop, but the step-row
+    triangle only after the sync re-read the transcript (~3 s later). The
+    stop discards the CLI's aborted `tool_result` frame, so the live push has
+    to carry the terminal status itself.
+    """
+
+    async def run() -> None:
+        host = _RecordingHost()
+        release = asyncio.Event()
+        client = _BlockingClaudeClient(release)
+        runtime = _runtime(host=host, client=client, config=_gateway_config())
+        try:
+            result = await runtime.start_turn(
+                "sess_interrupt", "native_interrupt", "wait"
+            )
+            turn_id = result.result["turnId"]
+            await _wait_until(lambda: bool(client.queries))
+            session = runtime._sessions["sess_interrupt"]
+            tool = RuntimeTimelineItem(
+                id="tool_running",
+                session_id="sess_interrupt",
+                type="tool",
+                status="running",
+                role="tool",
+                turn_id=turn_id,
+                order_seq=2,
+                content={"command": "sleep 30"},
+                content_hash="sha256:running",
+            )
+            session.timeline_items[tool.id] = tool
+
+            task = session.active_task
+            await runtime.interrupt_session("sess_interrupt", reason="user")
+            await asyncio.gather(task, return_exceptions=True)
+
+            published = {item.id: item for item in host.timeline_item_upserts}
+            closed = published["tool_running"]
+            assert closed.status == "failed"
+            assert closed.content.get(TURN_INTERRUPTED_CONTENT_KEY) is True
+            # Closed first, then stamped: both changes ride one push.
+            assert closed.revision == tool.revision + 2
         finally:
             release.set()
             await runtime.stop()

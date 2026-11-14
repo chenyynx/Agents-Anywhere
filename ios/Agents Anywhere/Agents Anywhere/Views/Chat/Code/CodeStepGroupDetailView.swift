@@ -190,12 +190,14 @@ struct CodeStepGroupDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        // Sheet chrome owns the background: a content `.background` draws
-        // above it on iOS 26 detent sheets and the rounded corners vanish
-        // when a text selection re-lays the page out (pp 2026-11-15).
-        .presentationBackground {
-            CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
-        }
+        .presentationDragIndicator(.visible)
+        // Same surface as the thinking sheet: the page owns a fixed top
+        // radius because the iOS 26 sheet chrome squares itself while a text
+        // selection's edit menu is up (pp 2026-11-15; see
+        // CodeThinkingDetailView's call site).
+        .presentationBackground(Color.clear)
+        .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme).ignoresSafeArea())
+        .clipShape(CodeThinkingSheetShape())
     }
 
     private var title: String {

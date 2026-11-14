@@ -80,14 +80,30 @@ struct CodeThinkingDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        // The sheet background belongs to the presentation, not to the
-        // content: on iOS 26 a detent sheet draws a content `.background`
-        // above its own chrome, and a text selection's re-layout reorders
-        // that — the corner radius vanished and the page rendered square
-        // (pp 2026-11-15, screenshot: 思考过程 with a selection menu).
-        .presentationBackground {
-            CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
-        }
+        .presentationDragIndicator(.visible)
+        // The page paints its own rounded top edge and the presentation stays
+        // transparent behind it. iOS 26's sheet chrome loses its corner radius
+        // while a text selection's edit menu is up (pp 2026-11-15: the 思考过程
+        // sheet renders square the moment text is selected), and an opaque
+        // production background — the previous attempt — kept that square edge
+        // (b1226 screenshot). Nothing the system draws there is reliable, so
+        // the visible surface is the content's own shape.
+        .presentationBackground(Color.clear)
+        .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme).ignoresSafeArea())
+        .clipShape(CodeThinkingSheetShape())
+    }
+}
+
+/// The thinking sheet's visible surface. A fixed top radius keeps the page
+/// rounded through every system presentation state, including the one where
+/// the sheet chrome squares itself (see the call site).
+struct CodeThinkingSheetShape: Shape {
+    var radius: CGFloat = 24
+
+    func path(in rect: CGRect) -> Path {
+        UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius,
+                               style: .continuous)
+            .path(in: rect)
     }
 }
 

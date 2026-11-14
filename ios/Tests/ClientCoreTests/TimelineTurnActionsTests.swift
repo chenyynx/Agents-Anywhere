@@ -130,41 +130,51 @@ import Testing
 struct TurnFooterGateTests {
     @Test func aRestoredFinishedTurnStartsClosed() {
         var gate = TurnFooterGate()
-        #expect(!gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0))
+        let open = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!open)
     }
 
     @Test func aRestoredRunningTurnStartsOpen() {
         var gate = TurnFooterGate()
-        #expect(gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0))
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(open)
     }
 
     @Test func aNewUserMessageOpensTheTurn() {
         var gate = TurnFooterGate()
         _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
-        #expect(gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1))
+        let open = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(open)
     }
 
     @Test func anAuthoritativeEndClosesTheTurnAndStatusFlapsDoNotReopenIt() {
         var gate = TurnFooterGate()
         _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
         // A running/idle flap with no authoritative end keeps the turn open.
-        #expect(gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0))
-        #expect(!gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1))
+        let flapWhileOpen = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(flapWhileOpen)
+        let afterEnd = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!afterEnd)
         // The status flapping back to running does not reopen the footer.
-        #expect(!gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1))
+        let flapAfterEnd = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(!flapAfterEnd)
     }
 
     @Test func theNextTurnReopensAfterAClosedTurn() {
         var gate = TurnFooterGate()
         _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
         _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
-        #expect(gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1))
-        #expect(!gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 2))
+        let reopened = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(reopened)
+        let closedAgain = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 2)
+        #expect(!closedAgain)
     }
 
     @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {
         var gate = TurnFooterGate()
-        #expect(!gate.update(userKey: nil, runtimeIsRunning: false, authoritativeTurnEnds: 0))
-        #expect(!gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0))
+        let first = gate.update(userKey: nil, runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!first)
+        let afterUserArrives = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!afterUserArrives)
     }
 }

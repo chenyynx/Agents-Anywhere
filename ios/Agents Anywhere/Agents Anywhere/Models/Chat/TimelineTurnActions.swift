@@ -43,24 +43,44 @@ nonisolated struct TurnFooterGate: Equatable {
     private(set) var isOpen = false
     private var userKey: String?
     private var endsSeen = 0
+    /// Whether the open state is anchored to a user bubble this client saw
+    /// arrive, rather than to a runtime status alone. A compaction's command
+    /// turn reports a turn in flight with no user bubble, so a gate that only
+    /// a status reopened must close again once the compaction is visible;
+    /// otherwise the finished turn loses its footer for the whole compaction
+    /// (pp 2026-11-15: copy/share disappeared and the page jumped twice by
+    /// the 30 pt action bar).
+    private var openedByTurn = false
 
     init() {}
 
     /// Feeds one adapter refresh; returns whether the latest turn's footer
     /// must stay suppressed.
+    ///
+    /// `isCompacting` separates a compaction from the latest turn's work. The
+    /// runtime reports a turn in flight while it compacts, but the reply on
+    /// screen is finished; treating that as a resumed turn reopened a closed
+    /// gate and hid the finished turn's footer — copy/share and the 30 pt
+    /// action bar — for the whole compaction (pp 2026-11-15).
     mutating func update(userKey: String?, runtimeIsRunning: Bool,
-                         authoritativeTurnEnds: Int) -> Bool {
+                         authoritativeTurnEnds: Int, isCompacting: Bool = false) -> Bool {
+        let turnIsRunning = runtimeIsRunning && !isCompacting
         if self.userKey == nil {
             // First refresh: a restored in-flight turn stays open; a restored
-            // finished turn is already closed.
+            // finished turn is already closed. A compaction in flight is
+            // neither: the turn it follows is over. Nothing observable ties
+            // this state to a user bubble, so only a bubble may later claim
+            // it as a turn.
             self.userKey = userKey
-            isOpen = runtimeIsRunning
+            isOpen = turnIsRunning
+            openedByTurn = false
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
         if userKey != self.userKey {
             self.userKey = userKey
             isOpen = true
+            openedByTurn = true
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
@@ -70,14 +90,22 @@ nonisolated struct TurnFooterGate: Equatable {
             // a tool-step flap, not the turn's end.
             if !runtimeIsRunning {
                 isOpen = false
+                openedByTurn = false
             }
         }
-        if runtimeIsRunning {
+        if turnIsRunning {
             // A cold open can initialize the gate before the live status
             // arrives (the app was launched mid-turn), and a tool step can
             // follow a transient idle. The turn is still in flight, so the
             // footer must stay suppressed on the same user message.
             isOpen = true
+        }
+        // A compaction detected on a turn no user bubble opened: the running
+        // episode belongs to the compaction, not to the latest turn. Closing
+        // here also repairs a gate the compaction's own status reopened in
+        // the window before its marker row reached the client.
+        if isCompacting, !openedByTurn {
+            isOpen = false
         }
         return isOpen
     }
@@ -154,7 +182,14 @@ enum TimelineTurnActions {
             if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
-            let active = group.rows.contains { $0.structure.status.isActive }
+            // A compaction marker is session maintenance, not turn content:
+            // while it runs, the finished turn keeps its footer and the 30 pt
+            // action bar with it (pp 2026-11-15: copy/share vanished for the
+            // whole compaction and the page jumped twice).
+            let active = group.rows.contains {
+                $0.structure.status.isActive
+                    && !TimelineEntryPresentation.isCompactItem($0.value)
+            }
             hasActiveItems = hasActiveItems || active
         }
         // The pending user bubble already starts the next turn, even before its

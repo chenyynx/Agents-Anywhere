@@ -2149,7 +2149,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let latestTurnOpen = turnFooterGate.update(
             userKey: submittingPendingID ?? latestUserRowID,
             runtimeIsRunning: model.isRunning,
-            authoritativeTurnEnds: model.session.runtime.authoritativeTurnEnds)
+            authoritativeTurnEnds: model.session.runtime.authoritativeTurnEnds,
+            // A command compaction opens a turn on the wire with no user
+            // bubble, so the finished turn before it would read as "still
+            // running" and lose its footer for the whole compaction
+            // (pp 2026-11-15: copy/share disappeared and the page jumped
+            // twice by the 30 pt action bar).
+            isCompacting: liveTurnIsCompacting())
         let turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but

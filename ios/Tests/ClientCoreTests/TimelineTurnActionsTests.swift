@@ -115,6 +115,26 @@ import Testing
         #expect(actions.isEmpty)
     }
 
+    /// A compaction is session maintenance, not the latest turn's work: while
+    /// the connector's compact marker runs (status `running`, wire kind
+    /// `compact`), the finished turn keeps its footer. Counting the marker as
+    /// active turn content hid copy/share — and the 30 pt action bar with
+    /// them — for the whole compaction (pp 2026-11-15).
+    @Test func aRunningCompactMarkerDoesNotHideTheFinishedTurnsFooter() throws {
+        var marker = try itemObject(id: "compact")
+        marker["type"] = "marker"
+        marker["role"] = "system"
+        marker["status"] = "running"
+        marker["content"] = ["kind": "compact", "state": "started"]
+        let compact = ChatTimelineRowModel(try decode(marker))
+        let rows = try [row("user", role: "user", text: "Question"),
+                        row("reply", text: "Answer"), compact]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions["reply"]?.copyText == "Answer")
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])
@@ -202,6 +222,61 @@ struct TurnFooterGateTests {
         #expect(reopened)
         let closedAgain = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 2)
         #expect(!closedAgain)
+    }
+
+    /// A command compaction opens a turn on the wire with no user bubble, so
+    /// the runtime reports a turn in flight while the reply on screen is
+    /// finished. The gate must not reopen on it (pp 2026-11-15: copy/share
+    /// disappeared for the whole compaction).
+    @Test func aCompactionDoesNotReopenAClosedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        let closed = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!closed)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!duringCompaction)
+        // Once the compaction settles, the live status governs the turn again.
+        let resumed = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                  authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(resumed)
+    }
+
+    /// The compaction's own status can reopen the gate before its marker row
+    /// reaches the client. Once the compaction is visible, a turn that no
+    /// user bubble opened must close again, or the finished turn keeps its
+    /// footer hidden for the whole compaction (pp 2026-11-15).
+    @Test func aCompactionClosesATurnTheRuntimeStatusAloneReopened() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let statusWindow = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                       authoritativeTurnEnds: 1)
+        #expect(statusWindow)
+        let compactionVisible = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                            authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!compactionVisible)
+    }
+
+    /// A compaction inside the user's own running turn (automatic compaction
+    /// mid-turn) must not reveal the footer early: the turn is still working.
+    @Test func aCompactionLeavesAUserOpenedTurnOpen() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u0", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let userTurn = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(userTurn)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(duringCompaction)
+    }
+
+    /// A cold open during a compaction lands on a finished turn, not a
+    /// running one: the footer must not start suppressed.
+    @Test func aColdOpenDuringACompactionStartsClosed() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true,
+                               authoritativeTurnEnds: 0, isCompacting: true)
+        #expect(!open)
     }
 
     @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {

@@ -58,7 +58,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let schemaLegend: [String: String] = [
         "schemaVersion": schemaVersion,
         "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
-        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped",
+        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement|timeline.haptic; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped",
         "fields": "ts=local ISO8601; kind; severity=info for actions and the gap note / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild|reconcile|fill|live|batch|history; limit=requested page size; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies; prevId/nextId=nearest held neighbours, prevOrder/nextOrder=their orderSeq, rowsBefore=held rows before the merge, windowMin/windowMax=window bounds before the merge; oldOrder/newOrder=a held row's orderSeq change; group=step-group id; liveTail/allowsPose/fresh/stopRequested/predictedIdle=0/1 pose gates; status=runtime status; steps=step count; item=row id, from/to=status before/after, revival=1 when to=running, revision/updatedSeq=row version; from/to=send-queue roster before/after a change; head=head id:state; offsetY/contentH/visibleH/atBottom=viewport numbers at the change; running/streaming/placeholder/statusLine=drawn working gates; liveTail=the group drawing the live tail; posing=groups the pose gate would animate, posingRunning=their running subset.",
     ]
 
@@ -78,7 +78,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "timeline.latest.fetch",
         "timeline.grouping", "timeline.recovery",
         "timeline.row.inserted", "timeline.row.moved",
-        "timeline.interrupt.card", "timeline.anchor.placement",
+        "timeline.interrupt.card", "timeline.anchor.placement", "timeline.haptic",
         "ws.connecting", "ws.connect", "ws.disconnect",
         "timeline.event.gap",
     ]

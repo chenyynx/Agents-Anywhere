@@ -273,6 +273,28 @@ struct TimelineChatTimelineView: View {
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
             }
+            // Diagnostics trail for the "double buzz" report (device
+            // 2026-11-14): record each phase cue with the gates that decide
+            // whether the sensory feedback actually plays.
+            .onChange(of: phase) { old, new in
+                let feedback = TurnPhaseHaptics.feedback(from: old, to: new)
+                guard feedback != .none else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.haptic",
+                    sessionID: model.session.id,
+                    detail: [
+                        "source": "phase",
+                        "from": String(old.rawValue),
+                        "to": String(new.rawValue),
+                        "feedback": feedback == .impactLight ? "impactLight" : "selection",
+                        "allowed": (!sidebarIsTransitioning && HapticGate.statusAllowed()
+                            && !model.session.runtime.stopRequested
+                            && !model.session.runtime.predictedIdle) ? "1" : "0",
+                        "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                        "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                    ],
+                    dedupe: false)
+            }
             // The Code page's tool detail (official full-screen presentation).
             // Rows report taps through the adapter; this page-level sheet
             // survives the streaming reconfigures that rebuild every cell.

@@ -634,7 +634,12 @@ final class TimelineAnchorDriver {
             return
         }
         writeOffset(target)
-        if state.placement == .end, !didReportOpeningArrival, isAtEnd() {
+        // An empty window is trivially "at the bottom": reporting the opening
+        // arrival there let the first real content animate in as a follow
+        // (b1226 cold open: a 645 pt `content` spring right after the rows
+        // landed). The arrival is the first landing over real content.
+        if state.placement == .end, !didReportOpeningArrival, isAtEnd(),
+           inputs.contentHeight() > 0 {
             didReportOpeningArrival = true
             inputs.onBottomArrived?()
         }

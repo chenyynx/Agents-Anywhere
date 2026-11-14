@@ -466,23 +466,12 @@ final class TimelineAnchorDriver {
             ])
         }
         lastObservedOffset = liveOffset
-        let contentHeight = inputs.contentHeight()
-        let contentHeightChanged = lastObservedContentHeight.map {
-            abs(contentHeight - $0) > 0.5
-        } ?? false
-        lastObservedContentHeight = contentHeight
+        lastObservedContentHeight = inputs.contentHeight()
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
             // the live position; the next tick continues from there.
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
-            return
-        }
-        if contentHeightChanged, state.placement == .end {
-            // The content grew/shrank under a following reader. This scroll
-            // is UIKit's correction, not a hand; `contentChanged` starts the
-            // follow. Flipping to `.reading` here lost the bottom follow
-            // right after a send (device 2026-11-14).
             return
         }
         if isHistoryPaging {
@@ -493,6 +482,19 @@ final class TimelineAnchorDriver {
             // apply's correction a no-op (device 2026-10-31 13:46: a 37→57
             // page prepended 49,859 pt above the anchor and the viewport
             // stayed at the new page's top).
+            return
+        }
+        if state.placement == .end {
+            // A following reader cannot leave the bottom without a hand:
+            // dragging/coasting flip the placement at their own events. So a
+            // handless scroll here is UIKit's layout correction from a
+            // content-height or inset change. Re-place the follow now instead
+            // of leaving placement and offset disagreeing — that disagreement
+            // let a later responseRevision return fly the page from the
+            // corrected offset back to the bottom (device 2026-11-15: a
+            // 402 pt jump + fly-back right after a send).
+            pendingContentMove = true
+            startMover()
             return
         }
         guard let anchor = currentAnchor() else { return }

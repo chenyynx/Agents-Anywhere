@@ -55,6 +55,15 @@ final class V2SessionRuntimeModel {
     /// never writes the projected state, never counts as an authoritative
     /// turn ending, and is only honoured while the projection is fresh.
     private(set) var predictedIdle = false
+    /// The user's stop tap is on the wire but has not been acknowledged yet.
+    ///
+    /// Deliberately not `predictedIdle`: that one opens the composer's send
+    /// window and may only speak after the ack. This one settles the
+    /// transcript's working pose at the tap, because the round trip
+    /// (server → connector → SDK stop) can take seconds and the step row
+    /// otherwise keeps spinning after the user stopped it (device
+    /// 2026-11-14). A refused stop clears it and the pose comes back.
+    private(set) var stopRequested = false
     /// Authoritative turn endings: transitions of the projected state from a
     /// turn in flight to `idle`, applied while live facts were fresh. The
     /// completion cue keys off this instead of a raw status edge so that a
@@ -94,6 +103,16 @@ final class V2SessionRuntimeModel {
         guard let capability = capabilities?.capability(id: "session.interrupt") else { return false }
         guard capability.supported, capability.allowed else { return false }
         return capability.available || !isFresh
+    }
+
+    func beginStopRequest() {
+        guard !stopRequested else { return }
+        stopRequested = true
+    }
+
+    func endStopRequest() {
+        guard stopRequested else { return }
+        stopRequested = false
     }
 
     func beginPredictedIdle() {

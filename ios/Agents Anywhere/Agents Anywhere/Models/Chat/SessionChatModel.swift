@@ -119,6 +119,15 @@ final class SessionChatModel {
     var isTurnStreaming: Bool {
         isRunning && !session.runtime.isPredictedIdle
     }
+    /// What the transcript may paint as working. Adds the stop tap's own
+    /// window to `isTurnStreaming`: from the tap until the ack, the turn is
+    /// still in flight on the wire, but the user has already decided it ended
+    /// — the step row must not keep spinning through that round trip
+    /// (device 2026-11-14). The composer keeps reading `isTurnStreaming`, so
+    /// the send key still waits for the ack.
+    var isTranscriptStreaming: Bool {
+        isTurnStreaming && !session.runtime.stopRequested
+    }
     /// The composer's view of the same window: inside an accepted interrupt's
     /// optimistic window the send key is already usable.
     var isComposerStreaming: Bool { isTurnStreaming }
@@ -808,10 +817,17 @@ final class SessionChatModel {
         // the user has already sent the next prompt, and the timeline's tail
         // would then belong to that prompt, not to the turn being stopped.
         let anchor = session.stopAnchor()
+        // Settle the transcript's working pose at the tap: the ack has to
+        // reach the connector and wait for the SDK to stop the turn, and until
+        // it landed the step row kept its live pose after the user stopped it
+        // (device 2026-11-14). Only the transcript reads this flag — the
+        // composer's send window still waits for the accepted ack.
+        session.runtime.beginStopRequest()
         let accepted = await perform {
             try await self.repository.interrupt(sessionId: self.session.id,
                                                 preserveBackground: true)
         }
+        session.runtime.endStopRequest()
         // The accepted stop is the client's proof that this turn ended by the
         // user's request; freeze its anchor before any later turn can move
         // the tail.

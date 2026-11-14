@@ -98,10 +98,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.responseRevision)
         hasher.combine(model.disclosures.revision)
         hasher.combine(model.isRunning)
-        // The drawn posing reads streaming (not raw in-flight): a stop ack
-        // flips `predictedIdle` while `isRunning` is still true, and a fresh
-        // idle makes a late `running` row stale (pp 2026-11-14).
-        hasher.combine(model.isTurnStreaming)
+        // The drawn posing reads streaming (not raw in-flight): the stop tap
+        // itself settles it (`stopRequested`), the ack flips `predictedIdle`
+        // while `isRunning` is still true, and a fresh idle makes a late
+        // `running` row stale (pp 2026-11-14).
+        hasher.combine(model.isTranscriptStreaming)
         hasher.combine(model.session.runtime.isFresh)
         // `interruptedTurns` is cached until the next timeline apply, so this
         // hashes only the handful of markers, not the whole timeline. Keep the
@@ -1908,7 +1909,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // an interrupted row flash back to running the moment a new
             // message was sent (pp 2026-11-10), and the same window re-opened
             // on the stop ack before the idle frames landed (pp 2026-11-14).
-            let turnStreaming = model.isTurnStreaming
+            let turnStreaming = model.isTranscriptStreaming
             // A local outgoing message is still on screen (sending, accepted
             // or awaiting its echo). Every group above it belongs to the
             // previous turn, so none may inherit the new turn's mark while the

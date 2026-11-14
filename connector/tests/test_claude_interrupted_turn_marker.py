@@ -100,6 +100,31 @@ def _assistant_tool(uuid: str, *, message_id: str = "msg_tool") -> Any:
     )
 
 
+def _assistant_text_and_tool(
+    uuid: str,
+    text: str,
+    *,
+    message_id: str = "msg_tool",
+) -> Any:
+    return SimpleNamespace(
+        type="assistant",
+        uuid=uuid,
+        message={
+            "role": "assistant",
+            "id": message_id,
+            "content": [
+                {"type": "text", "text": text},
+                {
+                    "type": "tool_use",
+                    "id": TOOL_USE_ID,
+                    "name": "Bash",
+                    "input": {"command": "sleep 30"},
+                },
+            ],
+        },
+    )
+
+
 def _aborted_tool_result(uuid: str) -> Any:
     return SimpleNamespace(
         type="user",
@@ -156,6 +181,31 @@ def test_history_projection_marks_the_stopped_turns_last_main_row() -> None:
     # The aborted result keeps its own truthful status; the turn-level fact is
     # the only thing added.
     assert anchor.status == "failed"
+
+
+def test_history_projection_anchors_a_text_plus_tool_turn_on_the_tool_row() -> None:
+    """The card must follow the step group, not sit between text and tool.
+
+    Device 2026-11-14: a message with text + a Bash call, stopped while the
+    command ran, showed 「Claude 的回复已中断。」 above the running-command
+    row because the stamp had landed on the message text row. The client
+    draws the text block first and the tool block after it, so the tool row
+    is the turn's last drawn row.
+    """
+
+    session = _session()
+    messages = (
+        _user(PROMPT_UUID, "run it"),
+        _assistant_text_and_tool("assistant-tool", "I'll run it"),
+        _aborted_tool_result("tool-result"),
+        _interrupt_marker(INTERRUPT_TOOL_TEXT),
+    )
+    items = _history_items_from_messages(session, messages)
+
+    flagged = _flagged(items)
+    assert len(flagged) == 1, [item.id for item in flagged]
+    assert flagged[0].id == stable_tool_item_id(session, TOOL_USE_ID)
+    assert flagged[0].turn_id == _history_turn_id(SESSION_ID, PROMPT_UUID)
 
 
 def test_history_projection_marks_a_text_only_turn_on_its_last_message() -> None:

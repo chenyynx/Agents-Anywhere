@@ -2240,6 +2240,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 "from": previous ?? "none",
                 "to": roster.isEmpty ? "empty" : roster,
                 "head": model.session.sendQueue.head.map { "\($0.id):\($0.state)" } ?? "none",
+                "echo": {
+                    guard let head = model.session.sendQueue.head else { return "none" }
+                    let present = model.timeline.rows.contains { row in
+                        row.value.role == .user
+                            && row.value.source["clientMessageId"]?.stringValue == head.id
+                    }
+                    return present ? "1" : "0"
+                }(),
                 "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
                 "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
                 "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),
@@ -2997,16 +3005,31 @@ private struct TimelineCollectionTailRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
+    /// A queued message whose echo row is already on screen is the same
+    /// message twice: the tail bubble plus the timeline row. Hiding the
+    /// bubble in the same apply that inserts the row keeps the bottom height
+    /// stable; otherwise the echo adds its height (+49) and the bubble
+    /// removal takes it back (−51) in a later layout pass, so the
+    /// bottom-pinned page drops by one bubble height (device 2026-11-14).
+    /// The rule mirrors `SessionTimelinePresentation.isEchoed`.
+    private var visibleQueueItems: [V2QueuedMessage] {
+        let echoed = Set(model.timeline.rows.compactMap { row -> String? in
+            guard row.value.role == .user else { return nil }
+            return row.value.source["clientMessageId"]?.stringValue
+        })
+        return model.session.sendQueue.items.filter { !echoed.contains($0.id) }
+    }
+
     private var queueRoster: String {
-        model.session.sendQueue.items.map { "\($0.id):\($0.state)" }.joined(separator: ",")
+        visibleQueueItems.map { "\($0.id):\($0.state)" }.joined(separator: ",")
     }
     private static let idleHeight: CGFloat = 12
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !model.session.sendQueue.items.isEmpty {
+            if !visibleQueueItems.isEmpty {
                 VStack(spacing: 6) {
-                    ForEach(model.session.sendQueue.items) { item in
+                    ForEach(visibleQueueItems) { item in
                         QueuedMessageRow(item: item, model: model,
                                          onAttachment: onAttachment)
                             .id(item.id)

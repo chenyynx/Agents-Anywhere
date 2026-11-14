@@ -15,9 +15,11 @@ import Testing
         id: String,
         turnID: String?,
         order: Int,
-        flagged: Bool = false
+        flagged: Bool = false,
+        role: V2MessageRole = .assistant
     ) throws -> V2TimelineItem {
         var object = try itemObject(id: id, order: order)
+        object["role"] = role.rawValue
         if let turnID { object["turnId"] = turnID }
         var content = object["content"] as! [String: Any]
         if flagged { content[InterruptedTurnMarkers.contentKey] = true }
@@ -124,5 +126,41 @@ import Testing
         #expect(InterruptedTurnMarkers.authoritativeAnchor(
             timeline: timeline, existing: existing, isIdleInterrupt: true
         ) == nil)
+    }
+
+    @Test func staleUserRowAnchorIsDroppedWhenThatTurnContinued() throws {
+        // The archived marker left by the duplicate-card bug: anchored on the
+        // prompt that followed the stop, whose turn then ran to completion.
+        let local = [V2InterruptedTurnMarker(anchorItemID: "user-1", turnID: "turn-2")]
+        let markers = InterruptedTurnMarkers.merge(
+            local: local,
+            timeline: [
+                try item(id: "row-1", turnID: "turn-1", order: 1, flagged: true),
+                try item(id: "user-1", turnID: "turn-2", order: 2, role: .user),
+                try item(id: "row-2", turnID: "turn-2", order: 3),
+            ]
+        )
+        #expect(markers == [V2InterruptedTurnMarker(anchorItemID: "row-1", turnID: "turn-1")])
+    }
+
+    @Test func emptyStoppedTurnKeepsItsUserRowAnchor() throws {
+        let local = [V2InterruptedTurnMarker(anchorItemID: "user-1", turnID: "turn-1")]
+        let markers = InterruptedTurnMarkers.merge(
+            local: local,
+            timeline: [try item(id: "user-1", turnID: "turn-1", order: 1, role: .user)]
+        )
+        #expect(markers == local)
+    }
+
+    @Test func localMarkerWithoutATurnIDIsNeverJudged() throws {
+        let local = [V2InterruptedTurnMarker(anchorItemID: "user-1", turnID: nil)]
+        let markers = InterruptedTurnMarkers.merge(
+            local: local,
+            timeline: [
+                try item(id: "user-1", turnID: "turn-1", order: 1, role: .user),
+                try item(id: "row-2", turnID: "turn-1", order: 2),
+            ]
+        )
+        #expect(markers == local)
     }
 }

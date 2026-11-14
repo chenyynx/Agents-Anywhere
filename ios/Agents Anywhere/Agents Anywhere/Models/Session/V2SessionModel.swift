@@ -1057,7 +1057,7 @@ nonisolated enum InterruptedTurnMarkers {
 
     static func merge(local: [V2InterruptedTurnMarker],
                       timeline: [V2TimelineItem]) -> [V2InterruptedTurnMarker] {
-        var merged = local
+        var merged = validLocal(local, in: timeline)
         var indexByTurn: [String: Int] = [:]
         for (index, marker) in merged.enumerated() {
             if let turnID = marker.turnID { indexByTurn[turnID] = index }
@@ -1074,5 +1074,29 @@ nonisolated enum InterruptedTurnMarkers {
             }
         }
         return merged
+    }
+
+    /// Drops archived markers that provably never anchored a stopped turn.
+    ///
+    /// A user row is its turn's *first* row, so if the same turn has any later
+    /// main row, that user row cannot be the stopped turn's last row: the
+    /// marker was written by an ack or cold-open recovery that read the tail
+    /// after the next prompt had landed (device 2026-11-14, one stop → two
+    /// cards). A genuinely empty stopped turn keeps its user-row anchor
+    /// because nothing follows it, and markers whose anchor is outside the
+    /// loaded window are left alone — absence is not proof.
+    private static func validLocal(
+        _ local: [V2InterruptedTurnMarker],
+        in timeline: [V2TimelineItem]
+    ) -> [V2InterruptedTurnMarker] {
+        local.filter { marker in
+            guard let turnID = marker.turnID,
+                  let index = timeline.firstIndex(where: { $0.id == marker.anchorItemID }),
+                  timeline[index].role == .user
+            else { return true }
+            return !timeline[(index + 1)...].contains {
+                $0.turnId == turnID && $0.raw["content"]?["parentItemId"] == nil
+            }
+        }
     }
 }

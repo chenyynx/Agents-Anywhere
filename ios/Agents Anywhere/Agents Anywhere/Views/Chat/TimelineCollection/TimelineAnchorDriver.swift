@@ -75,6 +75,11 @@ final class TimelineAnchorDriver {
     /// external write (UIKit layout correction, inset apply) — the shape the
     /// "page jumped instead of scrolling" report describes (device 2026-11-15).
     private var lastObservedOffset: CGFloat?
+    /// The last `.end` target this driver followed and when. A target that
+    /// shrinks within the window is an estimated-height correction from the
+    /// same insert, not a new layout.
+    private var lastContentTarget: CGFloat?
+    private var lastContentTargetAt: CFTimeInterval = 0
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
@@ -406,6 +411,23 @@ final class TimelineAnchorDriver {
             motion: String(describing: state.motion))
 #endif
         lastObservedContentHeight = inputs.contentHeight()
+        let now = CACurrentMediaTime()
+        if state.placement == .end, let target = state.placement.target(in: geometry()) {
+            // A row inserted under a following reader is first laid out with
+            // its estimated height and corrected a frame or two later. That
+            // correction can shrink the target inside the same insert
+            // (device 2026-11-15 01:33:03: +53 → +2 → +49 in 44 ms); chasing
+            // the intermediate value made the Mover declare arrival 2 pt in
+            // and stall. Keep the last target instead; the next content
+            // change carries the settled height.
+            if let previous = lastContentTarget,
+               target < previous - 0.5,
+               now - lastContentTargetAt < 0.15 {
+                return
+            }
+            lastContentTarget = target
+            lastContentTargetAt = now
+        }
         if isHistoryPaging {
             enforceReadingPlacement()
             return

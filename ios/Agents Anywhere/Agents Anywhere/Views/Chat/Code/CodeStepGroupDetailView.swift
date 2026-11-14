@@ -152,6 +152,8 @@ struct CodeStepGroupDetailView: View {
                     guard startsAtBottom, tailFollow.followsTail, !isInteracting else { return }
                     scrollToTail(proxy, animated: true)
                 }
+                .background(CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
+                    .ignoresSafeArea())
                 .navigationTitle(Text(title))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { SheetCloseToolbar { dismiss() } }
@@ -190,12 +192,6 @@ struct CodeStepGroupDetailView: View {
             }
         }
         .presentationDetents([.medium, .large])
-        // Sheet chrome owns the background: a content `.background` draws
-        // above it on iOS 26 detent sheets and the rounded corners vanish
-        // when a text selection re-lays the page out (pp 2026-11-15).
-        .presentationBackground {
-            CodePageTheme.pageBackgroundColor.resolved(for: colorScheme)
-        }
     }
 
     private var title: String {

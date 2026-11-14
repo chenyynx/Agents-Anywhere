@@ -30,6 +30,13 @@ struct TimelineChatTimelineView: View {
     @AppStorage(ChatTypeSettings.schemeKey) private var typeSchemeRaw = ChatTypeScheme.compact.rawValue
     @AppStorage(ChatTypeSettings.bodySizeKey) private var typeBodySize = 0.0
     @AppStorage(ChatTypeSettings.customKey) private var typeCustomRaw = ""
+    /// The phase the haptics describe: settled, never a transient flap.
+    @State private var settledPhase: ChatTurnPhase = .idle
+    @State private var phaseSettleTask: Task<Void, Never>?
+    @State private var phaseSeeded = false
+    /// Cues stay disarmed through the seed, so a page opened mid-turn does not
+    /// buzz on appearance.
+    @State private var phaseHapticsArmed = false
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -70,6 +77,30 @@ struct TimelineChatTimelineView: View {
             writing: signals.isStreamingAssistantText,
             reasoning: signals.hasActiveReasoningItem)
     }
+    /// How long a phase must hold before its haptic plays. iOS merges impacts
+    /// fired within roughly 0.1 s; 150 ms collapses the `writing → idle → tool`
+    /// handover into one cue and keeps the end-of-stream impact close enough
+    /// to feel immediate.
+    private static let phaseSettleWindow: Duration = .milliseconds(150)
+
+    /// Feeds one live phase into the settle: the first observation seeds the
+    /// state without a cue; later changes only play if they still hold after
+    /// `phaseSettleWindow` (a change back cancels the pending cue entirely).
+    private func settlePhase(_ phase: ChatTurnPhase) {
+        if !phaseSeeded {
+            phaseSeeded = true
+            settledPhase = phase
+            DispatchQueue.main.async { phaseHapticsArmed = true }
+            return
+        }
+        phaseSettleTask?.cancel()
+        phaseSettleTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.phaseSettleWindow)
+            guard !Task.isCancelled else { return }
+            if settledPhase != phase { settledPhase = phase }
+        }
+    }
+
     private var typography: TimelineTypographySnapshot {
         let scale = ChatTypeSettings.resolve(
             schemeRaw: typeSchemeRaw,
@@ -265,30 +296,42 @@ struct TimelineChatTimelineView: View {
             // phase's own cue would land right behind it as a second buzz
             // (device 2026-11-14). The stop's optimistic idle therefore never
             // plays here; only stream-driven transitions do.
-            .sensoryFeedback(.selection, trigger: phase) { old, new in
-                TurnPhaseHaptics.feedback(from: old, to: new) == .selection
+            // The cue describes the *settled* phase, not every transient flap:
+            // a text→tool handover flashes `idle` for a frame or two, and
+            // playing both cues landed two buzzes 15–150 ms apart (pp
+            // 2026-11-15; 49 of the 158 cues in the b1221 log sat <350 ms
+            // from the previous one). `phaseSettleTask` collapses those.
+            .sensoryFeedback(.selection, trigger: settledPhase) { old, new in
+                phaseHapticsArmed
+                    && TurnPhaseHaptics.feedback(from: old, to: new) == .selection
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
             }
             .sensoryFeedback(.impact(weight: .light, intensity: 1.0),
-                             trigger: phase) { old, new in
-                TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
+                             trigger: settledPhase) { old, new in
+                phaseHapticsArmed
+                    && TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
             }
+            .onChange(of: phase, initial: true) { _, new in
+                settlePhase(new)
+            }
+            .onDisappear { phaseSettleTask?.cancel() }
             // Diagnostics trail for the "double buzz" report (device
-            // 2026-11-14): record each phase cue with the gates that decide
+            // 2026-11-14): record each settled cue with the gates that decide
             // whether the sensory feedback actually plays.
-            .onChange(of: phase) { old, new in
+            .onChange(of: settledPhase) { old, new in
+                guard phaseHapticsArmed else { return }
                 let feedback = TurnPhaseHaptics.feedback(from: old, to: new)
                 guard feedback != .none else { return }
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.haptic",
                     sessionID: model.session.id,
                     detail: [
-                        "source": "phase",
+                        "source": "phase-settled",
                         "from": String(old.rawValue),
                         "to": String(new.rawValue),
                         "feedback": feedback == .impactLight ? "impactLight" : "selection",

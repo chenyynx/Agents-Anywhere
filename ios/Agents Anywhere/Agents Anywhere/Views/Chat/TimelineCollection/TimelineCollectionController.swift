@@ -372,6 +372,14 @@ final class TimelineCollectionController: UIViewController {
                 guard let self else { return }
                 var merged = detail
                 merged["action"] = action
+                // Name the row whose height change moved the page under this
+                // handless correction (pp 2026-11-15: a send-time -30 pt jump
+                // before the working row appeared). The layout keeps the trail
+                // in release builds; only handless corrections read it.
+                if action == "scroll",
+                   let heights = self.layout.recentHeightChangeText(within: 0.5) {
+                    merged["heights"] = heights
+                }
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.mover",
                     sessionID: self.diagnosticSessionID,
@@ -679,6 +687,40 @@ final class TimelineCollectionController: UIViewController {
 #endif
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
+        // Diagnostic (pp 2026-11-15): name the send-path rows this apply adds
+        // or removes — the optimistic working row, the pending bubble and the
+        // tail spacer. A send swaps the pending bubble for the echo row and
+        // mounts the working row; when those land in two passes, the bottom
+        // moves ~30 pt outside the content follow (the "jump then scroll"
+        // working-row report). Group/message churn is left out so a stream
+        // cannot flood the file.
+        let newItemIDs = Set(items)
+        let removedSendPath = oldItems.filter {
+            !newItemIDs.contains($0) && Self.isSendPathItem($0)
+        }
+        let addedSendPath = items.filter {
+            !oldIDs.contains($0) && Self.isSendPathItem($0)
+        }
+        if !removedSendPath.isEmpty || !addedSendPath.isEmpty {
+            // `lastPreparedHeight` names the height the row was last laid out
+            // at; an inserted row that has not prepared yet logs just its id.
+            func describe(_ item: TimelineListItem) -> String {
+                guard let height = layout.lastPreparedHeight[item.itemID] else {
+                    return "\(item.itemID)|-"
+                }
+                return "\(item.itemID)|\(String(format: "%.1f", height))"
+            }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.items.diff",
+                sessionID: diagnosticSessionID,
+                detail: [
+                    "removed": removedSendPath.isEmpty
+                        ? "-" : removedSendPath.map(describe).joined(separator: ","),
+                    "added": addedSendPath.isEmpty
+                        ? "-" : addedSendPath.map(describe).joined(separator: ","),
+                ],
+                dedupe: false)
+        }
         // A window replacement drops the old dynamic rows; a prepend/append
         // keeps them. Compare the first *dynamic* item because `.olderPrompt`
         // / `.latestPrompt` / `.tail` have static identities and both windows
@@ -1069,6 +1111,15 @@ final class TimelineCollectionController: UIViewController {
         switch item {
         case .group, .notice, .pending: return true
         case .olderPrompt, .latestPrompt, .workingStatus, .tail: return false
+        }
+    }
+
+    /// Rows whose identity changes around a send. The probe logs their
+    /// insert/remove so the height handoff can be attributed to a named row.
+    private static func isSendPathItem(_ item: TimelineListItem) -> Bool {
+        switch item {
+        case .workingStatus, .pending, .tail: return true
+        case .group, .notice, .olderPrompt, .latestPrompt: return false
         }
     }
 

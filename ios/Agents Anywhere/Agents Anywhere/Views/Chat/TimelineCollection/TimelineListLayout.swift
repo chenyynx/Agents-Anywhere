@@ -700,6 +700,14 @@ final class TimelineListLayout: UICollectionViewLayout {
     private(set) var lastPreferredAppliedHeight: [String: CGFloat] = [:]
     private(set) var lastPreparedHeight: [String: CGFloat] = [:]
     private(set) var lastPreparedKeyRevision: [String: Int] = [:]
+    /// Recent row height changes, always compiled: the send-time offset
+    /// correction reproduces on release device builds. The controller reads it
+    /// when a handless `timeline.mover` correction is logged, so the entry
+    /// names the row whose height change caused the page to move.
+    private var recentHeightChanges = TimelineRecentHeightChanges()
+    func recentHeightChangeText(within window: CFTimeInterval) -> String? {
+        recentHeightChanges.text(within: window, now: CACurrentMediaTime())
+    }
 #if DEBUG
     /// Gate counter: a height change applied while the reader's finger is down
     /// or the list is coasting. Must stay zero once the official contract is
@@ -1149,6 +1157,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             lastAppliedHeight[update.itemID] = AppliedHeight(key: update.key,
                                                              height: update.height)
             guard abs(update.contentSizeDelta) > 0.5 else { continue }
+            recentHeightChanges.note(
+                itemID: update.itemID,
+                oldHeight: update.height - update.contentSizeDelta,
+                newHeight: update.height,
+                source: update.source,
+                at: CACurrentMediaTime())
             changed = true
             contentSize += update.contentSizeDelta
             if let offsetDelta = update.offsetDelta { offset += offsetDelta }

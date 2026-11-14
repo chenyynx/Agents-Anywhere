@@ -255,14 +255,23 @@ struct TimelineChatTimelineView: View {
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
             // tokens never play a haptic.
+            // A phase change caused by the user's own stop is not a stream
+            // event: the stop key already played its tap feedback, and the
+            // phase's own cue would land right behind it as a second buzz
+            // (device 2026-11-14). The stop's optimistic idle therefore never
+            // plays here; only stream-driven transitions do.
             .sensoryFeedback(.selection, trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .selection
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
+                    && !model.session.runtime.stopRequested
+                    && !model.session.runtime.predictedIdle
             }
             .sensoryFeedback(.impact(weight: .light, intensity: 1.0),
                              trigger: phase) { old, new in
                 TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
+                    && !model.session.runtime.stopRequested
+                    && !model.session.runtime.predictedIdle
             }
             // The Code page's tool detail (official full-screen presentation).
             // Rows report taps through the adapter; this page-level sheet

@@ -70,6 +70,13 @@ final class V2SessionRuntimeModel {
     /// status no authoritative source ever confirmed (an optimistic
     /// prediction, a selection write response) cannot announce a completion.
     private(set) var authoritativeTurnEnds = 0
+    /// An accepted stop is still waiting for its authoritative idle. Consumed
+    /// by the idle transition so the "reply finished" cue can tell a stopped
+    /// turn from a completed one (the user's stop already played its tap
+    /// feedback; a completion buzz behind it reads as a stray second one).
+    private(set) var pendingStopEnd = false
+    /// Whether the newest authoritative turn ending came from a user stop.
+    private(set) var lastTurnEndWasStop = false
 
     func allows(_ id: V2CapabilityID) -> Bool {
         guard isFresh, let capability = capabilities?.capability(id: id) else { return false }
@@ -118,6 +125,7 @@ final class V2SessionRuntimeModel {
     func beginPredictedIdle() {
         guard !predictedIdle else { return }
         predictedIdle = true
+        pendingStopEnd = true
     }
 
     /// Ends the prediction. Called when authoritative facts land (truth wins)
@@ -141,7 +149,15 @@ final class V2SessionRuntimeModel {
         let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
         if fresh, previousStatus?.isTurnInFlight == true, data?.state?.status == .idle {
+            lastTurnEndWasStop = pendingStopEnd
+            pendingStopEnd = false
             authoritativeTurnEnds += 1
+        } else if data?.state?.status.isTurnInFlight == true,
+                  previousStatus?.isTurnInFlight != true {
+            // A new turn started before the stopped one ever reported idle:
+            // the stop's ending will never arrive, so do not let the flag
+            // mute a later completion.
+            pendingStopEnd = false
         }
     }
 }

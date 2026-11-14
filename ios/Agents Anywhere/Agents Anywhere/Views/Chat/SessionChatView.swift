@@ -308,6 +308,10 @@ struct SessionChatView: View, Equatable {
         .completionFeedback(trigger: session.runtime.authoritativeTurnEnds) { previous, current in
             current > previous && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle
+                // A stopped turn already played the stop key's feedback; the
+                // completion buzz behind it would be a stray second cue
+                // (device 2026-11-14).
+                && !session.runtime.lastTurnEndWasStop
         }
         // Context usage is asked for, not derived: once when the page opens,
         // again on every authoritative turn ending, and on a capability or

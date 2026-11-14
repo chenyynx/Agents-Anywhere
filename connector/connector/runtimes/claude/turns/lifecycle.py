@@ -4137,12 +4137,27 @@ class ClaudeTurnRunner:
         ]
         if not candidates:
             return False
-        last = max(candidates, key=lambda item: item.order_seq)
-        stamped = mark_turn_interrupted(last)
-        if stamped is last:
+        # A stop discards the CLI's aborted `tool_result` frame, so a tool that
+        # was still running has no live terminal status: it would stay
+        # `running` until the post-stop history sync re-reads the transcript
+        # (~3 s later), leaving the client's failure mark behind the notice
+        # (device 2026-11-14). The stop itself knows the truth — the tool did
+        # not finish — so publish `failed` in the same push; the sync then
+        # republishes the transcript's own verdict.
+        original = {item.id: item for item in candidates}
+        updated = dict(original)
+        for item in candidates:
+            if item.type == "tool" and item.status == "running":
+                updated[item.id] = _close_running_tool_item(item)
+        anchor_id = max(updated.values(), key=lambda item: item.order_seq).id
+        updated[anchor_id] = mark_turn_interrupted(updated[anchor_id])
+        changed = tuple(
+            item for item in updated.values() if item != original.get(item.id)
+        )
+        if not changed:
             return False
         try:
-            await self.publish_items(execution, (stamped,))
+            await self.publish_items(execution, changed)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude interrupted-turn stamp failed session_id={} turn_id={}",
@@ -4545,6 +4560,30 @@ class ClaudeTurnRunner:
             session,
             source="claude.session.external_id",
         )
+
+
+def _close_running_tool_item(item: RuntimeTimelineItem) -> RuntimeTimelineItem:
+    """Give a still-running tool the terminal status the stop implies.
+
+    The CLI aborts the tool, and the aborted ``tool_result`` it would publish
+    says so — but the stop discards that frame. The row then stays ``running``
+    until the history sync re-reads the transcript, and the client's failure
+    mark (the step-row triangle) trails the interrupted notice by that much.
+    ``failed`` is also what the transcript's aborted result projects, so the
+    live push and the later rebuild agree.
+    """
+
+    return replace(
+        item,
+        status="failed",
+        revision=item.revision + 1,
+        content_hash=timeline_content_hash(
+            item_type="tool",  # type: ignore[arg-type]
+            status="failed",  # type: ignore[arg-type]
+            role=item.role,  # type: ignore[arg-type]
+            content=item.content,
+        ),
+    )
 
 
 def _parent_tool_use_id(message: Any) -> str | None:

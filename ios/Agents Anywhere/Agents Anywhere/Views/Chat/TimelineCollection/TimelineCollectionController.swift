@@ -291,8 +291,22 @@ final class TimelineCollectionController: UIViewController {
     var safeAreaInsets: UIEdgeInsets = .zero {
         didSet {
             guard oldValue != safeAreaInsets else { return }
-            anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+            applySafeAreaInsetsIfMounted()
         }
+    }
+
+    /// Applies the page inset only once the view is in a window.
+    ///
+    /// Before that the scroll view has no safe area of its own, so the
+    /// home-indicator portion cannot be subtracted yet and the driver lays the
+    /// page out 34 pt short. Correcting it after mounting moved the whole page
+    /// by ~113 pt right as the opening content appeared — the "page glides up
+    /// when a session opens" report (pp 2026-11-15). `applyInsets` is
+    /// idempotent, so the first mounted layout pass installs the one true
+    /// value and later passes are no-ops.
+    private func applySafeAreaInsetsIfMounted() {
+        guard isViewLoaded, view.window != nil else { return }
+        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
     }
 
     // MARK: - Lifecycle
@@ -379,7 +393,7 @@ final class TimelineCollectionController: UIViewController {
                     dedupe: false)
             }))
         anchorDriver?.setSuspended(navigationSuspended)
-        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+        applySafeAreaInsetsIfMounted()
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.attach { [weak self] in
             guard let self else { return (false, false, "?") }
@@ -517,6 +531,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The first mounted pass installs the page inset; before the window
+        // there was no scroll-view safe area to subtract (see the helper).
+        applySafeAreaInsetsIfMounted()
         if let hosted = measurer as? TimelineHostingHeightMeasurer {
             hosted.updateTraitOverrides(from: traitCollection)
         }

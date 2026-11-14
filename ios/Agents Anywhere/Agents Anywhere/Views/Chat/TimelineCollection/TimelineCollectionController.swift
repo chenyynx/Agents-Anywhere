@@ -2727,11 +2727,10 @@ final class TimelineCollectionController: UIViewController {
         }
     }
 
-    /// Keeps the bottom follow through UIKit layout corrections for a short
-    /// window after a send (working row → tool row swaps must not leave the
-    /// page short of the new bottom).
-    func beginSendFollowWindow() {
-        anchorDriver?.beginFollowWindow()
+    /// A send pins the page to the bottom until the reader scrolls: working
+    /// row → tool row swaps must not leave the page short of the new bottom.
+    func beginStickyFollow() {
+        anchorDriver?.beginStickyFollow()
     }
 
     /// Forced commands (pill / loadLatest / approval dismissed / window

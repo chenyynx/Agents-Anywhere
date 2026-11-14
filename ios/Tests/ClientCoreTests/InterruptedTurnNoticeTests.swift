@@ -85,4 +85,44 @@ import Testing
         )
         #expect(markers.isEmpty)
     }
+
+    @Test func authoritativeRecoveryStandsDownOnceADurableMarkerExists() throws {
+        // Device 2026-11-14: one stop, two cards. The durable marker sits on
+        // the stopped turn; the recovery then ran again after the next prompt
+        // landed and anchored a second marker on that prompt's row.
+        let timeline = [
+            try item(id: "row-1", turnID: "turn-1", order: 1),
+            try item(id: "row-2", turnID: "turn-1", order: 2, flagged: true),
+            try item(id: "row-3", turnID: "turn-2", order: 3),
+        ]
+        let existing = InterruptedTurnMarkers.merge(local: [], timeline: timeline)
+        #expect(InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline, existing: existing, isIdleInterrupt: true
+        ) == nil)
+    }
+
+    @Test func authoritativeRecoveryAnchorsTheNewestRowForALegacyConnector() throws {
+        let timeline = [
+            try item(id: "row-1", turnID: "turn-1", order: 1),
+            try item(id: "row-2", turnID: "turn-1", order: 2),
+        ]
+        #expect(InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline, existing: [], isIdleInterrupt: true
+        ) == V2InterruptedTurnMarker(anchorItemID: "row-2", turnID: "turn-1"))
+    }
+
+    @Test func authoritativeRecoveryRequiresTheInterruptedIdleState() throws {
+        let timeline = [try item(id: "row-1", turnID: "turn-1", order: 1)]
+        #expect(InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline, existing: [], isIdleInterrupt: false
+        ) == nil)
+    }
+
+    @Test func authoritativeRecoveryLeavesAnAlreadyAnchoredRowAlone() throws {
+        let timeline = [try item(id: "row-1", turnID: "turn-1", order: 1)]
+        let existing = [V2InterruptedTurnMarker(anchorItemID: "row-1", turnID: "turn-1")]
+        #expect(InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline, existing: existing, isIdleInterrupt: true
+        ) == nil)
+    }
 }

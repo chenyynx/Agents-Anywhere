@@ -456,15 +456,22 @@ final class V2SessionModel: Identifiable {
     /// Cold-open recovery: the runtime still names the interrupt as the reason
     /// it is idle, so the newest turn can be recovered even though the live
     /// ack happened on a previous launch.
+    ///
+    /// The anchor is whatever row is newest *now*, so this stays a fallback:
+    /// once the timeline carries a durable `turnInterrupted` marker the fact
+    /// is already represented, and a second local anchor only duplicates the
+    /// card — on whichever turn's row happens to be newest (device
+    /// 2026-11-14: one stop drew a card on the stopped turn and a second card
+    /// under the prompt sent three seconds later).
     func noteAuthoritativeInterruptIfNeeded() {
-        guard runtime.state?.status == .idle,
-              runtime.state?.metadata["source"]?.stringValue
-                  == "claude.session.interrupt",
-              let last = lastMainAgentItem(),
-              !hasInterruptedMarker(for: last)
-        else { return }
-        localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
-                                                             turnID: last.turnId))
+        guard let marker = InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline.map(\.value),
+            existing: interruptedTurns,
+            isIdleInterrupt: runtime.state?.status == .idle
+                && runtime.state?.metadata["source"]?.stringValue
+                    == "claude.session.interrupt"
+        ) else { return }
+        localInterruptedTurns.append(marker)
         cachedInterruptedTurns = nil
         repository?.draftDidChange(sessionID: id)
     }
@@ -1002,6 +1009,40 @@ final class V2SessionModel: Identifiable {
 /// produced before the connector learned to stamp them.
 nonisolated enum InterruptedTurnMarkers {
     static let contentKey = "turnInterrupted"
+
+    /// Whether the cold-open recovery may anchor a new local marker.
+    ///
+    /// `existing` is the merged view (local ack markers plus durable flags),
+    /// and the timeline guard is deliberately not "a marker for this turn
+    /// exists": the runtime state names no turn, so `last` may be a newer
+    /// prompt's row, which no per-turn comparison can rule out. Once any
+    /// durable marker is present the fact is represented and the fallback
+    /// must stand down; it exists only for connectors that never stamped.
+    static func authoritativeAnchor(
+        timeline: [V2TimelineItem],
+        existing: [V2InterruptedTurnMarker],
+        isIdleInterrupt: Bool
+    ) -> V2InterruptedTurnMarker? {
+        guard isIdleInterrupt,
+              !hasDurableMarker(in: timeline),
+              let last = lastMainItem(in: timeline),
+              !existing.contains(where: {
+                  $0.anchorItemID == last.id
+                      || ($0.turnID != nil && $0.turnID == last.turnId)
+              })
+        else { return nil }
+        return V2InterruptedTurnMarker(anchorItemID: last.id, turnID: last.turnId)
+    }
+
+    static func hasDurableMarker(in timeline: [V2TimelineItem]) -> Bool {
+        timeline.contains { $0.raw["content"]?[contentKey]?.boolValue == true }
+    }
+
+    private static func lastMainItem(in timeline: [V2TimelineItem]) -> V2TimelineItem? {
+        // Sub-agent child rows live in the same array but not in the chat
+        // timeline; anchoring on one would never find a row to sit after.
+        timeline.last { $0.raw["content"]?["parentItemId"] == nil }
+    }
 
     static func merge(local: [V2InterruptedTurnMarker],
                       timeline: [V2TimelineItem]) -> [V2InterruptedTurnMarker] {

@@ -663,10 +663,19 @@ final class TimelineAnchorDriver {
             // a stream flush. This must outrank the dead band below, where a
             // live stream keeps a sub-pixel gap while the motion stays alive.
             if contentMove, moverIsContent {
-                let changed = mover.spring != .ease
-                mover.retarget(spring: .ease, usesPace: false)
+                // A second height change inside the same insert (working row,
+                // tool row, estimated-height correction — 13–40 ms apart on
+                // device) keeps the crisp content spring. Only a stream whose
+                // next chunk arrives later than this window earns the 0.4 s
+                // catch-up; retargeting every follow made the "正在处理中"
+                // row take 0.53 s to settle (device 2026-11-15 02:39:39).
+                let continuingStream = CACurrentMediaTime() - moverStartedAt > 0.1
+                let wanted: TimelineSpringFollow.Spring =
+                    continuingStream ? .ease : .content
+                let changed = mover.spring != wanted
+                mover.retarget(spring: wanted, usesPace: false)
                 if changed {
-                    reportMover("retarget", spring: .ease, target: target,
+                    reportMover("retarget", spring: wanted, target: target,
                                 position: mover.position, contentMove: contentMove)
                 }
             } else if !contentMove {

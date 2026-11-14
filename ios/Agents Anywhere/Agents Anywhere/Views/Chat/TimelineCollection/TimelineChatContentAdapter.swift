@@ -2150,7 +2150,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             authoritativeTurnEnds: model.session.runtime.authoritativeTurnEnds)
         let turnActions = TimelineTurnActions.build(
             groups: groups,
-            suppressLatest: latestTurnOpen || model.session.hasNewerItems,
+            // The gate's authoritative end count is the primary boundary, but
+            // a turn that ended without a captured transition must not keep
+            // its footer suppressed until the next user message (device
+            // 2026-11-15: the copy/share buttons only appeared after the
+            // reader sent the following message). A confirmed idle overrides
+            // the open gate; a running tool step still suppresses, so the
+            // footer cannot hop between reply segments.
+            suppressLatest: (latestTurnOpen && model.isRunning)
+                || model.session.hasNewerItems,
             // Only an outgoing bubble that has not been echoed starts a new
             // turn for the previous footer. A confirmed record held by the
             // presentation until its echo row publishes is not a new turn.

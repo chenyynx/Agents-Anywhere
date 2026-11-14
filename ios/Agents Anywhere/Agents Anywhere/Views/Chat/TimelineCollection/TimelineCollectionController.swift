@@ -1398,6 +1398,21 @@ final class TimelineCollectionController: UIViewController {
                 documentHeights.removeValue(forKey: item.itemID)
                 continue
             }
+            // A tail that just emptied has an exact height (the 12/32
+            // spacer). Write it for the new key even though the row was
+            // displayed: the self-reporting path below deliberately keeps a
+            // displayed row's old height until the cell reports, and for the
+            // tail that old height is the queued bubble — the bottom would
+            // then drop a bubble late (device 2026-11-14: "the page jumps
+            // when a queued message is sent"). The cell's later self-report
+            // still owns the final word.
+            if case .tail = item, case let .fixed(height) = content.estimateKind(for: item) {
+                let key = content.heightKey(for: item, width: width)
+                if !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                    layout.heights.set(height, for: key, tier: .precalc)
+                }
+                continue
+            }
             // Official hosted-cell contract rows measure themselves once when
             // the cell materializes and report later changes through
             // `heightDidChange`; the controller must not mark them measured.

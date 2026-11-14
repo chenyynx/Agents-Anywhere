@@ -414,7 +414,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .olderPrompt: return .olderPrompt
         case .latestPrompt: return .latestPrompt
         case .workingStatus: return .fixed(CodeWorkingStatusRow.estimatedHeight)
-        case .tail: return .tail(statusLine: tailStatusLineVisible)
+        case .tail:
+            // An empty queue leaves exactly the spacer (12 pt, or 32 pt with
+            // the status line). Declaring that as a fixed height lets the
+            // layout take it in the same apply that removes the last queued
+            // bubble; otherwise the row keeps the bubble's height until the
+            // cell self-reports and the bottom drops a bubble late (device
+            // 2026-11-14: the page jumped when a queued message was sent).
+            if model.session.sendQueue.items.isEmpty {
+                return .fixed(TimelineHeightEstimateKind.tail(
+                    statusLine: tailStatusLineVisible).height)
+            }
+            return .tail(statusLine: tailStatusLineVisible)
         case .notice: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }

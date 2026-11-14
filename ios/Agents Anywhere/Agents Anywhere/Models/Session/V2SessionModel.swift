@@ -249,6 +249,11 @@ final class V2SessionModel: Identifiable {
     /// connector's `content.turnInterrupted` flag) win over these when both
     /// name the same turn — see `interruptedTurns`.
     private(set) var localInterruptedTurns: [V2InterruptedTurnMarker] = []
+    /// Lazily merged view of `localInterruptedTurns` + the timeline's
+    /// `turnInterrupted` flags. Every read used to copy and rescan the whole
+    /// timeline; a single rebuild reads it two or three times, so cache it
+    /// until the next timeline apply (or a local marker change).
+    @ObservationIgnored private var cachedInterruptedTurns: [V2InterruptedTurnMarker]?
     /// Set when the composer's text came back from an unresolved send record;
     /// the next send from that draft replaces the record once it is confirmed.
     @ObservationIgnored private(set) var draftRestoredFromPendingID: String?
@@ -427,8 +432,28 @@ final class V2SessionModel: Identifiable {
     /// when both name the same turn, because it is the one every device and
     /// every relaunch sees.
     var interruptedTurns: [V2InterruptedTurnMarker] {
-        InterruptedTurnMarkers.merge(local: localInterruptedTurns,
-                                     timeline: timeline.map(\.value))
+        if let cachedInterruptedTurns { return cachedInterruptedTurns }
+        let merged = InterruptedTurnMarkers.merge(local: localInterruptedTurns,
+                                                  timeline: timeline.map(\.value))
+        cachedInterruptedTurns = merged
+        return merged
+    }
+
+    /// Cheap fingerprint for the local half of `interruptedTurns`.
+    ///
+    /// The adapter's per-update `updateFingerprint()` must not read the merged
+    /// array: that copies the whole timeline and rescans it on every SwiftUI
+    /// update (`TimelineChatContentAdapter.prepareForUpdate`). Local stop
+    /// markers are the only interrupt input that can change without a timeline
+    /// flush; server-side `turnInterrupted` flags arrive together with a
+    /// `flushRevision` bump, which the fingerprint already hashes.
+    var localInterruptedTurnsSignature: Int {
+        var hasher = Hasher()
+        for marker in localInterruptedTurns {
+            hasher.combine(marker.anchorItemID)
+            hasher.combine(marker.turnID)
+        }
+        return hasher.finalize()
     }
 
     /// Freezes the just-stopped turn on its last main-agent row. Called on the
@@ -441,6 +466,7 @@ final class V2SessionModel: Identifiable {
         else { return }
         localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
                                                              turnID: last.turnId))
+        cachedInterruptedTurns = nil
         repository?.draftDidChange(sessionID: id)
     }
 
@@ -456,6 +482,7 @@ final class V2SessionModel: Identifiable {
         else { return }
         localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,
                                                              turnID: last.turnId))
+        cachedInterruptedTurns = nil
         repository?.draftDidChange(sessionID: id)
     }
 
@@ -795,6 +822,9 @@ final class V2SessionModel: Identifiable {
             timeline = rows
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         }
+        // A row update may add or remove `turnInterrupted`; the merged marker
+        // cache is derived from those rows and the local marker list.
+        cachedInterruptedTurns = nil
         // Reconcile authoritative echoes against both the optimistic bubbles and
         // the send queue. A queued message in flight has a sendQueue row but no
         // pending bubble, so gating on `pendingMessages` alone would skip a
@@ -897,6 +927,7 @@ final class V2SessionModel: Identifiable {
         // The notice list is read-only history, not local work; restore it
         // even when a draft/queue write raced the disk read.
         localInterruptedTurns = archive.interruptedTurns ?? []
+        cachedInterruptedTurns = nil
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
         draft = archive.draft; composer.attachments = archive.draftAttachments
@@ -933,7 +964,7 @@ final class V2SessionModel: Identifiable {
         queueDrainTask?.cancel(); queueDrainTask = nil
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
-        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; localInterruptedTurns = []; draft = ""; draftAttachmentIDs = []
+        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; localInterruptedTurns = []; cachedInterruptedTurns = nil; draft = ""; draftAttachmentIDs = []
         draftRestoredFromPendingID = nil; blockedSendPendingID = nil
         activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()

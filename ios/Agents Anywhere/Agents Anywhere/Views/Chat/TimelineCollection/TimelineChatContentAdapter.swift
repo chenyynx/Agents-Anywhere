@@ -103,7 +103,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // idle makes a late `running` row stale (pp 2026-11-14).
         hasher.combine(model.isTurnStreaming)
         hasher.combine(model.session.runtime.isFresh)
-        hasher.combine(model.interruptedTurns.map(\.anchorItemID).joined(separator: ","))
+        // Hash the cheap local marker signature, not the merged array: the
+        // latter maps the whole timeline and rescans it on every SwiftUI
+        // update (the keyboard/drawer path). Server-side `turnInterrupted`
+        // flags come with `flushRevision`, hashed above.
+        hasher.combine(model.session.localInterruptedTurnsSignature)
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)

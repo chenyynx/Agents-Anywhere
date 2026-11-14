@@ -1814,8 +1814,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // working row once the live turn has a step group, not even between
         // steps or before the first body text. Only a live turn with no steps
         // yet shows the standalone row.
+        // The tail's queue bubble already shows the in-flight spinner. In the
+        // chat profile a standalone working row next to it is a second copy
+        // of the same fact, and stacking the two adds the working row's
+        // height on the send-success frame (+49, device 2026-11-14). Once the
+        // queue empties the working row takes the bubble's place in the same
+        // apply, so the swap stays height-neutral.
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && chatLiveTurnHasSteps)
+            && !(renderMode == .chat && (chatLiveTurnHasSteps
+                || !model.session.sendQueue.items.isEmpty))
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
@@ -1966,9 +1973,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (diagnostics 2026-11-14 19:22:41: allowsPose=1 fresh=0
             // stopRequested=1), and that row's live/settled height difference
             // also moved the bottom — the flash and the jump share this gate.
+            // A cold open has no runtime status yet; the local row snapshot
+            // can still say `running` from the previous launch, and drawing
+            // that pose before any live fact arrives is a false active row
+            // (device 2026-11-14 21:03:00: fresh=0, status=nil, 4 stale
+            // steps). Only trust row status once the runtime has reported
+            // something; the `!isFresh` fallback still covers a known-stale
+            // projection.
             chatAllowsRunningPose = !model.session.runtime.isFresh
                 && !model.session.runtime.stopRequested
                 && !model.session.runtime.predictedIdle
+                && model.session.runtime.state != nil
             chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
             // While the turn streams, a failed tool in the group is not
             // residue — the agent moves on and the row must keep the live
@@ -2248,6 +2263,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     }
                     return present ? "1" : "0"
                 }(),
+                "tailH": {
+                    guard let controller,
+                          let height = controller.tailCellHeight() else { return "-1" }
+                    return String(format: "%.1f", height)
+                }(),
+                "working": lastHasWorkingStatus ? "1" : "0",
                 "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
                 "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
                 "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),

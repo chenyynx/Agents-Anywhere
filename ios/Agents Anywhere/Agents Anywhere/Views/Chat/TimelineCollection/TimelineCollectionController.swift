@@ -2140,6 +2140,15 @@ final class TimelineCollectionController: UIViewController {
         TimelineListMetrics.column(containerWidth: collectionView?.bounds.width ?? 0).width
     }
 
+    /// The tail cell's current laid-out height, for the queue handoff
+    /// diagnostics. Nil until the tail is in the applied snapshot.
+    func tailCellHeight() -> CGFloat? {
+        guard collectionView != nil, dataSource != nil else { return nil }
+        guard let index = dataSource.snapshot().indexOfItem(.tail) else { return nil }
+        return collectionView.layoutAttributesForItem(
+            at: IndexPath(item: index, section: 0))?.frame.height
+    }
+
     var viewport: TimelineViewport {
         TimelineViewport(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,

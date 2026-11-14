@@ -641,6 +641,17 @@ final class TimelineListLayout: UICollectionViewLayout {
                                   state: TimelineLayoutInteractionState,
                                   probeSource: String) {
         guard let collectionView else { return }
+        if abs(contentSizeDelta) > 0.5 {
+            // The second height-write path (hosted/preferred/streaming). The
+            // send-time -30 pt correction goes through here, not
+            // `applyHeightUpdates`, so the handless-scroll trail must see it.
+            recentHeightChanges.note(
+                itemID: itemID,
+                oldHeight: attributes.frame.height,
+                newHeight: attributes.frame.height + contentSizeDelta,
+                source: probeSource.isEmpty ? "invalidate" : probeSource,
+                at: CACurrentMediaTime())
+        }
 #if DEBUG
         if let state = host?.layoutInteractionState(),
            state.isTracking || state.isDecelerating {

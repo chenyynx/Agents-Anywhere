@@ -695,15 +695,16 @@ final class TimelineCollectionController: UIViewController {
         // working-row report). Group/message churn is left out so a stream
         // cannot flood the file.
         let newItemIDs = Set(items)
-        let removedSendPath = oldItems.filter {
-            !newItemIDs.contains($0) && Self.isSendPathItem($0)
-        }
-        let addedSendPath = items.filter {
-            !oldIDs.contains($0) && Self.isSendPathItem($0)
-        }
+        let removedAll = oldItems.filter { !newItemIDs.contains($0) }
+        let addedAll = items.filter { !oldIDs.contains($0) }
+        let removedSendPath = removedAll.filter(Self.isSendPathItem)
+        let addedSendPath = addedAll.filter(Self.isSendPathItem)
         if !removedSendPath.isEmpty || !addedSendPath.isEmpty {
-            // `lastPreparedHeight` names the height the row was last laid out
-            // at; an inserted row that has not prepared yet logs just its id.
+            // A send-path item changed, so this apply is the send handoff:
+            // log every row it inserts or removes (the echo message group is
+            // part of the same handoff even though its own id is not send
+            // path). `lastPreparedHeight` names the height the row was last
+            // laid out at; a never-prepared row logs just its id.
             func describe(_ item: TimelineListItem) -> String {
                 guard let height = layout.lastPreparedHeight[item.itemID] else {
                     return "\(item.itemID)|-"
@@ -714,10 +715,12 @@ final class TimelineCollectionController: UIViewController {
                 kind: "timeline.items.diff",
                 sessionID: diagnosticSessionID,
                 detail: [
-                    "removed": removedSendPath.isEmpty
-                        ? "-" : removedSendPath.map(describe).joined(separator: ","),
-                    "added": addedSendPath.isEmpty
-                        ? "-" : addedSendPath.map(describe).joined(separator: ","),
+                    "removed": removedAll.isEmpty
+                        ? "-" : removedAll.prefix(8).map(describe)
+                            .joined(separator: ","),
+                    "added": addedAll.isEmpty
+                        ? "-" : addedAll.prefix(8).map(describe)
+                            .joined(separator: ","),
                 ],
                 dedupe: false)
         }

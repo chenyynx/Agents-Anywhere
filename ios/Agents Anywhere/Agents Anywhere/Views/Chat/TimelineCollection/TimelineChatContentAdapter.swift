@@ -168,6 +168,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// that hold each stopped turn's last row). Empty when no stop is known
     /// for this session, or when the anchor rows are outside the window.
     private var chatInterruptedItemIDs: Set<String> = []
+    /// Last interrupted-card anchors the diagnostics probe saw. The card's
+    /// height is applied by the adapter apply that first knows the anchor;
+    /// logging that moment separates "the marker apply drew it" from "a later,
+    /// unrelated refresh dragged its height in" (device 2026-11-14).
+    private var lastInterruptedCardProbeIDs: Set<String> = []
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -2065,6 +2070,28 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         chatInterruptedItemIDs = Set(model.interruptedTurns.compactMap {
             rowToItem[$0.anchorItemID]?.itemID
         })
+        let newCardAnchors = chatInterruptedItemIDs.subtracting(lastInterruptedCardProbeIDs)
+        if !newCardAnchors.isEmpty {
+            let viewport = controller?.viewport
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.interrupt.card",
+                sessionID: model.session.id,
+                detail: [
+                    "anchors": newCardAnchors.sorted().joined(separator: ","),
+                    "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
+                    "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
+                    "tailH": {
+                        guard let height = controller?.tailCellHeight() else { return "-1" }
+                        return String(format: "%.1f", height)
+                    }(),
+                    "fresh": model.session.runtime.isFresh ? "1" : "0",
+                    "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                    "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
+        }
+        lastInterruptedCardProbeIDs = chatInterruptedItemIDs
         var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
         for notice in visibleNotices where notice.notice.type == "interaction" {
             guard let target = notice.timelineTargetID else { continue }

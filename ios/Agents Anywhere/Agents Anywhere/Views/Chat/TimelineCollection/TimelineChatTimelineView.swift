@@ -54,6 +54,16 @@ struct TimelineChatTimelineView: View {
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a
     /// selection, `writing -> idle` is the single light impact.
     private var turnPhase: ChatTurnPhase {
+        // A stopped turn is over for the user the moment they tap stop. The
+        // row snapshots still say `running` until the connector's terminal
+        // row lands, and holding the phase that long fired the phase haptic
+        // seconds after the visual settled — a buzz with no visible cause
+        // (device 2026-11-14: it used to ride the late ⚠️). The optimistic
+        // stop (tap or accepted ack) ends the phase here, so the cue lands
+        // with the notice instead.
+        if model.session.runtime.stopRequested || model.session.runtime.predictedIdle {
+            return .idle
+        }
         let signals = model.orbActivitySignals
         return ChatTurnPhase.resolve(
             toolActive: signals.hasActiveToolItem,

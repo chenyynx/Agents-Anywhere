@@ -96,9 +96,14 @@ final class SessionChatModel {
         // keeps session metadata after evicting rows, and treating that shell
         // as cached suppressed the cold mask while the newest page was still
         // downloading — the session looked broken (device 2026-11-01).
-        // A local creation is the exception: its placeholder is deliberately
-        // empty and the pending bubble must show without a mask.
+        // An unconfirmed outgoing bubble is local content that must show
+        // immediately. A local creation carries it on its placeholder, and
+        // the server entry a creation binds onto starts empty with the same
+        // bubble staged. Without this the bound page cold-opened — blank
+        // until the newest page returned — and replayed the send's entrance
+        // (pp 2026-11-15: the bubble and the working row animated twice).
         opensFromCachedSnapshot = session.isLocalCreation
+            || !session.pendingMessages.isEmpty
             || repository.cached(sessionId: session.id)?.items.isEmpty == false
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
@@ -318,9 +323,13 @@ final class SessionChatModel {
         openingError = nil
         // A memory-cached visit presents before any network read so the page is
         // usable immediately (D3). Present the same opening window the store
-        // reads, so the later refresh cannot remove rows the reader sees.
+        // reads, so the later refresh cannot remove rows the reader sees. An
+        // unconfirmed bubble counts as presentable content: the entry a
+        // creation binds onto is empty but already carries it, and waiting for
+        // the network left the page blank and replayed the entrance
+        // (pp 2026-11-15).
         if session.isValid, let cached = repository.cached(sessionId: session.id),
-           !cached.items.isEmpty || session.isLocalCreation {
+           !cached.items.isEmpty || session.isLocalCreation || !session.pendingMessages.isEmpty {
             timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
                                     pendingMessages: session.pendingMessages)
             isOpeningPrepared = true

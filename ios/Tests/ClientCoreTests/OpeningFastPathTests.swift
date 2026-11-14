@@ -320,6 +320,48 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.openingError == nil)
     }
 
+    /// A creation handoff: the server entry a local creation binds onto starts
+    /// with an empty projection and the unconfirmed bubble staged. It must open
+    /// like a cached visit — the bubble paints before the newest page returns
+    /// and no cold mask covers the page. Otherwise the bound page stayed blank
+    /// until the snapshot landed and replayed the send's entrance (pp
+    /// 2026-11-15: the bubble and the working row animated twice).
+    @Test func aBoundCreationOpensLikeACachedVisitInsteadOfColdOpening() async throws {
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        var latestStarted = false
+        http.respond = { call in
+            if call.path.hasSuffix("timeline") {
+                latestStarted = true
+                await gate.wait()
+                return try openingTimelinePage(rows: [1])
+            }
+            return try http.defaultResponse(call)
+        }
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let project = try fixture("project", as: V2ProjectResponse.self).project
+        let runtime: V2DeviceRuntime = try fixture("runtime")
+        let submission = NewSessionSubmission(
+            project: project, runtime: runtime, text: "第一条", attachments: [])
+        repo.stageCreation(submission)
+        let response: V2SessionCreateResponse = try fixture("session")
+        repo.bindCreation(submission, response: response)
+
+        let model = chat(repo, http)
+        #expect(model.opensFromCachedSnapshot)
+        #expect(!model.showsOpeningMask)
+        let opening = Task { await model.prepareOpening() }
+        defer { gate.release(); opening.cancel() }
+        try await eventually { latestStarted }
+        // The bubble on the handoff entry is presentable while the newest page
+        // is still in flight; the page never shows an empty window.
+        #expect(model.isOpeningReady)
+        #expect(model.timeline.pendingMessages.map(\.id) == [submission.pending.id])
+        await opening.value
+        #expect(model.openingError == nil)
+    }
+
     @Test func coldMaskWaitsForTheFirstPositioningOrItsBoundedFallback() async throws {
         let http = TestHTTPTransport()
         let repo = repository(transport: http)

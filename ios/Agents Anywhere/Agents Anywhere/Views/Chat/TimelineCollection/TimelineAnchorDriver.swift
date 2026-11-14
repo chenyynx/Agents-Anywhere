@@ -69,6 +69,12 @@ final class TimelineAnchorDriver {
     /// the placement to `.reading` (keyboard up + pending row insert, device
     /// 2026-11-14).
     private var lastObservedContentHeight: CGFloat?
+    /// The last offset seen outside a running Mover, for the diagnostics
+    /// trail. A scroll callback that moves the page by more than a few points
+    /// while the driver is not writing and the Mover is not running is an
+    /// external write (UIKit layout correction, inset apply) — the shape the
+    /// "page jumped instead of scrolling" report describes (device 2026-11-15).
+    private var lastObservedOffset: CGFloat?
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
@@ -208,6 +214,18 @@ final class TimelineAnchorDriver {
             || abs(current.bottom - target.bottom) > 0.5
             || abs(current.right - target.right) > 0.5
         guard changed else { return }
+        // Who moved the page when the composer/keyboard changed the inset:
+        // the before/after offset and inset are the only record of the
+        // "page jumped instead of scrolling" report (device 2026-11-15).
+        let diagnosticOffsetBefore = view.contentOffset.y
+        defer {
+            inputs.onMoverEvent?("inset", [
+                "insetBefore": String(format: "%.1f", current.bottom),
+                "insetAfter": String(format: "%.1f", target.bottom),
+                "offsetBefore": String(format: "%.1f", diagnosticOffsetBefore),
+                "offsetAfter": String(format: "%.1f", view.contentOffset.y),
+            ])
+        }
 #if AA_TIMELINE_PROBE
         let offsetBefore = view.contentOffset
         let insetBefore = current
@@ -436,6 +454,18 @@ final class TimelineAnchorDriver {
     /// `scrolledWithoutAHand`). The driver's own writes set `isApplying`.
     func scrolledWithoutAHand() {
         guard state.hasLanded else { return }
+        let liveOffset = scrollView?.contentOffset.y ?? 0
+        if let previous = lastObservedOffset,
+           !mover.isRunning, !isApplying,
+           abs(liveOffset - previous) > 8 {
+            inputs.onMoverEvent?("scroll", [
+                "position": String(format: "%.1f", liveOffset),
+                "previous": String(format: "%.1f", previous),
+                "contentH": String(format: "%.1f", inputs.contentHeight()),
+                "placement": String(describing: state.placement),
+            ])
+        }
+        lastObservedOffset = liveOffset
         let contentHeight = inputs.contentHeight()
         let contentHeightChanged = lastObservedContentHeight.map {
             abs(contentHeight - $0) > 0.5

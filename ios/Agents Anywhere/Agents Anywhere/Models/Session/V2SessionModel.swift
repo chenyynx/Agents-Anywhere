@@ -513,6 +513,33 @@ final class V2SessionModel: Identifiable {
         repository?.draftDidChange(sessionID: id)
     }
 
+    /// Tripwire for "a stopped turn's tool row moved after the stop".
+    ///
+    /// The visible flash was one symptom of this data path; a late `running`
+    /// write, a status bouncing back, or a row arriving after the card all
+    /// land here. Diagnostics only (the reader keeps that file); every status
+    /// change is recorded with the gates that decide the drawn pose, so a
+    /// recurrence can be told from normal convergence.
+    private func recordPostStopToolChange(
+        _ item: V2TimelineItem,
+        from previous: V2TimelineItemStatus?
+    ) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.tool.after_stop",
+            sessionID: id,
+            detail: [
+                "item": item.id,
+                "from": previous?.rawValue ?? "none",
+                "to": item.status.rawValue,
+                "revival": item.status == .running ? "1" : "0",
+                "revision": String(item.revision),
+                "updatedSeq": String(item.updatedSeq),
+                "fresh": runtime.isFresh ? "1" : "0",
+                "stopRequested": runtime.stopRequested ? "1" : "0",
+                "predictedIdle": runtime.predictedIdle ? "1" : "0",
+            ])
+    }
+
     /// Cold-open recovery: the runtime still names the interrupt as the reason
     /// it is idle, so the newest turn can be recovered even though the live
     /// ack happened on a previous launch.
@@ -856,7 +883,17 @@ final class V2SessionModel: Identifiable {
         var rows: [V2TimelineItemModel] = []
         rows.reserveCapacity(items.count)
         var orderChanged = items.count != timeline.count
+        // Stopped turns whose tool rows may still move under the user's eyes.
+        // Read once per apply (the cache is cleared at the end of this method).
+        let stoppedTurnIDs = Set(interruptedTurns.compactMap(\.turnID))
         for (index, item) in items.enumerated() {
+            if item.type == .tool, !stoppedTurnIDs.isEmpty,
+               let turnID = item.turnId, stoppedTurnIDs.contains(turnID) {
+                let previousStatus = rowsByID[item.id]?.value.status
+                if previousStatus != item.status {
+                    recordPostStopToolChange(item, from: previousStatus)
+                }
+            }
             let row: V2TimelineItemModel
             if let existing = rowsByID[item.id] {
                 row = existing

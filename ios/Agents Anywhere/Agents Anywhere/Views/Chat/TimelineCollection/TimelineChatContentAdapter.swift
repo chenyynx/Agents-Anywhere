@@ -1245,14 +1245,37 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if let stepGroup = stepGroupsByID[id] {
                 let cwd = model.session.metadata?.cwd
                 let isLiveTail = id == chatLiveTailGroupID
+                let allowsPose = chatAllowsRunningPose
+                    || chatRunningPoseGroupIDs.contains(stepGroup.id)
+                // Probe for the intermittent "a stopped turn still drew the
+                // working pose" report (device 2026-11-14, fixed then; kept as
+                // a tripwire because it was layout-dependent). One diagnostics
+                // line per group per window when the pose is drawn while the
+                // turn is not streaming — the reader has that file only.
+                if !model.isTranscriptStreaming,
+                   stepGroup.showsRunningPose(isLiveTail: isLiveTail,
+                                              allowsRunningPose: allowsPose) {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.step.pose_after_stop",
+                        sessionID: model.session.id,
+                        detail: [
+                            "group": stepGroup.id,
+                            "liveTail": isLiveTail ? "1" : "0",
+                            "allowsPose": allowsPose ? "1" : "0",
+                            "fresh": model.session.runtime.isFresh ? "1" : "0",
+                            "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                            "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                            "status": String(describing: model.session.runtime.state?.status),
+                            "steps": String(stepGroup.steps.count),
+                        ])
+                }
                 // A group from the running turn opens at its newest step too:
                 // the gap between two steps has nothing running, and a group
                 // that body text follows is still the turn's work
                 // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail,
-                                                    allowsRunningPose: chatAllowsRunningPose
-                                                        || chatRunningPoseGroupIDs.contains(stepGroup.id),
+                                                    allowsRunningPose: allowsPose,
                                                     treatsRunningAsFailed: model.treatsRunningStepsAsFailed,
                                                     showsInterruptedNotice:
                                                         chatInterruptedItemIDs.contains(

@@ -311,11 +311,11 @@ final class TimelineCollectionController: UIViewController {
     /// 94→60 on every open). `applyInsets` is idempotent, so the first
     /// correctly-derivable pass installs the one true value and later passes
     /// are no-ops.
-    private func applySafeAreaInsetsIfMounted() {
+    private func applySafeAreaInsetsIfMounted(wasAtBottom: Bool = false) {
         guard isViewLoaded, view.window != nil else { return }
         guard hasAppliedInsets || collectionView?.safeAreaInsets != .zero || hasAppeared else { return }
         hasAppliedInsets = true
-        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+        anchorDriver?.updateSafeAreaInsets(safeAreaInsets, wasAtBottom: wasAtBottom)
     }
 
     // MARK: - Lifecycle
@@ -613,9 +613,13 @@ final class TimelineCollectionController: UIViewController {
         // The last published viewport is the pre-change one: it tells the
         // driver whether the page was resting on the bottom before a
         // keyboard/composer transition.
-        anchorDriver?.updateSafeAreaInsets(
-            safeAreaInsets,
-            wasAtBottom: lastPublishedViewport.measuredAtBottom)
+        //
+        // This callback is also the first one that arrives before the scroll
+        // view has its own safe area installed: the gate defers the install to
+        // the adjusted-content-inset pass, so the page is never laid out 34 pt
+        // short and then corrected under the reader's eyes (pp 2026-11-15;
+        // b1224 still applied 0→94 here and 94→60 a few ms later).
+        applySafeAreaInsetsIfMounted(wasAtBottom: lastPublishedViewport.measuredAtBottom)
         handleContainerHeightChange()
     }
 

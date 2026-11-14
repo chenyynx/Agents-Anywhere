@@ -438,6 +438,16 @@ final class TimelineAnchorDriver {
             enforceReadingPlacement()
             return
         }
+        if !didReportOpeningArrival {
+            // The opening visit's first content belongs to the opening
+            // landing, not to a follow: the window mounts above its newest
+            // rows and must arrive instantly. Animating it glided the whole
+            // page up while the sidebar closed — the "page moves up when a
+            // session opens" report (pp 2026-11-15; b1224 cold open: a 645 pt
+            // `content` spring started 30 ms after the rows landed).
+            placeDirect()
+            return
+        }
         // Content growth follows with the short content spring (official
         // collection-view insert feel); only an explicit scroll request uses
         // the 0.4 s ease/fly.

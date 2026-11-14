@@ -147,7 +147,7 @@ struct TurnFooterGateTests {
         #expect(open)
     }
 
-    @Test func anAuthoritativeEndClosesTheTurnAndStatusFlapsDoNotReopenIt() {
+    @Test func anAuthoritativeEndClosesTheTurnAndAResumedTurnReopensIt() {
         var gate = TurnFooterGate()
         _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
         // A running/idle flap with no authoritative end keeps the turn open.
@@ -155,9 +155,21 @@ struct TurnFooterGateTests {
         #expect(flapWhileOpen)
         let afterEnd = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
         #expect(!afterEnd)
-        // The status flapping back to running does not reopen the footer.
-        let flapAfterEnd = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
-        #expect(!flapAfterEnd)
+        // The runtime reports a turn in flight on the same user message: a
+        // tool step resumed or the status was stale. Suppress again instead
+        // of leaving the footer mid-turn (device 2026-11-14).
+        let resumed = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(resumed)
+    }
+
+    @Test func aColdOpenMidTurnReopensWhenTheLiveStatusArrives() {
+        var gate = TurnFooterGate()
+        // The first refresh can precede the live runtime status; the app was
+        // launched while a turn was already running (device 2026-11-14).
+        let beforeStatus = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!beforeStatus)
+        let afterStatus = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(afterStatus)
     }
 
     @Test func theNextTurnReopensAfterAClosedTurn() {

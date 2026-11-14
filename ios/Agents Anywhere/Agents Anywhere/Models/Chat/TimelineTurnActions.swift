@@ -66,7 +66,18 @@ nonisolated struct TurnFooterGate: Equatable {
         }
         if authoritativeTurnEnds != endsSeen {
             endsSeen = authoritativeTurnEnds
-            isOpen = false
+            // An end seen while the runtime still reports a turn in flight is
+            // a tool-step flap, not the turn's end.
+            if !runtimeIsRunning {
+                isOpen = false
+            }
+        }
+        if runtimeIsRunning {
+            // A cold open can initialize the gate before the live status
+            // arrives (the app was launched mid-turn), and a tool step can
+            // follow a transient idle. The turn is still in flight, so the
+            // footer must stay suppressed on the same user message.
+            isOpen = true
         }
         return isOpen
     }

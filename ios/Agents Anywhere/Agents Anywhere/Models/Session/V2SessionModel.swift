@@ -486,10 +486,12 @@ final class V2SessionModel: Identifiable {
     }
 
     /// Rolls back a tap-time marker when the stop request was refused.
-    func discardInterruptedTurn(anchor: V2TimelineItem) {
-        guard let index = localInterruptedTurns.firstIndex(where: {
-            $0.anchorItemID == anchor.id && $0.turnID == anchor.turnId
-        }) else { return }
+    func discardInterruptedTurn(anchor: V2TimelineItem?) {
+        guard let anchor,
+              let index = localInterruptedTurns.firstIndex(where: {
+                  $0.anchorItemID == anchor.id && $0.turnID == anchor.turnId
+              })
+        else { return }
         localInterruptedTurns.remove(at: index)
         cachedInterruptedTurns = nil
         repository?.draftDidChange(sessionID: id)

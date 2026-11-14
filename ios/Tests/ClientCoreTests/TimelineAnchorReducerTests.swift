@@ -142,13 +142,32 @@ import Testing
     }
 
     @Test func contentGrowthFollowsOnlyTheEnd() {
-        let following = reduce(landed(.end), .contentChanged)
+        let following = reduce(landed(.end), .contentChanged(wasAtBottom: false))
         #expect(following.action == .move)
         #expect(following.state.isFollowingCatchUp)
 
-        let reading = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)), .contentChanged)
+        let reading = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)),
+                             .contentChanged(wasAtBottom: false))
         #expect(reading.action == .none)
         #expect(!reading.state.isFollowingCatchUp)
+    }
+
+    /// A UIKit layout correction can flip `.end` to `.reading` before the
+    /// content-change event while the keyboard is up. The pre-change bottom
+    /// verdict wins, so the reader keeps following.
+    @Test func aBottomReaderReAdoptsEndAfterALayoutCorrection() {
+        let corrected = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)),
+                               .contentChanged(wasAtBottom: true))
+        #expect(corrected.state.placement == .end)
+        #expect(corrected.action == .move)
+        #expect(corrected.state.isFollowingCatchUp)
+    }
+
+    @Test func aDraggingReaderKeepsOwnershipThroughContentGrowth() {
+        let dragging = reduce(landed(.reading(id: "u1", offsetIntoRow: 40), motion: .dragging),
+                              .contentChanged(wasAtBottom: true))
+        #expect(dragging.state.placement == .reading(id: "u1", offsetIntoRow: 40))
+        #expect(dragging.action == .none)
     }
 
     @Test func aSafeAreaChangePlacesDirectlyAndStopsTheMover() {

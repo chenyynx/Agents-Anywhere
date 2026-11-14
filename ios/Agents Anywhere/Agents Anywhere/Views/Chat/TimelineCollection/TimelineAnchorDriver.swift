@@ -23,6 +23,10 @@ final class TimelineAnchorDriver {
         var firstRowID: () -> String?
         /// The measured viewport reached the bottom (opening mask release).
         var onBottomArrived: (() -> Void)?
+        /// Placement transitions, for the client diagnostics trail. Args are
+        /// the previous placement, the new placement and the event that
+        /// caused it.
+        var onPlacementChanged: ((String, String, String) -> Void)?
     }
 
     private(set) weak var scrollView: UICollectionView?
@@ -49,6 +53,12 @@ final class TimelineAnchorDriver {
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
     private var isApplying = false
+    /// The content height the last scroll event saw. A scroll callback whose
+    /// height differs is a UIKit layout correction from the content change,
+    /// not a reader scroll: while the reader follows `.end`, it must not flip
+    /// the placement to `.reading` (keyboard up + pending row insert, device
+    /// 2026-11-14).
+    private var lastObservedContentHeight: CGFloat?
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
@@ -265,6 +275,10 @@ final class TimelineAnchorDriver {
     // MARK: - Events
 
     func viewportChanged() {
+        // Seed the content-height baseline at the opening landing so the
+        // first post-landing scroll event can tell a content change from a
+        // hand.
+        lastObservedContentHeight = inputs.contentHeight()
         perform(.viewportChanged)
     }
 
@@ -355,7 +369,12 @@ final class TimelineAnchorDriver {
         startMover()
     }
 
-    func contentChanged() {
+    /// - Parameter wasAtBottom: the viewport's bottom verdict *before* this
+    ///   content change. A UIKit layout correction can flip the placement to
+    ///   `.reading` before the callback runs while the content is already
+    ///   taller than the offset (keyboard up, pending row insert); a reader
+    ///   who was on the bottom must keep following.
+    func contentChanged(wasAtBottom: Bool = false) {
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
             "contentChanged", spring: "-",
@@ -363,6 +382,7 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
+        lastObservedContentHeight = inputs.contentHeight()
         if isHistoryPaging {
             enforceReadingPlacement()
             return
@@ -371,7 +391,7 @@ final class TimelineAnchorDriver {
         // collection-view insert feel); only an explicit scroll request uses
         // the 0.4 s ease/fly.
         pendingContentMove = true
-        perform(.contentChanged)
+        perform(.contentChanged(wasAtBottom: wasAtBottom))
     }
 
     func readerBeganDragging() {
@@ -406,11 +426,23 @@ final class TimelineAnchorDriver {
     /// `scrolledWithoutAHand`). The driver's own writes set `isApplying`.
     func scrolledWithoutAHand() {
         guard state.hasLanded else { return }
+        let contentHeight = inputs.contentHeight()
+        let contentHeightChanged = lastObservedContentHeight.map {
+            abs(contentHeight - $0) > 0.5
+        } ?? false
+        lastObservedContentHeight = contentHeight
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
             // the live position; the next tick continues from there.
             mover.reseed(at: scrollView?.contentOffset.y ?? mover.position)
+            return
+        }
+        if contentHeightChanged, state.placement == .end {
+            // The content grew/shrank under a following reader. This scroll
+            // is UIKit's correction, not a hand; `contentChanged` starts the
+            // follow. Flipping to `.reading` here lost the bottom follow
+            // right after a send (device 2026-11-14).
             return
         }
         if isHistoryPaging {
@@ -473,8 +505,15 @@ final class TimelineAnchorDriver {
     // MARK: - Reducer plumbing
 
     private func perform(_ event: TimelineAnchorEvent) {
+        let previousPlacement = state.placement
         let reduction = TimelineAnchorReducer.reduce(state, event)
         state = reduction.state
+        if state.placement != previousPlacement {
+            inputs.onPlacementChanged?(
+                String(describing: previousPlacement),
+                String(describing: state.placement),
+                String(describing: event))
+        }
         if reduction.action != .move { pendingContentMove = false }
         switch reduction.action {
         case .none:

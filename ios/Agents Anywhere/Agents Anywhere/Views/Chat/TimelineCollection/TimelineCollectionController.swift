@@ -33,6 +33,8 @@ nonisolated enum TimelineCollectionSection: Hashable, Sendable {
 final class TimelineCollectionController: UIViewController {
     let layout = TimelineListLayout()
     private(set) var collectionView: UICollectionView!
+    /// Session id for the diagnostics trail; set by the content adapter.
+    var diagnosticSessionID = ""
     private var dataSource: UICollectionViewDiffableDataSource<TimelineCollectionSection, TimelineListItem>!
     weak var content: TimelineCollectionContentProviding?
     private(set) var measurer: (any TimelineHeightMeasuring)?
@@ -352,7 +354,20 @@ final class TimelineCollectionController: UIViewController {
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
             readingAnchor: { [weak self] in self?.anchor(at: $0) },
             firstRowID: { [weak self] in self?.currentItems.first?.itemID },
-            onBottomArrived: { [weak self] in self?.onBottomArrived?() }))
+            onBottomArrived: { [weak self] in self?.onBottomArrived?() },
+            onPlacementChanged: { [weak self] from, to, event in
+                guard let self else { return }
+                // Reader gestures own their position; this line exists for
+                // layout-driven flips (the lost bottom follow after a send).
+                guard event.hasPrefix("contentChanged")
+                    || event.hasPrefix("safeAreaChanged")
+                    || event.hasPrefix("scrolledWithoutAHand") else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.anchor.placement",
+                    sessionID: self.diagnosticSessionID,
+                    detail: ["from": from, "to": to, "event": event],
+                    dedupe: false)
+            }))
         anchorDriver?.setSuspended(navigationSuspended)
         anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
 #if AA_TIMELINE_PROBE
@@ -3266,6 +3281,11 @@ extension TimelineCollectionController: TimelineListLayoutHost {
     func layoutDidSettlePull() { settlePulls() }
 
     func layoutDidChangeContentHeight(_ height: CGFloat) {
+        // Pre-change bottom verdict. A UIKit layout correction can publish a
+        // taller content height with the old offset before this callback, so
+        // the driver's own height-delta guard is the primary protection; this
+        // value still covers a placement flip from another edge.
+        let wasAtBottom = lastPublishedViewport.measuredAtBottom
         publishViewport()
         if !didStartAnchorDriver {
             startAnchorDriverIfNeeded()
@@ -3273,7 +3293,7 @@ extension TimelineCollectionController: TimelineListLayoutHost {
             if historyPaging || historyAnchorSettling {
                 reanchorHistoryPageIfNeeded()
             }
-            anchorDriver?.contentChanged()
+            anchorDriver?.contentChanged(wasAtBottom: wasAtBottom)
             if historyAnchorSettling, !historyPaging {
                 anchorDriver?.enforceReadingPlacement()
             }

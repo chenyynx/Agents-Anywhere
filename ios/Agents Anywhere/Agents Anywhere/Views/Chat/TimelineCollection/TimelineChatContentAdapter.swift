@@ -1702,6 +1702,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        controller?.diagnosticSessionID = model.session.id
 #if AA_TIMELINE_PROBE
         let probeRefreshStart = CACurrentMediaTime()
         let probeHadHistoryRequest = pendingHistoryRequest != nil

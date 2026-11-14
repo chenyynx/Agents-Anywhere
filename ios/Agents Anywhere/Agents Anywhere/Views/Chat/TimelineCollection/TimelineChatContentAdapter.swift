@@ -155,6 +155,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
+    /// Last queue roster the handoff probe saw (diagnostics only).
+    private var lastQueueProbeRoster: String?
     /// Live facts are not fresh (cold load): draw the running pose from the
     /// row status, because nothing better is known yet.
     private var chatAllowsRunningPose = false
@@ -2208,6 +2210,55 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             NSLog("timeline duplicates: %@", duplicates.joined(separator: ","))
         }
 #endif
+        noteQueueHandoffIfNeeded()
+    }
+
+    /// Diagnostic probe for the queued-send handoff (device 2026-11-14).
+    ///
+    /// The page moved and a settled row looked active exactly when a queued
+    /// message was sent. One line per queue roster change, carrying the
+    /// viewport numbers, the working-status gates and every step group the
+    /// drawn pose would animate — the next occurrence can then be read
+    /// instead of guessed.
+    private func noteQueueHandoffIfNeeded() {
+        let roster = model.session.sendQueue.items
+            .map { "\($0.id):\($0.state)" }.joined(separator: ",")
+        guard roster != lastQueueProbeRoster else { return }
+        let previous = lastQueueProbeRoster
+        lastQueueProbeRoster = roster
+        let viewport = controller?.viewport
+        let posing = stepGroupsByID.values.filter {
+            $0.showsRunningPose(
+                isLiveTail: $0.id == chatLiveTailGroupID,
+                allowsRunningPose: chatAllowsRunningPose
+                    || chatRunningPoseGroupIDs.contains($0.id))
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.queue.handoff",
+            sessionID: model.session.id,
+            detail: [
+                "from": previous ?? "none",
+                "to": roster.isEmpty ? "empty" : roster,
+                "head": model.session.sendQueue.head.map { "\($0.id):\($0.state)" } ?? "none",
+                "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
+                "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
+                "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),
+                "atBottom": {
+                    guard let viewport, viewport.isMeasured else { return "0" }
+                    return viewport.visibleBottom >= viewport.contentHeight - 1 ? "1" : "0"
+                }(),
+                "running": model.isRunning ? "1" : "0",
+                "streaming": model.isTranscriptStreaming ? "1" : "0",
+                "placeholder": model.sendingPlaceholder != nil ? "1" : "0",
+                "statusLine": tailStatusLineVisible ? "1" : "0",
+                "fresh": model.session.runtime.isFresh ? "1" : "0",
+                "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                "status": String(describing: model.session.runtime.state?.status),
+                "liveTail": chatLiveTailGroupID ?? "none",
+                "posing": posing.map(\.id).joined(separator: ","),
+                "posingRunning": posing.filter(\.isRunning).map(\.id).joined(separator: ","),
+            ])
     }
 
     // MARK: - Working status exit

@@ -802,16 +802,59 @@ def _mark_interrupted_history_turns(
 
     if not items or not interrupted_turns:
         return items
-    last_index_by_turn: dict[str, int] = {}
+    indices_by_turn: dict[str, list[int]] = {}
     for index, item in enumerate(items):
         if item.turn_id in interrupted_turns and is_main_timeline_item(item):
-            last_index_by_turn[item.turn_id] = index
-    if not last_index_by_turn:
+            indices_by_turn.setdefault(item.turn_id, []).append(index)
+    if not indices_by_turn:
         return items
     marked = list(items)
-    for index in last_index_by_turn.values():
-        marked[index] = mark_turn_interrupted(marked[index])
+    for indices in indices_by_turn.values():
+        anchor = _interrupted_anchor_index(items, indices)
+        marked[anchor] = mark_turn_interrupted(marked[anchor])
     return tuple(marked)
+
+
+def _interrupted_anchor_index(
+    items: tuple[RuntimeTimelineItem, ...],
+    indices: list[int],
+) -> int:
+    """Pick the row the client draws last for one stopped turn.
+
+    List position is not drawing order here: the projection appends a
+    message's tool rows before the message row itself, while the client draws
+    the text block first and the tool block after it (as its own step group).
+    Stamping the message row then puts the notice between the text and the
+    step group it belongs under (device 2026-11-14: the card sat above the
+    running-command row it should have followed).
+
+    Within the turn's last message, a tool row that declares that message as
+    its ``nativeMessageId`` is the visually-last block — assistant messages
+    put tool blocks after text. A text-only message keeps itself, and a turn
+    with neither falls back to the list's last row.
+    """
+
+    last_message = None
+    for index in indices:
+        if items[index].type == "message":
+            last_message = index
+    if last_message is not None:
+        native_message_id = items[last_message].source.get("itemId")
+        tool_indices = [
+            index
+            for index in indices
+            if items[index].type == "tool"
+            and items[index].source.get("nativeMessageId") == native_message_id
+        ]
+        if tool_indices:
+            return max(
+                tool_indices,
+                key=lambda index: (
+                    items[index].source.get("blockIndex") or 0,
+                    items[index].order_seq,
+                ),
+            )
+    return indices[-1]
 
 
 def _apply_oracle_closures(

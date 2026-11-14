@@ -804,6 +804,10 @@ final class SessionChatModel {
     /// way to be stopped.
     func interrupt() async {
         guard !isWorking else { return }
+        // Freeze the anchor before the request leaves: the ack can land after
+        // the user has already sent the next prompt, and the timeline's tail
+        // would then belong to that prompt, not to the turn being stopped.
+        let anchor = session.stopAnchor()
         let accepted = await perform {
             try await self.repository.interrupt(sessionId: self.session.id,
                                                 preserveBackground: true)
@@ -811,7 +815,7 @@ final class SessionChatModel {
         // The accepted stop is the client's proof that this turn ended by the
         // user's request; freeze its anchor before any later turn can move
         // the tail.
-        if accepted { session.recordInterruptedTurn() }
+        if accepted { session.recordInterruptedTurn(anchor: anchor) }
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

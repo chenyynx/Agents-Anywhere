@@ -439,12 +439,23 @@ final class V2SessionModel: Identifiable {
         return merged
     }
 
+    /// The row a stop must freeze, captured when the stop is requested.
+    ///
+    /// The ack can land after the user has already sent the next prompt, and
+    /// "last row now" would then name that prompt instead of the stopped turn
+    /// (device 2026-11-14: a stop, then a message three seconds later, and
+    /// the notice appeared under the message).
+    func stopAnchor() -> V2TimelineItem? {
+        lastMainAgentItem()
+    }
+
     /// Freezes the just-stopped turn on its last main-agent row. Called on the
     /// accepted interrupt; the archive write makes the notice survive a
     /// relaunch (an older connector that never stamps the turn still shows it
-    /// on this device).
-    func recordInterruptedTurn() {
-        guard let last = lastMainAgentItem(),
+    /// on this device). `anchor` is the row captured before the request left
+    /// (`stopAnchor()`); without it the ack's own "last row" is used.
+    func recordInterruptedTurn(anchor: V2TimelineItem? = nil) {
+        guard let last = anchor ?? lastMainAgentItem(),
               !hasInterruptedMarker(for: last)
         else { return }
         localInterruptedTurns.append(V2InterruptedTurnMarker(anchorItemID: last.id,

@@ -44,6 +44,11 @@ final class TimelineAnchorDriver {
     /// between `.end` and `.row` is a real distance to animate, not content
     /// growth to track 1:1).
     private var moverPlacement: TimelineAnchorPlacement?
+    /// When the running motion was started. A second height change within one
+    /// insert (row insert then group remeasure, ~13 ms apart on device
+    /// 2026-11-15) must keep the crisp content spring; only a stream whose
+    /// next chunk arrives later than that window earns the 0.4 s catch-up.
+    private var moverStartedAt: CFTimeInterval = 0
     /// The next `.move` was requested by content growth, so a fresh motion
     /// uses the short content spring instead of the 0.4 s catch-up ease.
     private var pendingContentMove = false
@@ -599,10 +604,19 @@ final class TimelineAnchorDriver {
             // a stream flush. This must outrank the dead band below, where a
             // live stream keeps a sub-pixel gap while the motion stays alive.
             if contentMove, moverIsContent {
-                let changed = mover.spring != .ease
-                mover.retarget(spring: .ease, usesPace: false)
+                // A second height change inside the same insert (row insert
+                // then group remeasure, ~13 ms apart on device 2026-11-15)
+                // must keep the crisp 0.2 s content spring: retargeting it to
+                // the 0.4 s catch-up made the first tool row after a send read
+                // soft and arrive ~0.5 s late. Only a stream whose next chunk
+                // arrives later than this window earns the catch-up.
+                let continuingStream = CACurrentMediaTime() - moverStartedAt > 0.1
+                let wanted: TimelineSpringFollow.Spring =
+                    continuingStream ? .ease : .content
+                let changed = mover.spring != wanted
+                mover.retarget(spring: wanted, usesPace: false)
                 if changed {
-                    reportMover("retarget", spring: .ease, target: target,
+                    reportMover("retarget", spring: wanted, target: target,
                                 position: mover.position, contentMove: contentMove)
                 }
             } else if !contentMove {
@@ -648,6 +662,7 @@ final class TimelineAnchorDriver {
         mover.start(at: view.contentOffset.y, spring: spring, usesPace: !contentMove)
         moverPlacement = state.placement
         moverIsContent = contentMove
+        moverStartedAt = CACurrentMediaTime()
         reportMover("start", spring: spring, target: target,
                     position: view.contentOffset.y, contentMove: contentMove)
 #if AA_TIMELINE_PROBE

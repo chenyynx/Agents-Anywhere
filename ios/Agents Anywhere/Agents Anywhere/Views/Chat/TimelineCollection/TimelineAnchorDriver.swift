@@ -479,19 +479,22 @@ final class TimelineAnchorDriver {
     /// `scrolledWithoutAHand`). The driver's own writes set `isApplying`.
     func scrolledWithoutAHand() {
         guard state.hasLanded else { return }
+        let previousOffset = lastObservedOffset
+        let previousHeight = lastObservedContentHeight
         let liveOffset = scrollView?.contentOffset.y ?? 0
+        let liveHeight = inputs.contentHeight()
         if let previous = lastObservedOffset,
            !mover.isRunning, !isApplying,
            abs(liveOffset - previous) > 8 {
             inputs.onMoverEvent?("scroll", [
                 "position": String(format: "%.1f", liveOffset),
                 "previous": String(format: "%.1f", previous),
-                "contentH": String(format: "%.1f", inputs.contentHeight()),
+                "contentH": String(format: "%.1f", liveHeight),
                 "placement": String(describing: state.placement),
             ])
         }
         lastObservedOffset = liveOffset
-        lastObservedContentHeight = inputs.contentHeight()
+        lastObservedContentHeight = liveHeight
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
@@ -519,7 +522,21 @@ final class TimelineAnchorDriver {
             return
         }
         guard let anchor = currentAnchor() else { return }
-        perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
+        // While the page follows `.end`, a handless move is a layout artifact —
+        // the content height changed under the page, a Mover's final settle —
+        // not the reader. Reading it as a reader scroll flipped the placement
+        // to `.reading`, and every later follow was refused: a background-task
+        // wake-up's working row and its reply never scrolled into view
+        // (pp 2026-11-15; b1221 log 06:36:22 / 06:41:38 both flipped end →
+        // reading while the content was growing). A real reader scroll arrives
+        // through the drag/coast events above, and VoiceOver moves a
+        // screenful, well past the tolerance.
+        let absorbed = TimelineHandlessScroll.staysFollowing(
+            placement: state.placement,
+            previousOffset: previousOffset,
+            liveOffset: liveOffset,
+            contentHeightChanged: previousHeight.map { abs(liveHeight - $0) > 0.5 } ?? false)
+        perform(.scrolledWithoutAHand(atEnd: absorbed || isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
     }
 

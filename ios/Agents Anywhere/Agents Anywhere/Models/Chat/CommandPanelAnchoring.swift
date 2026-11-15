@@ -2,47 +2,45 @@ import Foundation
 
 /// Placement of the slash-command card above the composer.
 ///
-/// The card is a page-level overlay whose base ignores the keyboard's safe
-/// area, while the page's geometry proxy reports the keyboard in
-/// `safeAreaInsets` and may also shrink `size` around it. Subtracting both
-/// collapsed the card to a few points when the keyboard was up, so opening it
-/// from the composer drew nothing (pp 2026-11-15). Resolve from the measured
-/// composer dock instead: the card's bottom clears that dock's top, and its
-/// free height runs from the overlay base's top to the same dock. The inset
-/// formula stays only as the pre-measurement fallback.
+/// Device diagnostic `composer.panel.geometry` (b1253, session
+/// `sess_TZOh5OCVj3KD8w`, 2026-11-15 19:22–19:53) settled the geometry:
+///
+/// - the timeline view's frame is the transcript area between the navigation
+///   bar and the composer bar (`baseTop 113 → baseBottom 414` with the
+///   keyboard up, `113 → 758` down), so `baseBottom - baseTop` is exactly the
+///   room the card may use;
+/// - the composer dock reports the same `minY` as the timeline's bottom, so a
+///   separate dock measurement adds nothing;
+/// - `safeAreaInsets.bottom` is the distance from the timeline's bottom edge
+///   to the screen bottom (composer bar + home indicator + keyboard; 438 up,
+///   94 down), and the card's overlay base ends at the screen bottom — the
+///   card must be lifted by that inset and by nothing else.
+///
+/// The previous attempt subtracted the navigation chrome twice and then mixed
+/// measured frames from two coordinate spaces, which put the card under the
+/// composer (keyboard down) or behind the keyboard (keyboard up).
 nonisolated struct CommandPanelAnchoring: Equatable {
     var bottomPadding: CGFloat
     var availableHeight: CGFloat
 
     /// - Parameters:
-    ///   - baseTop/baseBottom: global frame of the overlay's base, after it
-    ///     ignores the keyboard safe area. Nil before the first measurement.
-    ///   - dockTop: global top of the composer dock. Nil before the first
-    ///     measurement.
-    static func resolve(baseTop: CGFloat?, baseBottom: CGFloat?, dockTop: CGFloat?,
-                        insetTop: CGFloat, insetBottom: CGFloat, height: CGFloat) -> Self {
-        let insetAvailable = max(0, height - insetTop - insetBottom - 8)
-        guard let dockTop, dockTop > 0 else {
-            return Self(bottomPadding: insetBottom, availableHeight: insetAvailable)
+    ///   - baseTop/baseBottom: global frame of the timeline view. Nil before
+    ///     its first geometry action.
+    ///   - insetBottom: the page's bottom safe area, measured from the same
+    ///     view that hosts the card's overlay.
+    ///   - height: the geometry proxy's height, the fallback before the
+    ///     timeline reports its frame.
+    static func resolve(baseTop: CGFloat?, baseBottom: CGFloat?,
+                        insetBottom: CGFloat, height: CGFloat) -> Self {
+        let visibleHeight: CGFloat
+        if let baseTop, let baseBottom, baseBottom > baseTop {
+            visibleHeight = baseBottom - baseTop
+        } else {
+            visibleHeight = height
         }
-        // Before the base reports its bottom, the inset is the dock's height
-        // below the card.
-        let baseBottom = baseBottom ?? (dockTop + insetBottom)
-        let baseTop = baseTop ?? 0
-        // Both values are global frames measured in the same space, so their
-        // difference is the whole distance from the card's base to the dock.
-        // Mixing in `insetBottom` here could lift the card by the home
-        // indicator when the base stops above it.
-        let padding = max(0, baseBottom - dockTop)
-        // The card may run up to the navigation bar, not through it. The two
-        // values describe the same chrome — the base's global frame already
-        // starts below it (measured ~109 pt) and the proxy repeats it in
-        // `insetTop` (~103 pt) — so take the larger, never the sum. Adding
-        // both cost the card 103 pt and left only three rows visible with
-        // the keyboard up (pp 2026-11-15).
-        let topBoundary = max(baseTop, insetTop)
-        // 8 pt keeps the card off the navigation bar.
-        let available = max(0, dockTop - topBoundary - 8)
-        return Self(bottomPadding: padding, availableHeight: available)
+        // The card's base is the screen bottom, so the inset is the whole
+        // lift; 8 pt keeps the card off the navigation bar.
+        return Self(bottomPadding: insetBottom,
+                    availableHeight: max(0, visibleHeight - 8))
     }
 }

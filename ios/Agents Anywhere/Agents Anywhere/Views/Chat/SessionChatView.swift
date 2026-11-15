@@ -142,8 +142,7 @@ struct SessionChatView: View, Equatable {
 
     private func commandPanelAnchor(proxy: GeometryProxy) -> CommandPanelAnchoring {
         CommandPanelAnchoring.resolve(
-            baseTop: panelBaseTop, baseBottom: panelBaseBottom, dockTop: composerDockTop,
-            insetTop: proxy.safeAreaInsets.top,
+            baseTop: panelBaseTop, baseBottom: panelBaseBottom,
             insetBottom: proxy.safeAreaInsets.bottom,
             height: proxy.size.height)
     }
@@ -161,7 +160,6 @@ struct SessionChatView: View, Equatable {
                 "padding": String(Int(anchor.bottomPadding.rounded())),
                 "baseTop": panelBaseTop.map { String(Int($0.rounded())) } ?? "nil",
                 "baseBottom": panelBaseBottom.map { String(Int($0.rounded())) } ?? "nil",
-                "dockTop": composerDockTop.map { String(Int($0.rounded())) } ?? "nil",
                 "insetTop": String(Int(proxy.safeAreaInsets.top.rounded())),
                 "insetBottom": String(Int(proxy.safeAreaInsets.bottom.rounded())),
                 "height": String(Int(proxy.size.height.rounded())),
@@ -235,12 +233,6 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
-        // The command card's only anchor: its bottom clears this measured
-        // top, so the card moves with the keyboard and with an expanded
-        // composer without consulting safe-area arithmetic.
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { top in
-            composerDockTop = top
-        }
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
     }
@@ -292,15 +284,14 @@ struct SessionChatView: View, Equatable {
     @State private var hasStartedLoading = false
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
-    /// The command card's anchor, measured instead of inferred. On this page
-    /// the geometry proxy reports the keyboard inside the safe area while the
-    /// page layout also shrinks around it; subtracting both left the card a
-    /// few points tall, so opening it with the keyboard up drew nothing
-    /// (pp 2026-11-15). These are the global frames of the card's base and of
-    /// the composer dock it must clear.
+    /// The timeline's measured frame: its top is the navigation bar and its
+    /// bottom is the composer bar, so its height is exactly the room the
+    /// command card may use. Device diagnostics pinned these numbers
+    /// (113→414 with the keyboard up, 113→758 down); deriving the card from
+    /// safe-area arithmetic instead mixed two coordinate spaces and put the
+    /// card under the composer (pp 2026-11-15).
     @State private var panelBaseTop: CGFloat?
     @State private var panelBaseBottom: CGFloat?
-    @State private var composerDockTop: CGFloat?
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32

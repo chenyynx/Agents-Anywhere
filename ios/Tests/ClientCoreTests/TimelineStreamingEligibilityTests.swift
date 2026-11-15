@@ -11,7 +11,6 @@ import Testing
         emptyText: Bool = false,
         notice: Bool = false,
         attachments: Bool = false,
-        footerSupported: Bool = true,
         fallback: Bool = false,
         holdsEngine: Bool = false
     ) -> Bool {
@@ -24,7 +23,6 @@ import Testing
             textIsEmpty: emptyText,
             hasInlineNotice: notice,
             hasAttachments: attachments,
-            footerSupported: footerSupported,
             isFallback: fallback,
             holdsEngineThroughDisqualifiers: holdsEngine)
     }
@@ -56,7 +54,6 @@ import Testing
         #expect(!admits(streamingText: true, emptyText: true))
         #expect(!admits(streamingText: true, notice: true))
         #expect(!admits(streamingText: true, attachments: true))
-        #expect(!admits(streamingText: true, footerSupported: false))
     }
 
     @Test func stickyFallbackWinsOverTheLiveStream() {
@@ -68,7 +65,6 @@ import Testing
         #expect(!admits(revealPending: true, emptyText: true))
         #expect(!admits(revealPending: true, notice: true))
         #expect(!admits(revealPending: true, attachments: true))
-        #expect(!admits(revealPending: true, footerSupported: false))
         #expect(!admits(assistant: false, revealPending: true))
     }
 
@@ -87,12 +83,6 @@ import Testing
     @Test func anAttachmentArrivingMidRevealDoesNotSwitchEngines() {
         #expect(admits(revealPending: true, attachments: true, holdsEngine: true))
         #expect(!admits(revealPending: true, attachments: true))
-    }
-
-    @Test func anUnsupportedFooterArrivingMidRevealDoesNotSwitchEngines() {
-        #expect(admits(revealPending: true, footerSupported: false,
-                       holdsEngine: true))
-        #expect(!admits(revealPending: true, footerSupported: false))
     }
 
     @Test func theHoldNeverRescuesAnUnrenderableDocument() {

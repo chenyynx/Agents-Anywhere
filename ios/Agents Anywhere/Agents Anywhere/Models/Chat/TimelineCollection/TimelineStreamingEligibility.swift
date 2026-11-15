@@ -8,8 +8,6 @@ import Foundation
 /// the TextKit cell after `status == .done`, so committing does not cut the
 /// animation or hand the message to a fresh hosting view for one frame.
 nonisolated enum TimelineStreamingEligibility {
-    /// - Parameter footerSupported: the turn-action footer can be rendered by
-    ///   this row (M4.3 extends this from text-only to file-change summaries).
     /// - Parameter holdsEngineThroughDisqualifiers: the renderer-owned reveal
     ///   still owns the row. A notice, an attachment or a newly eligible
     ///   footer must not yank the row to the hosting path mid-reveal: the
@@ -25,7 +23,6 @@ nonisolated enum TimelineStreamingEligibility {
                        textIsEmpty: Bool,
                        hasInlineNotice: Bool,
                        hasAttachments: Bool,
-                       footerSupported: Bool,
                        isFallback: Bool,
                        holdsEngineThroughDisqualifiers: Bool = false) -> Bool {
         guard isSingleRowGroup,
@@ -33,9 +30,7 @@ nonisolated enum TimelineStreamingEligibility {
               !textIsEmpty,
               !isFallback else { return false }
         if !holdsEngineThroughDisqualifiers {
-            guard !hasInlineNotice,
-                  !hasAttachments,
-                  footerSupported else { return false }
+            guard !hasInlineNotice, !hasAttachments else { return false }
         }
         return isStreamingText || isRevealing || isRevealPending
     }

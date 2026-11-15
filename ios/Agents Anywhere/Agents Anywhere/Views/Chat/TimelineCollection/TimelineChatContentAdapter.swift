@@ -1099,8 +1099,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             textIsEmpty: row.text.isEmpty,
             hasInlineNotice: inlineNoticesByRow[row.id] != nil,
             hasAttachments: !attachments(of: row.value).isEmpty,
-            footerSupported: footerIsSupported(turnActions[group.id],
-                                               groupID: group.id),
             isFallback: streamingFallbacks.contains(row.id),
             holdsEngineThroughDisqualifiers: holdsEngine)
         guard admitted else {
@@ -1174,123 +1172,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         forceRefresh()
     }
 
-    // MARK: - Footer
+    // MARK: - Turn action bar
 
-    /// What the footer will contain. Presence and counts are deterministic at
-    /// a given revision (`TimelineTurnReview` parses the diffs synchronously
-    /// and is memoized), and the height is a constant, so no fitting pass is
-    /// involved.
-    private struct FooterPlan {
-        let hasReview: Bool
-        let hasReplies: Bool
-
-        var height: CGFloat {
-            AssistantFooterMetrics.contentHeight(
-                hasReview: hasReview, hasReplies: hasReplies,
-                actionRowHeight: SessionTurnActionsRow.rowHeight)
-        }
-    }
-
-    /// The Code page's turn action bar is a separate transcript row; the Chat
-    /// collection timeline keeps the Chat reference row (`SessionTurnActionsRow`).
-    /// A generic runtime is a plain chat session, not a Code page.
+    /// The Code page's turn action bar is a separate transcript row drawn inside
+    /// the Code message row. A generic runtime is a plain chat session, not a
+    /// Code page.
     private var usesCodeActionBar: Bool { codeProfile.family != .generic }
 
     /// The turn action bar is drawn inside the Code row (hosted cells do not
-    /// receive the assistant footer). Only the group that ends a finished
-    /// turn has an action; an empty copy text draws no bar.
+    /// receive an assistant footer). Only the group that ends a finished turn
+    /// has an action; an empty copy text draws no bar.
     private func actionBarCopyText(for groupID: String) -> String? {
         guard usesCodeActionBar,
               let text = turnActions[groupID]?.copyText,
               !text.isEmpty else { return nil }
         return text
-    }
-
-    private struct FooterReviewKey: Equatable {
-        struct Item: Equatable {
-            let id: String
-            let revision: Int
-            let updatedSeq: Int
-        }
-
-        let root: String?
-        let items: [Item]
-    }
-
-    /// Last parsed review per group. `SessionTurnReviewFooter.ReviewMemo` does
-    /// the same inside the view; the TextKit path cannot rely on that memo
-    /// because it builds the view on every measurement.
-    private var footerReviews: [String: (key: FooterReviewKey, review: TimelineTurnReview)] = [:]
-
-    private func footerReview(_ action: TimelineTurnAction,
-                              groupID: String) -> TimelineTurnReview {
-        let root = model.session.metadata?.cwd
-        let key = FooterReviewKey(
-            root: root,
-            items: action.changes.map {
-                FooterReviewKey.Item(id: $0.id,
-                                     revision: $0.value.revision,
-                                     updatedSeq: $0.value.updatedSeq)
-            })
-        if let cached = footerReviews[groupID], cached.key == key {
-            return cached.review
-        }
-        let windows = root?.range(of: #"^[A-Za-z]:[/\\]|^\\\\"#,
-                                  options: .regularExpression) != nil
-        let review = TimelineTurnReview.build(
-            items: action.changes.map(\.value), root: root,
-            caseInsensitive: windows)
-        footerReviews[groupID] = (key, review)
-        return review
-    }
-
-    /// Nil means "keep hosting": an extreme Dynamic Type size can push the
-    /// summary line past its fixed 44pt row. M4.5 handles that scale.
-    private func footerPlan(for action: TimelineTurnAction,
-                            groupID: String) -> FooterPlan? {
-        let hasReview = action.changes.isEmpty
-            ? false : !footerReview(action, groupID: groupID).files.isEmpty
-        let hasReplies = !action.replies.isEmpty
-        guard hasReview || hasReplies else {
-            return FooterPlan(hasReview: false, hasReplies: false)
-        }
-        if hasReview,
-           UIFont.preferredFont(forTextStyle: .footnote).lineHeight
-            > AssistantFooterMetrics.reviewRowHeight {
-            return nil
-        }
-        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies)
-    }
-
-    private func footerIsSupported(_ action: TimelineTurnAction?,
-                                   groupID: String) -> Bool {
-        guard let action else { return true }
-        return footerPlan(for: action, groupID: groupID) != nil
-    }
-
-    func assistantFooter(for item: TimelineListItem) -> AssistantFooterHost? {
-        guard case .group(let id) = item,
-              let action = turnActions[id],
-              let plan = footerPlan(for: action, groupID: id),
-              plan.hasReview || plan.hasReplies else { return nil }
-        let review = plan.hasReview ? footerReview(action, groupID: id) : nil
-        let content = VStack(alignment: .leading,
-                             spacing: AssistantFooterMetrics.groupSpacing) {
-            if let review {
-                SessionTurnReviewFooter(
-                    action: action,
-                    root: model.session.metadata?.cwd,
-                    hasOlderItems: model.session.hasOlderItems,
-                    onFile: onFile)
-                .equatable()
-            }
-            if plan.hasReplies {
-                SessionTurnActionsRow(copyText: action.copyText,
-                                      timestampText: action.timestampText)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        return AssistantFooterHost(height: plan.height, view: AnyView(content))
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
@@ -1438,7 +1334,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 profile: codeProfile,
                 onAttachment: onAttachment,
                 onFile: onFile,
-                turnAction: turnActions[group.id],
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
                 showsInterruptedNotice:
                     chatInterruptedItemIDs.contains(
@@ -2303,7 +2198,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
-        footerReviews = footerReviews.filter { turnActions[$0.key] != nil }
         let streamingNow = ProcessInfo.processInfo.systemUptime
         let presentRowIDs = Set(model.timeline.rows.map(\.id))
         rendererRevealOwnership.prune(keeping: presentRowIDs)

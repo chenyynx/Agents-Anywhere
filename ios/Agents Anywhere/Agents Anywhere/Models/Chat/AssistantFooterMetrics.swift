@@ -12,8 +12,10 @@ nonisolated enum AssistantFooterMetrics {
     /// and the action row.
     static let groupSpacing: CGFloat = 4
 
-    /// `SessionTurnReviewFooter`'s summary row is a button with
-    /// `.frame(minHeight: 44)` and one line of footnote text.
+    /// The file-change summary row's height (a 44 pt button with one line of
+    /// footnote text). The product no longer draws that row (the turn-review
+    /// footer was removed on 2026-11-16); the constant stays because the
+    /// TextKit gate fixtures still measure a footer of this shape.
     static let reviewRowHeight: CGFloat = 44
 
     /// The footer view's own height, excluding the spacing the cell installs

@@ -1,26 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// The row under a finished reply: copy, like, dislike, branch, then the time.
-///
-/// The timeline's hosting path wraps `SessionTurnActions`; the TextKit path
-/// hosts `SessionTurnActionsRow` directly with the same copy text and
-/// timestamp, so both renderers share one implementation.
-struct SessionTurnActions: View, Equatable {
-    let action: TimelineTurnAction
-
-    /// The timeline compares rows to skip body evaluation; the copy flash is
-    /// local state and must not force a recompare.
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.action == rhs.action }
-
-    var body: some View {
-        SessionTurnActionsRow(copyText: action.copyText,
-                              timestampText: action.timestampText)
-    }
-}
-
 /// The row itself, split out so a UIKit cell can host it without owning a
-/// `TimelineTurnAction` (which carries the turn's row models).
+/// `TimelineTurnAction` (which carries the turn's row models). Today only the
+/// TextKit cell (M3/M4.3 gates) hosts it: the Code transcript draws its own
+/// action bar, and the file-change review footer was deleted (2026-11-16).
 ///
 /// Layout follows the reference at 1:1 — the icons are absolutely placed
 /// because their optical spacing is tighter than an `HStack` produces: the

@@ -7,9 +7,8 @@ import UIKit
 ///
 /// Every branch draws with the Code page's own components — the one-line status
 /// rows reuse `CodeCollapsedStepsRow`, the message/tool/thinking rows reuse
-/// `CodeMessageRowView` / `CodeCollapsedToolRow`. The retired Chat leaves
-/// (`TimelineMarkerRow` / `TimelineFold` / `TimelineCodePanel`) are gone:
-/// keeping them as a fallback made old-styled rows reappear on this page
+/// `CodeMessageRowView` / `CodeCollapsedToolRow`. The retired Chat leaves are
+/// gone: keeping them as a fallback made old-styled rows reappear on this page
 /// (pp 2026-11-16).
 ///
 /// The row's inline interaction cards, the interrupted notice and the turn
@@ -22,7 +21,6 @@ struct CodeStandaloneRowView: View, Equatable {
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
-    var turnAction: TimelineTurnAction?
     /// Interaction cards targeting this row. Passing the subset keeps unrelated
     /// groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
@@ -32,7 +30,7 @@ struct CodeStandaloneRowView: View, Equatable {
     var onThinkingDetail: (CodeThinkingDetailRequest) -> Void = { _ in }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.group == rhs.group && lhs.chat === rhs.chat && lhs.turnAction == rhs.turnAction
+        lhs.group == rhs.group && lhs.chat === rhs.chat
             && lhs.inlineNotices.elementsEqual(rhs.inlineNotices, by: ===)
             && lhs.showsInterruptedNotice == rhs.showsInterruptedNotice
     }
@@ -50,14 +48,6 @@ struct CodeStandaloneRowView: View, Equatable {
                     // The stack's 4 pt spacing already separates this footer;
                     // 4 more matches the official card's top gap.
                     .padding(.top, 4)
-            }
-            if let turnAction {
-                SessionTurnReviewFooter(action: turnAction, root: cwd,
-                    hasOlderItems: chat.session.hasOlderItems, onFile: onFile)
-                    .equatable()
-                if !turnAction.replies.isEmpty {
-                    SessionTurnActions(action: turnAction).equatable()
-                }
             }
         }
     }
@@ -199,8 +189,8 @@ struct CodeStandaloneRowView: View, Equatable {
     /// One Code-styled line for a row the page has no dedicated component for:
     /// a system marker, a file artifact, or a thinking block with nothing
     /// drawable. It reuses the thinking row's slot, type settings and paddings,
-    /// so these rows read as part of the page — the retired Chat marker line
-    /// (`TimelineMarkerRow`) is gone (pp 2026-11-16).
+    /// so these rows read as part of the page (the retired Chat marker line is
+    /// gone, pp 2026-11-16).
     ///
     /// - `icon`: an `anthropicon` asset name; the row draws it in the 24 pt
     ///   slot at `.medium`, the same extent a thinking row uses.

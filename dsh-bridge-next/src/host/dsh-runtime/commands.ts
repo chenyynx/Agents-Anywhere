@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { parseCommand } from '@deepseek-ai/dsh-commands'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SkillEntry } from '@deepseek-ai/dsh-api-session-controller/types'
 import { randomUUID } from 'node:crypto'
 import { BridgeError } from './errors.js'
 import type { RuntimeConfiguration } from './configuration.js'
@@ -73,10 +74,9 @@ export class RuntimeCommands {
     if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new BridgeError('INVALID_PARAMS', 'The command limit must be an integer between 1 and 1000.')
     const query = typeof params.query === 'string' ? params.query.toLocaleLowerCase() : ''
     const agent = await this.agent(id, signal)
-    return { commands: registry.list(agent)
+    const actions = registry.list(agent)
       .filter(item => item.name === 'compact')
-      .filter(item => `${item.name} ${item.description} ${item.input?.hint ?? ''}`.toLocaleLowerCase().includes(query))
-      .slice(0, limit).map(item => ({
+      .map(item => ({
         id: item.name, title: item.name, description: item.description, aliases: [], scope: 'session', enabled: true,
         acceptsArgs: item.input !== undefined,
         ...(item.input ? { argsSchema: { type: 'string', description: item.input.hint } } : {}),
@@ -86,7 +86,36 @@ export class RuntimeCommands {
           ui: { kind: 'execute', ...(item.input ? { argumentHint: item.input.hint } : {}),
             acceptsMultiline: true, allowedStatuses: [...ONLINE_STATUSES] },
         },
-      })) }
+      }))
+    // User-invocable skills are prompt templates: the client writes /name
+    // back into the composer instead of executing through the command API.
+    const skills = [...(await this.sessionSkills(id, signal))]
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+      .map(skill => ({
+        id: skill.name, title: skill.name, description: skill.description, aliases: [], scope: 'session', enabled: true,
+        acceptsArgs: true,
+        metadata: {
+          attachmentsAvailable: false,
+          ui: { kind: 'insert', acceptsMultiline: true },
+          skill: { modelInvocable: skill.modelInvocable },
+        },
+      }))
+    return { commands: [...actions, ...skills]
+      .filter(item => `${item.id} ${item.title} ${item.description}`.toLocaleLowerCase().includes(query))
+      .slice(0, limit) }
+  }
+
+  private async sessionSkills(id: SessionId, signal: AbortSignal): Promise<readonly SkillEntry[]> {
+    const catalog = this.ctx.get('sessionSkillCatalog')
+    if (!catalog) return []
+    try {
+      const value = await catalog.list({ sessionId: id }, signal)
+      return value.skills.filter(skill => typeof skill.name === 'string' && skill.name !== ''
+        && typeof skill.description === 'string')
+    } catch {
+      // A skill registry that cannot answer must not take the command menu down.
+      return []
+    }
   }
 
   async execute(id: SessionId, params: Record<string, unknown>, signal: AbortSignal): Promise<CommandResult> {

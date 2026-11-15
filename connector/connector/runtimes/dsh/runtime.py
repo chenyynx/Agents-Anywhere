@@ -151,7 +151,18 @@ class DshRuntime(AgentRuntime):
         commands = models.commands(await self._request("session.listCommands", {
             **_session_params(session_id, external_session_id), "query": query, "limit": limit,
         }))
-        return tuple(command for command in commands if command.id == "compact")
+        # Keep the action plus, when the caller opted in, the bridge's insert
+        # rows (user-invocable skills). Older bridges have neither; any other
+        # native command stays out of AA's catalog.
+        def keep(command: RuntimeCommand) -> bool:
+            if command.id == "compact":
+                return True
+            if not include_skills:
+                return False
+            ui = command.metadata.get("ui")
+            return isinstance(ui, Mapping) and ui.get("kind") == "insert"
+
+        return tuple(command for command in commands if keep(command))
 
     async def execute_command(
         self, session_id: str, command: str, external_session_id: str | None = None,

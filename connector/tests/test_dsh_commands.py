@@ -88,12 +88,17 @@ async def bridge(tmp_path: Path, *, supported: bool = True, mode: str = "success
                     elif mode == "unavailable":
                         result["capabilities"][0].update({"available": False, "allowed": False, "unavailableReason": "DSH session is archived."})
                 elif method == "session.listCommands":
-                    assert params == {"sessionId": "session", "externalSessionId": "native", "query": "compact", "limit": 1}
+                    assert params["sessionId"] == "session"
+                    assert params["externalSessionId"] == "native"
                     result = {"commands": [{"id": "compact", "title": "compact", "description": "native compact", "acceptsArgs": True,
                         "metadata": {"definitionId": "compact-plugin", "input": {"hint": "text", "attachments": True}, "attachmentsAvailable": False,
                             "ui": {"kind": "execute", "acceptsMultiline": True, "allowedStatuses": ["idle", "running"]}}}]}
                     if mode == "wide-catalog":
                         result["commands"].extend({"id": name, "title": name} for name in ["export", "goal", "permission"])
+                    if mode == "skills":
+                        result["commands"].append({"id": "deep-research", "title": "deep-research",
+                            "description": "Research a topic.", "acceptsArgs": True,
+                            "metadata": {"ui": {"kind": "insert", "acceptsMultiline": True}}})
                 elif method == "session.executeCommand":
                     entered.set()
                     if mode == "timeout":
@@ -182,6 +187,16 @@ def test_catalog_filters_non_compact_commands_from_an_older_bridge(tmp_path: Pat
         async with bridge(tmp_path, mode="wide-catalog") as (runtime, _, _):
             catalog = await runtime.list_commands("session", "native", query="compact", limit=1)
             assert [command.id for command in catalog] == ["compact"]
+    asyncio.run(run())
+
+
+def test_skills_are_opt_in_and_only_insert_rows_survive(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with bridge(tmp_path, mode="skills") as (runtime, _, _):
+            enabled = await runtime.list_commands("session", "native", include_skills=True)
+            assert [command.id for command in enabled] == ["compact", "deep-research"]
+            disabled = await runtime.list_commands("session", "native")
+            assert [command.id for command in disabled] == ["compact"]
     asyncio.run(run())
 
 

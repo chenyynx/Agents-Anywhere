@@ -141,7 +141,7 @@ final class ComposerCommandTokenAttachment: NSTextAttachment {
         self.image = image
         // Bottom sits just below the baseline so the capsule centers on the
         // body line instead of floating above it.
-        bounds = CGRect(x: 0, y: -4, width: image.size.width, height: image.size.height)
+        bounds = CGRect(x: 0, y: -3, width: image.size.width, height: image.size.height)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -156,13 +156,18 @@ private enum CommandTokenRenderer {
         let key = "\(commandName)|\(dark)|\(scale)"
         if let cached = cache[key] { return cached }
 
-        let font = UIFont(name: "JetBrainsMono-Regular", size: 15)
-            ?? UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+        // The official card measures 21 pt tall at 15 pt mono, but that
+        // proportion sits on a body line of 20.5 pt: with the composer's
+        // font bug rendering body at 12 pt the chip read as a bubble
+        // (pp 2026-11-15: 「把这个胶囊缩小 别这么大」). 18 pt / 13 pt stays
+        // inside the body line and reads as one token, not a filled field.
+        let font = UIFont(name: "JetBrainsMono-Regular", size: 13)
+            ?? UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let text = "/\(commandName)" as NSString
         let textSize = text.size(withAttributes: [.font: font])
-        // Measured off the official card: 21 pt tall, 3 pt side padding,
-        // capsule ends. The command name keeps the panel's accent color.
-        let size = CGSize(width: ceil(textSize.width) + 6, height: 21)
+        // 3 pt side padding, capsule ends. The command name keeps the
+        // panel's accent color.
+        let size = CGSize(width: ceil(textSize.width) + 6, height: 18)
         let background = dark
             ? UIColor(red: 54 / 255, green: 68 / 255, blue: 90 / 255, alpha: 1)
             : UIColor(red: 208 / 255, green: 216 / 255, blue: 228 / 255, alpha: 1)

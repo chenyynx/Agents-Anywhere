@@ -108,22 +108,65 @@ struct SessionChatView: View, Equatable {
                 // The command card floats over the page, not inside the
                 // composer's overlay: an overlay drawn outside its base frame
                 // renders but cannot be tapped. The timeline fills the screen,
-                // so this base owns the hit area; the bottom padding is the
-                // bar + home indicator + keyboard inset, placing the card's
-                // bottom 16 pt above the composer glass.
+                // so this base owns the hit area; the anchor is the measured
+                // composer dock top (see `CommandPanelAnchoring`), placing the
+                // card 16 pt above the composer glass with the keyboard up or
+                // down.
                 .overlay(alignment: .bottom) {
+                    let anchor = commandPanelAnchor(proxy: proxy)
                     CommandSuggestionPanel(chat: model, draft: session.composer,
                         forced: $showsCommandMenu, controls: controls, editor: composerEditor,
-                        availableHeight: proxy.size.height - proxy.safeAreaInsets.top
-                            - proxy.safeAreaInsets.bottom - 8)
-                        .padding(.bottom, proxy.safeAreaInsets.bottom)
+                        availableHeight: anchor.availableHeight)
+                        .padding(.bottom, anchor.bottomPadding)
                 }
                 // The bridge owns one adapter for its lifetime; a mode switch
                 // must rebuild it, exactly like the old switch rebuilt the
                 // branch it replaced.
                 .id(renderModeRaw)
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
+                // Measure the expanded base the card draws in. Global frames
+                // give the anchor one coordinate system: the card clears the
+                // measured composer dock top, and its free height runs from
+                // the same base top to that dock. Insets are only the
+                // pre-measurement fallback.
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    panelBaseTop = frame.minY
+                    panelBaseBottom = frame.maxY
+                }
+                .onChange(of: showsCommandMenu) { _, open in
+                    guard open else { return }
+                    recordCommandPanelGeometry(proxy: proxy)
+                }
         }
+    }
+
+    private func commandPanelAnchor(proxy: GeometryProxy) -> CommandPanelAnchoring {
+        CommandPanelAnchoring.resolve(
+            baseTop: panelBaseTop, baseBottom: panelBaseBottom, dockTop: composerDockTop,
+            insetTop: proxy.safeAreaInsets.top,
+            insetBottom: proxy.safeAreaInsets.bottom,
+            height: proxy.size.height)
+    }
+
+    /// One line per open. If the card ever fails to draw with the keyboard up,
+    /// these numbers separate a wrong anchor from a wrong height without
+    /// re-deriving what safe-area insets meant on that build.
+    private func recordCommandPanelGeometry(proxy: GeometryProxy) {
+        let anchor = commandPanelAnchor(proxy: proxy)
+        ClientDiagnosticsLog.shared.record(
+            kind: "composer.panel.geometry",
+            sessionID: model.session.id,
+            detail: [
+                "available": String(Int(anchor.availableHeight.rounded())),
+                "padding": String(Int(anchor.bottomPadding.rounded())),
+                "baseTop": panelBaseTop.map { String(Int($0.rounded())) } ?? "nil",
+                "baseBottom": panelBaseBottom.map { String(Int($0.rounded())) } ?? "nil",
+                "dockTop": composerDockTop.map { String(Int($0.rounded())) } ?? "nil",
+                "insetTop": String(Int(proxy.safeAreaInsets.top.rounded())),
+                "insetBottom": String(Int(proxy.safeAreaInsets.bottom.rounded())),
+                "height": String(Int(proxy.size.height.rounded())),
+                "focused": session.composer.isFocused ? "1" : "0",
+            ])
     }
 
     /// The page's layering, in its own method: the `GeometryReader` closure's
@@ -192,6 +235,12 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
+        // The command card's only anchor: its bottom clears this measured
+        // top, so the card moves with the keyboard and with an expanded
+        // composer without consulting safe-area arithmetic.
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { top in
+            composerDockTop = top
+        }
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
     }
@@ -243,6 +292,15 @@ struct SessionChatView: View, Equatable {
     @State private var hasStartedLoading = false
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
+    /// The command card's anchor, measured instead of inferred. On this page
+    /// the geometry proxy reports the keyboard inside the safe area while the
+    /// page layout also shrinks around it; subtracting both left the card a
+    /// few points tall, so opening it with the keyboard up drew nothing
+    /// (pp 2026-11-15). These are the global frames of the card's base and of
+    /// the composer dock it must clear.
+    @State private var panelBaseTop: CGFloat?
+    @State private var panelBaseBottom: CGFloat?
+    @State private var composerDockTop: CGFloat?
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32

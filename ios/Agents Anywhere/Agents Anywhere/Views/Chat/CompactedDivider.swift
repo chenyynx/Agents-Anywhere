@@ -56,6 +56,25 @@ struct CompactedDivider: View {
     /// The blockquote ink at 15 % (`round31` §3.3) — the same dynamic colour
     /// the rendered quotes use.
     private var ink: Color { Color(uiColor: CodePageTheme.quoteBarUIColor) }
+
+    /// The row's height before it is measured: the label's scaled line box
+    /// plus the 16 pt padding on each side.
+    ///
+    /// The collection estimates a self-sizing row with a generic text floor
+    /// (44 pt) and then corrects to the real height. The 10 pt correction
+    /// moved the divider on every refresh while the anchor followed (pp
+    /// 2026-11-15: 「压缩分割线会抖」— `timeline.mover start delta 10.0` on
+    /// every open). Declaring the exact height removes the correction; the
+    /// 0.5 pt tolerance in `applyPreferredHeight` absorbs any rounding left
+    /// between SwiftUI's custom-font metrics and `UIFontMetrics`.
+    static func estimatedHeight(traits: UITraitCollection?) -> CGFloat {
+        let base = UIFont(name: CodePageTheme.sansFontName,
+                          size: CodePageTheme.toolRowFontSize)
+            ?? UIFont.systemFont(ofSize: CodePageTheme.toolRowFontSize)
+        let font = UIFontMetrics(forTextStyle: .footnote)
+            .scaledFont(for: base, compatibleWith: traits)
+        return ceil(font.lineHeight) + 32
+    }
 }
 
 /// The official `Squiggle` shape (`round31` §2.2): 8 pt segments on a 16 pt

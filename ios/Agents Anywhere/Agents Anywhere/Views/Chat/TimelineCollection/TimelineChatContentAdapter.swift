@@ -513,6 +513,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }))
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
+            // The compaction divider declares its exact height. The generic
+            // text floor (44 pt) was 10 pt short of the drawn row, so every
+            // fresh layout estimated, then corrected by 10 pt, and the anchor
+            // followed the correction (pp 2026-11-15: 「压缩分割线会抖」,
+            // `timeline.mover start delta 10.0` on every open).
+            if compactGroupRow(id) != nil {
+                return .fixed(CompactedDivider.estimatedHeight(
+                    traits: controller?.traitCollection))
+            }
             // The chat profile's step-group row is always one line; its live
             // text changes but never its height. A stopped turn adds the fixed
             // notice card under it.
@@ -2587,12 +2596,39 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return hasher.revision
     }
 
+    /// The standalone compaction divider group: one marker row, no explicit
+    /// message key. It draws the divider and nothing turn-scoped.
+    private func compactGroupRow(_ id: String) -> ChatTimelineRowModel? {
+        guard let group = groupsByID[id], group.explicitID == nil,
+              group.rows.count == 1, let row = group.rows.first,
+              TimelineEntryPresentation.isCompactItem(row.value) else { return nil }
+        return row
+    }
+
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
         // The chat profile's step row draws the live step's text, so its
         // signature follows the drawn line (not the wire revision, which the
         // Code path deliberately avoids hashing per frame).
         if let stepGroup = stepGroupsByID[group.id] {
             return stepGroupSignature(stepGroup)
+        }
+        // The compaction divider draws one label: no turn action, suppression
+        // or notice reaches it. The generic signature hashed the turn state,
+        // so every turn-status change re-keyed the row and forced a fresh
+        // estimate→measure pass — the divider moved on its own with the anchor
+        // following (pp 2026-11-15). Sign only the marker row itself.
+        if let row = compactGroupRow(group.id) {
+            return TimelineGroupContentSignature(
+                rows: [TimelineRowContentSignature(id: row.id,
+                                                   revision: row.value.revision,
+                                                   updatedSeq: row.value.updatedSeq)],
+                disclosureExpanded: false,
+                inlineNotices: [],
+                attachments: [],
+                turnAction: nil,
+                turnSuppression: TimelineTurnSuppression(
+                    isRunning: false, hasNewerItems: false,
+                    hasPendingUserMessage: false))
         }
         // The Code row renders only its rows and those rows' attachments. The
         // generic signature also hashes the turn action, suppression and

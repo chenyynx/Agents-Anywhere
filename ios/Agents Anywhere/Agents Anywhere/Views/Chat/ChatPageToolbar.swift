@@ -55,7 +55,12 @@ struct ChatPageToolbar: ViewModifier {
                     // width even when there is space between the buttons.
                     ToolbarItem(placement: .principal) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(.headline).lineLimit(1)
+                            // One step below `.headline` (17) with the same
+                            // semibold weight: pp 2026-11-16 asked for the
+                            // session title to read one size smaller.
+                            Text(title)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
                                 .modifier(StatusShimmer(active: status?.isGlow == true))
                                 .accessibilityAddTraits(.isHeader)
                             if subtitle != nil || status != nil {

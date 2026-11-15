@@ -631,7 +631,7 @@ final class TimelineCollectionController: UIViewController {
         applySafeAreaInsetsIfMounted()
         guard !didMarkActivation else { return }
         didMarkActivation = true
-        UserDefaults.standard.set(Date(), forKey: TimelineCollectionSwitch.lastActiveKey)
+        UserDefaults.standard.set(Date(), forKey: TimelineRenderModeSwitch.lastActiveKey)
         Self.log.notice("aa.timeline.collectionView active")
     }
 

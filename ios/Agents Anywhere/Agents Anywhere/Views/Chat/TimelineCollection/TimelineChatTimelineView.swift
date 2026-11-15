@@ -6,10 +6,10 @@ import UIKit
 /// pending/queue/approval events, navigation suspension) around the collection
 /// container.
 ///
-/// The old `ChatTimelineView` stays intact and selectable; this view is only
-/// built when `aa.timeline.collectionView` is on. I10–I13/I14/I15/I20 and the
-/// Markdown externalization stay in C5 — the history prompts render, but their
-/// load actions are inert until that wiring lands.
+/// The retired SwiftUI `ChatTimelineView` was deleted (2026-11-16), so this is
+/// the page's only timeline container. I10–I13/I14/I15/I20 and the Markdown
+/// externalization stay in C5 — the history prompts render, but their load
+/// actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`

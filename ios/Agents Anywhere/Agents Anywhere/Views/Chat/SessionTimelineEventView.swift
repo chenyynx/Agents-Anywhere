@@ -72,8 +72,9 @@ struct SessionTimelineGroupView: View, Equatable {
                 // notice has no timeline anchor and is a top toast instead; the
                 // type check keeps that true even if a future one carried an
                 // anchor. Routing the group's pre-sliced `inlineNotices` (not the
-                // full list) keeps the equatable narrowing ChatTimelineView
-                // gained: this group re-renders only when its own notices change.
+                // full list) keeps the equatable narrowing the retired Chat
+                // container gained: this group re-renders only when its own
+                // notices change.
                 ForEach(SessionNoticeRouting.notices(inlineNotices,
                     sessionID: chat.session.id, anchoredTo: row.id)) { notice in
                     SessionInteractionCard(item: notice, chat: chat)

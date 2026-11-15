@@ -2,11 +2,14 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// Test-local mirror of the product's two-tier tail contract (F1, pp
-/// 2026-10-07): `Views/Chat/ChatTimelineView.swift` frames the tail spacer at
-/// `hasStatusLine ? 32 : Self.idleTailHeight`.
+/// Test-local mirror of the two-tier tail contract (F1, pp 2026-10-07): the
+/// retired Chat container framed its tail spacer at
+/// `hasStatusLine ? 32 : Self.idleTailHeight`. That container was deleted
+/// (2026-11-16), so the mirror now records the contract itself rather than a
+/// live product expression.
 ///
-/// T-e mutation note. The product mutation point is that frame expression:
+/// T-e mutation note (historical). The product mutation point was that frame
+/// expression:
 /// reverting it to the old single constant 32 removes the ±20pt contentHeight
 /// transition modelled below and collapses this mirror to one value — the
 /// delta pin at the top of T-a fails first, and T-d's expand convergence has

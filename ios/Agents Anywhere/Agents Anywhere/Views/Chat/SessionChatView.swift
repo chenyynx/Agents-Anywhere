@@ -499,7 +499,7 @@ struct SessionChatView: View, Equatable {
         }
         // Notification-type notices ("切换已延后") float as top toasts instead of
         // seating in the timeline; the timeline's own render points exclude them
-        // (ChatTimelineView / SessionTimelineEventView). `pendingNotifications`
+        // (SessionTimelineEventView). `pendingNotifications`
         // is pre-filtered by the session's durable per-episode acknowledgements,
         // so a notice the user already closed in this open episode does not come
         // back on the next page visit; reconciling the store against the same

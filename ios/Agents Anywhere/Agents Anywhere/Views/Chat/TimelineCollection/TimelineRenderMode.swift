@@ -44,8 +44,13 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
 /// - a fresh install gets `.chat` (pp 2026-11-13).
 enum TimelineRenderModeSwitch {
     static let key = "aa.timeline.renderMode"
-    static let legacyCollectionKey = TimelineCollectionSwitch.key
-    static let lastActiveKey = TimelineCollectionSwitch.lastActiveKey
+    /// The retired A/B switch's key, read once by the migration below. The
+    /// switch and the container it gated are gone; the string stays so a
+    /// device that set the old Bool keeps its visual choice.
+    static let legacyCollectionKey = "aa.timeline.collectionView"
+    /// Written by the controller on first appearance and shown in Settings, so
+    /// a device test can prove the collection container actually ran.
+    static let lastActiveKey = "aa.timeline.collectionViewLastActive"
 
     static func current(defaults: UserDefaults = .standard) -> TimelineRenderMode {
         if let raw = defaults.string(forKey: key),

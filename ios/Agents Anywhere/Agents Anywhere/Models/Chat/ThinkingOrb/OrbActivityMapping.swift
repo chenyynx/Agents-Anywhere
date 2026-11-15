@@ -59,19 +59,25 @@ extension SessionChatModel {
         }
         let fresh = session.runtime.isFresh
         let items = timeline.rows.map(\.value)
+        // Sub-agent child rows never drive the main turn's phase. Their
+        // running tools/thinking otherwise pin the page to `usingTool` /
+        // `thinking`, which hides the main agent's own tool cue and leaks the
+        // child's thinking into the working row (pp 2026-11-16). The capsule
+        // count still reads the full window: the cards are top-level rows.
+        let mainItems = items.filter { SubAgentProgress.parentItemID($0) == nil }
         let value = OrbActivitySignals(
             status: fresh ? session.runtime.state?.status : nil,
             hasRespondableNotice: session.notices.visibleNotices.contains { $0.canRespond(fresh: fresh) },
             runningSubagentCount: SubAgentProgress.capsuleState(
                 inWindow: items, activeCards: session.activeAgentCards).runningCount,
-            hasActiveToolItem: items.contains { TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive },
-            hasActiveCompactItem: items.contains {
+            hasActiveToolItem: mainItems.contains { TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive },
+            hasActiveCompactItem: mainItems.contains {
                 TimelineEntryPresentation.isCompactItem($0) && TimelineEntryPresentation.isActiveCompactItem($0)
             },
-            isStreamingAssistantText: items.contains {
+            isStreamingAssistantText: mainItems.contains {
                 ($0.status == .pending || $0.status == .running) && $0.type == .message && $0.role == .assistant
             },
-            hasActiveReasoningItem: items.contains { $0.isReasoning && $0.status.isActive })
+            hasActiveReasoningItem: mainItems.contains { $0.isReasoning && $0.status.isActive })
         orbSignalsCache = (key, value)
         return value
     }

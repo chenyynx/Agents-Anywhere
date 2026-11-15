@@ -263,6 +263,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var compact: V2TimelineItem?
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // Sub-agent child rows belong to their own transcript; the main
+            // page's live state never reads them (pp 2026-11-16).
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if TimelineEntryPresentation.isCompactItem(item) { compact = item; break }
         }
@@ -2853,6 +2856,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var tail: [CodeWorkingMarkRow] = []
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // A sub-agent's running tools must not pose the main page's mark.
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             tail.append(CodeWorkingMarkRow(
                 role: item.role,
@@ -2943,6 +2948,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func liveThinkingItem() -> V2TimelineItem? {
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // The sub-agent's own thinking must not surface as the main
+            // turn's closed 「思考了 n 秒」 label (pp 2026-11-16).
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if item.isReasoning { return item }
         }
@@ -2972,6 +2980,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func liveTurnIsCompacting() -> Bool {
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if TimelineEntryPresentation.isCompactItem(item) {
                 return TimelineEntryPresentation.isActiveCompactItem(item)

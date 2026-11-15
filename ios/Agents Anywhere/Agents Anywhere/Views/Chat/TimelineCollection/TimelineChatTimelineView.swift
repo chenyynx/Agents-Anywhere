@@ -82,22 +82,44 @@ struct TimelineChatTimelineView: View {
     /// handover into one cue and keeps the end-of-stream impact close enough
     /// to feel immediate.
     private static let phaseSettleWindow: Duration = .milliseconds(150)
+    /// How far apart any two phase cues must be. The settle window alone
+    /// swallowed every cue during a tool-dense turn (idle↔tool flaps faster
+    /// than 150 ms), which read as “no vibration while the agent works”
+    /// (pp 2026-11-16). Tool entries now cue immediately, subject to this
+    /// throttle; prose/thinking transitions keep the settle window.
+    private static let phaseCueThrottle: TimeInterval = 0.6
+    @State private var lastPhaseCueAt: TimeInterval = 0
 
     /// Feeds one live phase into the settle: the first observation seeds the
     /// state without a cue; later changes only play if they still hold after
     /// `phaseSettleWindow` (a change back cancels the pending cue entirely).
+    /// A tool entry is the exception: it cues at once, rate-limited, so a
+    /// running tool is always felt even while the phases flap around it.
     private func settlePhase(_ phase: ChatTurnPhase) {
+        let now = ProcessInfo.processInfo.systemUptime
         if !phaseSeeded {
             phaseSeeded = true
             settledPhase = phase
+            lastPhaseCueAt = now
             DispatchQueue.main.async { phaseHapticsArmed = true }
+            return
+        }
+        if phase == .usingTool, settledPhase != .usingTool {
+            phaseSettleTask?.cancel()
+            guard now - lastPhaseCueAt >= Self.phaseCueThrottle else { return }
+            lastPhaseCueAt = now
+            settledPhase = phase
             return
         }
         phaseSettleTask?.cancel()
         phaseSettleTask = Task { @MainActor in
             try? await Task.sleep(for: Self.phaseSettleWindow)
             guard !Task.isCancelled else { return }
-            if settledPhase != phase { settledPhase = phase }
+            guard settledPhase != phase else { return }
+            let stamp = ProcessInfo.processInfo.systemUptime
+            guard stamp - lastPhaseCueAt >= Self.phaseCueThrottle else { return }
+            lastPhaseCueAt = stamp
+            settledPhase = phase
         }
     }
 

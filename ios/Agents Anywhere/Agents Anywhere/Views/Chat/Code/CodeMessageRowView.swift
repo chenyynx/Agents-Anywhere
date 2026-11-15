@@ -471,11 +471,15 @@ struct CodeThinkingStatusLine: View {
                     CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
                 }
             case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
-                // `思考了 X` is visible for 2 s after the block ends; past
-                // that the official selector returns nil and the working row
-                // falls back to the rotating verbs (`0x102a88f20-f50`).
+                // `思考了 X` is the Code (合并) profile's official closed
+                // label, visible for 2 s after the block ends; past that the
+                // selector returns nil and the row falls back to the rotating
+                // verbs (`0x102a88f20-f50`). The chat (分步) profile never
+                // shows it (pp 2026-11-16): it keeps the neutral processing
+                // label while the turn continues.
                 statusTimeline { date in
-                    if date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
+                    if !usesChatWorkingStyle,
+                       date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
                         return CodeThinkingText.closedText(seconds: seconds)
                     }
                     if usesChatWorkingStyle {

@@ -22,6 +22,14 @@ alias of the same command, not a separate menu entry. Other Codex slash commands
 are absent from the catalog and rejected by the command API. Model, reasoning
 and permission settings remain available through the session selection controls.
 
+With `includeSkills=1`, the catalog also lists the enabled Codex skills from the
+app-server's `skills/list` as `kind: "insert"` rows. Selecting one returns
+`/name` to the composer; sending it makes the connector start the turn with a
+native `SkillUserInput(name, path)` (plus the remaining text), not the command
+API. A `/name` prompt naming no loaded skill stays ordinary user text, and the
+desktop-app IPC handoff path has no skill input — those sessions fall back to
+plain text.
+
 Compaction requires an idle or failed turn and respects known archived, missing,
 deleted and unavailable source states. The SDK adapter resumes the native thread
 before compacting. A writer lock held by another Codex client produces a rejection;

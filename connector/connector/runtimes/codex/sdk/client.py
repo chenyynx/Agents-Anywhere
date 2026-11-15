@@ -20,6 +20,8 @@ from openai_codex.generated.v2_all import (
     ReasoningEffort,
     SandboxMode,
     SandboxPolicy,
+    SkillUserInput,
+    SkillsListResponse,
     SortDirection,
     TextUserInput,
     ThreadResumeParams,
@@ -38,6 +40,7 @@ from connector.runtime_protocol import (
     RuntimeInvalidRequestError,
 )
 from connector.runtimes.codex.domain.input_requests import CODEX_REQUEST_USER_INPUT
+from connector.runtimes.codex.domain.skills import CodexSkill, skills_from_list
 from connector.runtimes.codex.runtime_helpers import soft_codex_unavailable_reason
 from connector.runtimes.codex.sdk.binary import (
     codex_launch_command,
@@ -401,6 +404,35 @@ class CodexSdkClient:
 
         result = await self.call_read_with_recovery("model/list", read_models)
         return model_list_result(result)
+
+    async def list_skills(self) -> tuple[CodexSkill, ...]:
+        """The enabled Codex skills for the session's workspace.
+
+        `skills/list` is a plain JSON-RPC read. An older app-server without
+        the method, a closed transport or a malformed answer degrades to an
+        empty tuple: the command catalog still returns its actions.
+        """
+
+        low_level_client = codex_low_level_client(self._client)
+        request = getattr(low_level_client, "request", None)
+        if not callable(request):
+            return ()
+        try:
+            result = await request("skills/list", None, response_model=SkillsListResponse)
+        except (MethodNotFoundError, JsonRpcError, TransportClosedError) as exc:
+            logger.warning("Codex skills/list unavailable: {}", exc)
+            return ()
+        except Exception as exc:  # noqa: BLE001 - fail-soft by contract
+            logger.warning("Codex skills/list failed: {}", exc)
+            return ()
+        payload = (
+            result.model_dump(by_alias=True)
+            if isinstance(result, BaseModel)
+            else result
+        )
+        if not isinstance(payload, Mapping):
+            return ()
+        return skills_from_list(payload)
 
     async def list_threads(
         self,
@@ -1451,14 +1483,27 @@ def codex_turn_start_params(request: CodexStartTurnRequest) -> TurnStartParams:
 
 
 def codex_turn_user_input(request: CodexStartTurnRequest) -> list[UserInput]:
-    values: list[UserInput] = [
-        UserInput(
-            root=TextUserInput(
-                text=codex_turn_text_input(request),
-                type="text",
+    values: list[UserInput] = []
+    if request.skill_name and request.skill_path:
+        values.append(
+            UserInput(
+                root=SkillUserInput(
+                    name=request.skill_name,
+                    path=request.skill_path,
+                    type="skill",
+                )
             )
         )
-    ]
+    text = codex_turn_text_input(request)
+    if text or not values:
+        values.append(
+            UserInput(
+                root=TextUserInput(
+                    text=text,
+                    type="text",
+                )
+            )
+        )
     for attachment in request.attachments:
         if attachment.is_image:
             values.append(

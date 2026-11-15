@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from openai_codex.generated.v2_all import Thread
 
+from connector.runtimes.codex.domain.skills import CodexSkill
 from connector.runtimes.codex.sdk.events import CodexSdkEvent
 
 CodexNotificationMessage = CodexSdkEvent | dict[str, Any]
@@ -50,6 +51,10 @@ class CodexStartTurnRequest:
     approvals_reviewer: str | None = None
     sandbox: str | None = None
     attachments: tuple[CodexTurnInputAttachment, ...] = ()
+    #: Set when the prompt names a Codex skill (`/name args`). The turn then
+    #: carries `SkillUserInput(name, path)` ahead of the remaining text.
+    skill_name: str | None = None
+    skill_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +129,7 @@ class CodexRuntimeClient(Protocol):
     async def start(self, handler: NotificationHandler) -> None: ...
     async def stop(self) -> None: ...
     async def list_models(self) -> CodexModelListResult: ...
+    async def list_skills(self) -> tuple[CodexSkill, ...]: ...
     async def list_threads(
         self,
         limit: int = 100,

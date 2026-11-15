@@ -818,7 +818,13 @@ class CodexRuntime(AgentRuntime):
         *,
         include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
-        commands = self._turns.commands.catalog(session_id, external_session_id, None, 1000)
+        commands = await self._turns.commands.catalog(
+            session_id,
+            external_session_id,
+            None,
+            1000,
+            include_skills=include_skills,
+        )
         if self.ipc is not None or self.ipc_enabled or desktop_app.supported():
             commands = (*commands, kill_chatgpt_command(supported=desktop_app.supported()))
         if self._ipc_handoff_supported() or self.ipc is not None:

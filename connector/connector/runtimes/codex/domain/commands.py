@@ -1,8 +1,9 @@
 """Commands supported by AA's native Codex runtime."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from connector.runtime_protocol import RuntimeCommand
+from connector.runtimes.codex.domain.skills import CodexSkill
 
 IDLE = ("idle", "error")
 ALL_STATUSES = (
@@ -41,6 +42,34 @@ def filter_commands(
     )[: max(0, min(limit, 1000))]
 
 
+def _skill_command(skill: CodexSkill) -> RuntimeCommand:
+    """One Codex skill as an insert-only command row.
+
+    Selecting it writes `/name` back into the composer; sending turns into a
+    `SkillUserInput(name, path)` in the Codex turn input, not the command API.
+    """
+
+    # `name` is the slash-safe token (kebab-case); `display_name` may contain
+    # spaces and would break the `/name` grammar.
+    return RuntimeCommand(
+        id=skill.name,
+        title=skill.display_name,
+        description=skill.description or None,
+        enabled=True,
+        accepts_args=True,
+        metadata={
+            "ui": {
+                "kind": "insert",
+                "acceptsMultiline": True,
+            },
+            "skill": {
+                "name": skill.name,
+                "scope": skill.scope,
+            },
+        },
+    )
+
+
 def list_codex_commands(
     external_session_id: str | None,
     client_available: bool,
@@ -49,6 +78,7 @@ def list_codex_commands(
     *,
     status: str = "idle",
     source_availability: str | None = None,
+    skills: Sequence[CodexSkill] = (),
 ) -> tuple[RuntimeCommand, ...]:
     reason = None
     if not client_available:
@@ -74,7 +104,15 @@ def list_codex_commands(
             }
         },
     )
-    return filter_commands((command,), query, limit)
+    seen = {command.id}
+    skill_commands: list[RuntimeCommand] = []
+    for skill in sorted(skills, key=lambda item: item.display_name.casefold()):
+        candidate = _skill_command(skill)
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        skill_commands.append(candidate)
+    return filter_commands((command, *skill_commands), query, limit)
 
 
 def kill_chatgpt_command(*, supported: bool) -> RuntimeCommand:

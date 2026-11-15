@@ -23,12 +23,17 @@ struct DiagnosticsStatusDot: View {
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = true
+    @AppStorage(ClientDiagnosticsLog.verboseKey) private var verbose = false
     @Environment(\.colorScheme) private var colorScheme
     @State private var days: [DiagnosticsDay] = []
     @State private var didLoad = false
     @State private var shareItems: [Any] = []
     @State private var showsShare = false
     @State private var confirmsClear = false
+    /// Which log row currently shows its delete action (one at a time).
+    @State private var openDayID: String?
+    /// Byte estimates per export slice, filled off the main thread.
+    @State private var exportSizes: [DiagnosticsExportWindow: Int64] = [:]
 
     var body: some View {
         SettingsScreen(title: String(localized: "Diagnostics log")) {
@@ -36,6 +41,12 @@ struct DiagnosticsLogSettingsView: View {
                 SettingsToggleRow(icon: "doc.text.magnifyingglass",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
+            }
+
+            SettingsSection(footer: String(localized: "详细模式额外记录逐帧滚动采样、行更新与页脚决策；日志增长更快，建议排查时开启、导出后关闭。")) {
+                SettingsToggleRow(icon: "doc.plaintext",
+                                  title: String(localized: "详细记录"),
+                                  isOn: $verbose)
             }
 
             SettingsSection(String(localized: "Log files")) {
@@ -59,7 +70,20 @@ struct DiagnosticsLogSettingsView: View {
                         if index > 0 {
                             SettingsRowDivider()
                         }
-                        dayRow(day)
+                        // Right-swipe reveals the delete action; the context
+                        // menu keeps working as the long-press path.
+                        SwipeToDeleteRow(
+                            id: day.id,
+                            openID: $openDayID,
+                            isFirst: index == 0,
+                            isLast: index == days.count - 1,
+                            onDelete: {
+                                ClientDiagnosticsLog.shared.delete(day)
+                                reload()
+                            }
+                        ) {
+                            dayRow(day)
+                        }
                     }
                 }
             }
@@ -87,10 +111,20 @@ struct DiagnosticsLogSettingsView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    if let url = ClientDiagnosticsLog.shared.exportFile() {
-                        shareItems = [url]
-                        showsShare = true
+                // A slice, not the whole week: a verbose day is far too large
+                // to attach, and the reader usually reproduces a bug right
+                // before exporting. Each item carries its estimated size.
+                Menu {
+                    ForEach(DiagnosticsExportWindow.allCases) { window in
+                        Button {
+                            export(window)
+                        } label: {
+                            if let size = exportSizes[window], size > 0 {
+                                Text("\(window.title) · \(DiagnosticsFormat.bytes(size))")
+                            } else {
+                                Text(window.title)
+                            }
+                        }
                     }
                 } label: {
                     Image(systemName: "square.and.arrow.up")
@@ -114,6 +148,14 @@ struct DiagnosticsLogSettingsView: View {
             }
             reload()
         }
+        .onChange(of: verbose) { _, isOn in
+            ClientDiagnosticsLog.shared.record(
+                kind: "diagnostics.verbose",
+                detail: ["on": isOn ? "1" : "0"],
+                dedupe: false)
+            refreshExportSizes()
+        }
+        .onDisappear { openDayID = nil }
         .confirmationDialog(
             String(localized: "Clear diagnostics?"),
             isPresented: $confirmsClear,
@@ -127,6 +169,7 @@ struct DiagnosticsLogSettingsView: View {
         .sheet(isPresented: $showsShare) {
             DiagnosticsShareSheet(items: shareItems)
         }
+        .diagnosticsBreadcrumb("settings.diagnostics")
     }
 
     private func dayRow(_ day: DiagnosticsDay) -> some View {
@@ -171,8 +214,74 @@ struct DiagnosticsLogSettingsView: View {
         }
     }
 
+    /// Export one slice off the main thread: the log queue reads up to seven
+    /// day files and folds the mover samples.
+    private func export(_ window: DiagnosticsExportWindow) {
+        let since = window.since(Date())
+        Task {
+            let url = await Task.detached(priority: .userInitiated) {
+                ClientDiagnosticsLog.shared.exportWindow(since: since)
+            }.value
+            guard let url else { return }
+            let bytes = (try? Data(contentsOf: url).count) ?? 0
+            ClientDiagnosticsLog.shared.record(
+                kind: "diagnostics.export",
+                detail: ["window": window.rawValue, "bytes": String(bytes)],
+                dedupe: false)
+            shareItems = [url]
+            showsShare = true
+        }
+    }
+
+    /// Fill the menu's per-slice size estimates off the main thread.
+    private func refreshExportSizes() {
+        let windows = DiagnosticsExportWindow.allCases
+        let now = Date()
+        Task {
+            let sizes = await Task.detached(priority: .utility) {
+                var sizes: [DiagnosticsExportWindow: Int64] = [:]
+                for window in windows {
+                    sizes[window] = ClientDiagnosticsLog.shared.exportWindowSize(
+                        since: window.since(now))
+                }
+                return sizes
+            }.value
+            exportSizes = sizes
+        }
+    }
+
     private func reload() {
         days = ClientDiagnosticsLog.shared.days()
+        refreshExportSizes()
+    }
+}
+
+/// The export slices offered on the log page. A reader who just reproduced a
+/// bug wants the last minutes, not the whole week.
+private enum DiagnosticsExportWindow: String, CaseIterable, Identifiable {
+    case last5, last15, last60, today, all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .last5: return String(localized: "最近 5 分钟")
+        case .last15: return String(localized: "最近 15 分钟")
+        case .last60: return String(localized: "最近 1 小时")
+        case .today: return String(localized: "今天")
+        case .all: return String(localized: "全部保留")
+        }
+    }
+
+    /// The first timestamp the slice keeps; `nil` keeps every retained day.
+    func since(_ now: Date) -> Date? {
+        switch self {
+        case .last5: return now.addingTimeInterval(-5 * 60)
+        case .last15: return now.addingTimeInterval(-15 * 60)
+        case .last60: return now.addingTimeInterval(-60 * 60)
+        case .today: return Calendar.current.startOfDay(for: now)
+        case .all: return nil
+        }
     }
 }
 

@@ -38,6 +38,12 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let shared = ClientDiagnosticsLog()
 
     static let enabledKey = "diagnostics.log.enabled"
+    /// The second, independent level: per-frame samples, per-row updates and
+    /// per-refresh gate decisions that are too noisy to keep on by default.
+    /// Standard (off) records state changes only; verbose (on) adds the
+    /// detail used to explain "this row did not redraw" and "the page moved
+    /// on its own". Export by time window keeps a verbose day shareable.
+    static let verboseKey = "diagnostics.log.verbose"
     static let serverKey = "diagnostics.log.server"
     static let retainedDays = 7
     static let maxBytesPerDay = 5 * 1024 * 1024
@@ -58,8 +64,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let schemaLegend: [String: String] = [
         "schemaVersion": schemaVersion,
         "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
-        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement|timeline.mover|timeline.working.row|timeline.compact.row|timeline.haptic; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped",
-        "fields": "ts=local ISO8601; kind; severity=info for actions and the gap note / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild|reconcile|fill|live|batch|history; limit=requested page size; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies; prevId/nextId=nearest held neighbours, prevOrder/nextOrder=their orderSeq, rowsBefore=held rows before the merge, windowMin/windowMax=window bounds before the merge; oldOrder/newOrder=a held row's orderSeq change; group=step-group id; liveTail/allowsPose/fresh/stopRequested/predictedIdle=0/1 pose gates; status=runtime status; steps=step count; item=row id, from/to=status before/after, revival=1 when to=running, revision/updatedSeq=row version; from/to=send-queue roster before/after a change; head=head id:state; offsetY/contentH/visibleH/atBottom=viewport numbers at the change; running/streaming/placeholder/statusLine=drawn working gates; liveTail=the group drawing the live tail; posing=groups the pose gate would animate, posingRunning=their running subset; state/title=the compact row's wire state and the divider label it draws.",
+        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled|diagnostics.verbose|diagnostics.export; cache.clear; ui.screen; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement|timeline.mover|timeline.working.row|timeline.compact.row|timeline.footer.gate|timeline.apply|timeline.row.update|timeline.height.delta|timeline.haptic; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped",
+        "fields": "ts=local ISO8601; kind; severity=info for actions and the gap note / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild|reconcile|fill|live|batch|history; limit=requested page size; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies; prevId/nextId=nearest held neighbours, prevOrder/nextOrder=their orderSeq, rowsBefore=held rows before the merge, windowMin/windowMax=window bounds before the merge; oldOrder/newOrder=a held row's orderSeq change; group=step-group id; liveTail/allowsPose/fresh/stopRequested/predictedIdle=0/1 pose gates; status=runtime status; steps=step count; item=row id, from/to=status before/after, revival=1 when to=running, revision/updatedSeq=row version; from/to=send-queue roster before/after a change; head=head id:state; offsetY/contentH/visibleH/atBottom=viewport numbers at the change; running/streaming/placeholder/statusLine=drawn working gates; liveTail=the group drawing the live tail; posing=groups the pose gate would animate, posingRunning=their running subset; state/title=the compact row's wire state and the divider label it draws; open/suppress/running/compacting/hasActive=footer gate inputs; items/changed/reconfigured=apply sizes; estimate/measured=height correction; name/action=page breadcrumb; window/bytes/n=an export request; collapsed=folded timeline.mover scroll samples.",
     ]
 
     /// Kinds recorded at info level: reader actions plus the cursor note
@@ -72,7 +78,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let infoKinds: Set<String> = [
         "app.launch", "app.foreground", "app.background",
         "diagnostics.enabled", "diagnostics.disabled",
-        "cache.clear",
+        "diagnostics.verbose", "diagnostics.export",
+        "cache.clear", "ui.screen",
         "session.open", "session.open.ready", "session.refresh",
         "timeline.snapshot.fetch", "timeline.snapshot.applied",
         "timeline.latest.fetch",
@@ -80,7 +87,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "timeline.row.inserted", "timeline.row.moved",
         "timeline.interrupt.card", "timeline.anchor.placement", "timeline.mover",
         "timeline.working.row", "timeline.haptic",
-        "timeline.compact.row",
+        "timeline.compact.row", "timeline.footer.gate",
+        "timeline.apply", "timeline.row.update", "timeline.height.delta",
         "ws.connecting", "ws.connect", "ws.disconnect",
         "timeline.event.gap",
     ]
@@ -125,6 +133,9 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             || defaults.bool(forKey: Self.enabledKey)
     }
 
+    /// Off unless the reader turned it on: the detailed level is opt-in.
+    var isVerbose: Bool { defaults.bool(forKey: Self.verboseKey) }
+
     /// The server shown in a day's header. The app sets it once the configured
     /// server is known; it is diagnostic metadata, not a credential.
     func setServer(_ description: String?) {
@@ -150,6 +161,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     /// Anomalies use the default `dedupe` so a stuck window cannot flood the
     /// file. User actions (`session.open`, `cache.clear`, a fetch) pass
     /// `dedupe: false` because the trail must preserve every occurrence.
+    /// `verbose` marks the detailed level; without `isVerbose` the call
+    /// returns before the fingerprint work.
     /// `force` is only for the event that turns recording off: it is written
     /// after the flag already reads false.
     func record(
@@ -158,9 +171,10 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         detail: [String: String] = [:],
         severity: String? = nil,
         dedupe: Bool = true,
+        verbose: Bool = false,
         force: Bool = false
     ) {
-        guard force || isEnabled else { return }
+        guard force || (isEnabled && (!verbose || isVerbose)) else { return }
         let resolvedSeverity = severity ?? Self.severity(for: kind)
         let stamp = now()
         guard dedupe else {
@@ -233,30 +247,146 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         }
     }
 
-    /// Concatenate the retained days into one file for the share sheet.
-    func exportFile() -> URL? {
+    /// Export the retained lines at or after `since` (nil = every retained
+    /// day) into one temporary file for the share sheet.
+    ///
+    /// The file opens with a `# window: … | build … | device …` comment so a
+    /// slice always carries the build that produced it. Runs of identical
+    /// `timeline.mover` scroll samples collapse into one folded line — they
+    /// are per-frame noise and a verbose day is mostly them — while every
+    /// other kind is written verbatim.
+    func exportWindow(since: Date?) -> URL? {
         queue.sync {
-            let retained = daysLocked()
-            guard !retained.isEmpty else { return nil }
-            var output = ""
-            for day in retained.sorted(by: { $0.date < $1.date }) {
-                output += "# diagnostics \(Self.dayString(day.date, calendar: calendar))\n"
-                if let data = try? Data(contentsOf: day.fileURL),
-                   let text = String(data: data, encoding: .utf8) {
-                    output += text
-                    if !output.hasSuffix("\n") { output += "\n" }
-                }
-            }
+            let text = exportTextLocked(since: since)
+            guard !text.isEmpty else { return nil }
             let stamp = Self.exportString(now(), calendar: calendar)
+            let tag = since.map { "-since-" + Self.exportString($0, calendar: calendar) } ?? "-all"
             let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Anywhere-diagnostics-\(stamp).log")
+                .appendingPathComponent("Anywhere-diagnostics-\(stamp)\(tag).log")
             do {
-                try Data(output.utf8).write(to: url, options: .atomic)
+                try Data(text.utf8).write(to: url, options: .atomic)
                 return url
             } catch {
                 return nil
             }
         }
+    }
+
+    /// The byte count `exportWindow(since:)` would write, for the export menu.
+    func exportWindowSize(since: Date?) -> Int64 {
+        queue.sync { Int64(exportTextLocked(since: since).utf8.count) }
+    }
+
+    /// The requested slice as one file body: the window header, then the
+    /// filtered lines with mover scroll runs folded.
+    private func exportTextLocked(since: Date?) -> String {
+        let retained = daysLocked().sorted { $0.date < $1.date }
+        guard !retained.isEmpty else { return "" }
+        var output: [String] = [
+            exportHeader(since: since, firstDay: retained[0].date)
+        ]
+        // A run of identical scroll samples: the period between two state
+        // changes, which is all a reader needs from them.
+        var run: [String] = []
+        var runKey: String?
+
+        func flushRun() {
+            defer { run = []; runKey = nil }
+            guard !run.isEmpty else { return }
+            if run.count <= 2 {
+                output.append(contentsOf: run)
+                return
+            }
+            output.append(run[0])
+            if let folded = Self.foldedMoverLine(first: run[0], last: run[run.count - 1],
+                                                 collapsed: run.count - 1) {
+                output.append(folded)
+            } else {
+                output.append(contentsOf: run.dropFirst())
+            }
+        }
+
+        for day in retained {
+            guard let data = try? Data(contentsOf: day.fileURL),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                let line = String(line)
+                guard let object = Self.jsonObject(line) else {
+                    // Legacy or comment lines: only kept by a full export.
+                    if since == nil { output.append(line) }
+                    continue
+                }
+                let kind = object["kind"] as? String
+                guard kind != "day.started", kind != "log.schema" else { continue }
+                guard let stamp = Self.isoDate(object["ts"] as? String) else {
+                    if since == nil { output.append(line) }
+                    continue
+                }
+                if let since, stamp < since { continue }
+                let detail = object["detail"] as? [String: Any] ?? [:]
+                let isScroll = kind == "timeline.mover"
+                    && detail["action"] as? String == "scroll"
+                if isScroll {
+                    let key = [
+                        object["session"] as? String ?? "",
+                        detail["placement"] as? String ?? "",
+                        detail["contentH"] as? String ?? "",
+                    ].joined(separator: "|")
+                    if key == runKey {
+                        run.append(line)
+                        continue
+                    }
+                    flushRun()
+                    runKey = key
+                    run = [line]
+                    continue
+                }
+                flushRun()
+                output.append(line)
+            }
+        }
+        flushRun()
+        guard output.count > 1 else { return "" }
+        return output.joined(separator: "\n") + "\n"
+    }
+
+    private func exportHeader(since: Date?, firstDay: Date) -> String {
+        var parts = [
+            "# window: \(Self.isoString(since ?? firstDay, calendar: calendar)) – \(Self.isoString(now(), calendar: calendar))"
+        ]
+        parts.append("build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")")
+        parts.append("version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
+        parts.append("device \(Self.deviceDescription)")
+        if let server = serverDescription() { parts.append("server \(server)") }
+        return parts.joined(separator: " | ")
+    }
+
+    /// The first line of a folded mover run plus one synthetic line carrying
+    /// the hidden count and the run's last position/time. JSON-encoded so a
+    /// placement string's quotes survive.
+    private static func foldedMoverLine(first: String, last: String,
+                                        collapsed: Int) -> String? {
+        guard let firstObject = jsonObject(first),
+              let lastObject = jsonObject(last),
+              let firstDetail = firstObject["detail"] as? [String: Any],
+              let lastDetail = lastObject["detail"] as? [String: Any] else {
+            return nil
+        }
+        var detail = firstDetail
+        detail["collapsed"] = String(collapsed)
+        detail["firstPosition"] = firstDetail["position"]
+        detail["lastPosition"] = lastDetail["position"]
+        var object: [String: Any] = [
+            "ts": lastObject["ts"] ?? "",
+            "kind": "timeline.mover",
+            "severity": "info",
+            "detail": detail,
+        ]
+        if let session = lastObject["session"] { object["session"] = session }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys]
+        ) else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     func clear() {
@@ -324,12 +454,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
             "device": Self.deviceDescription,
             "schemaVersion": Self.schemaVersion,
         ]
-        if let server = defaults.string(forKey: Self.serverKey), !server.isEmpty {
+        if let server = serverDescription() {
             detail["server"] = server
-        } else if let raw = defaults.string(
-            forKey: "agentsAnywhere.serverURL"
-        ), let url = URL(string: raw), let host = url.host {
-            detail["server"] = host
         }
         write(
             kind: "day.started", sessionID: nil, detail: detail,
@@ -431,6 +557,18 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// The configured server, as the host shown in day and export headers.
+    private func serverDescription() -> String? {
+        if let server = defaults.string(forKey: Self.serverKey), !server.isEmpty {
+            return server
+        }
+        if let raw = defaults.string(forKey: "agentsAnywhere.serverURL"),
+           let url = URL(string: raw), let host = url.host {
+            return host
+        }
+        return nil
+    }
 
     private func fileURL(for day: Date) -> URL {
         directory.appendingPathComponent(

@@ -274,7 +274,116 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
 
     /// The byte count `exportWindow(since:)` would write, for the export menu.
     func exportWindowSize(since: Date?) -> Int64 {
-        queue.sync { Int64(exportTextLocked(since: since).utf8.count) }
+        exportWindowSizes(sinces: [since]).first ?? 0
+    }
+
+    /// One folded `timeline.mover` scroll run while sizing an export.
+    private struct ExportRun {
+        let key: String
+        let first: String
+        let firstBytes: Int
+        var last: String
+        var lastBytes: Int
+        var totalBytes: Int
+        var count: Int
+    }
+
+    /// Exact byte counts for several slices in one read/parse pass.
+    ///
+    /// The export menu asks for five windows. Building each slice's text
+    /// separately re-parsed every retained day five times; on a verbose day
+    /// (up to 5 MB) that held the log queue long enough to stall the page and
+    /// every queued write (pp 2026-11-15: opening the log page loaded for a
+    /// long time and hung). The counters mirror `exportTextLocked` exactly —
+    /// header, the same folding, the same skipped rows — so the menu's size
+    /// stays the size of the file it produces.
+    func exportWindowSizes(sinces: [Date?]) -> [Int64] {
+        queue.sync {
+            let retained = daysLocked().sorted { $0.date < $1.date }
+            guard !retained.isEmpty else { return sinces.map { _ in 0 } }
+            var sizes = sinces.map {
+                Int64(exportHeader(since: $0, firstDay: retained[0].date).utf8.count + 1)
+            }
+            var emitted = sinces.map { 1 }
+            var runs: [ExportRun?] = Array(repeating: nil, count: sinces.count)
+
+            func flushRun(_ index: Int) {
+                defer { runs[index] = nil }
+                guard let run = runs[index] else { return }
+                if run.count <= 2 {
+                    sizes[index] += Int64(run.count == 2 ? run.totalBytes : run.firstBytes)
+                    emitted[index] += run.count
+                    return
+                }
+                sizes[index] += Int64(run.firstBytes)
+                if let folded = Self.foldedMoverLine(first: run.first, last: run.last,
+                                                     collapsed: run.count - 1) {
+                    sizes[index] += Int64(folded.utf8.count + 1)
+                } else {
+                    // The text export falls back to every raw line.
+                    sizes[index] += Int64(run.totalBytes - run.firstBytes)
+                }
+                emitted[index] += 2
+            }
+
+            for day in retained {
+                guard let data = try? Data(contentsOf: day.fileURL),
+                      let text = String(data: data, encoding: .utf8) else { continue }
+                for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                    let line = String(line)
+                    let lineBytes = line.utf8.count + 1
+                    guard let object = Self.jsonObject(line) else {
+                        for index in sinces.indices where sinces[index] == nil {
+                            sizes[index] += Int64(lineBytes)
+                            emitted[index] += 1
+                        }
+                        continue
+                    }
+                    let kind = object["kind"] as? String
+                    guard kind != "day.started", kind != "log.schema" else { continue }
+                    let stamp = Self.isoDate(object["ts"] as? String)
+                    let detail = object["detail"] as? [String: Any] ?? [:]
+                    let isScroll = kind == "timeline.mover"
+                        && detail["action"] as? String == "scroll"
+                    let key = isScroll ? [
+                        object["session"] as? String ?? "",
+                        detail["placement"] as? String ?? "",
+                        detail["contentH"] as? String ?? "",
+                    ].joined(separator: "|") : ""
+                    for index in sinces.indices {
+                        guard let stamp else {
+                            // Unparseable timestamps survive only the full export.
+                            if sinces[index] == nil {
+                                sizes[index] += Int64(lineBytes)
+                                emitted[index] += 1
+                            }
+                            continue
+                        }
+                        if let since = sinces[index], stamp < since { continue }
+                        if isScroll {
+                            if var run = runs[index], run.key == key {
+                                run.last = line
+                                run.lastBytes = lineBytes
+                                run.totalBytes += lineBytes
+                                run.count += 1
+                                runs[index] = run
+                                continue
+                            }
+                            flushRun(index)
+                            runs[index] = ExportRun(key: key, first: line, firstBytes: lineBytes,
+                                              last: line, lastBytes: lineBytes,
+                                              totalBytes: lineBytes, count: 1)
+                            continue
+                        }
+                        flushRun(index)
+                        sizes[index] += Int64(lineBytes)
+                        emitted[index] += 1
+                    }
+                }
+            }
+            for index in sinces.indices { flushRun(index) }
+            return sizes.indices.map { emitted[$0] > 1 ? sizes[$0] : 0 }
+        }
     }
 
     /// The requested slice as one file body: the window header, then the
@@ -523,20 +632,15 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         return Array(days.sorted { $0.date > $1.date }.prefix(Self.retainedDays))
     }
 
+    /// The anomaly flag is a byte search, not a per-line parse: the writer
+    /// emits compact JSON with sorted keys, so an anomaly line always contains
+    /// `"severity":"warn"`. Parsing every line here ran on the main thread via
+    /// `days()` and froze the log page once a verbose day grew (pp 2026-11-15:
+    /// opening the log page loaded for a long time and hung).
     private func fileHasEntries(_ url: URL) -> Bool {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
-            return false
-        }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let object = Self.jsonObject(String(line)) else { continue }
-            let kind = object["kind"] as? String
-            let severity = object["severity"] as? String
-            if kind != "day.started", kind != "log.schema", severity != "info" {
-                return true
-            }
-        }
-        return false
+        guard let data = try? Data(contentsOf: url) else { return false }
+        return data.range(of: Data("\"severity\":\"warn\"".utf8)) != nil
+            || data.range(of: Data("\"severity\" : \"warn\"".utf8)) != nil
     }
 
     private func prune(retaining day: Date) {

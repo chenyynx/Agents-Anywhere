@@ -12,7 +12,12 @@ struct DiagnosticsStatusDot: View {
             .fill(hasEntries ? Color.orange : Color.green)
             .frame(width: 8, height: 8)
             .accessibilityHidden(true)
-            .task { hasEntries = ClientDiagnosticsLog.shared.hasRecentEntries() }
+            // Off the main thread: the check reads every retained day file.
+            .task {
+                hasEntries = await Task.detached(priority: .utility) {
+                    ClientDiagnosticsLog.shared.hasRecentEntries()
+                }.value
+            }
     }
 }
 
@@ -133,10 +138,7 @@ struct DiagnosticsLogSettingsView: View {
                 .accessibilityLabel(String(localized: "Export diagnostics"))
             }
         }
-        .task {
-            reload()
-            didLoad = true
-        }
+        .task { await firstLoad() }
         .onChange(of: enabled) { _, isOn in
             if isOn {
                 ClientDiagnosticsLog.shared.markEnabled()
@@ -233,26 +235,42 @@ struct DiagnosticsLogSettingsView: View {
         }
     }
 
-    /// Fill the menu's per-slice size estimates off the main thread.
+    /// Fill the menu's per-slice size estimates off the main thread. One pass
+    /// serves all five windows: measuring them one by one re-parsed the day
+    /// files five times and made the page feel frozen on a verbose day.
     private func refreshExportSizes() {
         let windows = DiagnosticsExportWindow.allCases
         let now = Date()
         Task {
             let sizes = await Task.detached(priority: .utility) {
-                var sizes: [DiagnosticsExportWindow: Int64] = [:]
-                for window in windows {
-                    sizes[window] = ClientDiagnosticsLog.shared.exportWindowSize(
-                        since: window.since(now))
-                }
-                return sizes
+                let values = ClientDiagnosticsLog.shared.exportWindowSizes(
+                    sinces: windows.map { $0.since(now) })
+                return Dictionary(uniqueKeysWithValues: zip(windows, values))
             }.value
             exportSizes = sizes
         }
     }
 
-    private func reload() {
-        days = ClientDiagnosticsLog.shared.days()
+    /// The day list is read off the main thread: a verbose week is up to seven
+    /// 5 MB files and the anomaly flag reads each one. Doing it inline made
+    /// the page load for a long time and hang (pp 2026-11-15).
+    private func firstLoad() async {
+        let loaded = await Task.detached(priority: .userInitiated) {
+            ClientDiagnosticsLog.shared.days()
+        }.value
+        days = loaded
+        didLoad = true
         refreshExportSizes()
+    }
+
+    private func reload() {
+        Task {
+            let loaded = await Task.detached(priority: .userInitiated) {
+                ClientDiagnosticsLog.shared.days()
+            }.value
+            days = loaded
+            refreshExportSizes()
+        }
     }
 }
 

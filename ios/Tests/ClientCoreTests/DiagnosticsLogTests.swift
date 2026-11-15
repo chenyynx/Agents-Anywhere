@@ -86,10 +86,17 @@ import Testing
         #expect(text.contains("\"action\":\"inset\""))
     }
 
+    /// The menu's count is one shared pass over the files; it must keep
+    /// matching the file the export actually writes, folding included.
     @Test func theReportedSizeMatchesTheExportedFile() throws {
         let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
-        let (log, _, _) = makeLog(clock)
+        let (log, defaults, _) = makeLog(clock)
+        defaults.set(true, forKey: ClientDiagnosticsLog.verboseKey)
         log.record(kind: "session.open", detail: ["rows": "3"], dedupe: false)
+        for index in 0..<6 {
+            clock.advance(0.02)
+            scroll(log, placement: "end", contentH: "100", position: "\(index)")
+        }
         let size = log.exportWindowSize(since: nil)
         let url = try #require(log.exportWindow(since: nil))
         let bytes = try Data(contentsOf: url).count

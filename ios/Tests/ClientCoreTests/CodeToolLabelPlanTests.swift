@@ -13,9 +13,11 @@ private func makeCall(_ id: String,
                       kind: CodeToolKind,
                       input: [String: Any] = [:],
                       status: String = "done",
-                      text: String? = nil) throws -> CodeToolCall {
+                      text: String? = nil,
+                      extraContent: [String: Any] = [:]) throws -> CodeToolCall {
     var content: [String: Any] = ["kind": "tool_call", "toolName": name, "input": input]
     if let text { content["text"] = text }
+    content.merge(extraContent) { _, new in new }
     let item: V2TimelineItem = try decode([
         "id": id,
         "sessionId": "session",
@@ -195,6 +197,34 @@ struct CodeToolLabelPlanTests {
         #expect(plan.phrases == [
             .init(verb: .used, unit: .sessions, count: 3, failed: 1),
         ])
+    }
+
+    /// The connector publishes an `AskUserQuestion` tool row as an input
+    /// request whose questions live in the flattened `questions` array (no
+    /// flat `question` key). The row names the first question instead of
+    /// reading a bare "Asked" (pp 2026-11-16).
+    @Test func askUserQuestionNamesItsFirstQuestion() throws {
+        let questions: [[String: Any]] = [["question": "Continue?", "header": "Step"]]
+        // The connector's payload: `questions` flattened onto the content.
+        let fromContent = try makeCall("q1", name: "AskUserQuestion", kind: .question,
+                                       input: ["questions": questions],
+                                       extraContent: ["kind": "input_request",
+                                                      "questions": questions])
+        let contentPlan = try #require(CodeToolLabelPlan.make(calls: [fromContent], cwd: nil))
+        #expect(contentPlan.verb == .asked)
+        #expect(contentPlan.target == "Continue?")
+
+        // A row carrying the array only in its raw input still names it.
+        let fromInput = try makeCall("q2", name: "AskUserQuestion", kind: .question,
+                                     input: ["questions": questions])
+        let inputPlan = try #require(CodeToolLabelPlan.make(calls: [fromInput], cwd: nil))
+        #expect(inputPlan.target == "Continue?")
+
+        // A flat `question` keeps its older, direct read.
+        let flat = try makeCall("q3", name: "AskUserQuestion", kind: .question,
+                                input: ["question": "Flat?"])
+        let flatPlan = try #require(CodeToolLabelPlan.make(calls: [flat], cwd: nil))
+        #expect(flatPlan.target == "Flat?")
     }
 
     /// AskUserQuestion has no category of its own; it counts as `other`.

@@ -5,12 +5,12 @@ import UIKit
 /// nor a step group: a compaction divider, a marker row, an artifact, an
 /// interaction anchor, or a legacy keyless row the builder could not group.
 ///
-/// - A message row keeps the Code message row (bubble / markdown / thinking).
-/// - A tool or reasoning row keeps the Code row too, so an approval anchored on
-///   a tool call still opens the official tool detail instead of degrading to a
-///   one-line marker.
-/// - A compaction divider, a marker and an artifact keep the same leaf views
-///   the retired Chat group used.
+/// Every branch draws with the Code page's own components — the one-line status
+/// rows reuse `CodeCollapsedStepsRow`, the message/tool/thinking rows reuse
+/// `CodeMessageRowView` / `CodeCollapsedToolRow`. The retired Chat leaves
+/// (`TimelineMarkerRow` / `TimelineFold` / `TimelineCodePanel`) are gone:
+/// keeping them as a fallback made old-styled rows reappear on this page
+/// (pp 2026-11-16).
 ///
 /// The row's inline interaction cards, the interrupted notice and the turn
 /// footer keep the retired group's spacing (outer 4 pt, row → notice 2 pt).
@@ -36,6 +36,9 @@ struct CodeStandaloneRowView: View, Equatable {
             && lhs.inlineNotices.elementsEqual(rhs.inlineNotices, by: ===)
             && lhs.showsInterruptedNotice == rhs.showsInterruptedNotice
     }
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
 
     private var cwd: String? { chat.session.metadata?.cwd }
 
@@ -89,34 +92,27 @@ struct CodeStandaloneRowView: View, Equatable {
             case .compact:
                 CompactedDivider(title: value.title, failed: value.compactFailed)
             case .marker:
-                if let detail = value.detail {
-                    TimelineFold(id: row.id, title: value.title, symbol: value.symbol,
-                                 status: row.value.status, disclosures: chat.disclosures) {
-                        TimelineCodePanel(label: String(localized: "Details"),
-                                          code: detail.formattedJSON)
-                            .clipShape(.rect(cornerRadius: 14))
-                    }
-                } else {
-                    TimelineMarkerRow(title: value.title, symbol: value.symbol,
-                                      status: row.value.status)
-                }
+                // A system/status line (a reconnect notice, an error row).
+                codeStatusRow(title: value.title,
+                              icon: row.value.status.isFailure
+                                  ? "anthropicon.warning" : "anthropicon.clock",
+                              failure: row.value.status.isFailure)
             case .artifact:
+                // A file (or an external link) published as its own row.
                 if let path = value.filePath {
-                    Button { onFile(path) } label: {
-                        TimelineMarkerRow(title: value.title, symbol: value.symbol,
-                                          status: row.value.status, accessory: "arrow.up.right")
+                    codeStatusRow(title: value.title, icon: "anthropicon.file",
+                                  failure: row.value.status.isFailure) {
+                        onFile(path)
                     }
-                    .buttonStyle(.plain)
                     .accessibilityHint(String(localized: "打开文件预览"))
                 } else if let url = value.externalURL {
-                    Link(destination: url) {
-                        TimelineMarkerRow(title: value.title, symbol: value.symbol,
-                                          status: row.value.status, accessory: "arrow.up.right")
+                    codeStatusRow(title: value.title, icon: "anthropicon.file",
+                                  failure: row.value.status.isFailure) {
+                        openURL(url)
                     }
-                    .buttonStyle(.plain)
                 } else {
-                    TimelineMarkerRow(title: value.title, symbol: value.symbol,
-                                      status: row.value.status)
+                    codeStatusRow(title: value.title, icon: "anthropicon.file",
+                                  failure: row.value.status.isFailure)
                 }
             case .tool, .reasoning:
                 // An approval anchors on these rows; they keep the Code tool /
@@ -124,13 +120,19 @@ struct CodeStandaloneRowView: View, Equatable {
                 // call itself (an answered question, ExitPlanMode), and a
                 // running reasoning block is not drawn by the Code builder:
                 // what is left is the builder's generic `.other` placeholder,
-                // not a drawing. Those cases keep the marker line so the
-                // anchored card never floats under a blank or a raw type name.
+                // not a drawing. A skipped *tool* still has a name, a status
+                // and a payload, so it keeps a Code tool row (label plan +
+                // status glyph + the Code detail sheet). A thinking block the
+                // builder does not draw keeps one Code-styled status line: the
+                // Code page draws only settled thinking, and a running one is
+                // the live working line.
                 if hasDrawableCodeRow(row) {
                     codeRow(row)
+                } else if let call = codeToolCall(row) {
+                    codeToolRow(call)
                 } else {
-                    TimelineMarkerRow(title: value.title, symbol: value.symbol,
-                                      status: row.value.status)
+                    codeStatusRow(title: value.title, icon: "anthropicon.extendedThinking",
+                                  failure: row.value.status.isFailure)
                 }
             }
         }
@@ -139,7 +141,7 @@ struct CodeStandaloneRowView: View, Equatable {
     /// Whether the Code builder draws a real block for this row. A standalone
     /// item maps to a generic `.other` block — the builder's placeholder for
     /// "the Code page has no block for this" — so a row with only that block is
-    /// not drawable and the caller keeps the marker line.
+    /// not drawable and the caller draws its own one-line row.
     private func hasDrawableCodeRow(_ row: ChatTimelineRowModel) -> Bool {
         CodeMessageBuilder.rows(for: [row.value], profile: profile,
                                 includeSubAgentChildren: true)
@@ -149,6 +151,86 @@ struct CodeStandaloneRowView: View, Equatable {
                     return true
                 }
             }
+    }
+
+    /// The row as a Code tool call, when it declares one. The Code builder
+    /// drops a runtime's skipped calls (`AskUserQuestion`, `ExitPlanMode`) and
+    /// therefore has no block for them; the row itself still carries
+    /// everything the Code tool row draws.
+    private func codeToolCall(_ row: ChatTimelineRowModel) -> CodeToolCall? {
+        let item = row.value
+        // The same predicate `CodeMessageBuilder` uses for a tool row.
+        guard item.type == .tool || item.type == .fileChange
+                || item.raw["content"]?["kind"] == .string("file_change") else { return nil }
+        let name = CodeToolCall.wireName(for: item)
+        return CodeToolCall(item: item,
+                            kind: profile.kind(for: name,
+                                               wireKind: CodeToolCall.wireKind(for: item)))
+    }
+
+    /// One call in the Code page's own row shape — the construction
+    /// `CodeMessageRowView.toolRow` uses: the label plan, the category icon,
+    /// the status glyph, and the caret when there is a detail page to open.
+    private func codeToolRow(_ call: CodeToolCall) -> some View {
+        let calls = [call]
+        let label = CodeToolLabels.label(for: calls, cwd: cwd)
+        let failed = calls.filter { $0.status == .failed }.count
+        let status: CodeToolStatus
+        if label.isRunning {
+            status = .running
+        } else if failed == calls.count {
+            status = .failed
+        } else {
+            status = .complete
+        }
+        let failureExtent: CodeFailureExtent? = failed == 0
+            ? nil : (failed == calls.count ? .failed : .partial)
+        let request = CodeToolDetailRequest(calls: calls)
+        return CodeCollapsedToolRow(label: label,
+                                    icon: CodeToolLabels.anthropicon(for: calls),
+                                    workingMark: nil,
+                                    status: status,
+                                    failureExtent: failureExtent,
+                                    hasDetails: request != nil) {
+            if let request { onToolDetail(request) }
+        }
+    }
+
+    /// One Code-styled line for a row the page has no dedicated component for:
+    /// a system marker, a file artifact, or a thinking block with nothing
+    /// drawable. It reuses the thinking row's slot, type settings and paddings,
+    /// so these rows read as part of the page — the retired Chat marker line
+    /// (`TimelineMarkerRow`) is gone (pp 2026-11-16).
+    ///
+    /// - `icon`: an `anthropicon` asset name; the row draws it in the 24 pt
+    ///   slot at `.medium`, the same extent a thinking row uses.
+    /// - `failure`: the title takes the Code danger ink. The status glyph stays
+    ///   empty so the warning does not read twice.
+    /// - `action`: when non-nil the row is tappable and shows the caret; a
+    ///   plain status line has no affordance.
+    private func codeStatusRow(title: String, icon: String, failure: Bool,
+                               action: (() -> Void)? = nil) -> some View {
+        CodeCollapsedStepsRow(
+            icon: icon,
+            iconSize: .medium,
+            text: Text(verbatim: title)
+                .font(.custom(CodePageTheme.sansFontName,
+                              size: CodePageTheme.toolRowFontSize,
+                              relativeTo: CodePageTheme.toolRowBodyTextStyle))
+                .foregroundStyle((failure ? CodePageTheme.danger00Color
+                                          : CodePageTheme.text400Color)
+                    .resolved(for: colorScheme)),
+            status: .complete,
+            failureExtent: nil,
+            hasDetails: action != nil,
+            diffIndicator: nil,
+            workingMark: nil,
+            isTextHidden: false,
+            includesImages: false,
+            voiceControlName: nil,
+            spokenLabel: nil,
+            isRunning: false,
+            action: { action?() })
     }
 
     /// One row through the Code message row: the builder groups it by its own

@@ -35,6 +35,10 @@ final class TimelineCollectionController: UIViewController {
     private(set) var collectionView: UICollectionView!
     /// Session id for the diagnostics trail; set by the content adapter.
     var diagnosticSessionID = ""
+    /// The detailed level samples mover scrolls at most 10×/s. The driver
+    /// reports per frame (60×/s); unthrottled, one verbose day would hit the
+    /// 5 MB daily cap in minutes and take the state trail down with it.
+    private var lastVerboseScrollSample: TimeInterval = 0
     private var dataSource: UICollectionViewDiffableDataSource<TimelineCollectionSection, TimelineListItem>!
     weak var content: TimelineCollectionContentProviding?
     private(set) var measurer: (any TimelineHeightMeasuring)?
@@ -395,11 +399,19 @@ final class TimelineCollectionController: UIViewController {
                 guard let self else { return }
                 var merged = detail
                 merged["action"] = action
+                // Per-frame scroll samples are the detailed level; the state
+                // changes (start / arrived / inset / retarget) stay standard.
+                if action == "scroll" {
+                    let now = CACurrentMediaTime()
+                    guard now - self.lastVerboseScrollSample >= 0.1 else { return }
+                    self.lastVerboseScrollSample = now
+                }
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.mover",
                     sessionID: self.diagnosticSessionID,
                     detail: merged,
-                    dedupe: false)
+                    dedupe: false,
+                    verbose: action == "scroll")
             }))
         anchorDriver?.setSuspended(navigationSuspended)
         applySafeAreaInsetsIfMounted()
@@ -785,6 +797,17 @@ final class TimelineCollectionController: UIViewController {
         }
         let change = signatures.update(entries)
         let changed = Set(change.changed)
+        // Detailed level: how much one apply replaces. A whole-page reconfigure
+        // is the usual cause of a visible height/scroll correction; applies
+        // with nothing changed are the stream's idle ticks and stay out.
+        if !changed.isEmpty {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.apply",
+                sessionID: diagnosticSessionID,
+                detail: ["items": String(items.count), "changed": String(changed.count)],
+                dedupe: false,
+                verbose: true)
+        }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteStage(
             "apply.entries", seconds: CACurrentMediaTime() - probeEntriesStart)

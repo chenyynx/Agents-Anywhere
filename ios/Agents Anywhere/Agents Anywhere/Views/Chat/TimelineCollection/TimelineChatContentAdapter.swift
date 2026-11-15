@@ -256,6 +256,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// finished until the session was reopened).
     private var lastCompactRowProbe: String?
 
+    /// The last row revision this adapter saw, for the detailed level's
+    /// `timeline.row.update` trail.
+    private var lastRowRevisions: [String: Int] = [:]
+
+    /// The last footer-gate decision written to the detailed trail. Logging
+    /// every refresh would flood a verbose day; the decision changes a handful
+    /// of times per turn.
+    private var lastFooterGateProbe: String?
+
     private func noteCompactRowState() {
         // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
         // turn can still change sits after the last user row, so the scan
@@ -291,6 +300,48 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 "title": title,
             ],
             dedupe: false)
+    }
+
+    /// Detailed level: one line per row whose revision moved. A whole-page
+    /// arrival aggregates into one line — logging 1400 rows would bury the
+    /// single update a reader is chasing.
+    private func noteRowUpdates() {
+        guard ClientDiagnosticsLog.shared.isVerbose else { return }
+        var next: [String: Int] = [:]
+        next.reserveCapacity(model.timeline.rows.count)
+        var changed: [ChatTimelineRowModel] = []
+        for row in model.timeline.rows {
+            next[row.id] = row.value.revision
+            if let last = lastRowRevisions[row.id], last != row.value.revision {
+                changed.append(row)
+            }
+        }
+        let firstPass = lastRowRevisions.isEmpty
+        lastRowRevisions = next
+        guard !firstPass, !changed.isEmpty else { return }
+        if changed.count > 8 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.row.update",
+                sessionID: model.session.id,
+                detail: ["rows": String(changed.count),
+                         "last": changed.last?.id ?? ""],
+                dedupe: false,
+                verbose: true)
+            return
+        }
+        for row in changed {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.row.update",
+                sessionID: model.session.id,
+                detail: [
+                    "item": row.id,
+                    "type": row.value.type.rawValue,
+                    "status": row.value.status.rawValue,
+                    "revision": String(row.value.revision),
+                ],
+                dedupe: false,
+                verbose: true)
+        }
     }
 
     /// What the last chat refresh built for each unit, aligned by index.
@@ -2207,6 +2258,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     && row.value.source["clientMessageId"]?.stringValue == id
             }
         } ?? false
+        let compacting = liveTurnIsCompacting()
         let latestTurnOpen = turnFooterGate.update(
             userKey: submittingPendingID ?? latestUserRowID,
             runtimeIsRunning: model.isRunning,
@@ -2216,18 +2268,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // running" and lose its footer for the whole compaction
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
-            isCompacting: liveTurnIsCompacting())
+            isCompacting: compacting)
+        // The gate's authoritative end count is the primary boundary, but a
+        // turn that ended without a captured transition must not keep its
+        // footer suppressed until the next user message (device 2026-11-15:
+        // the copy/share buttons only appeared after the reader sent the
+        // following message). A confirmed idle overrides the open gate; a
+        // running tool step still suppresses, so the footer cannot hop
+        // between reply segments.
+        let suppressLatest = (latestTurnOpen && model.isRunning)
+            || model.session.hasNewerItems
         let turnActions = TimelineTurnActions.build(
             groups: groups,
-            // The gate's authoritative end count is the primary boundary, but
-            // a turn that ended without a captured transition must not keep
-            // its footer suppressed until the next user message (device
-            // 2026-11-15: the copy/share buttons only appeared after the
-            // reader sent the following message). A confirmed idle overrides
-            // the open gate; a running tool step still suppresses, so the
-            // footer cannot hop between reply segments.
-            suppressLatest: (latestTurnOpen && model.isRunning)
-                || model.session.hasNewerItems,
+            suppressLatest: suppressLatest,
             // Only an outgoing bubble that has not been echoed starts a new
             // turn for the previous footer. A confirmed record held by the
             // presentation until its echo row publishes is not a new turn.
@@ -2238,6 +2291,35 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
             footerHostEligible: { stepGroupsByID[$0.id] == nil })
+        // Detailed level: the inputs behind the footer decision, so a footer
+        // that stays hidden or hops can be explained without guessing which
+        // gate moved. Written when the decision changes, not every refresh.
+        let footerGateProbe = [
+            latestTurnOpen ? "1" : "0",
+            suppressLatest ? "1" : "0",
+            model.isRunning ? "1" : "0",
+            compacting ? "1" : "0",
+            model.session.hasNewerItems ? "1" : "0",
+            submittingPendingID != nil ? "1" : "0",
+            String(turnActions.count),
+        ].joined(separator: "|")
+        if footerGateProbe != lastFooterGateProbe {
+            lastFooterGateProbe = footerGateProbe
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.footer.gate",
+                sessionID: model.session.id,
+                detail: [
+                    "open": latestTurnOpen ? "1" : "0",
+                    "suppress": suppressLatest ? "1" : "0",
+                    "running": model.isRunning ? "1" : "0",
+                    "compacting": compacting ? "1" : "0",
+                    "newer": model.session.hasNewerItems ? "1" : "0",
+                    "pending": submittingPendingID != nil ? "1" : "0",
+                    "actions": String(turnActions.count),
+                ],
+                dedupe: false,
+                verbose: true)
+        }
 
         self.groupsByID = groupsByID
         self.codeProfile = profile
@@ -2259,6 +2341,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
         noteCompactRowState()
+        noteRowUpdates()
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)

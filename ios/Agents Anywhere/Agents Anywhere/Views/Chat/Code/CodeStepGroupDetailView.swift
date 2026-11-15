@@ -191,6 +191,7 @@ struct CodeStepGroupDetailView: View {
                 }
             }
         }
+        .diagnosticsBreadcrumb("sheet.steps")
         .presentationDetents([.medium, .large])
     }
 

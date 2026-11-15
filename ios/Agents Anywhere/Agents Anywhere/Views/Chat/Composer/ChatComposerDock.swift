@@ -10,6 +10,8 @@ struct ChatComposerDock: View {
     let settings: ConversationSettings
     let maximumEditorHeight: CGFloat
     let controls: ChatControlMetrics
+    let editor: ComposerEditorController
+    @Binding var showsCommandMenu: Bool
     var canSend = true
     var canAttach = true
     var canSelectModel = true
@@ -35,7 +37,6 @@ struct ChatComposerDock: View {
     var queueEnqueueTick = 0
     var onQueueSend: () async -> Void = {}
 
-    @State private var editor = ComposerEditorController()
     @State private var showsOptions = false
     @State private var pendingPicker: AttachmentPicker?
     @State private var picker: AttachmentPicker?
@@ -43,7 +44,6 @@ struct ChatComposerDock: View {
     @State private var attachmentError: String?
     @State private var isSending = false
     @State private var importCount = 0
-    @State private var showsCommandMenu = false
     @State private var showsCamera = false
     @State private var pendingCamera = false
     @State private var editingAttachment: ChatAttachment?
@@ -86,21 +86,6 @@ struct ChatComposerDock: View {
                 // the timeline's interactive dismissal. Inner controls, the
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
-                // Official `InputAutocompleteSuggestions` is an `_OverlayModifier`
-                // on the composer (decompiled Body type): the suggestion card
-                // floats above the bar instead of taking page layout space, so
-                // opening it never reflows the timeline. `alignmentGuide(.top)`
-                // pins the card's bottom edge to the composer's top edge; the
-                // card's own bottom padding supplies the gap.
-                .overlay(alignment: .top) {
-                    // The guide must live on the overlay's direct content. On a
-                    // child inside `if let`, the conditional wrapper keeps its
-                    // own top guide and the card starts at the composer's top
-                    // edge, covering the input field instead of floating above.
-                    CommandSuggestionOverlay(chat: sessionChat, draft: draft,
-                        forced: $showsCommandMenu, controls: controls, editor: editor)
-                        .alignmentGuide(.top) { $0[.bottom] }
-                }
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
         // The add-to-chat rows (permission/model) read from `settings`, which
@@ -290,24 +275,6 @@ struct ChatComposerDock: View {
                 if urls.count > 5 { attachmentError = String(localized: "每条消息最多添加 5 个附件。") }
             }
         } catch { attachmentError = error.localizedDescription }
-    }
-}
-
-/// Overlay host for the command card. Kept as a type of its own so the
-/// `alignmentGuide` in `ChatComposerDock` lands on the overlay's direct
-/// content instead of a child hidden behind `if let`.
-private struct CommandSuggestionOverlay: View {
-    let chat: SessionChatModel?
-    @Bindable var draft: ComposerDraft
-    @Binding var forced: Bool
-    let controls: ChatControlMetrics
-    let editor: ComposerEditorController
-
-    var body: some View {
-        if let chat {
-            CommandSuggestionPanel(chat: chat, draft: draft, forced: $forced,
-                controls: controls, editor: editor)
-        }
     }
 }
 

@@ -105,6 +105,17 @@ struct SessionChatView: View, Equatable {
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 safeAreaInsets: proxy.safeAreaInsets,
                 renderMode: renderMode)
+                // The command card floats over the page, not inside the
+                // composer's overlay: an overlay drawn outside its base frame
+                // renders but cannot be tapped. The timeline fills the screen,
+                // so this base owns the hit area; the bottom padding is the
+                // bar + home indicator + keyboard inset, placing the card's
+                // bottom 16 pt above the composer glass.
+                .overlay(alignment: .bottom) {
+                    CommandSuggestionPanel(chat: model, draft: session.composer,
+                        forced: $showsCommandMenu, controls: controls, editor: composerEditor)
+                        .padding(.bottom, proxy.safeAreaInsets.bottom)
+                }
                 // The bridge owns one adapter for its lifetime; a mode switch
                 // must rebuild it, exactly like the old switch rebuilt the
                 // branch it replaced.
@@ -161,6 +172,7 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("interaction-dock")
             ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
+                editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                 canSend: session.canSend, canAttach: model.canAttach,
                 canSelectModel: session.runtime.allows("catalog.model"),
                 canSelectPermission: session.runtime.allows("catalog.permission"),
@@ -227,6 +239,8 @@ struct SessionChatView: View, Equatable {
     }
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
+    @State private var composerEditor = ComposerEditorController()
+    @State private var showsCommandMenu = false
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32

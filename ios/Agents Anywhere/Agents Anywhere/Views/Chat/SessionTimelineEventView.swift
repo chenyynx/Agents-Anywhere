@@ -139,11 +139,13 @@ struct SessionTimelineEventView: View {
                 }
             }
         case .compact:
-            HStack(spacing: 12) {
-                Rectangle().fill(.quaternary).frame(height: 1)
-                Text(value.title).font(.caption).foregroundStyle(row.value.status.isFailure ? Color.red : .secondary).fixedSize()
-                Rectangle().fill(.quaternary).frame(height: 1)
-            }.padding(.vertical, 8)
+            // The official `SquiggleDivider` (round31). The adapter drops a
+            // compact marker that a working status row is already narrating
+            // (`Compacting conversation…`), so a row reaching this view always
+            // draws: the settled label, the failure message, or — where the
+            // chat profile has no standalone working row — the compaction in
+            // progress.
+            CompactedDivider(title: value.title, failed: value.compactFailed)
         case .tool:
             if value.hasToolDetails {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,

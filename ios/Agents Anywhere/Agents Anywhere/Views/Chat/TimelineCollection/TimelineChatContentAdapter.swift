@@ -2057,6 +2057,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 groups.append(group)
             }
         }
+        // While a working status row narrates the turn, the compaction marker
+        // draws nothing (round31 §5: the official transcript has one working
+        // row, not a second progress line). Dropping the group keeps its
+        // height, list gap and turn-action participation out of the layout
+        // entirely. With no working row (the chat profile keeps it on a
+        // stepped turn's group) the marker stays and carries the progress
+        // label itself.
+        if showsWorkingStatus {
+            groups.removeAll { group in
+                guard group.explicitID == nil, group.rows.count == 1,
+                      let row = group.rows.first else { return false }
+                return TimelineEntryPresentation.isCompactItem(row.value)
+                    && TimelineEntryPresentation.isActiveCompactItem(row.value)
+            }
+        }
 #if AA_TIMELINE_PROBE
         let probeIndexStart = CACurrentMediaTime()
 #endif

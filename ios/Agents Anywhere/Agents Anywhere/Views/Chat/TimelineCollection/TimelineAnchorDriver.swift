@@ -593,8 +593,16 @@ final class TimelineAnchorDriver {
         guard isInteractionPresented != presented else { return }
         isInteractionPresented = presented
         let anchor = currentAnchor()
+        // A page in `.end` placement is bottomed even while the layout still
+        // owes it a few points: the card's dock inset and its anchored row
+        // land in one update. Halting that in-flight follow is the b1264 bug
+        // this `atEnd` was added for, one frame wider — the b1266 log still
+        // shows the +64 follow with no `arrived` and the return control
+        // appearing under the card (pp 2026-11-16).
         perform(.interactionPresentedChanged(presented: presented,
-                                             atEnd: isEffectivelyAtEnd(),
+                                             atEnd: TimelineInteractionFollow.keepsFollowing(
+                                                 placement: state.placement,
+                                                 liveAtEnd: isEffectivelyAtEnd()),
                                              id: anchor?.id,
                                              offsetIntoRow: anchor?.offsetIntoRow ?? 0))
     }

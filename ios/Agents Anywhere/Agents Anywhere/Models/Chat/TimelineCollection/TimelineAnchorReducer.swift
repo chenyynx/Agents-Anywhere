@@ -21,6 +21,23 @@ nonisolated struct TimelineAnchorState: Equatable {
     var isFollowingCatchUp = false
 }
 
+/// Whether an approval / interaction card keeps the end follow.
+///
+/// `.end` placement already means "no reader motion since the page was last
+/// bottomed": a reader scroll arrives through the drag/coast events and flips
+/// the placement to `.reading`. So while the placement is `.end`, a live
+/// shortfall is layout debt, not a reader position — the card's dock inset and
+/// its anchored row land in one update and the follow needs a frame or two to
+/// pay it. Judging that window "not at the end" halted the follow and showed
+/// the return control under a question card (pp 2026-11-16, b1264 and b1266
+/// logs: `start delta=64` with no `arrived`).
+nonisolated enum TimelineInteractionFollow {
+    static func keepsFollowing(placement: TimelineAnchorPlacement,
+                               liveAtEnd: Bool) -> Bool {
+        placement == .end || liveAtEnd
+    }
+}
+
 /// What the driver should do after a reduction. Offset writes happen in one
 /// place (`placeDirect`), or through the one Mover (`move`).
 nonisolated enum TimelineAnchorAction: Equatable {

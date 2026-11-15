@@ -200,6 +200,26 @@ import Testing
         #expect(presented.action == .move)
     }
 
+    /// The live "at the end" verdict is not enough on its own: the card's
+    /// dock and its anchored row land in the same update, so the page is a
+    /// row short while the follow is still paying that debt. A `.end`
+    /// placement is already a bottomed page (any reader scroll flips it to
+    /// `.reading` first); judging it by live geometry halted the follow and
+    /// showed the return control under a question card — the b1266 log still
+    /// shows `start delta=64` with no `arrived` (pp 2026-11-16).
+    @Test func anInteractionCardKeepsFollowingWhileThePlacementIsEnd() {
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .end, liveAtEnd: false))
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .end, liveAtEnd: true))
+        // A reader placed in the history keeps the stop — even if a live
+        // sample happens to read "at the end" while the layout settles.
+        #expect(!TimelineInteractionFollow.keepsFollowing(
+            placement: .reading(id: "u4", offsetIntoRow: 8), liveAtEnd: false))
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .reading(id: "u4", offsetIntoRow: 8), liveAtEnd: true))
+    }
+
     @Test func navigationSuspensionStopsAndResumeRePlaces() {
         let suspended = reduce(landed(.end, motion: .flying), .navigationSuspendedChanged(suspended: true))
         #expect(suspended.state.motion == .resting)

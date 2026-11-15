@@ -225,27 +225,28 @@ import Testing
     }
 
     @Test func capsuleListLiveTextFollowsTheNewestVisibleRow() throws {
-        let cardItem = try cardItem(description: "Sleep five minutes then report")
-        let card = try card(cardItem)
+        // Keep the helpers' names free: `cardItem`/`card` are local helpers.
+        let runningItem = try cardItem(description: "Sleep five minutes then report")
+        let runningCard = try card(runningItem)
         // A running command reads like the reference: the tool's own name.
         let command = try item("t1", type: "tool", status: "running", order: 2,
                                content: ["kind": "command", "toolName": "Bash",
                                          "command": "sleep 300", "parentItemId": "card"])
-        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, command]) == "正在运行 Bash 指令")
+        #expect(SubAgentProgress.liveActivityText(for: runningCard, in: [runningItem, command]) == "正在运行 Bash 指令")
         // A tool without a wire name keeps its row title, which is already a verb.
         let bareTool = try item("t2", type: "tool", status: "running", order: 2,
                                 content: ["kind": "command", "command": "ls", "parentItemId": "card"])
-        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, bareTool]) == "执行 ls")
+        #expect(SubAgentProgress.liveActivityText(for: runningCard, in: [runningItem, bareTool]) == "执行 ls")
         // Reasoning and a streaming reply use their own words.
         let reasoning = try item("r1", type: "reasoning", status: "running", order: 3,
                                  content: ["kind": "reasoning", "text": "hmm", "parentItemId": "card"])
-        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, reasoning]) == "正在思考")
+        #expect(SubAgentProgress.liveActivityText(for: runningCard, in: [runningItem, reasoning]) == "正在思考")
         let reply = try item("m1", type: "message", status: "running", order: 4, role: "assistant",
                              content: ["text": "working", "parentItemId": "card"])
-        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, reply]) == "正在回复")
+        #expect(SubAgentProgress.liveActivityText(for: runningCard, in: [runningItem, reply]) == "正在回复")
         // Before the first row arrives the phase word stands in; a settled card
         // never shows a live line.
-        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem]) == "运行中")
+        #expect(SubAgentProgress.liveActivityText(for: runningCard, in: [runningItem]) == "运行中")
         let finishedItem = try cardItem("done", status: "done")
         #expect(SubAgentProgress.liveActivityText(for: try card(finishedItem), in: [finishedItem]) == "已完成")
     }

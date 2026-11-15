@@ -179,7 +179,7 @@ struct CodeCollapsedStepsRow: View {
                 }
 
                 if hasDetails {
-                    CodeRowCaret(isRunning: isRunning)
+                    CodeRowCaret()
                 }
 
                 // Official body ends in a `Spacer`, so the row's tap target
@@ -257,35 +257,10 @@ struct CodeCollapsedStepsRow: View {
 ///   R-F C5/C7), passed explicitly by `CodeToolGroupCallRow`.
 struct CodeRowCaret: View {
     var tint: CodePageTheme.SchemeColor = CodePageTheme.text400Color
-    /// The row is live: the caret drifts horizontally so a tool call of any
-    /// length reads as ongoing work (pp 2026-11-16). A settled row keeps the
-    /// official static chevron.
-    var isRunning: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// Whether the drift runs. The cadence is driven by the timeline clock —
-    /// the same pattern the working mark uses — instead of a repeating
-    /// SwiftUI animation, which the collection's reconfigure would restart on
-    /// every step and turn into a stutter.
-    private var animates: Bool { isRunning && !reduceMotion }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animates)) { context in
-            caret
-                .offset(x: animates ? drift(at: context.date) : 0)
-        }
-    }
-
-    /// A slow sine (±1.5 pt, 1.4 s a cycle): large enough to read as motion,
-    /// small enough that the row's leading text never appears to move.
-    private func drift(at date: Date) -> CGFloat {
-        let phase = date.timeIntervalSinceReferenceDate * .pi * 2 / 1.4
-        return CGFloat(sin(phase) * 1.5)
-    }
-
-    private var caret: some View {
         // The artwork is drawn at the official medium extent (8 x 15 pt),
         // centred in the 20 x 20 icon box, not stretched to the box: the
         // `Icon` preset sizes the box, the glyph keeps its own extent

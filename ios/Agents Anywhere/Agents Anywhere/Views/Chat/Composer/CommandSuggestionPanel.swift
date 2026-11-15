@@ -160,19 +160,28 @@ struct CommandSuggestionPanel: View {
         }
     }
 
-    /// Official list: a plain (non-lazy) VStack of buttons inside a scroll view
-    /// that only bounces when the content overflows, capped at five rows.
-    private var list: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 0) {
-                ForEach(suggestions) { command in row(command) }
+    /// Official list: a plain (non-lazy) VStack of buttons. More than the
+    /// visible-row budget becomes a fixed-height ScrollView; `fixedSize`
+    /// around a ScrollView made its content its own height, so the list was
+    /// clipped and could not scroll (only the first four rows were reachable).
+    @ViewBuilder private var list: some View {
+        if suggestions.count > maxVisibleRows {
+            ScrollView(.vertical) {
+                rows
             }
-            .padding(.vertical, contentInset)
+            .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: maximumHeight)
+        } else {
+            rows
         }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: maximumHeight)
-        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var rows: some View {
+        VStack(spacing: 0) {
+            ForEach(suggestions) { command in row(command) }
+        }
+        .padding(.vertical, contentInset)
     }
 
     private func message(_ text: String, symbol: String) -> some View {

@@ -8,6 +8,12 @@ Selecting a command that accepts arguments inserts an editable draft. Submit the
 draft to execute it. The request preserves its original text, including whitespace
 and newlines; attachments remain in the draft and are not sent with commands.
 
+Rows with `metadata.ui.kind = "insert"` are prompt templates, not actions: the
+client writes their `/name` back into the composer (selecting the inserted text)
+and sending is an ordinary prompt. A session command list reads them only when
+the caller opts in with the `includeSkills` query flag, so clients that cannot
+render the autocomplete card keep the action-only catalog.
+
 ## Codex
 
 AA exposes only `/compact` for Codex. It takes no arguments and requests native
@@ -41,7 +47,16 @@ status when the native snapshot omits item status.
 AA exposes only `/compact` for Claude. It takes no arguments: the CLI compacts
 the whole conversation, so an appended remark is rejected before any prompt is
 sent. The CLI reports many more native slash commands, skills included; none of
-them reach the catalog, and every other name is rejected by the command API.
+them reach the command API, and every other name is rejected there.
+
+With `includeSkills=1`, the session catalog additionally carries the rows of
+the CLI's own skills menu (`get_skills_dialog`: `display_name`, `description`,
+source, state, advertised). They are `kind: "insert"` prompt templates:
+selecting one returns `/name` to the composer and sending it is a normal
+prompt, which the CLI dispatches as its skill invocation. Rows the CLI does not
+advertise as slash commands (`off`, not user-invocable) are omitted. The
+control is @internal; a missing subtype, timeout or malformed answer degrades
+to the action-only catalog.
 
 The command runs through the ordinary Claude turn path — the same session lock,
 turn state machine and SDK connection an interactive reply uses — so a busy

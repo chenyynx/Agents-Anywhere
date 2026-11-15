@@ -35,6 +35,7 @@ from connector.runtimes.claude.domain.permissions import (
     permission_mode_from_selection_id,
 )
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
+from connector.runtimes.claude.domain.skills import ClaudeSkill, skills_from_dialog
 from connector.runtimes.claude.history.syncer import ClaudeHistorySyncer
 from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
@@ -45,8 +46,10 @@ from connector.runtimes.claude.sdk.client import (
     client_supports_context_usage,
     client_supports_set_model,
     client_supports_set_permission_mode,
+    client_supports_skills_dialog,
     connect_client,
     get_context_usage_client,
+    get_skills_dialog_client,
     load_sdk,
     new_sdk_client,
     query_client,
@@ -2469,6 +2472,25 @@ class ClaudeTurnRunner:
             detail=detail,
             measured_at=utc_now(),
         )
+
+    async def session_skills(self, session_id: str) -> tuple[ClaudeSkill, ...]:
+        """The live CLI's user-invocable skills, or an empty tuple.
+
+        `get_skills_dialog` answers from the session's own transport and is
+        @internal; a cold/retiring connection, an older CLI without the
+        subtype, a timeout or a malformed answer all degrade to "no skills"
+        so the command catalog still returns `/compact`.
+        """
+
+        connection = self.connections.get(session_id)
+        if connection is None or connection.closing:
+            return ()
+        if not client_supports_skills_dialog(connection.client):
+            return ()
+        payload = await get_skills_dialog_client(connection.client)
+        if payload is None:
+            return ()
+        return skills_from_dialog(payload)
 
     async def connection_for(
         self,

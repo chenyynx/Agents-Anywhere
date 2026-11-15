@@ -350,6 +350,56 @@ async def get_context_usage_client(
     return None
 
 
+CLAUDE_SKILLS_DIALOG_TIMEOUT_SECONDS = 5.0
+
+
+def client_supports_skills_dialog(client: Any) -> bool:
+    """Whether this connection can answer the CLI's skills menu control.
+
+    The CLI exposes `get_skills_dialog` for hosts that draw the `/skills`
+    menu themselves. It is @internal, so support is probed on the control
+    sender (the same seam the context-usage call uses), never by version.
+    """
+
+    query = getattr(client, "_query", None)
+    return callable(getattr(query, "_send_control_request", None))
+
+
+async def get_skills_dialog_client(
+    client: Any,
+    timeout: float = CLAUDE_SKILLS_DIALOG_TIMEOUT_SECONDS,
+) -> Mapping[str, Any] | None:
+    """Ask the live CLI for the rows of its skills menu.
+
+    Returns the response mapping (`{"skills": [...]}`), or None on a refusal,
+    timeout, missing seam or malformed answer. The caller treats None as
+    "this session has no skill catalog" and falls back to the static command
+    set, never as an error into the turn.
+    """
+
+    query = getattr(client, "_query", None)
+    sender = getattr(query, "_send_control_request", None)
+    if not callable(sender):
+        return None
+    try:
+        try:
+            result = sender({"subtype": "get_skills_dialog"}, timeout=timeout)
+        except TypeError:
+            result = sender({"subtype": "get_skills_dialog"})
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(result, timeout=timeout)
+        else:
+            if inspect.isawaitable(result):
+                result = await result
+        if isinstance(result, Mapping):
+            return result
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.warning("Claude skills dialog timed out timeout_s={}", timeout)
+    except Exception as exc:  # noqa: BLE001 - fail-soft by contract
+        logger.warning("Claude skills dialog failed: {}", exc)
+    return None
+
+
 async def set_model_client(client: Any, model: str | None) -> bool:
     """Apply `model` to the live connection; True when the CLI accepted it.
 

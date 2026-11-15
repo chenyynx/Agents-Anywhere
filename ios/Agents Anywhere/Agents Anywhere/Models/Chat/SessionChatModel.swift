@@ -265,6 +265,20 @@ final class SessionChatModel {
         return commands.exact(intent)
     }
 
+    /// Autocomplete insert: write `/name` back into the composer and keep
+    /// focus. The caller owns the text selection (the official card selects
+    /// the inserted command so typing replaces it). Sending is a normal
+    /// prompt, so the runtime dispatches the skill itself.
+    @discardableResult
+    func complete(_ command: V2RuntimeCommand) -> String {
+        let draft = session.composer
+        let text = "/\(command.id)"
+        draft.text = text
+        draft.isFocused = true
+        repository.draftDidChange(sessionID: session.id)
+        return text
+    }
+
     /// Menu choice: commands with arguments are completed into the draft.
     func choose(_ command: V2RuntimeCommand) async {
         if let block = commandBlock(command) { fail(commandBlockMessage(command, block)); return }
@@ -707,7 +721,8 @@ final class SessionChatModel {
     }
 
     func send(_ text: String, allowsCommands: Bool = true) async {
-        if allowsCommands, let command = await catalogCommand(for: text) {
+        if allowsCommands, let command = await catalogCommand(for: text),
+           !command.isInsertCommand {
             session.composer.text = text
             await runCommand(command, raw: text)
             return

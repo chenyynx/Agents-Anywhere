@@ -537,12 +537,15 @@ class ClaudeRuntime(AgentRuntime):
         external_session_id: str | None = None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
-        return self._turns.list_commands(
+        return await self._turns.list_commands(
             session_id=session_id,
             external_session_id=external_session_id,
             query=query,
             limit=limit,
+            include_skills=include_skills,
         )
 
     async def execute_command(

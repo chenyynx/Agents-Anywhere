@@ -98,7 +98,7 @@ struct ChatComposerDock: View {
                     // own top guide and the card starts at the composer's top
                     // edge, covering the input field instead of floating above.
                     CommandSuggestionOverlay(chat: sessionChat, draft: draft,
-                        forced: $showsCommandMenu, controls: controls)
+                        forced: $showsCommandMenu, controls: controls, editor: editor)
                         .alignmentGuide(.top) { $0[.bottom] }
                 }
         }
@@ -301,10 +301,12 @@ private struct CommandSuggestionOverlay: View {
     @Bindable var draft: ComposerDraft
     @Binding var forced: Bool
     let controls: ChatControlMetrics
+    let editor: ComposerEditorController
 
     var body: some View {
         if let chat {
-            CommandSuggestionPanel(chat: chat, draft: draft, forced: $forced, controls: controls)
+            CommandSuggestionPanel(chat: chat, draft: draft, forced: $forced,
+                controls: controls, editor: editor)
         }
     }
 }

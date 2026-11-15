@@ -143,6 +143,7 @@ class DshRuntime(AgentRuntime):
     async def list_commands(
         self, session_id: str, external_session_id: str | None = None,
         query: str | None = None, limit: int = 50,
+        *, include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
         unavailable = await self._commands_unavailable(session_id, external_session_id)
         if unavailable:

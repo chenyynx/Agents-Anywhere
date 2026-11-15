@@ -120,6 +120,7 @@ async def dispatch_session_commands(
         external_session_id=parsed.external_session_id,
         query=parsed.query,
         limit=parsed.limit,
+        include_skills=parsed.include_skills,
     )
     return {"commands": [runtime_command_payload(command) for command in commands]}
 

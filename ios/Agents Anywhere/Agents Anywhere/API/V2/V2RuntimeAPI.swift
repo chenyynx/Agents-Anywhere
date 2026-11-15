@@ -59,7 +59,14 @@ struct V2RuntimeAPI: V2RuntimeAPIProtocol {
     }
 
     func commands(sessionId: V2SessionID) async throws -> V2RuntimeCommandListResponse {
-        try await get(sessionId: sessionId, suffix: "commands")
+        // `includeSkills` is opt-in: the autocomplete card renders CLI skills
+        // as insert rows, while older clients keep the action-only catalog.
+        let request = HTTPRequest<EmptyRequestBody, V2RuntimeCommandListResponse>(
+            method: .get,
+            path: runtimePath(sessionId, suffix: "commands"),
+            queryItems: [URLQueryItem(name: "includeSkills", value: "true")]
+        )
+        return try await transport.send(request)
     }
 
     func executeCommand(

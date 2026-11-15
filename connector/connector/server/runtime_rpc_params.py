@@ -472,14 +472,19 @@ class SessionCommandsParams:
     external_session_id: str | None
     query: str | None
     limit: int
+    include_skills: bool
 
     @classmethod
     def parse(cls, params: dict[str, Any]) -> SessionCommandsParams:
+        include_skills = params.get("includeSkills", False)
+        if not isinstance(include_skills, bool):
+            raise TypeError("includeSkills must be a boolean")
         return cls(
             session_id=required_session_id(params),
             external_session_id=optional_string(params.get("externalSessionId")),
             query=optional_string(params.get("query")),
             limit=int_param(params, "limit", 50),
+            include_skills=include_skills,
         )
 
 

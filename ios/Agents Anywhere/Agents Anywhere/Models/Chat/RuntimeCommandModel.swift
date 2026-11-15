@@ -33,6 +33,10 @@ enum RuntimeCommandUI: Equatable {
     enum SelectorTarget: String { case model, reasoning, permission, collaborationMode }
     case execute(argumentHint: String?, acceptsMultiline: Bool, allowedStatuses: [String]?)
     case selector(SelectorTarget)
+    /// A prompt template (a Claude CLI skill): selecting it writes `/name`
+    /// back into the composer and lets the runtime dispatch it when sent.
+    /// It is never executed through the command API on selection.
+    case insert
 }
 
 enum RuntimeCommandBlock: Equatable {
@@ -67,6 +71,7 @@ extension V2RuntimeCommand {
         if kind == "selector" {
             return ui["target"]?.stringValue.flatMap(RuntimeCommandUI.SelectorTarget.init(rawValue:)).map { .selector($0) }
         }
+        if kind == "insert" { return .insert }
         guard kind == "execute" else { return nil }
         var statuses: [String]?
         if case let .array(items)? = ui["allowedStatuses"] {
@@ -88,8 +93,17 @@ extension V2RuntimeCommand {
         return ([id, title] + aliases).contains { $0.lowercased().hasPrefix(normalized) }
     }
 
+    /// A skill row: selection inserts text and never runs the command API.
+    var isInsertCommand: Bool {
+        if case .insert = ui { return true }
+        return false
+    }
+
     func allowed(status: V2RuntimeStatus?) -> Bool {
         guard enabled, let ui else { return false }
+        // Inserting text is harmless while a turn runs; send admission owns
+        // whether the prompt may actually leave.
+        if case .insert = ui { return true }
         let value = (status ?? .unknown).rawValue
         if case let .execute(_, _, statuses) = ui, let statuses { return statuses.contains(value) }
         return value == "idle" || value == "error"

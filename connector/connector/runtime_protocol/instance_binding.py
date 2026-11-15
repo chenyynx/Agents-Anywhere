@@ -784,12 +784,15 @@ class RuntimeInstance(AgentRuntime):
         external_session_id: str | None = None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
         return await self.native_runtime.list_commands(
             session_id=session_id,
             external_session_id=external_session_id,
             query=query,
             limit=limit,
+            include_skills=include_skills,
         )
 
     async def list_runtime_commands(

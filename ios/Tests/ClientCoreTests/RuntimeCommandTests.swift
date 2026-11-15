@@ -55,6 +55,19 @@ import Testing
         #expect(try command(ui: ["kind": "future"]).ui == nil)
     }
 
+    @Test func skillRowsParseAsInsertAndIgnoreTurnStatus() throws {
+        let skill = try command("deep-research", acceptsArgs: true,
+                                ui: ["kind": "insert", "acceptsMultiline": true])
+        #expect(skill.ui == .insert)
+        #expect(skill.isInsertCommand)
+        #expect(skill.acceptsArgs)
+        // Selecting a skill only writes text; a running turn must not grey it.
+        #expect(skill.allowed(status: .running))
+        #expect(skill.allowed(status: .idle))
+        // The composer path, not the command API, owns the eventual send.
+        #expect(skill.request(for: SlashIntent("/deep-research topic")!)?.args == ["topic"])
+    }
+
     @Test func blocksExplainWhyACommandCannotRun() throws {
         let item = try command()
         #expect(try command(enabled: false).block(status: .idle, capability: true, writable: true, online: true) == .disabled)

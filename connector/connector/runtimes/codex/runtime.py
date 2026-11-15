@@ -815,6 +815,8 @@ class CodexRuntime(AgentRuntime):
         external_session_id: str | None = None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
         commands = self._turns.commands.catalog(session_id, external_session_id, None, 1000)
         if self.ipc is not None or self.ipc_enabled or desktop_app.supported():

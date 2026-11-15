@@ -202,18 +202,24 @@ class ClaudeTurnController:
     ) -> RuntimeContextUsage:
         return await self.runner.session_context_usage(session_id, detail=detail)
 
-    def list_commands(
+    async def list_commands(
         self,
         session_id: str,
         external_session_id: str | None = None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
+        # Skills come from the session's live CLI transport. A cold session
+        # or an older CLI simply contributes none; `/compact` still answers.
+        skills = await self.runner.session_skills(session_id) if include_skills else ()
         return self.commands.catalog(
             session_id=session_id,
             external_session_id=external_session_id,
             query=query,
             limit=limit,
+            skills=skills,
         )
 
     async def execute_command(

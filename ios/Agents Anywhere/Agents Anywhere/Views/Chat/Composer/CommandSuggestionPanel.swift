@@ -34,6 +34,7 @@ struct CommandSuggestionPanel: View {
     @Bindable var draft: ComposerDraft
     @Binding var forced: Bool
     let controls: ChatControlMetrics
+    let editor: ComposerEditorController
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -184,7 +185,17 @@ struct CommandSuggestionPanel: View {
             ?? (command.title == command.id ? nil : command.title)
         return Button {
             forced = false
-            Task { await chat.choose(command) }
+            if command.isInsertCommand {
+                // Official card: the skill goes back into the composer and
+                // the whole command is selected, so typing replaces it and
+                // sending dispatches it as a normal prompt. Dismiss the card
+                // for this exact text; typing a new prefix reopens it.
+                let text = chat.complete(command)
+                dismissedFor = text
+                editor.selectAllAfterSync(text)
+            } else {
+                Task { await chat.choose(command) }
+            }
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: "/\(command.id)")

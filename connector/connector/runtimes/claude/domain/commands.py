@@ -1,8 +1,44 @@
-"""The compact command supported by AA's native Claude runtime."""
+"""The commands a Claude session exposes: native `/compact` plus its skills."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
 
 from connector.runtime_protocol import RuntimeCommand
+from connector.runtimes.claude.domain.skills import ClaudeSkill
 
 IDLE = ("idle", "error")
+
+
+def _skill_command(skill: ClaudeSkill) -> RuntimeCommand:
+    """One CLI skill as an insert-only command row.
+
+    Skills are prompt templates: selecting one writes `/name` back into the
+    composer (the official card's behaviour), it is not executed by the
+    command API. `metadata.ui.kind = "insert"` is the client contract for
+    that; `accepts_args` is true because the composer appends free text.
+    """
+
+    name = skill.display_name.removeprefix("/")
+    return RuntimeCommand(
+        id=name,
+        title=name,
+        description=skill.description or None,
+        aliases=tuple(alias.removeprefix("/") for alias in skill.aliases),
+        enabled=True,
+        accepts_args=True,
+        metadata={
+            "ui": {
+                "kind": "insert",
+                "acceptsMultiline": True,
+            },
+            "skill": {
+                "name": skill.name,
+                "source": skill.source,
+                "state": skill.state,
+            },
+        },
+    )
 
 
 def list_claude_commands(
@@ -11,15 +47,19 @@ def list_claude_commands(
     limit: int = 50,
     *,
     status: str = "idle",
+    skills: Sequence[ClaudeSkill] = (),
 ) -> tuple[RuntimeCommand, ...]:
     """Describe the commands a Claude session exposes right now.
 
-    ``/compact`` is the only command on offer: the CLI reports far more native
-    commands, but AA deliberately exposes a single one so the client UI stays
-    identical across runtimes. Availability is decided here rather than by the
-    runtime so the catalog always explains *why* a command is greyed out: the
-    ``session.commands`` capability bit only says whether the session has a loaded
-    CLI conversation, and busy gating stays per command here so clients can still
+    ``/compact`` is always present. ``skills`` are the user-invocable rows of
+    the CLI's own skills menu, supplied only when the caller opted in to
+    skills (the iOS autocomplete card). They are insert-only: the client
+    writes ``/name`` back into the composer instead of executing through the
+    command API, and the send path lets the CLI dispatch it from the prompt.
+    Availability is decided here rather than by the runtime so the catalog
+    always explains *why* a command is greyed out: the ``session.commands``
+    capability bit only says whether the session has a loaded CLI
+    conversation, and busy gating stays per command here so clients can still
     fetch the catalog while a turn runs.
 
     A session this process has never seen (cold connector, external id supplied by
@@ -53,10 +93,21 @@ def list_claude_commands(
             }
         },
     )
+    # `/compact` owns its id; a skill that claims the same name would be
+    # unreachable, so the action wins and the skill row is dropped.
+    seen = {command.id}
+    skill_commands: list[RuntimeCommand] = []
+    for skill in sorted(skills, key=lambda item: item.display_name.casefold()):
+        candidate = _skill_command(skill)
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        skill_commands.append(candidate)
+
     needle = (query or "").strip().casefold()
     return tuple(
         c
-        for c in (command,)
+        for c in (command, *skill_commands)
         if not needle
         or needle
         in " ".join((c.id, c.title, c.description or "", *c.aliases)).casefold()

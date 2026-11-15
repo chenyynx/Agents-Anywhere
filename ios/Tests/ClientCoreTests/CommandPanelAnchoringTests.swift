@@ -22,7 +22,7 @@ import Testing
             insetTop: safeTop, insetBottom: 430, height: 516)
         #expect(anchor.availableHeight == 389)
         #expect(anchor.availableHeight >= 296) // five rows: 5 × 56 + 16
-        #expect(anchor.bottomPadding == 430)
+        #expect(anchor.bottomPadding == 396)
     }
 
     @Test func keyboardDownMatchesTheInsetPlacement() {
@@ -31,6 +31,25 @@ import Testing
             insetTop: safeTop, insetBottom: 94, height: screenHeight)
         #expect(anchor.bottomPadding == 94)
         #expect(anchor.availableHeight == 691)
+    }
+
+    @Test func theBaseFrameAndTheInsetDescribeTheSameNavigationChrome() {
+        // The expanded base starts below the navigation bar (109) and the
+        // proxy repeats the same chrome in `insetTop` (103). Adding both
+        // left the card only three rows tall with the keyboard up.
+        let up = CommandPanelAnchoring.resolve(
+            baseTop: 109, baseBottom: screenHeight, dockTop: 402,
+            insetTop: 103, insetBottom: 450, height: 516)
+        #expect(up.availableHeight == 285)
+        let down = CommandPanelAnchoring.resolve(
+            baseTop: 109, baseBottom: screenHeight, dockTop: 642,
+            insetTop: 103, insetBottom: 100, height: screenHeight)
+        #expect(down.availableHeight == 525)
+        // The keyboard-down card must be allowed to show more rows than the
+        // keyboard-up one.
+        #expect(down.availableHeight > up.availableHeight)
+        #expect(up.bottomPadding == 450)
+        #expect(down.bottomPadding == 210)
     }
 
     @Test func anExpandedComposerShrinksTheCardInsteadOfPushingItUnderTheBar() {

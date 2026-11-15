@@ -55,7 +55,6 @@ struct CommandSuggestionPanel: View {
     private let cornerRadius: CGFloat = 16
     private let contentInset: CGFloat = 8
     private let rowInset: CGFloat = 20
-    private let maxVisibleRows = 5
 
     private var slashQuery: String? {
         guard let intent = SlashIntent(draft.text), intent.isCommandLike, intent.suffix.isEmpty, !intent.multiline else { return nil }
@@ -76,11 +75,14 @@ struct CommandSuggestionPanel: View {
         return true
     }
 
-    /// Official cap: five `rowMinHeight`s plus the 8 pt insets on both ends.
-    /// Rows can be taller than `rowMinHeight` (two-line descriptions), so the
-    /// fifth row is intentionally clipped in the screenshot as well.
+    /// Every matching row participates in the intrinsic height. The card is
+    /// capped by the space measured between the navigation bar and the
+    /// composer, not by a fixed row count: the official five-row cap left
+    /// ~130 pt of empty page above the card and gave the keyboard-down state
+    /// the same number of rows as the keyboard-up one (pp 2026-11-15:
+    /// 「键盘收起来 可见行肯定要比键盘弹起来的面板可见行要更多」).
     private var desiredHeight: CGFloat {
-        rowMinHeight * CGFloat(min(suggestions.count, maxVisibleRows)) + contentInset * 2
+        rowMinHeight * CGFloat(suggestions.count) + contentInset * 2
     }
 
     private var maximumHeight: CGFloat {
@@ -170,12 +172,12 @@ struct CommandSuggestionPanel: View {
         }
     }
 
-    /// Official list: a plain (non-lazy) VStack of buttons. More than the
-    /// visible-row budget becomes a fixed-height ScrollView; `fixedSize`
+    /// Official list: a plain (non-lazy) VStack of buttons. Content taller
+    /// than the measured space becomes a fixed-height ScrollView; `fixedSize`
     /// around a ScrollView made its content its own height, so the list was
     /// clipped and could not scroll (only the first four rows were reachable).
     @ViewBuilder private var list: some View {
-        if suggestions.count > maxVisibleRows || desiredHeight > availableHeight {
+        if desiredHeight > availableHeight + 0.5 {
             ScrollView(.vertical) {
                 rows
             }

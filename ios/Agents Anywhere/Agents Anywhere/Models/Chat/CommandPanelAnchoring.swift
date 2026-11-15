@@ -29,11 +29,20 @@ nonisolated struct CommandPanelAnchoring: Equatable {
         // below the card.
         let baseBottom = baseBottom ?? (dockTop + insetBottom)
         let baseTop = baseTop ?? 0
-        // Never sit lower than the inset places the card: whatever the inset
-        // means on this build, the keyboard must not cover it.
-        let padding = max(insetBottom, max(0, baseBottom - dockTop))
+        // Both values are global frames measured in the same space, so their
+        // difference is the whole distance from the card's base to the dock.
+        // Mixing in `insetBottom` here could lift the card by the home
+        // indicator when the base stops above it.
+        let padding = max(0, baseBottom - dockTop)
+        // The card may run up to the navigation bar, not through it. The two
+        // values describe the same chrome — the base's global frame already
+        // starts below it (measured ~109 pt) and the proxy repeats it in
+        // `insetTop` (~103 pt) — so take the larger, never the sum. Adding
+        // both cost the card 103 pt and left only three rows visible with
+        // the keyboard up (pp 2026-11-15).
+        let topBoundary = max(baseTop, insetTop)
         // 8 pt keeps the card off the navigation bar.
-        let available = max(0, dockTop - baseTop - insetTop - 8)
+        let available = max(0, dockTop - topBoundary - 8)
         return Self(bottomPadding: padding, availableHeight: available)
     }
 }

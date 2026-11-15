@@ -67,9 +67,6 @@ struct ChatComposerDock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let sessionChat {
-                CommandSuggestionPanel(chat: sessionChat, draft: draft, forced: $showsCommandMenu)
-            }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
                 canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
                 placeholder: placeholder,
@@ -89,6 +86,19 @@ struct ChatComposerDock: View {
                 // the timeline's interactive dismissal. Inner controls, the
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
+                // Official `InputAutocompleteSuggestions` is an `_OverlayModifier`
+                // on the composer (decompiled Body type): the suggestion card
+                // floats above the bar instead of taking page layout space, so
+                // opening it never reflows the timeline. `alignmentGuide(.top)`
+                // pins the card's bottom edge to the composer's top edge; the
+                // card's own bottom padding supplies the gap.
+                .overlay(alignment: .top) {
+                    if let sessionChat {
+                        CommandSuggestionPanel(chat: sessionChat, draft: draft,
+                            forced: $showsCommandMenu, controls: controls)
+                            .alignmentGuide(.top) { $0[.bottom] }
+                    }
+                }
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
         // The add-to-chat rows (permission/model) read from `settings`, which

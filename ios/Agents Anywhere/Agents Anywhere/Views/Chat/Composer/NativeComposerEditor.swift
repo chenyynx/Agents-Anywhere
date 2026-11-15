@@ -193,6 +193,21 @@ private enum CommandTokenRenderer {
 
 final class ComposerTextView: UITextView {
     var commandSend: (() -> Void)?
+    /// A text view created before its window's traits are attached resolves
+    /// `preferredFont` against an unspecified category and can render at
+    /// UIKit's default face instead of body; plain typing then inherits it.
+    /// Resolve again once the real traits exist (pp 2026-11-15: 「输入框输入
+    /// 的文字变小了」). `adjustsFontForContentSizeCategory` covers later
+    /// category changes.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard let window else { return }
+        let body = UIFont.preferredFont(forTextStyle: .body,
+                                        compatibleWith: window.traitCollection)
+        guard font?.pointSize != body.pointSize else { return }
+        font = body
+        typingAttributes[.font] = body
+    }
     /// Long pasted logs leave the editor at paste time, not at send time: the
     /// reply returns true when the text became an attachment instead.
     var onLongPaste: ((String) -> Bool)?
@@ -238,7 +253,9 @@ struct NativeComposerEditor: UIViewRepresentable {
         let view = ComposerTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.font = .preferredFont(forTextStyle: .body)
+        // Resolve against the view's own traits: at `makeUIView` the hosting
+        // window's content-size category may not be attached yet.
+        view.font = .preferredFont(forTextStyle: .body, compatibleWith: view.traitCollection)
         view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.tintColor = .label
@@ -266,6 +283,21 @@ struct NativeComposerEditor: UIViewRepresentable {
         controller.expandAnimation = expandAnimation
         view.commandSend = onCommandSend
         view.onLongPaste = onLongPaste
+        // UIKit drops back to its own default face when an `attributedText`
+        // run carries no font (the command-token path), and a text view first
+        // laid out before its window traits arrive starts at that default
+        // too. Either way later plain typing inherits it and the composer
+        // renders visibly smaller than body (pp 2026-11-15). Repair the font
+        // off the live traits; this also rewrites any run that already
+        // rendered at the wrong size.
+        if view.markedTextRange == nil {
+            let bodyFont = UIFont.preferredFont(forTextStyle: .body,
+                                                compatibleWith: view.traitCollection)
+            if view.font?.pointSize != bodyFont.pointSize {
+                view.font = bodyFont
+                view.typingAttributes[.font] = bodyFont
+            }
+        }
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
         if view.markedTextRange == nil, controller.canonicalText(of: view) != draft.text {
             let selection = view.selectedRange

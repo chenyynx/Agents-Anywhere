@@ -10,6 +10,21 @@ final class ComposerEditorController {
     /// The profile's expand curve, set by the hosting composer. Only the
     /// expanding transition uses it (see `ComposerFocusTransition`).
     @ObservationIgnored var expandAnimation: Animation?
+
+    func finishEditing() {
+        guard let textView else { return }
+        textView.resignFirstResponder()
+        synchronize()
+    }
+
+    /// Focus mirror of `finishEditing`: driven straight from the keyboard
+    /// gesture, so the pop never waits on a SwiftUI re-render hop.
+    func beginEditing() {
+        guard let textView else { return }
+        textView.becomeFirstResponder()
+        synchronize()
+    }
+
     /// Canonical plain text for persistence and sending: command tokens are
     /// inline attachments in the native view, so U+FFFC must be expanded back
     /// to `/name`. The draft and every consumer keep seeing plain text.

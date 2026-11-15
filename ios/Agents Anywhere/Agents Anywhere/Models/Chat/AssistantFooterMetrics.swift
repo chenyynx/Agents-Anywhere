@@ -8,8 +8,8 @@ import Foundation
 /// The TextKit path installs those same numbers as constraints; it never
 /// fits the hosted view, so a late layout pass cannot change the row height.
 nonisolated enum AssistantFooterMetrics {
-    /// `SessionTimelineGroupView`'s VStack spacing between the reply, the
-    /// review summary and the action row.
+    /// The group stack's VStack spacing between the reply, the review summary
+    /// and the action row.
     static let groupSpacing: CGFloat = 4
 
     /// `SessionTurnReviewFooter`'s summary row is a button with

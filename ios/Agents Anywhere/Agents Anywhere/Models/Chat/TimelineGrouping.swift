@@ -150,7 +150,10 @@ enum TimelineGrouping {
     /// - `.message` keeps its declared key as `explicitID`,
     /// - `.span` takes the planner's stable span id (the first tool's
     ///   `source.itemId`), so a new serial call grows the same top-level item,
-    /// - `.standalone` keeps the Chat renderer and its first-row identity.
+    /// - `.standalone` draws through `CodeStandaloneRowView` and stays keyless
+    ///   on purpose: that renderer owns the inline interaction cards, the turn
+    ///   footer and the interrupted notice, which the explicit-key branch does
+    ///   not draw.
     ///
     /// Rows are filtered before planning exactly as the old grouping filtered
     /// them: `isVisibleInChat` (hidden rows, turn markers, signature-only
@@ -195,6 +198,12 @@ enum TimelineGrouping {
             case let .span(id, _):
                 groups.append(ChatTimelineGroup(kind: .single, rows: unitRows, explicitID: id))
             case .standalone:
+                // Deliberately keyless even when the row is a message: the
+                // standalone renderer carries the interaction cards, the turn
+                // footer and the interrupted notice, which the explicit-key
+                // branch does not draw. The first-frame estimate uses the Chat
+                // typography for these (rare) rows; hosting measurement
+                // settles the real height.
                 groups.append(ChatTimelineGroup(kind: .single, rows: unitRows))
             }
         }

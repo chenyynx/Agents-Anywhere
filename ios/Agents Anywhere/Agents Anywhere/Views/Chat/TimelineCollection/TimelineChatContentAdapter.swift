@@ -1416,17 +1416,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     },
                     onAttachment: onAttachment))
             }
-            return AnyView(SessionTimelineGroupView(
+            // A group with no declared message key is one standalone row
+            // (compaction divider, marker, artifact, interaction anchor). The
+            // Code-side fallback draws it; the retired Chat group container —
+            // whose only caller this was — is gone.
+            return AnyView(CodeStandaloneRowView(
                 group: group,
                 chat: model,
+                profile: codeProfile,
                 onAttachment: onAttachment,
                 onFile: onFile,
                 turnAction: turnActions[group.id],
-                onSubAgent: onSubAgent,
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
                 showsInterruptedNotice:
                     chatInterruptedItemIDs.contains(
-                        TimelineListItem.group(group.id).itemID)))
+                        TimelineListItem.group(group.id).itemID),
+                onToolDetail: { [weak self] request in
+                    self?.onCodeToolDetail?(request)
+                },
+                onThinkingDetail: { [weak self] request in
+                    self?.onCodeThinkingDetail?(request)
+                }))
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else { return AnyView(EmptyView()) }
             // The same row margins as a Code message row: these rows report 0
@@ -1441,8 +1451,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onRetry: { [weak self] in
                     guard let self else { return }
                     Task { await self.model.retryPendingMessage(pending) }
-                },
-                bubbleStyle: .code)
+                })
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,
@@ -1495,9 +1504,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func updateCodeStreaming(groups: [ChatTimelineGroup]) {
         let now = CACurrentMediaTime()
         var rowsByID: [String: ChatTimelineRowModel] = [:]
-        // Only message groups render through `CodeMessageRowView`; an
-        // interaction-target row keeps the Chat renderer (and its reveal), so
-        // it must not be switched to renderer-owned reveal.
+        // Only explicit-key groups own the paced reveal; a standalone group is
+        // drawn by `CodeStandaloneRowView` (its own pacing), so it must not be
+        // switched to renderer-owned reveal.
         for group in groups where group.explicitID != nil {
             // Reasoning is drawn as the turn's single working row, not as
             // body text; feeding it through the publisher used to reconfigure
@@ -2018,6 +2027,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     build.messageRows = rowsBuilt
                 case let .standalone(rowID):
                     guard let row = rowsByID[rowID] else { builds.append(build); continue }
+                    // Keyless on purpose: the standalone renderer carries the
+                    // interaction cards, turn footer and interrupted notice.
                     let group = ChatTimelineGroup(kind: .single, rows: [row])
                     groups.append(group)
                     build.group = group

@@ -2,9 +2,9 @@ import SwiftUI
 
 // The Code page's user message: one right-aligned neutral bubble.
 //
-// This is the Code transcript's own bubble, not the Chat page's
-// `UserMessageBubble` (SessionTimelineRow.swift): the Chat page paints the
-// user bubble with the app accent, while the Code page keeps it neutral. The
+// This is the Code transcript's own bubble, not the retired Chat page's
+// accent bubble: that page painted the user bubble with the app accent, while
+// the Code page keeps it neutral. The
 // text is literal and selectable — a user message is never Markdown — and the
 // value is laid out by the row, which joins the message's `.text` blocks
 // before handing it over.

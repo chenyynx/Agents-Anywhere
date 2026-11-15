@@ -345,7 +345,7 @@ struct SubAgentPanelSheet: View {
 
     /// The dispatch prompt in the bubble the current chat page paints user
     /// messages with (`CodeUserBubble`, neutral and right-aligned), not the
-    /// retired Chat row's accent `UserMessageBubble`. The detail is a
+    /// retired Chat page's accent bubble. The detail is a
     /// miniature chat: the instruction on the right, the subagent's own rows
     /// (assistant bubbles, tool cards, thinking) underneath.
     @ViewBuilder private func promptSection(_ card: SubAgentCard) -> some View {
@@ -450,11 +450,16 @@ struct SubAgentPanelSheet: View {
                     }
                 case let .standalone(rowID):
                     if let row = rowsByID[rowID] {
-                        SessionTimelineRow(row: row, chat: chat,
-                                           onAttachment: onAttachment,
-                                           cwd: chat.session.metadata?.cwd,
-                                           disclosures: chat.disclosures,
-                                           onFile: onFile, onSubAgent: nil)
+                        // The same Code-side fallback the main transcript uses
+                        // for a standalone row (compaction divider, marker,
+                        // artifact); the retired Chat row no longer draws.
+                        CodeStandaloneRowView(
+                            group: ChatTimelineGroup(kind: .single, rows: [row],
+                                                     explicitID: nil),
+                            chat: chat,
+                            profile: profile,
+                            onAttachment: onAttachment,
+                            onFile: onFile)
                     }
                 }
             }

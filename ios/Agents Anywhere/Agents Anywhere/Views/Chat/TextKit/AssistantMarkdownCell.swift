@@ -295,9 +295,9 @@ final class AssistantMarkdownCell: UICollectionViewCell {
         }
 
         if let footer {
-            // `SessionTimelineGroupView` uses a 4pt VStack gap between the
-            // reply and its footer; the footer's own height is a constant
-            // from the legacy views, never a fitting pass.
+            // The group stack uses a 4pt VStack gap between the reply and its
+            // footer; the footer's own height is a constant from the legacy
+            // views, never a fitting pass.
             if let last = stack.arrangedSubviews.last {
                 stack.setCustomSpacing(AssistantFooterMetrics.groupSpacing, after: last)
             }

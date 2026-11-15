@@ -65,6 +65,11 @@ struct CodeMessageRowView: View {
     /// Draw the official interrupted-response notice under this message. The
     /// chat profile anchors it to the stopped turn's last row (pp 2026-11-14).
     var showsInterruptedNotice: Bool = false
+    /// Whether the row adds the official 5 pt top/bottom row margins. The
+    /// adapter zeroes the list gap for these rows and lets the margin be the
+    /// whole inter-row gap; the standalone fallback sits in a group that
+    /// already carries the list spacing, so it opts out.
+    var addsRowMargins: Bool = true
     /// The session's configured agent name for the notice copy.
     var interruptedAgentName: String = "Claude"
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
@@ -98,6 +103,7 @@ struct CodeMessageRowView: View {
          columnWidth: CGFloat? = nil,
          turnActionCopyText: String? = nil,
          showsInterruptedNotice: Bool = false,
+         addsRowMargins: Bool = true,
          interruptedAgentName: String = "Claude",
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
@@ -125,6 +131,7 @@ struct CodeMessageRowView: View {
         self.columnWidth = columnWidth
         self.turnActionCopyText = turnActionCopyText
         self.showsInterruptedNotice = showsInterruptedNotice
+        self.addsRowMargins = addsRowMargins
         self.interruptedAgentName = interruptedAgentName
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
@@ -153,7 +160,7 @@ struct CodeMessageRowView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, CodePageTheme.rowMarginTop)
+                    .padding(.vertical, addsRowMargins ? CodePageTheme.rowMarginTop : 0)
                 } else {
                     Color.clear.frame(height: 0)
                 }
@@ -186,7 +193,7 @@ struct CodeMessageRowView: View {
                 // phones. The list's own item gap is zeroed for these rows
                 // (adapter `itemSpacing(after:)`), so this margin is the whole
                 // inter-row gap.
-                .padding(.vertical, CodePageTheme.rowMarginTop)
+                .padding(.vertical, addsRowMargins ? CodePageTheme.rowMarginTop : 0)
             }
         }
     }

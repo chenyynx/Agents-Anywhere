@@ -455,8 +455,8 @@ private enum CodeFileReadTextMetrics {
 /// title of its own).
 ///
 /// The rendered prefix is capped at 200 000 characters, the same guard
-/// `TimelineCodePanel` uses (`Views/Chat/SessionTimelineEventView.swift:327`);
-/// copying always takes the full string.
+/// `TimelineCodePanel` uses (`Views/Chat/TimelineRowLeaves.swift`); copying
+/// always takes the full string.
 struct CodeToolCodeCard: View {
     let title: String?
     let code: String

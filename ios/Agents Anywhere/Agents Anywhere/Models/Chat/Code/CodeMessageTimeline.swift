@@ -297,10 +297,13 @@ nonisolated enum CodeMessageBuilder {
                     continue
                 }
                 guard let key = groupKey(for: item) else {
-                    // No declared grouping key: the row cannot join a span.
+                    // No declared grouping key (a legacy payload without
+                    // `source.itemId`): the row still ends the run and keeps
+                    // its own Code row, exactly like the Agent card below —
+                    // the retired Chat row never draws tools now.
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item: item))
+                    units.append(.span(id: spanID(for: item), items: [item]))
                     continue
                 }
                 // The Agent card is the official `threadSessionCard` shape: it
@@ -341,9 +344,18 @@ nonisolated enum CodeMessageBuilder {
 
             if isReasoning(item) {
                 guard let key = groupKey(for: item) else {
+                    // A keyless reasoning row keeps its own row. A settled one
+                    // becomes a Code thinking block keyed by its own id; a
+                    // running/failed one keeps the standalone line, because
+                    // the Code builder only draws settled reasoning and a
+                    // dropped unit would erase the row entirely.
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item: item))
+                    if item.status == .done {
+                        units.append(.message(key: item.id, items: [item]))
+                    } else {
+                        units.append(.standalone(item: item))
+                    }
                     continue
                 }
                 // Thinking is transparent (rule 3): whatever row is open —
@@ -368,7 +380,8 @@ nonisolated enum CodeMessageBuilder {
             }
 
             // A body row, or any other row the Code page does not stack.
-            if isStackable(item), let key = groupKey(for: item) {
+            if isStackable(item) {
+                let key = groupKey(for: item) ?? item.id
                 if !pendingReasoning.isEmpty,
                    !pendingReasoning.contains(where: { groupKey(for: $0) == key }) {
                     flushPending()
@@ -424,7 +437,20 @@ nonisolated enum CodeMessageBuilder {
                 continue
             }
             if !includeSubAgentChildren, isSubAgentChild(item) { continue }
-            if isStackable(item), let key = groupKey(for: item) {
+            if isStackable(item) {
+                let declaredKey = groupKey(for: item)
+                // Same rule as the merge path: the Code builder draws only
+                // settled reasoning, so a running/failed keyless row keeps the
+                // standalone line instead of a row that would draw nothing.
+                if isReasoning(item), item.status != .done, declaredKey == nil {
+                    standalone[item.id] = item
+                    let itemSlot = LegacySlot.item(item.id)
+                    if seen.insert(itemSlot).inserted { order.append(itemSlot) }
+                    continue
+                }
+                // Legacy runtimes get the same id fallback: a keyless row keeps
+                // its own Code row, never the retired Chat row.
+                let key = declaredKey ?? item.id
                 let slot = LegacySlot.message(key)
                 if seen.insert(slot).inserted { order.append(slot) }
                 grouped[key, default: []].append(item)

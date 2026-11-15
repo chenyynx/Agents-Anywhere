@@ -15,6 +15,11 @@ struct CodeAttachmentRow: View {
     var state: (V2AttachmentContent) -> CodeAttachmentDisplayState = { _ in .complete }
     var onAttachment: (V2AttachmentContent, UIImage?) -> Void = { _, _ in }
     var loadThumbnail: (V2AttachmentContent) async throws -> Data? = { _ in nil }
+    /// The send-state indicator of a pure-attachment row. It sits in the
+    /// stack's leading gutter, bottom-aligned with the cards — the row spans
+    /// the page, so anchoring it to the row's leading edge put the spinner at
+    /// the screen's far left while the card hugged the right (pp 2026-11-16).
+    var leadingAccessory: AnyView? = nil
 
     var body: some View {
         let images = files.filter { $0.content.isImage }
@@ -22,28 +27,32 @@ struct CodeAttachmentRow: View {
         let failedFiles = documents.filter { state($0.content) == .failed }
         let uploadedFiles = documents.filter { state($0.content) != .failed }
 
-        VStack(alignment: .trailing, spacing: CodePageTheme.blockGap) {
-            if !images.isEmpty {
-                CodeAttachmentTiles(files: images,
-                                    state: state,
-                                    onAttachment: onAttachment,
-                                    loadThumbnail: loadThumbnail)
-            }
-            if !documents.isEmpty {
-                VStack(alignment: .trailing, spacing: CodePageTheme.blockGap) {
-                    // Failed uploads first: `SendUserMessageAttachmentRow`'s
-                    // `ForEach(uploadFailed)` precedes the successful tiles
-                    // (CLOSURE.md §4 / round25 `attachment-file-card.md` §0).
-                    ForEach(failedFiles) { file in
-                        CodeArtifactPreviewCard(file: file.content, isFailed: true)
-                    }
-                    if !uploadedFiles.isEmpty {
-                        CodeFileTiles(files: uploadedFiles.map(\.content),
-                                      state: state,
-                                      onOpen: onAttachment)
-                    }
+        HStack(alignment: .bottom, spacing: 8) {
+            Spacer(minLength: 0)
+            if let leadingAccessory { leadingAccessory }
+            VStack(alignment: .trailing, spacing: CodePageTheme.blockGap) {
+                if !images.isEmpty {
+                    CodeAttachmentTiles(files: images,
+                                        state: state,
+                                        onAttachment: onAttachment,
+                                        loadThumbnail: loadThumbnail)
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                if !documents.isEmpty {
+                    VStack(alignment: .trailing, spacing: CodePageTheme.blockGap) {
+                        // Failed uploads first: `SendUserMessageAttachmentRow`'s
+                        // `ForEach(uploadFailed)` precedes the successful tiles
+                        // (CLOSURE.md §4 / round25 `attachment-file-card.md` §0).
+                        ForEach(failedFiles) { file in
+                            CodeArtifactPreviewCard(file: file.content, isFailed: true)
+                        }
+                        if !uploadedFiles.isEmpty {
+                            CodeFileTiles(files: uploadedFiles.map(\.content),
+                                          state: state,
+                                          onOpen: onAttachment)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)

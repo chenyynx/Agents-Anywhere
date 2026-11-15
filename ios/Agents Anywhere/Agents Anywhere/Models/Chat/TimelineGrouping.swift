@@ -17,8 +17,15 @@ struct ChatTimelineGroup: Identifiable, Equatable {
     /// Groups built by `groups(_:interactionTargets:)` keep nil and stay keyed
     /// on their first row exactly as before.
     var explicitID: String?
+    /// The row an interaction card (approval / question) is anchored to. A
+    /// standalone anchor row draws the Code page's 5 pt row margins and pays
+    /// no list gap, so a docked card sits at the same distance as a step-group
+    /// anchor. Paying the list's legacy 20 pt gap while drawing no margins put
+    /// the question card ~20 pt lower than the approval card (pp 2026-11-16).
+    var isInteractionAnchor: Bool = false
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.explicitID == rhs.explicitID
+            && lhs.isInteractionAnchor == rhs.isInteractionAnchor
             && lhs.rows.elementsEqual(rhs.rows, by: ===)
     }
     // The first row owns the group, even as the second tool arrives. A group
@@ -63,7 +70,9 @@ extension ChatTimelineGroup {
     /// carries 16 pt padding. The list must not add its 20 pt gap after
     /// these — paying it on the divider's trailing side alone left 20 pt
     /// more space below the divider than above it (device 2026-11-15).
-    var isSelfMargined: Bool { explicitID != nil || isStandaloneCompactDivider }
+    var isSelfMargined: Bool {
+        explicitID != nil || isStandaloneCompactDivider || isInteractionAnchor
+    }
 
     /// The vertical gap the collection list adds after this group.
     var listSpacing: CGFloat { isSelfMargined ? 0 : TimelineListMetrics.itemSpacing }
@@ -130,8 +139,14 @@ enum TimelineGrouping {
             // parentItemId, but reading the value would let a streaming token or
             // tool-output refresh invalidate the list and regroup history.
             if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id), !includeAgentRows { continue }
-            let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
-            if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
+            let isInteractionAnchor = interactionTargets.contains(row.id)
+            let kind: ChatTimelineGroup.Kind = isInteractionAnchor ? .single : row.structure.groupKind
+            if kind == .single {
+                flush()
+                groups.append(ChatTimelineGroup(kind: .single, rows: [row],
+                                                isInteractionAnchor: isInteractionAnchor))
+                continue
+            }
             if pendingKind != kind { flush() }
             pendingKind = kind; pending.append(row)
         }
@@ -204,7 +219,14 @@ enum TimelineGrouping {
                 // branch does not draw. The first-frame estimate uses the Chat
                 // typography for these (rare) rows; hosting measurement
                 // settles the real height.
-                groups.append(ChatTimelineGroup(kind: .single, rows: unitRows))
+                //
+                // An interaction target is self-margined like a message row:
+                // its card docks directly below, so the list's 20 pt gap
+                // would read as a blank band under the card's anchor row
+                // (pp 2026-11-16).
+                let isInteractionAnchor = unitRows.contains { interactionTargets.contains($0.id) }
+                groups.append(ChatTimelineGroup(kind: .single, rows: unitRows,
+                                               isInteractionAnchor: isInteractionAnchor))
             }
         }
         return groups

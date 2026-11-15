@@ -232,9 +232,13 @@ struct CodeStandaloneRowView: View, Equatable {
             profile: profile,
             includesSubAgentChildren: true,
             cwd: cwd,
-            // The group already sits in the list's 20 pt spacing; the official
-            // 5 pt row margins would make this row's gaps uneven (5/25).
-            addsRowMargins: false,
+            // A plain standalone row sits in the list's 20 pt spacing and
+            // skips the official 5 pt margins (5/25 would be uneven). An
+            // interaction anchor is the exception: its group is self-margined
+            // and its card docks right below, so it draws the Code margins
+            // and pays no list gap (pp 2026-11-16: the question card sat
+            // ~20 pt lower than the approval card).
+            addsRowMargins: group.isInteractionAnchor,
             onToolDetail: onToolDetail,
             onThinkingDetail: onThinkingDetail,
             // The page's own attachment pipeline: without it an image tile

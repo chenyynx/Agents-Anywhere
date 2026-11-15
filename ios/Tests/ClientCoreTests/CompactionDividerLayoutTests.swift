@@ -59,6 +59,28 @@ import Testing
         #expect(group.listSpacing == TimelineListMetrics.itemSpacing)
     }
 
+    @Test func anInteractionAnchorStandaloneIsSelfMargined() throws {
+        let tool = try row("t1", type: "tool", role: "tool",
+                           content: ["kind": "command", "command": "pwd"])
+        let group = ChatTimelineGroup(kind: .single, rows: [tool],
+                                      isInteractionAnchor: true)
+        #expect(group.isSelfMargined)
+        // The anchor row draws the Code page's 5 pt margins; the list must not
+        // add its legacy 20 pt gap under a card that docks right below it
+        // (pp 2026-11-16: the question card sat ~20 pt lower than the
+        // approval card, whose anchor lives inside a self-margined step group).
+        #expect(group.listSpacing == 0)
+    }
+
+    @Test func groupingMarksTheInteractionAnchor() throws {
+        let tool = try row("t1", type: "tool", role: "tool",
+                           content: ["kind": "command", "command": "pwd"])
+        let groups = TimelineGrouping.groups([tool], interactionTargets: ["t1"])
+        #expect(groups.count == 1)
+        #expect(groups[0].isInteractionAnchor)
+        #expect(groups[0].listSpacing == 0)
+    }
+
     @Test func groupingKeepsTheDividerStandaloneNextToTheReply() throws {
         let groups = TimelineGrouping.groups([try assistantMessage(), try compactMarker()],
                                              interactionTargets: [])

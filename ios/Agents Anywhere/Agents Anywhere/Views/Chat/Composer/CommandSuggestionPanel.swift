@@ -29,7 +29,10 @@ import SwiftUI
 /// name JetBrains Mono 13 pt (the bundled ClaudeFonts face — the system mono
 /// at the same size reads ~9 % smaller in x-height), description Anthropic
 /// Sans 12 pt with 1.3 pt leading (`text400`), two lines then "…", corner
-/// radius 16 pt, 16 pt gap above the composer. No header, no close button —
+/// radius 16 pt, 16 pt gap above the composer. Both are fixed sizes: the
+/// official card does not follow Dynamic Type, and on a phone set to ~0.92×
+/// the same custom fonts declared `relativeTo: .footnote` rendered at ~12 pt
+/// (21.5 px advance vs the official 23.2 px). No header, no close button —
 /// the official card is a bare list.
 struct CommandSuggestionPanel: View {
     let chat: SessionChatModel
@@ -137,7 +140,7 @@ struct CommandSuggestionPanel: View {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
                 Text(String(localized: "正在读取指令…"))
-                    .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
+                    .font(.custom(CodePageTheme.sansFontName, fixedSize: 12))
                     .foregroundStyle(detailColor)
             }
             .padding(.horizontal, rowInset)
@@ -176,7 +179,7 @@ struct CommandSuggestionPanel: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             AppSymbol(symbol, size: 14).foregroundStyle(detailColor)
             Text(text)
-                .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
+                .font(.custom(CodePageTheme.sansFontName, fixedSize: 12))
                 .foregroundStyle(detailColor)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -212,13 +215,13 @@ struct CommandSuggestionPanel: View {
                     // Official card: JetBrains Mono 13 pt — the bundled
                     // ClaudeFonts face, which is why the system mono at the
                     // same size read smaller (x-height 21 vs 23 px @3x).
-                    .font(.custom(CodePageTheme.monoFontName, size: 13, relativeTo: .footnote))
+                    .font(.custom(CodePageTheme.monoFontName, fixedSize: 13))
                     .foregroundStyle(nameColor)
                 if let detail, !detail.isEmpty {
                     Text(detail)
                         // Official description: Anthropic Sans 12 pt
                         // (cap 25–26 px @3x). Not the system 13 pt face.
-                        .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
+                        .font(.custom(CodePageTheme.sansFontName, fixedSize: 12))
                         .foregroundStyle(detailColor)
                         // Official description line pitch is 16.3 pt; the
                         // 12 pt Anthropic Sans line box is 15 pt.

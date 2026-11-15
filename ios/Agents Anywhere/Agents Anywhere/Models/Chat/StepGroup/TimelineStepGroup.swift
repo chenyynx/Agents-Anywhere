@@ -172,19 +172,24 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     }
 }
 
-/// The settled row's counts: 「思考 N 次 · 读取 X 个文件 · 运行 Y 个命令 ·
-/// 编辑 Z 个文件」 (pp 2026-10-29). File categories count distinct targets,
-/// the same rule `CodeToolLabelPlan` uses for its summary phrases.
+/// The settled row's counts: 「思考 N 次 · 询问 X 次 · 读取 Y 个文件 ·
+/// 运行 Z 个命令 · 编辑 W 个文件」 (pp 2026-10-29, 询问 pp 2026-11-16).
+/// File categories count distinct targets, the same rule `CodeToolLabelPlan`
+/// uses for its summary phrases; questions count calls — every question is
+/// its own interaction. A question used to fall through the summarizer's
+/// `default`, so a step group holding 2 thinking + 1 question titled itself
+/// 「思考 2 次」 while the sheet listed three rows (pp 2026-11-16).
 nonisolated struct TimelineStepSummary: Hashable {
     var thinkingCount = 0
+    var askedCount = 0
     var readFiles = 0
     var ranCommands = 0
     var editedFiles = 0
     var toolCount = 0
 
     var isEmpty: Bool {
-        thinkingCount == 0 && readFiles == 0 && ranCommands == 0
-            && editedFiles == 0 && toolCount == 0
+        thinkingCount == 0 && askedCount == 0 && readFiles == 0
+            && ranCommands == 0 && editedFiles == 0 && toolCount == 0
     }
 }
 
@@ -201,6 +206,13 @@ nonisolated enum TimelineStepSummarizer {
             }
             guard let call = step.toolCall else { continue }
             summary.toolCount += 1
+            // A question is its own category. `CodeToolLabelPlan.make` folds
+            // it into the generic `other/.tools` phrase, so the verb switch
+            // below can never see it — read the call's kind directly.
+            if call.kind == .question {
+                summary.askedCount += 1
+                continue
+            }
             guard let plan = CodeToolLabelPlan.make(calls: [call], cwd: cwd),
                   let verb = plan.verb else { continue }
             let target = plan.target ?? call.id
@@ -218,15 +230,18 @@ nonisolated enum TimelineStepSummarizer {
     }
 }
 
-/// The settled row's one-line text: 「思考 N 次 · 读取 X 个文件 · 运行 Y 个命令 ·
-/// 编辑 Z 个文件」. Kept next to the counts so the row, the detail title and
-/// the gate cannot drift.
+/// The settled row's one-line text: 「思考 N 次 · 询问 X 次 · 读取 Y 个文件 ·
+/// 运行 Z 个命令 · 编辑 W 个文件」. Kept next to the counts so the row, the
+/// detail title and the gate cannot drift.
 nonisolated enum TimelineStepSummaryText {
     static func line(_ summary: TimelineStepSummary,
                      locale: Locale = .autoupdatingCurrent) -> String {
         var parts: [String] = []
         if summary.thinkingCount > 0 {
             parts.append(String(localized: "思考 \(summary.thinkingCount) 次", locale: locale))
+        }
+        if summary.askedCount > 0 {
+            parts.append(String(localized: "询问 \(summary.askedCount) 次", locale: locale))
         }
         if summary.readFiles > 0 {
             parts.append(String(localized: "读取 \(summary.readFiles) 个文件", locale: locale))

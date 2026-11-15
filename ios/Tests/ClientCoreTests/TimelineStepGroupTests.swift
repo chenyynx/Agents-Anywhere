@@ -240,6 +240,26 @@ struct TimelineStepGroupSummaryTests {
         #expect(line.contains("1"))
     }
 
+    @Test func aQuestionIsItsOwnCountedCategory() throws {
+        // A step group with 2 thinking + 1 question used to title itself
+        // 「思考 2 次」 while its sheet listed three rows: the summarizer's
+        // verb switch never sees a question because `CodeToolLabelPlan`
+        // folds it into the generic `other/.tools` phrase (pp 2026-11-16).
+        let steps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            try tool("q1", name: "AskUserQuestion",
+                     input: ["questions": [["question": "弹窗表现如何？"]]]),
+            .thinking(id: "r2", text: "think again", status: .done),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.thinkingCount == 2)
+        #expect(summary.askedCount == 1)
+        #expect(summary.toolCount == 1)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("思考 2 次"))
+        #expect(line.contains("询问 1 次"))
+    }
+
     @Test func liveThinkingLineIsTheLastNonEmptyLine() {
         let step = TimelineStep.thinking(id: "r", text: "\nfirst line\n\n  second line  \n",
                                          status: .running)

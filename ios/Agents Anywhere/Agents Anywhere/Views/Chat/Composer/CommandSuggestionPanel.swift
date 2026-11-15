@@ -26,9 +26,11 @@ import SwiftUI
 ///
 /// Screenshot measurements (1179×2556 @3x = 393×852 pt, the reference pp sent):
 /// card side inset 8–9 pt (same as the composer card), 20 pt row text inset,
-/// name 13 pt monospaced (advance 7.7 pt), description 13 pt warm gray
-/// (`text400`), two lines then "…", corner radius 16 pt, 16 pt gap above the
-/// composer. No header, no close button — the official card is a bare list.
+/// name JetBrains Mono 13 pt (the bundled ClaudeFonts face — the system mono
+/// at the same size reads ~9 % smaller in x-height), description Anthropic
+/// Sans 12 pt with 1.3 pt leading (`text400`), two lines then "…", corner
+/// radius 16 pt, 16 pt gap above the composer. No header, no close button —
+/// the official card is a bare list.
 struct CommandSuggestionPanel: View {
     let chat: SessionChatModel
     @Bindable var draft: ComposerDraft
@@ -134,7 +136,9 @@ struct CommandSuggestionPanel: View {
         } else if chat.commands.isEmpty && chat.isLoadingCommands {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(String(localized: "正在读取指令…")).font(.footnote).foregroundStyle(detailColor)
+                Text(String(localized: "正在读取指令…"))
+                    .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
+                    .foregroundStyle(detailColor)
             }
             .padding(.horizontal, rowInset)
             .frame(minHeight: rowMinHeight)
@@ -171,7 +175,9 @@ struct CommandSuggestionPanel: View {
     private func message(_ text: String, symbol: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             AppSymbol(symbol, size: 14).foregroundStyle(detailColor)
-            Text(text).font(.footnote).foregroundStyle(detailColor)
+            Text(text)
+                .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
+                .foregroundStyle(detailColor)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, rowInset)
@@ -203,12 +209,20 @@ struct CommandSuggestionPanel: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: "/\(command.id)")
-                    .font(.footnote.monospaced())
+                    // Official card: JetBrains Mono 13 pt — the bundled
+                    // ClaudeFonts face, which is why the system mono at the
+                    // same size read smaller (x-height 21 vs 23 px @3x).
+                    .font(.custom(CodePageTheme.monoFontName, size: 13, relativeTo: .footnote))
                     .foregroundStyle(nameColor)
                 if let detail, !detail.isEmpty {
                     Text(detail)
-                        .font(.footnote)
+                        // Official description: Anthropic Sans 12 pt
+                        // (cap 25–26 px @3x). Not the system 13 pt face.
+                        .font(.custom(CodePageTheme.sansFontName, size: 12, relativeTo: .footnote))
                         .foregroundStyle(detailColor)
+                        // Official description line pitch is 16.3 pt; the
+                        // 12 pt Anthropic Sans line box is 15 pt.
+                        .lineSpacing(1.3)
                         .lineLimit(2)
                         .truncationMode(.tail)
                         .multilineTextAlignment(.leading)

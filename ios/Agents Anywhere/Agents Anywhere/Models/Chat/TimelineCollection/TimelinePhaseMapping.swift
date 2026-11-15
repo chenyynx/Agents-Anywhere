@@ -42,8 +42,9 @@ nonisolated struct TimelinePhaseMapping: Equatable {
     private(set) var phase: TimelineScrollState.Phase = .idle
 
     /// Whether the reader physically owns the scroll right now. `.tracking`
-    /// never comes from the native mapping but stays in the predicate so the
-    /// definition matches `TimelineScrollState.userIsScrolling`.
+    /// never comes from the native mapping but stays in the predicate: this is
+    /// now the one definition of "the reader is scrolling" (the retired
+    /// scroll state machine carried the earlier copy).
     var userIsScrolling: Bool {
         [.tracking, .interacting, .decelerating].contains(phase)
     }

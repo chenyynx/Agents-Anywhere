@@ -197,7 +197,17 @@ final class TimelineAnchorDriver {
     /// 06:44).
     func updateSafeAreaInsets(_ insets: UIEdgeInsets, wasAtBottom: Bool = false) {
         pageInsets = insets
-        adoptEndOnNextInsetChange = wasAtBottom
+        // The caller's flag is an *asynchronously published* viewport sample,
+        // so it can lag the inset change arriving now — and it lies exactly
+        // when the inset moves (Bug 经验库 Agents-Anywhere「输入条上滑弹不起
+        // 键盘」再终章：静息几何 gap=213 而标记仍报"在底"＝标记说谎). Live geometry is
+        // the truth the driver's own placement uses, so either source counts:
+        // a page resting on the bottom follows the new bottom instead of
+        // staying put and leaving the last rows short of the composer by the
+        // inset delta, until the next gesture re-answers the placement
+        // (pp 2026-11-16: the keyboard/dock transition left 「中间空了一大截，
+        // 滑一下就落下来」).
+        adoptEndOnNextInsetChange = wasAtBottom || isAtEnd()
         applyInsets()
     }
 

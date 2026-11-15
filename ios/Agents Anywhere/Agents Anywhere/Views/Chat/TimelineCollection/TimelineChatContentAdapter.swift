@@ -21,9 +21,9 @@ enum TimelineHistoryLoadDirection {
 /// the row views stay unchanged.
 ///
 /// It is not `@Observable` on purpose: the wrapper re-evaluates on the model's
-/// own observable fields (`flushRevision`, pending, notices, queue, disclosure
-/// revision) and calls into the controller, which asks for `contentGeneration`.
-/// Rebuilding the item list happens once per wrapper update.
+/// own observable fields (`flushRevision`, pending, notices, queue) and calls
+/// into the controller, which asks for `contentGeneration`. Rebuilding the
+/// item list happens once per wrapper update.
 @MainActor
 final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     let model: SessionChatModel
@@ -96,7 +96,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.timeline.windowRevision)
         hasher.combine(model.timeline.rows.count)
         hasher.combine(model.responseRevision)
-        hasher.combine(model.disclosures.revision)
         hasher.combine(model.isRunning)
         // The drawn posing reads streaming (not raw in-flight): the stop tap
         // itself settles it (`stopRequested`), the ack flips `predictedIdle`
@@ -539,33 +538,33 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if group.explicitID != nil {
                 return codeEstimateKind(for: item, groupID: id)
             }
-            // A folded group renders its header only; estimating the hidden
-            // rows would park a large blank block above the fold.
-            let expanded = group.kind == .single || model.disclosures.isExpanded("group:\(group.id)")
-            let rows = expanded ? group.rows : []
+            // No row expands in place on this page: every group draws its own
+            // rows, so the estimate walks all of them.
+            let rows = group.rows
             let cwd = model.session.metadata?.cwd
             var textRows: [TimelineHeightEstimate.TextRow] = []
             textRows.reserveCapacity(rows.count)
             for row in rows {
-                // A collapsed fold renders its header, not its body. Counting
-                // the hidden reasoning/tool text would park a large blank
-                // block above the fold until the cell fit corrects it.
+                // A reasoning / tool / marker / compact row is one line, not
+                // body text. Counting the hidden payload would park a large
+                // blank block above the row until the cell fit corrects it.
                 let kind = row.entry(cwd: cwd).kind
-                let folded: Bool
+                let oneLine: Bool
                 switch kind {
                 case .reasoning, .compact, .tool:
-                    folded = !model.disclosures.isExpanded(row.id)
+                    oneLine = true
                 case .marker:
-                    folded = row.structure.type != .message
-                        && !model.disclosures.isExpanded(row.id)
+                    // `TimelineEntryPresentation` classifies a plain message as
+                    // `.marker`; only a real marker row is one line.
+                    oneLine = row.structure.type != .message
                 case .artifact:
-                    folded = false
+                    oneLine = false
                 }
                 textRows.append(TimelineHeightEstimate.TextRow(
-                    text: folded ? "" : row.text,
-                    attachmentCount: folded ? 0 : attachments(of: row.value).count))
+                    text: oneLine ? "" : row.text,
+                    attachmentCount: oneLine ? 0 : attachments(of: row.value).count))
             }
-            return .text(textEstimate(for: item, rows: textRows, minimum: expanded ? 44 : 64))
+            return .text(textEstimate(for: item, rows: textRows, minimum: 44))
         }
     }
 
@@ -740,13 +739,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// skipped: hosting the growing text on every 0.1 s flush would be
     /// quadratic, and its estimate is only visible while the reader is
     /// watching the streaming row.
-    /// Code message rows follow the official hosted-cell contract: the cell
-    /// self-measures once and reports later content changes. The Chat rows keep
-    /// the legacy controller polling path for now.
+    /// Code message rows and standalone rows follow the official hosted-cell
+    /// contract: the cell self-measures once and reports later content changes.
+    /// Only the compaction divider keeps the legacy preferred-fit path.
     func usesCellReportedHeight(for item: TimelineListItem) -> Bool {
         if case .workingStatus = item { return true }
-        guard case .group(let id) = item else { return false }
-        return groupsByID[id]?.explicitID != nil
+        guard case .group(let id) = item, let group = groupsByID[id] else { return false }
+        // A standalone row draws the Code message / tool rows and the
+        // turn-scoped footers, so its height follows content no estimate can
+        // predict. Left on the legacy Chat preferred-fit path its first fit
+        // latched `isMeasured` and nothing ever asked the cell again: a row
+        // that outlived a shrink kept the old, taller frame and painted blank
+        // space under its content until a scroll re-fit it (pp 2026-11-16:
+        // 「中间空了一大截，滑一下就落下来」). The cell's own geometry report
+        // is what keeps that class of row honest.
+        if group.explicitID == nil, group.isStandaloneCompactDivider {
+            // The compaction divider declares an exact fixed height and was
+            // tuned on the preferred-height path; it keeps it.
+            return false
+        }
+        return true
     }
 
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
@@ -2637,7 +2649,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rows: [TimelineRowContentSignature(id: row.id,
                                                    revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq)],
-                disclosureExpanded: false,
                 inlineNotices: [],
                 attachments: [],
                 turnAction: nil,
@@ -2709,8 +2720,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             return TimelineGroupContentSignature(
                 rows: signatureRows,
-                disclosureExpanded: false,
-                expandedRowIDs: [],
                 revealingRowIDs: [],
                 inlineNotices: [],
                 attachments: codeAttachmentPreviews(group),
@@ -2723,15 +2732,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)
-        let expanded = group.kind != .single && model.disclosures.isExpanded("group:\(group.id)")
-        var expandedRowIDs: [String] = []
         var revealingRowIDs: [String] = []
         var inlineNotices: [TimelineInlineNoticeSignature] = []
         var attachmentPreviews: [TimelineAttachmentPreviewSignature] = []
         for row in group.rows {
             rows.append(TimelineRowContentSignature(id: row.id, revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq))
-            if model.disclosures.isExpanded(row.id) { expandedRowIDs.append(row.id) }
             if row.isRevealing || rendererRevealOwnership.isActive(row.id) {
                 revealingRowIDs.append(row.id)
             }
@@ -2753,8 +2759,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let action = turnActions[group.id]
         return TimelineGroupContentSignature(
             rows: rows,
-            disclosureExpanded: expanded,
-            expandedRowIDs: expandedRowIDs,
             revealingRowIDs: revealingRowIDs,
             inlineNotices: inlineNotices,
             attachments: attachmentPreviews,
@@ -2821,8 +2825,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                 updatedSeq: 0))
         return TimelineGroupContentSignature(
             rows: rows,
-            disclosureExpanded: false,
-            expandedRowIDs: [],
             revealingRowIDs: [],
             inlineNotices: [],
             attachments: [],
@@ -3086,7 +3088,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private static var emptyGroupSignature: TimelineGroupContentSignature {
         TimelineGroupContentSignature(
-            rows: [], disclosureExpanded: false, revealingRowIDs: [],
+            rows: [], revealingRowIDs: [],
             inlineNotices: [], attachments: [],
             turnAction: nil,
             turnSuppression: TimelineTurnSuppression(isRunning: false, hasNewerItems: false,

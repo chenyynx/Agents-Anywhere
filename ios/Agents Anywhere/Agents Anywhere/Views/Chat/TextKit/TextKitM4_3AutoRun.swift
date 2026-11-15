@@ -64,7 +64,6 @@ final class TextKitM4_3AutoRunModel: TimelineCollectionContentProviding {
         let isAssistant = entry.kind == .assistantTextKit
         return .group(TimelineGroupContentSignature(
             rows: [TimelineRowContentSignature(id: entry.id, revision: 0, updatedSeq: 0)],
-            disclosureExpanded: false,
             revealingRowIDs: [],
             inlineNotices: [],
             attachments: [],

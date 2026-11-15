@@ -134,7 +134,6 @@ struct TimelineChatTimelineView: View {
         // trailing accessory, which changes wrapping and the tail's height.
         let _ = model.session.sendQueue.items.map(\.state)
         let _ = model.session.isSendQueuePaused
-        let _ = model.disclosures.revision
         let _ = model.responseRevision
         let _ = model.timeline.windowRevision
         // State fields the signatures read but no row flush necessarily

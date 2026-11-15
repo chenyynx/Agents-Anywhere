@@ -85,7 +85,6 @@ final class TextKitM4AutoRunModel: TimelineCollectionContentProviding {
             rows: [TimelineRowContentSignature(id: entry.id,
                                                revision: entry.revision,
                                                updatedSeq: entry.revision)],
-            disclosureExpanded: false,
             revealingRowIDs: entry.reveal ? [entry.id] : [],
             inlineNotices: [],
             attachments: [],

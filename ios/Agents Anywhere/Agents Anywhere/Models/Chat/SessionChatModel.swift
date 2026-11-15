@@ -8,7 +8,6 @@ final class SessionChatModel {
     /// The same opening window `V2SessionCachePolicy` reads from disk.
     private static let openingWindow = V2SessionCachePolicy.defaultOpeningWindow
     let settings = ConversationSettings()
-    let disclosures = TimelineDisclosureState()
     /// On-demand reads of deferred summary rows. The repository owns the
     /// projection change; this store owns only the per-row phase the UI
     /// renders (idle / loading / failed / offline) and its in-flight dedupe.

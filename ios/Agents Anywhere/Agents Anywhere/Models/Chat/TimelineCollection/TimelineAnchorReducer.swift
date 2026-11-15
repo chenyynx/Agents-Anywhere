@@ -123,8 +123,10 @@ nonisolated enum TimelineAnchorEvent: Equatable {
     /// recovery snapshot).
     case windowReplaced(readerTookOver: Bool)
 
-    /// An approval/interaction card appeared or left.
-    case interactionPresentedChanged(presented: Bool, id: String?, offsetIntoRow: CGFloat)
+    /// An approval/interaction card appeared or left. `atEnd` is the live
+    /// geometric verdict taken at the moment it appeared.
+    case interactionPresentedChanged(presented: Bool, atEnd: Bool,
+                                     id: String?, offsetIntoRow: CGFloat)
 
     /// The drawer hides or reveals the page.
     case navigationSuspendedChanged(suspended: Bool)
@@ -240,8 +242,17 @@ nonisolated enum TimelineAnchorReducer {
                 action = .placeDirect
             }
 
-        case .interactionPresentedChanged(let presented, let id, let offsetIntoRow):
-            if presented {
+        case .interactionPresentedChanged(let presented, let atEnd,
+                                          let id, let offsetIntoRow):
+            // An approval appearing stops automatic following — but not for a
+            // reader resting on the bottom. The card docks above the composer,
+            // and its anchored row (with the composer bar's inset growth)
+            // lands in the same update; stopping the in-flight follow there
+            // left the page a few points short, with the return control
+            // showing under a question card (pp 2026-11-16:
+            // 「我本来就是在最底部，弹询问卡片过后提问工具没有在最底部」).
+            // A reader higher up keeps the reading anchor and the stop.
+            if presented, !atEnd {
                 next.motion = .resting
                 if let id {
                     next.placement = .reading(id: id, offsetIntoRow: offsetIntoRow)

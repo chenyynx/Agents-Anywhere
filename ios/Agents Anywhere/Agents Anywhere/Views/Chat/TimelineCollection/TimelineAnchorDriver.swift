@@ -594,8 +594,21 @@ final class TimelineAnchorDriver {
         isInteractionPresented = presented
         let anchor = currentAnchor()
         perform(.interactionPresentedChanged(presented: presented,
+                                             atEnd: isEffectivelyAtEnd(),
                                              id: anchor?.id,
                                              offsetIntoRow: anchor?.offsetIntoRow ?? 0))
+    }
+
+    /// Live "resting on the bottom" verdict with the product's dead zone. The
+    /// return control tolerates 16 pt of remaining travel; an approval that
+    /// arrives while the page sits within 8 pt of the bottom is a bottomed-out
+    /// page that must keep following — the residual comes from the inset and
+    /// the anchored row landing in two steps, not from the reader.
+    private func isEffectivelyAtEnd(tolerance: CGFloat = 8) -> Bool {
+        guard let view = scrollView else { return false }
+        let target = bottomTarget(topInset: view.adjustedContentInset.top,
+                                  bottomInset: view.adjustedContentInset.bottom)
+        return view.contentOffset.y >= target - tolerance
     }
 
     func navigationSuspendedChanged(_ suspended: Bool) {

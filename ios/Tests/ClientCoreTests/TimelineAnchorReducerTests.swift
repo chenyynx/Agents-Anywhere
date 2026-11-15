@@ -179,14 +179,25 @@ import Testing
 
     @Test func anApprovalPinsTheReadingAnchorAndItsRemovalReturns() {
         let presented = reduce(landed(.end), .interactionPresentedChanged(
-            presented: true, id: "u6", offsetIntoRow: 30))
+            presented: true, atEnd: false, id: "u6", offsetIntoRow: 30))
         #expect(presented.state.placement == .reading(id: "u6", offsetIntoRow: 30))
         #expect(presented.action == .halt)
 
         let dismissed = reduce(presented.state, .interactionPresentedChanged(
-            presented: false, id: nil, offsetIntoRow: 0))
+            presented: false, atEnd: false, id: nil, offsetIntoRow: 0))
         #expect(dismissed.state.placement == .end)
         #expect(dismissed.action == .move)
+    }
+
+    /// A card that arrives while the page rests on the bottom keeps following:
+    /// the dock card and its anchored row land in the same update, and
+    /// stopping there left the page a few points short of the bottom with the
+    /// return control showing (pp 2026-11-16).
+    @Test func anApprovalAtTheBottomKeepsFollowing() {
+        let presented = reduce(landed(.end, motion: .flying), .interactionPresentedChanged(
+            presented: true, atEnd: true, id: "q1", offsetIntoRow: 12))
+        #expect(presented.state.placement == .end)
+        #expect(presented.action == .move)
     }
 
     @Test func navigationSuspensionStopsAndResumeRePlaces() {

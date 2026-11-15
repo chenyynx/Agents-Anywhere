@@ -208,13 +208,17 @@ struct CommandSuggestionPanel: View {
         return Button {
             forced = false
             if command.isInsertCommand {
-                // Official card: the skill goes back into the composer and
-                // the whole command is selected, so typing replaces it and
-                // sending dispatches it as a normal prompt. Dismiss the card
-                // for this exact text; typing a new prefix reopens it.
-                let text = chat.complete(command)
-                dismissedFor = text
-                editor.selectAllAfterSync(text)
+                // Official card: the skill goes back into the composer as one
+                // capsule token (typing appends arguments, backspace removes
+                // the whole command). Dismiss the card for this exact text;
+                // typing a new prefix reopens it.
+                if let text = editor.insertCommandToken(command.id) {
+                    chat.noteComposerChanged()
+                    dismissedFor = text
+                } else {
+                    // No mounted native view (headless/preview): plain text.
+                    dismissedFor = chat.complete(command)
+                }
             } else {
                 Task { await chat.choose(command) }
             }

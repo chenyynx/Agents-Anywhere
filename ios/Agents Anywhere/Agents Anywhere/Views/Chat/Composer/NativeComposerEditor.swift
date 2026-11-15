@@ -10,32 +10,52 @@ final class ComposerEditorController {
     /// The profile's expand curve, set by the hosting composer. Only the
     /// expanding transition uses it (see `ComposerFocusTransition`).
     @ObservationIgnored var expandAnimation: Animation?
-
-    func finishEditing() {
-        guard let textView else { return }
-        textView.resignFirstResponder()
-        synchronize()
+    /// Canonical plain text for persistence and sending: command tokens are
+    /// inline attachments in the native view, so U+FFFC must be expanded back
+    /// to `/name`. The draft and every consumer keep seeing plain text.
+    func canonicalText(of view: UITextView) -> String {
+        let attributed = view.attributedText ?? NSAttributedString(string: view.text ?? "")
+        let source = attributed.string as NSString
+        var result = ""
+        attributed.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributed.length)
+        ) { value, range, _ in
+            if let token = value as? ComposerCommandTokenAttachment {
+                result += "/" + token.commandName
+            } else {
+                result += source.substring(with: range)
+            }
+        }
+        return result
     }
 
-    /// Focus mirror of `finishEditing`: driven straight from the keyboard
-    /// gesture, so the pop never waits on a SwiftUI re-render hop.
-    func beginEditing() {
-        guard let textView else { return }
-        textView.becomeFirstResponder()
-        synchronize()
-    }
-
-    /// Replace the editor text and select all of it, so the next keystroke
-    /// replaces the inserted command. The autocomplete card owns the text
-    /// (it already wrote the same value into the draft); this only syncs the
-    /// native view and its selection, which `updateUIView` would otherwise
-    /// clamp back to a caret.
-    func selectAllAfterSync(_ text: String) {
-        guard let textView else { return }
+    /// Insert the selected skill as one capsule token. The token is a single
+    /// attachment character: typing appends arguments after it and backspace
+    /// removes the whole command. Returns the canonical text, or nil when the
+    /// native view is not mounted (the caller falls back to plain text).
+    @discardableResult
+    func insertCommandToken(_ commandName: String) -> String? {
+        guard let textView else { return nil }
+        let token = ComposerCommandTokenAttachment(
+            commandName: commandName,
+            traits: textView.traitCollection,
+            scale: textView.traitCollection.displayScale
+        )
+        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
+        let attributed = NSMutableAttributedString(attachment: token)
+        attributed.append(NSAttributedString(string: " ", attributes: [
+            .font: bodyFont,
+            .foregroundColor: UIColor.label,
+        ]))
+        textView.attributedText = attributed
+        textView.typingAttributes = [.font: bodyFont, .foregroundColor: UIColor.label]
+        textView.selectedRange = NSRange(location: attributed.length, length: 0)
         if !textView.isFirstResponder { textView.becomeFirstResponder() }
-        if textView.text != text { textView.text = text }
-        textView.selectedRange = NSRange(location: 0, length: (text as NSString).length)
-        synchronize()
+        let canonical = "/\(commandName) "
+        draft?.text = canonical
+        draft?.isFocused = true
+        return canonical
     }
 
     /// Check native marked text before ending editing. unmarkText() only removes
@@ -53,18 +73,19 @@ final class ComposerEditorController {
             // Without the resign there is no turn boundary to wait for; the
             // marked-text guard above already settled the composition state.
             synchronize()
-            return textView.text ?? ""
+            return canonicalText(of: textView)
         }
         textView.resignFirstResponder()
         await Task.yield()
         guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }
         synchronize()
-        return textView.text ?? ""
+        return canonicalText(of: textView)
     }
 
     func synchronize() {
         guard let textView, let draft, draft.isValid else { return }
-        if draft.text != textView.text { draft.text = textView.text ?? "" }
+        let canonical = canonicalText(of: textView)
+        if draft.text != canonical { draft.text = canonical }
         draft.isComposing = textView.markedTextRange != nil
         let focused = textView.isFirstResponder
         guard draft.isFocused != focused else { return }
@@ -77,6 +98,71 @@ final class ComposerEditorController {
         } else {
             draft.isFocused = focused
         }
+    }
+}
+
+/// One inserted skill rendered as an inline capsule token. It is a single
+/// attachment character in the text view, so backspace deletes the whole
+/// command and typing appends arguments after it; the canonical `/name`
+/// text is recovered by `ComposerEditorController.canonicalText`.
+final class ComposerCommandTokenAttachment: NSTextAttachment {
+    let commandName: String
+
+    @MainActor
+    init(commandName: String, traits: UITraitCollection, scale: CGFloat) {
+        self.commandName = commandName
+        super.init(data: nil, ofType: nil)
+        let image = CommandTokenRenderer.image(for: commandName, traits: traits, scale: scale)
+        self.image = image
+        // Bottom sits just below the baseline so the capsule centers on the
+        // body line instead of floating above it.
+        bounds = CGRect(x: 0, y: -4, width: image.size.width, height: image.size.height)
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+@MainActor
+private enum CommandTokenRenderer {
+    private static var cache: [String: UIImage] = [:]
+
+    static func image(for commandName: String, traits: UITraitCollection, scale: CGFloat) -> UIImage {
+        let dark = traits.userInterfaceStyle == .dark
+        let key = "\(commandName)|\(dark)|\(scale)"
+        if let cached = cache[key] { return cached }
+
+        let font = UIFont(name: "JetBrainsMono-Regular", size: 15)
+            ?? UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+        let text = "/\(commandName)" as NSString
+        let textSize = text.size(withAttributes: [.font: font])
+        // Measured off the official card: 21 pt tall, 3 pt side padding,
+        // capsule ends. The command name keeps the panel's accent color.
+        let size = CGSize(width: ceil(textSize.width) + 6, height: 21)
+        let background = dark
+            ? UIColor(red: 54 / 255, green: 68 / 255, blue: 90 / 255, alpha: 1)
+            : UIColor(red: 208 / 255, green: 216 / 255, blue: 228 / 255, alpha: 1)
+        let foreground = CodePageTheme.uiColor(CodePageTheme.accentSecondary100Color)
+            .resolvedColor(with: traits)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+            background.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: size.height / 2).fill()
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: foreground,
+            ]
+            let drawn = text.size(withAttributes: attributes)
+            text.draw(
+                at: CGPoint(x: (size.width - drawn.width) / 2,
+                            y: (size.height - drawn.height) / 2),
+                withAttributes: attributes
+            )
+        }
+        cache[key] = image
+        return image
     }
 }
 
@@ -156,7 +242,7 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.commandSend = onCommandSend
         view.onLongPaste = onLongPaste
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
-        if view.markedTextRange == nil, view.text != draft.text {
+        if view.markedTextRange == nil, controller.canonicalText(of: view) != draft.text {
             let selection = view.selectedRange
             view.text = draft.text
             let end = (draft.text as NSString).length

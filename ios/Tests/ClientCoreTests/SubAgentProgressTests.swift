@@ -154,11 +154,11 @@ import Testing
         let starting = try cardItem("a", order: 1, description: "排查日志", agents: asyncEntry())
         let state = SubAgentProgress.capsuleState([starting, try cardItem("b", order: 2, status: "done")])
         #expect(state.isVisible && state.runningCount == 1)
-        #expect(state.latestRunningID == "a" && state.title == "排查日志")
+        #expect(state.latestRunningID == "a" && state.title == "1 个 Agent 正在运行")
         // VoiceOver follows the phase word instead of a hardcoded 运行中.
-        #expect(state.accessibilityText == "排查日志，启动中")
+        #expect(state.accessibilityText == "1 个 Agent 正在运行，启动中")
         let running = SubAgentProgress.capsuleState([try cardItem("a", order: 1, description: "排查日志")])
-        #expect(running.accessibilityText == "排查日志，运行中")
+        #expect(running.accessibilityText == "1 个 Agent 正在运行，运行中")
         // …and a failing batch still overrides both.
         let failed = SubAgentProgress.capsuleState(try [
             cardItem("x", order: 1, status: "failed", agents: asyncEntry("failed")),
@@ -206,15 +206,15 @@ import Testing
 
     // MARK: Capsule
 
-    @Test func capsuleShowsTheTaskNameForOneAndTheCountForSeveral() throws {
+    @Test func capsuleAlwaysShowsTheRunningAgentCount() throws {
         let first = try cardItem("a", order: 1, description: "排查系统资源")
         let second = try cardItem("b", order: 2, description: "排查进程")
         let single = SubAgentProgress.capsuleState([first])
         #expect(single.isVisible && single.runningCount == 1)
-        #expect(single.title == "排查系统资源")
+        #expect(single.title == "1 个 Agent 正在运行")
         #expect(single.latestRunningID == "a")
         let pair = SubAgentProgress.capsuleState([first, second])
-        #expect(pair.title == "2 项任务进行中")
+        #expect(pair.title == "2 个 Agent 正在运行")
         // All-terminal cards leave no capsule.
         let done = SubAgentProgress.capsuleState([try cardItem("done", status: "done")])
         #expect(!done.isVisible && done.latestRunningID == nil)
@@ -222,6 +222,32 @@ import Testing
         let mixed = SubAgentProgress.capsuleState([try cardItem("old", order: 1, status: "done"),
                                                    try cardItem("new", order: 2)])
         #expect(mixed.latestRunningID == "new" && mixed.runningCount == 1)
+    }
+
+    @Test func capsuleListLiveTextFollowsTheNewestVisibleRow() throws {
+        let cardItem = try cardItem(description: "Sleep five minutes then report")
+        let card = try card(cardItem)
+        // A running command reads like the reference: the tool's own name.
+        let command = try item("t1", type: "tool", status: "running", order: 2,
+                               content: ["kind": "command", "toolName": "Bash",
+                                         "command": "sleep 300", "parentItemId": "card"])
+        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, command]) == "正在运行 Bash 指令")
+        // A tool without a wire name keeps its row title, which is already a verb.
+        let bareTool = try item("t2", type: "tool", status: "running", order: 2,
+                                content: ["kind": "command", "command": "ls", "parentItemId": "card"])
+        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, bareTool]) == "执行 ls")
+        // Reasoning and a streaming reply use their own words.
+        let reasoning = try item("r1", type: "reasoning", status: "running", order: 3,
+                                 content: ["kind": "reasoning", "text": "hmm", "parentItemId": "card"])
+        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, reasoning]) == "正在思考")
+        let reply = try item("m1", type: "message", status: "running", order: 4, role: "assistant",
+                             content: ["text": "working", "parentItemId": "card"])
+        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem, reply]) == "正在回复")
+        // Before the first row arrives the phase word stands in; a settled card
+        // never shows a live line.
+        #expect(SubAgentProgress.liveActivityText(for: card, in: [cardItem]) == "运行中")
+        let finishedItem = try cardItem("done", status: "done")
+        #expect(SubAgentProgress.liveActivityText(for: try card(finishedItem), in: [finishedItem]) == "已完成")
     }
 
     @Test func capsuleTurnsRedWhileAnySubAgentFailed() throws {

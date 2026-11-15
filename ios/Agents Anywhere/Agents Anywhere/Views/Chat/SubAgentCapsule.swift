@@ -3,36 +3,26 @@ import SwiftUI
 /// L2 (§3.2): the glass capsule above the composer that says a SubAgent is
 /// still running. Visibility is data-driven (a running top-level Agent card in
 /// the presented window) — never scroll or keyboard state. While running it is
-/// the plain glass with the phase-coloured `SubAgentGlyph` carrying the state;
-/// while the newest batch carries a failure the glass is tinted red and the
-/// glyph is repainted red — dispatching a new SubAgent clears older failures
+/// the plain glass with the `SubAgentStarGlyph` mark; while the newest batch
+/// carries a failure the glass is tinted red and the mark is repainted red —
+/// dispatching a new SubAgent clears older failures
 /// (`SubAgentProgress.hasLiveFailure`). Like the “到底部” pill, the capsule
 /// hugs its label instead of claiming a fixed maximum width.
+///
+/// Size follows the reference capsule (pp 2026-11-15): 41pt tall, 15pt side
+/// padding, 13pt label, 16pt mark — measured from a 1179×2556 @3x screenshot
+/// (123px tall, 44.5px side padding, 49×35px mark).
 struct SubAgentCapsule: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void
-    @ScaledMetric(relativeTo: .footnote) private var height: CGFloat = 36
-    @ScaledMetric(relativeTo: .footnote) private var glyphSize: CGFloat = 24
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .footnote) private var height: CGFloat = 41
+    @ScaledMetric(relativeTo: .footnote) private var glyphSize: CGFloat = 16
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 9) {
-                // The phase change cross-fades the whole mark instead of hard-
-                // cutting (2026-10-08 decision): a swap of `id` rebuilds the
-                // glyph, so the old frame fades out while the new one — its
-                // loop freshly anchored at u=0 — fades in. One SubAgent → two
-                // (or back) crosses phase ↔ nil the same way, so the icon never
-                // pops. Reduce Motion keeps the hard swap (no animation).
-                ZStack {
-                    SubAgentGlyph(phase: state.glyphPhase,
-                                  size: glyphSize,
-                                  overrideColor: state.hasFailure ? SubAgentPalette.failure : nil)
-                        .id(state.glyphPhase)
-                        .transition(.opacity)
-                }
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: state.glyphPhase)
-                .accessibilityHidden(true)
+            HStack(spacing: 8) {
+                SubAgentStarGlyph(size: glyphSize,
+                                  tint: state.hasFailure ? SubAgentPalette.failure : .primary)
                 Text(state.title)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
@@ -41,7 +31,7 @@ struct SubAgentCapsule: View {
                 AppSymbol("chevron.right", size: 12)
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 15)
             .frame(height: height)
             .glassEffect(state.hasFailure
                          ? .regular.interactive().tint(SubAgentPalette.failure.opacity(0.26))

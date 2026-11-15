@@ -282,7 +282,7 @@
         }
       }
     },
-    "%lld 项任务进行中": {
+    "%lld 个 Agent 正在运行": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -291,13 +291,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld task in progress"
+                  "value": "%lld Agent running"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld tasks in progress"
+                  "value": "%lld Agents running"
                 }
               }
             }
@@ -306,7 +306,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 项任务进行中"
+            "value": "%lld 个 Agent 正在运行"
           }
         }
       }
@@ -10329,6 +10329,23 @@
         }
       }
     },
+    "停止": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止"
+          }
+        }
+      }
+    },
     "停止子代理": {
       "extractionState": "manual",
       "localizations": {
@@ -14387,6 +14404,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在思考"
+          }
+        }
+      }
+    },
+    "正在运行 %@ 指令": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running %@ command"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在运行 %@ 指令"
+          }
+        }
+      }
+    },
+    "正在回复": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replying"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在回复"
           }
         }
       }

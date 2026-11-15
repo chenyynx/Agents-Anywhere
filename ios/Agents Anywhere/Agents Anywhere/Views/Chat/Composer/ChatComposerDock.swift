@@ -93,11 +93,13 @@ struct ChatComposerDock: View {
                 // pins the card's bottom edge to the composer's top edge; the
                 // card's own bottom padding supplies the gap.
                 .overlay(alignment: .top) {
-                    if let sessionChat {
-                        CommandSuggestionPanel(chat: sessionChat, draft: draft,
-                            forced: $showsCommandMenu, controls: controls)
-                            .alignmentGuide(.top) { $0[.bottom] }
-                    }
+                    // The guide must live on the overlay's direct content. On a
+                    // child inside `if let`, the conditional wrapper keeps its
+                    // own top guide and the card starts at the composer's top
+                    // edge, covering the input field instead of floating above.
+                    CommandSuggestionOverlay(chat: sessionChat, draft: draft,
+                        forced: $showsCommandMenu, controls: controls)
+                        .alignmentGuide(.top) { $0[.bottom] }
                 }
         }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
@@ -288,6 +290,22 @@ struct ChatComposerDock: View {
                 if urls.count > 5 { attachmentError = String(localized: "每条消息最多添加 5 个附件。") }
             }
         } catch { attachmentError = error.localizedDescription }
+    }
+}
+
+/// Overlay host for the command card. Kept as a type of its own so the
+/// `alignmentGuide` in `ChatComposerDock` lands on the overlay's direct
+/// content instead of a child hidden behind `if let`.
+private struct CommandSuggestionOverlay: View {
+    let chat: SessionChatModel?
+    @Bindable var draft: ComposerDraft
+    @Binding var forced: Bool
+    let controls: ChatControlMetrics
+
+    var body: some View {
+        if let chat {
+            CommandSuggestionPanel(chat: chat, draft: draft, forced: $forced, controls: controls)
+        }
     }
 }
 

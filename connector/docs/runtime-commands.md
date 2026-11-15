@@ -127,6 +127,13 @@ registered `compact` command, the catalog is empty. Both the bridge and Python
 connector reject other command names, including commands that depend on DSH's
 client UI. The connector also filters catalogs returned by older bridges.
 
+With `includeSkills=1`, the bridge also returns the session's user-invocable
+skills (`sessionSkillCatalog.list`) as `kind: "insert"` rows. The connector keeps
+only those insert rows alongside `/compact`; any other native command stays out.
+Sending `/name args` is currently an ordinary prompt — this bridge version has no
+skill-invoke API, so whether the DSH host dispatches the skill from that text is
+still a live-session probe, not a guaranteed path.
+
 Compaction still runs through the native registry's parser and handler, preserving
 the exact submitted line and native result text. The shipped DSH command takes
 no arguments; its handler owns validation and busy-state rejection. Model and

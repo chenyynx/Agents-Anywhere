@@ -13,6 +13,11 @@ struct TimelineEntryPresentation: Hashable {
     /// can make a summary-only row expandable — without it the fold would
     /// degrade into a non-tappable marker line.
     let deferred: Bool
+    /// Whether a compact row is in its failed state, so the divider paints the
+    /// official failure message in the danger ink. Derived from the row's own
+    /// wire state and status, the same pair `isCompactItem`/`isActiveCompactItem`
+    /// read.
+    let compactFailed: Bool
     private let raw: JSONValue
     private let rawChanges: [JSONValue]
     private let cwd: String?
@@ -71,6 +76,8 @@ struct TimelineEntryPresentation: Hashable {
         command = TimelineText.command(raw["command"]) ?? TimelineText.command(toolInput?["command"]) ?? TimelineText.command(toolInput?["cmd"])
         let rawChanges = TimelineFileChange.rawChanges(raw, allowDirect: wireKind == "file_change")
         self.raw = raw; self.cwd = cwd
+        compactFailed = Self.isCompactItem(item)
+            && (item.status == .failed || raw["state"] == .string("failed"))
         deferred = item.isDeferred
         self.rawChanges = rawChanges.isEmpty && wireKind == "file_change" && TimelineText.path(raw) != nil ? [raw] : rawChanges
         input = command == nil && self.rawChanges.isEmpty ? toolInput : nil
@@ -86,7 +93,16 @@ struct TimelineEntryPresentation: Hashable {
         } else if Self.isCompactItem(item) {
             kind = .compact; symbol = "line.3.horizontal.decrease"
             let active = Self.isActiveCompactItem(item)
-            title = item.status == .failed || raw["state"] == .string("failed") ? String(localized: "上下文压缩失败") : active ? String(localized: "正在压缩上下文") : String(localized: "上下文已压缩")
+            // The settled row is the official Code page's divider label
+            // (`Compacted conversation · saved/from %@ tokens`). The active
+            // row only draws where no working status row narrates it (the
+            // chat profile with a stepped turn); it then says what that row
+            // would have said.
+            title = compactFailed
+                ? CompactionSummaryText.failed
+                : active
+                    ? String(localized: "正在压缩对话…")
+                    : CompactionSummaryText.label(CompactionSummaryText.tokenCount(in: raw))
             detail = item.status == .failed ? raw : nil
         } else if Self.isToolKindItem(item) {
             kind = .tool

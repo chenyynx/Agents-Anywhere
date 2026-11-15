@@ -55,12 +55,28 @@ final class V2SessionRuntimeModel {
     /// never writes the projected state, never counts as an authoritative
     /// turn ending, and is only honoured while the projection is fresh.
     private(set) var predictedIdle = false
+    /// The user's stop tap is on the wire but has not been acknowledged yet.
+    ///
+    /// Deliberately not `predictedIdle`: that one opens the composer's send
+    /// window and may only speak after the ack. This one settles the
+    /// transcript's working pose at the tap, because the round trip
+    /// (server → connector → SDK stop) can take seconds and the step row
+    /// otherwise keeps spinning after the user stopped it (device
+    /// 2026-11-14). A refused stop clears it and the pose comes back.
+    private(set) var stopRequested = false
     /// Authoritative turn endings: transitions of the projected state from a
     /// turn in flight to `idle`, applied while live facts were fresh. The
     /// completion cue keys off this instead of a raw status edge so that a
     /// status no authoritative source ever confirmed (an optimistic
     /// prediction, a selection write response) cannot announce a completion.
     private(set) var authoritativeTurnEnds = 0
+    /// An accepted stop is still waiting for its authoritative idle. Consumed
+    /// by the idle transition so the "reply finished" cue can tell a stopped
+    /// turn from a completed one (the user's stop already played its tap
+    /// feedback; a completion buzz behind it reads as a stray second one).
+    private(set) var pendingStopEnd = false
+    /// Whether the newest authoritative turn ending came from a user stop.
+    private(set) var lastTurnEndWasStop = false
 
     func allows(_ id: V2CapabilityID) -> Bool {
         guard isFresh, let capability = capabilities?.capability(id: id) else { return false }
@@ -96,9 +112,20 @@ final class V2SessionRuntimeModel {
         return capability.available || !isFresh
     }
 
+    func beginStopRequest() {
+        guard !stopRequested else { return }
+        stopRequested = true
+    }
+
+    func endStopRequest() {
+        guard stopRequested else { return }
+        stopRequested = false
+    }
+
     func beginPredictedIdle() {
         guard !predictedIdle else { return }
         predictedIdle = true
+        pendingStopEnd = true
     }
 
     /// Ends the prediction. Called when authoritative facts land (truth wins)
@@ -122,7 +149,15 @@ final class V2SessionRuntimeModel {
         let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
         if fresh, previousStatus?.isTurnInFlight == true, data?.state?.status == .idle {
+            lastTurnEndWasStop = pendingStopEnd
+            pendingStopEnd = false
             authoritativeTurnEnds += 1
+        } else if data?.state?.status.isTurnInFlight == true,
+                  previousStatus?.isTurnInFlight != true {
+            // A new turn started before the stopped one ever reported idle:
+            // the stop's ending will never arrive, so do not let the flag
+            // mute a later completion.
+            pendingStopEnd = false
         }
     }
 }
@@ -189,7 +224,17 @@ final class V2PendingMessage: Identifiable {
 /// a view .task; cancellation releases that view's subscription. DTOs never own I/O.
 @MainActor @Observable
 final class V2SessionModel: Identifiable {
-    let id: V2SessionID
+    /// The client-side key. A creation handoff renames this in place
+    /// (`V2SessionRepository.bindCreation`): the staged local entry becomes the
+    /// server session instead of being replaced, so the page that already
+    /// mounted keeps this model object. Late holders of the retired id resolve
+    /// through the repository's rename map.
+    private(set) var id: V2SessionID
+    /// The identity views key on. It never changes, including through the
+    /// creation rename: `.id(session.id)` remounted the chat page when the
+    /// local creation was bound, and the re-mounted page played the send's
+    /// entrance a second time (pp 2026-11-15).
+    let presentationKey: V2SessionID
     let scope: V2ClientScope
     let runtime = V2SessionRuntimeModel()
     let notices = SessionNoticeStore()
@@ -243,6 +288,17 @@ final class V2SessionModel: Identifiable {
     var isPerformingAction = false
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var awaitingReplyID: String?
+    /// Stops this client observed itself, anchored to the last main-agent row
+    /// it held at the ack. Restored from the session archive so the notice
+    /// survives a relaunch (pp 2026-11-14). Server-derived markers (the
+    /// connector's `content.turnInterrupted` flag) win over these when both
+    /// name the same turn — see `interruptedTurns`.
+    private(set) var localInterruptedTurns: [V2InterruptedTurnMarker] = []
+    /// Lazily merged view of `localInterruptedTurns` + the timeline's
+    /// `turnInterrupted` flags. Every read used to copy and rescan the whole
+    /// timeline; a single rebuild reads it two or three times, so cache it
+    /// until the next timeline apply (or a local marker change).
+    @ObservationIgnored private var cachedInterruptedTurns: [V2InterruptedTurnMarker]?
     /// Set when the composer's text came back from an unresolved send record;
     /// the next send from that draft replaces the record once it is confirmed.
     @ObservationIgnored private(set) var draftRestoredFromPendingID: String?
@@ -289,7 +345,8 @@ final class V2SessionModel: Identifiable {
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository,
          echoWatchdogDelay: Duration = .seconds(30),
          echoHealAttempts: Int = 3) {
-        self.id = id; self.scope = scope; self.repository = repository
+        self.id = id; self.presentationKey = id
+        self.scope = scope; self.repository = repository
         self.echoWatchdogDelay = echoWatchdogDelay
         self.echoHealAttempts = max(1, echoHealAttempts)
         // The repository holds this model through its entries; the closures
@@ -311,6 +368,15 @@ final class V2SessionModel: Identifiable {
         composer.onTextBecameEmpty = { [weak self] in
             self?.draftRestoredFromPendingID = nil
         }
+    }
+
+    /// Renames the client-side key for a creation handoff. Only the repository's
+    /// `bindCreation` calls this, together with re-keying its entry map; the
+    /// model object (and therefore the page's view state) survives, and
+    /// `presentationKey` keeps the identity stable.
+    func rebind(to newID: V2SessionID) {
+        guard id != newID else { return }
+        id = newID
     }
 
     var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }
@@ -403,10 +469,97 @@ final class V2SessionModel: Identifiable {
     /// Binds one eager upload to its queued message. Kept on the session so the
     /// chat layer never reaches into the message's storage directly.
     func bindQueueUpload(itemID: String, localID: String, file: V2AttachmentReference) {
-        sendQueue.items.first { $0.id == itemID }?.bindUpload(file, localID: localID)
+        guard let item = sendQueue.items.first(where: { $0.id == itemID }) else { return }
+        item.bindUpload(file, localID: localID)
+        // Binding replaces the content's `local:<uuid>` fileId with the server
+        // id, which changes its cacheKey. Re-key the local preview under the
+        // new key, as the pending upload path does, or the queued thumbnail
+        // vanishes the moment the bytes land.
+        attachmentPreviews.remember(item.attachments, clientID: item.id)
     }
 
     func localWorkDidChange() { repository?.localWorkDidChange(sessionID: id) }
+
+    /// Every turn whose reply was stopped, anchored to the row its notice
+    /// follows. Local ack markers are merged with the durable markers the
+    /// connector stamps on the stopped turn's last main row
+    /// (`content.turnInterrupted`); the server-derived marker wins the anchor
+    /// when both name the same turn, because it is the one every device and
+    /// every relaunch sees.
+    var interruptedTurns: [V2InterruptedTurnMarker] {
+        if let cachedInterruptedTurns { return cachedInterruptedTurns }
+        let merged = InterruptedTurnMarkers.merge(local: localInterruptedTurns,
+                                                  timeline: timeline.map(\.value))
+        cachedInterruptedTurns = merged
+        return merged
+    }
+
+    /// Tripwire for "a stopped turn's tool row moved after the stop".
+    ///
+    /// The visible flash was one symptom of this data path; a late `running`
+    /// write, a status bouncing back, or a row arriving after the card all
+    /// land here. Diagnostics only (the reader keeps that file); every status
+    /// change is recorded with the gates that decide the drawn pose, so a
+    /// recurrence can be told from normal convergence.
+    private func recordPostStopToolChange(
+        _ item: V2TimelineItem,
+        from previous: V2TimelineItemStatus?
+    ) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.tool.after_stop",
+            sessionID: id,
+            detail: [
+                "item": item.id,
+                "from": previous?.rawValue ?? "none",
+                "to": item.status.rawValue,
+                "revival": item.status == .running ? "1" : "0",
+                "revision": String(item.revision),
+                "updatedSeq": String(item.updatedSeq),
+                "fresh": runtime.isFresh ? "1" : "0",
+                "stopRequested": runtime.stopRequested ? "1" : "0",
+                "predictedIdle": runtime.predictedIdle ? "1" : "0",
+            ])
+    }
+
+    /// Cold-open recovery: the runtime still names the interrupt as the reason
+    /// it is idle, so the newest turn can be recovered even though the live
+    /// ack happened on a previous launch.
+    ///
+    /// The anchor is whatever row is newest *now*, so this stays a fallback:
+    /// once the timeline carries a durable `turnInterrupted` marker the fact
+    /// is already represented, and a second local anchor only duplicates the
+    /// card — on whichever turn's row happens to be newest (device
+    /// 2026-11-14: one stop drew a card on the stopped turn and a second card
+    /// under the prompt sent three seconds later).
+    func noteAuthoritativeInterruptIfNeeded() {
+        guard let marker = InterruptedTurnMarkers.authoritativeAnchor(
+            timeline: timeline.map(\.value),
+            existing: interruptedTurns,
+            isIdleInterrupt: !runtime.stopRequested
+                && !runtime.predictedIdle
+                && runtime.state?.status == .idle
+                && runtime.state?.metadata["source"]?.stringValue
+                    == "claude.session.interrupt"
+        ) else { return }
+        localInterruptedTurns.append(marker)
+        cachedInterruptedTurns = nil
+        repository?.draftDidChange(sessionID: id)
+    }
+
+    private func hasInterruptedMarker(for item: V2TimelineItem) -> Bool {
+        interruptedTurns.contains {
+            $0.anchorItemID == item.id
+                || ($0.turnID != nil && $0.turnID == item.turnId)
+        }
+    }
+
+    private func lastMainAgentItem() -> V2TimelineItem? {
+        // Sub-agent child rows live in the same array but not in the chat
+        // timeline; anchoring on one would never find a row to sit after.
+        timeline.last {
+            $0.value.raw["content"]?["parentItemId"] == nil
+        }?.value
+    }
 
     /// Cheap gate before spawning a drain: nothing to do, or still paused, and
     /// no task is started. Otherwise a single-flight drain runs in the
@@ -438,14 +591,23 @@ final class V2SessionModel: Identifiable {
     func demoteStaleAwaitingEcho(now: Date) {
         guard let since = awaitingEchoSince, now.timeIntervalSince(since) >= Self.awaitingEchoTimeout,
               let head = sendQueue.head, head.state == .awaitingEcho else { return }
-        let pending = V2PendingMessage(id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
-            localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
-        // Same construction as a restored uncertain record, so the bubble, its
-        // duplicate warning and the late-echo reconciliation all behave alike.
+        // The drain already staged this record's pending bubble, so the stale
+        // path upgrades that same record instead of minting a second bubble
+        // with the same id. The fallback covers a queue item restored without
+        // its pending (e.g. a record written by an older client).
+        let pending: V2PendingMessage
+        if let existing = pendingMessages.first(where: { $0.id == head.id }) {
+            pending = existing
+        } else {
+            pending = V2PendingMessage(id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
+                localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
+            // Same construction as a restored uncertain record, so the bubble, its
+            // duplicate warning and the late-echo reconciliation all behave alike.
+            attachmentPreviews.remember(head.attachments, clientID: head.id)
+            pendingMessages.append(pending)
+        }
         let failure = V2ClientFailure(kind: .unavailable, message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))
         pending.update(.uncertain(failure))
-        attachmentPreviews.remember(head.attachments, clientID: head.id)
-        pendingMessages.append(pending)
         awaitingEchoSince = nil
         if awaitingReplyID == head.id { awaitingReplyID = nil }
         sendQueue.remove(id: head.id)
@@ -455,9 +617,16 @@ final class V2SessionModel: Identifiable {
 
     /// Sends the queue's head when every gate is open, then stops — the next
     /// message waits for this one's echo. Returns whether a send was issued.
-    /// Deliberately avoids `sendDraft`: the queue row stands in for the pending
-    /// bubble, and a failure must *not* refill the composer (the content is
-    /// still in the queue), so this calls `repository.send` directly.
+    ///
+    /// The queue row is the pre-send shape only. From the moment the message
+    /// takes the wire it is the same optimistic `V2PendingMessage` a normal
+    /// send uses (id = the queue row's id), so the echo upgrades one row in
+    /// place; the queue row stops drawing once that pending row exists. The
+    /// earlier "the queue row stands in for the pending bubble" split made the
+    /// echo row and the bubble two objects laid out in different passes — the
+    /// page dropped one bubble height when the queue released it (device
+    /// 2026-11-14). A failure still never refills the composer: the content
+    /// remains in the queue.
     @discardableResult func drainSendQueueIfPossible() async -> Bool {
         guard let repository, isValid, !Task.isCancelled else { return false }
         guard !sendQueue.items.isEmpty, !isSendQueuePaused else { return false }
@@ -466,32 +635,57 @@ final class V2SessionModel: Identifiable {
         guard canSend else { return false }
         guard let head = sendQueue.head, head.state == .queued, head.isUploadComplete else { return false }
         head.update(.sending)
+        let pending = V2PendingMessage(
+            id: head.id, content: head.content, attachmentIDs: head.attachmentIDs,
+            localAttachmentIDs: head.attachments.map(\.id), attachments: head.attachments)
+        pending.supersededPendingIDs = head.supersededPendingIDs
+        attachmentPreviews.remember(head.attachments, clientID: head.id)
+        pendingMessages.append(pending)
+        awaitingReplyID = head.id
         do {
             await repository.flushCache()
-            guard isValid, head.state == .sending else { return false }
+            guard isValid, head.state == .sending else {
+                discardStagedPending(id: head.id)
+                return false
+            }
             // A cancelled drain (the session went away mid-flush) must not leave
             // the head marked as on-the-wire, or the queue would hold forever.
-            guard !Task.isCancelled else { head.update(.queued); return false }
-            // Set the placeholder link immediately before the write, so a frame
-            // arriving during the flush cannot clear a promise not yet made.
-            awaitingReplyID = head.id
+            guard !Task.isCancelled else {
+                discardStagedPending(id: head.id)
+                head.update(.queued)
+                return false
+            }
             _ = try await repository.send(sessionId: id, content: head.content, attachmentIDs: head.attachmentIDs, clientMessageID: head.id)
             guard isValid else { return true }
-            // The send is on the wire; the echo removes the row. Until then no
-            // further message is drained, and this stamp arms the echo window.
-            head.update(.awaitingEcho)
-            awaitingEchoSince = Date()
+            // The send is on the wire; the echo upgrades this same pending
+            // row. Until then no further message is drained, and this stamp
+            // arms the echo window. An echo can win the race against the HTTP
+            // response: confirmEcho already removed the head, so this branch
+            // must not re-arm the window on a detached row.
+            pending.update(.accepted)
+            if sendQueue.head === head {
+                head.update(.awaitingEcho)
+                awaitingEchoSince = Date()
+            }
             return true
         } catch {
             guard isValid else { return false }
             // A failure leaves the message queued and pauses the whole queue:
             // the banner is the only notice, and the only way back is retry.
+            discardStagedPending(id: head.id)
             head.update(.queued)
-            if awaitingReplyID == head.id { awaitingReplyID = nil }
             sendQueue.pause(.failure(V2ClientFailure(error).message))
             repository.localWorkDidChange(sessionID: id)
             return false
         }
+    }
+
+    /// Drops the optimistic bubble staged by a drain that never reached its
+    /// echo. A confirmed record is owned by the presentation until its echo
+    /// row is published, so it is never touched here.
+    private func discardStagedPending(id: String) {
+        pendingMessages.removeAll { $0.id == id && $0.delivery != .confirmed }
+        if awaitingReplyID == id { awaitingReplyID = nil }
     }
 
     func connect() async {
@@ -713,7 +907,17 @@ final class V2SessionModel: Identifiable {
         var rows: [V2TimelineItemModel] = []
         rows.reserveCapacity(items.count)
         var orderChanged = items.count != timeline.count
+        // Stopped turns whose tool rows may still move under the user's eyes.
+        // Read once per apply (the cache is cleared at the end of this method).
+        let stoppedTurnIDs = Set(interruptedTurns.compactMap(\.turnID))
         for (index, item) in items.enumerated() {
+            if item.type == .tool, !stoppedTurnIDs.isEmpty,
+               let turnID = item.turnId, stoppedTurnIDs.contains(turnID) {
+                let previousStatus = rowsByID[item.id]?.value.status
+                if previousStatus != item.status {
+                    recordPostStopToolChange(item, from: previousStatus)
+                }
+            }
             let row: V2TimelineItemModel
             if let existing = rowsByID[item.id] {
                 row = existing
@@ -729,6 +933,9 @@ final class V2SessionModel: Identifiable {
             timeline = rows
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         }
+        // A row update may add or remove `turnInterrupted`; the merged marker
+        // cache is derived from those rows and the local marker list.
+        cachedInterruptedTurns = nil
         // Reconcile authoritative echoes against both the optimistic bubbles and
         // the send queue. A queued message in flight has a sendQueue row but no
         // pending bubble, so gating on `pendingMessages` alone would skip a
@@ -801,9 +1008,14 @@ final class V2SessionModel: Identifiable {
 
     var isLocalCreation: Bool { id.hasPrefix("local:") }
     func stage(_ pending: V2PendingMessage) {
-        guard isValid, !pendingMessages.contains(where: { $0.id == pending.id }) else { return }
-        pendingMessages.append(pending)
+        guard isValid else { return }
+        // Remember the previews on every stage, including the re-stage after a
+        // creation's uploads are bound: the store must learn the server file
+        // ids or the bubble loses the preview it already showed while the
+        // entry was local (LocalRestorationTests caught this on the rename).
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
+        guard !pendingMessages.contains(where: { $0.id == pending.id }) else { return }
+        pendingMessages.append(pending)
         repository?.localWorkDidChange(sessionID: id)
     }
     func restoreDraft(from pending: V2PendingMessage) -> Bool {
@@ -828,6 +1040,10 @@ final class V2SessionModel: Identifiable {
         // raced the disk read, so the panel can show it offline. The rows are
         // already decoded by the store actor.
         if !cachedActivity.isEmpty { subAgentActivity.restore(cachedActivity) }
+        // The notice list is read-only history, not local work; restore it
+        // even when a draft/queue write raced the disk read.
+        localInterruptedTurns = archive.interruptedTurns ?? []
+        cachedInterruptedTurns = nil
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
         draft = archive.draft; composer.attachments = archive.draftAttachments
@@ -864,7 +1080,7 @@ final class V2SessionModel: Identifiable {
         queueDrainTask?.cancel(); queueDrainTask = nil
         awaitingEchoSince = nil
         sendQueue.replaceAll([])
-        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
+        metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; localInterruptedTurns = []; cachedInterruptedTurns = nil; draft = ""; draftAttachmentIDs = []
         draftRestoredFromPendingID = nil; blockedSendPendingID = nil
         activeAgentCards = []; recoveryNotice = nil; acknowledgedNotifications = V2NotificationAcknowledgements()
         composer.invalidate()
@@ -907,6 +1123,95 @@ final class V2SessionModel: Identifiable {
         if pending.didRestoreDraft, draft == pending.content && draftAttachmentIDs == pending.attachmentIDs,
            composer.attachments.map(\.id) == pending.localAttachmentIDs {
             composer.clear(); draftAttachmentIDs = []
+        }
+    }
+}
+
+/// Merges the two sources of "this turn was stopped": a marker this client
+/// recorded from the live ack, and the durable flag the connector stamps on
+/// the turn's last main row (`content.turnInterrupted`). The server one wins
+/// on a shared turn id because it is what a relaunched app, another device and
+/// a history rebuild will read; the local one remains the fallback for turns
+/// produced before the connector learned to stamp them.
+nonisolated enum InterruptedTurnMarkers {
+    static let contentKey = "turnInterrupted"
+
+    /// Whether the cold-open recovery may anchor a new local marker.
+    ///
+    /// `existing` is the merged view (local ack markers plus durable flags),
+    /// and the timeline guard is deliberately not "a marker for this turn
+    /// exists": the runtime state names no turn, so `last` may be a newer
+    /// prompt's row, which no per-turn comparison can rule out. Once any
+    /// durable marker is present the fact is represented and the fallback
+    /// must stand down; it exists only for connectors that never stamped.
+    static func authoritativeAnchor(
+        timeline: [V2TimelineItem],
+        existing: [V2InterruptedTurnMarker],
+        isIdleInterrupt: Bool
+    ) -> V2InterruptedTurnMarker? {
+        guard isIdleInterrupt,
+              !hasDurableMarker(in: timeline),
+              let last = lastMainItem(in: timeline),
+              !existing.contains(where: {
+                  $0.anchorItemID == last.id
+                      || ($0.turnID != nil && $0.turnID == last.turnId)
+              })
+        else { return nil }
+        return V2InterruptedTurnMarker(anchorItemID: last.id, turnID: last.turnId)
+    }
+
+    static func hasDurableMarker(in timeline: [V2TimelineItem]) -> Bool {
+        timeline.contains { $0.raw["content"]?[contentKey]?.boolValue == true }
+    }
+
+    private static func lastMainItem(in timeline: [V2TimelineItem]) -> V2TimelineItem? {
+        // Sub-agent child rows live in the same array but not in the chat
+        // timeline; anchoring on one would never find a row to sit after.
+        timeline.last { $0.raw["content"]?["parentItemId"] == nil }
+    }
+
+    static func merge(local: [V2InterruptedTurnMarker],
+                      timeline: [V2TimelineItem]) -> [V2InterruptedTurnMarker] {
+        var merged = validLocal(local, in: timeline)
+        var indexByTurn: [String: Int] = [:]
+        for (index, marker) in merged.enumerated() {
+            if let turnID = marker.turnID { indexByTurn[turnID] = index }
+        }
+        for item in timeline where item.raw["content"]?[contentKey]?.boolValue == true {
+            let marker = V2InterruptedTurnMarker(anchorItemID: item.id, turnID: item.turnId)
+            if let turnID = marker.turnID, let index = indexByTurn[turnID] {
+                merged[index] = marker
+                continue
+            }
+            if !merged.contains(where: { $0.anchorItemID == marker.anchorItemID }) {
+                if let turnID = marker.turnID { indexByTurn[turnID] = merged.count }
+                merged.append(marker)
+            }
+        }
+        return merged
+    }
+
+    /// Drops archived markers that provably never anchored a stopped turn.
+    ///
+    /// A user row is its turn's *first* row, so if the same turn has any later
+    /// main row, that user row cannot be the stopped turn's last row: the
+    /// marker was written by an ack or cold-open recovery that read the tail
+    /// after the next prompt had landed (device 2026-11-14, one stop → two
+    /// cards). A genuinely empty stopped turn keeps its user-row anchor
+    /// because nothing follows it, and markers whose anchor is outside the
+    /// loaded window are left alone — absence is not proof.
+    private static func validLocal(
+        _ local: [V2InterruptedTurnMarker],
+        in timeline: [V2TimelineItem]
+    ) -> [V2InterruptedTurnMarker] {
+        local.filter { marker in
+            guard let turnID = marker.turnID,
+                  let index = timeline.firstIndex(where: { $0.id == marker.anchorItemID }),
+                  timeline[index].role == .user
+            else { return true }
+            return !timeline[(index + 1)...].contains {
+                $0.turnId == turnID && $0.raw["content"]?["parentItemId"] == nil
+            }
         }
     }
 }

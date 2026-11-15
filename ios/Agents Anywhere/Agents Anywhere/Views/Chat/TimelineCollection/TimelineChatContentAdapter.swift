@@ -98,6 +98,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.responseRevision)
         hasher.combine(model.disclosures.revision)
         hasher.combine(model.isRunning)
+        // The drawn posing reads streaming (not raw in-flight): the stop tap
+        // itself settles it (`stopRequested`), the ack flips `predictedIdle`
+        // while `isRunning` is still true, and a fresh idle makes a late
+        // `running` row stale (pp 2026-11-14).
+        hasher.combine(model.isTranscriptStreaming)
+        hasher.combine(model.session.runtime.isFresh)
+        // `interruptedTurns` is cached until the next timeline apply, so this
+        // hashes only the handful of markers, not the whole timeline. Keep the
+        // exact b1166 fingerprint semantics: no rebuild can be missed.
+        hasher.combine(model.interruptedTurns.map(\.anchorItemID).joined(separator: ","))
         hasher.combine(model.sendingPlaceholder)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
@@ -145,6 +155,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
+    /// Last queue roster the handoff probe saw (diagnostics only).
+    private var lastQueueProbeRoster: String?
+    /// Live facts are not fresh (cold load): draw the running pose from the
+    /// row status, because nothing better is known yet.
+    private var chatAllowsRunningPose = false
+    /// The groups of the actively streaming turn. Only these may animate a
+    /// step that still reports `running`; a previous turn's stale snapshot
+    /// must not (pp 2026-11-14).
+    private var chatRunningPoseGroupIDs: Set<String> = []
+    /// The top-level items the interrupted-turn notices follow (the units
+    /// that hold each stopped turn's last row). Empty when no stop is known
+    /// for this session, or when the anchor rows are outside the window.
+    private var chatInterruptedItemIDs: Set<String> = []
+    /// Last interrupted-card anchors the diagnostics probe saw. The card's
+    /// height is applied by the adapter apply that first knows the anchor;
+    /// logging that moment separates "the marker apply drew it" from "a later,
+    /// unrelated refresh dragged its height in" (device 2026-11-14).
+    private var lastInterruptedCardProbeIDs: Set<String> = []
     /// The chat profile's step groups whose first row belongs to the turn in
     /// flight. Their detail sheet opens at the newest step even when the group
     /// is not the trailing unit (body text between two tool runs) or nothing
@@ -198,6 +226,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var rowToItem: [String: TimelineListItem] = [:]
     private var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
     private var turnActions: [String: TimelineTurnAction] = [:]
+    /// Stable open/closed boundary for the one-footer-per-turn rule; the
+    /// runtime status alone flaps across tool steps (see `TurnFooterGate`).
+    private var turnFooterGate = TurnFooterGate()
     private var signaturesByItem: [TimelineListItem: TimelineContentSignature] = [:]
     private var lastEntries: [TimelineContentEntry] = []
     private var typography: TimelineTypographySnapshot
@@ -216,6 +247,52 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last grouping shape written to diagnostics. A live turn changes it
     /// often; logging only changes keeps the trail useful without flooding it.
     private var lastGroupingSignature: String?
+
+    /// The last compact row's state and the words the divider would draw,
+    /// logged when it changes. A compaction leaves a handful of lines; a
+    /// missing settled line means the client never applied the marker's
+    /// update, while a settled line plus a stale label points at the renderer
+    /// (pp 2026-11-15, b1230: 「正在压缩对话…」stayed after the compaction
+    /// finished until the session was reopened).
+    private var lastCompactRowProbe: String?
+
+    private func noteCompactRowState() {
+        // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
+        // turn can still change sits after the last user row, so the scan
+        // stops there instead of walking the whole window every refresh.
+        var compact: V2TimelineItem?
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            if TimelineEntryPresentation.isCompactItem(item) { compact = item; break }
+        }
+        guard let item = compact else {
+            // The marker left the live turn (a new prompt arrived): forget
+            // the last line so the next compaction logs its own first state.
+            lastCompactRowProbe = nil
+            return
+        }
+        let state = item.raw["content"]?["state"]?.stringValue ?? "nil"
+        let probe = "\(item.id)|\(item.status.rawValue)|\(state)|\(item.revision)"
+        guard probe != lastCompactRowProbe else { return }
+        lastCompactRowProbe = probe
+        // The label is parsed only when the row's own state moved, not on
+        // every stream refresh.
+        let title = TimelineEntryPresentation(item: item,
+                                              cwd: model.session.metadata?.cwd).title
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.compact.row",
+            sessionID: model.session.id,
+            detail: [
+                "item": item.id,
+                "status": item.status.rawValue,
+                "state": state,
+                "revision": String(item.revision),
+                "title": title,
+            ],
+            dedupe: false)
+    }
+
     /// What the last chat refresh built for each unit, aligned by index.
     /// The grouping cache proves the leading units unchanged; their built
     /// groups are still exact, so the refresh rebuilds only the tail — the
@@ -372,7 +449,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var hasher = TimelineStableHasher()
         hasher.combine(codeHeightDigest(rows: codeRowsByGroupID[id] ?? [],
                                         width: width,
-                                        hasActionBar: actionBarCopyText(for: id) != nil))
+                                        hasActionBar: actionBarCopyText(for: id) != nil,
+                                        hasInterruptedNotice:
+                                            interruptedNoticeExtraHeight(for: id) > 0))
         if let streaming {
             for rowID in streaming.textsByRowID.keys.sorted() {
                 hasher.combine(rowID)
@@ -391,7 +470,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         case .olderPrompt: return .olderPrompt
         case .latestPrompt: return .latestPrompt
         case .workingStatus: return .fixed(CodeWorkingStatusRow.estimatedHeight)
-        case .tail: return .tail(statusLine: tailStatusLineVisible)
+        case .tail:
+            // An empty queue leaves exactly the spacer (12 pt, or 32 pt with
+            // the status line). Declaring that as a fixed height lets the
+            // layout take it in the same apply that removes the last queued
+            // bubble; otherwise the row keeps the bubble's height until the
+            // cell self-reports and the bottom drops a bubble late (device
+            // 2026-11-14: the page jumped when a queued message was sent).
+            if model.session.sendQueue.items.isEmpty {
+                return .fixed(TimelineHeightEstimateKind.tail(
+                    statusLine: tailStatusLineVisible).height)
+            }
+            return .tail(statusLine: tailStatusLineVisible)
         case .notice: return .row
         case .pending(let id):
             guard let pending = pendingByID[id] else { return .row }
@@ -423,10 +513,23 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }))
         case .group(let id):
             guard let group = groupsByID[id] else { return .row }
+            // The compaction divider declares its exact height. The generic
+            // text floor (44 pt) was 10 pt short of the drawn row, so every
+            // fresh layout estimated, then corrected by 10 pt, and the anchor
+            // followed the correction (pp 2026-11-15: 「压缩分割线会抖」,
+            // `timeline.mover start delta 10.0` on every open).
+            if compactGroupRow(id) != nil {
+                return .fixed(CompactedDivider.estimatedHeight(
+                    traits: controller?.traitCollection))
+            }
             // The chat profile's step-group row is always one line; its live
-            // text changes but never its height.
+            // text changes but never its height. A stopped turn adds the fixed
+            // notice card under it.
             if stepGroupsByID[id] != nil {
-                return .fixed(CodeStepGroupRowView.estimatedHeight)
+                let extra = chatInterruptedItemIDs.contains(
+                    TimelineListItem.group(id).itemID)
+                    ? CodeStepGroupRowView.interruptedNoticeExtraHeight : 0
+                return .fixed(CodeStepGroupRowView.estimatedHeight + extra)
             }
             // A Code message group has no folds: its estimate is the message's
             // body text plus one line per collapsed tool row (W7 §3.6 / §6).
@@ -662,8 +765,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             return nil
         }
         let hasActionBar = actionBarCopyText(for: id) != nil
+        let noticeExtra = interruptedNoticeExtraHeight(for: id)
         let digest = codeHeightDigest(rows: rows, width: width,
-                                      hasActionBar: hasActionBar)
+                                      hasActionBar: hasActionBar,
+                                      hasInterruptedNotice: noticeExtra > 0)
         if let cached = codeHeightCache[id], cached.digest == digest {
             return cached.height
         }
@@ -674,7 +779,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             traits: controller?.traitCollection,
             measured: true,
             hasActionBar: hasActionBar,
-            pixelSize: attachmentPixelSize)
+            pixelSize: attachmentPixelSize) + noticeExtra
         codeHeightCache[id] = CachedCodeHeight(digest: digest, height: height)
         return height
     }
@@ -722,7 +827,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // A row that was measured before (reconnect/recovery re-streams the
         // same message) never seeds below the height the reader last saw.
         let previous = codeHeightCache[groupID]?.height ?? 0
-        return max(estimate, previous)
+        return max(estimate + interruptedNoticeExtraHeight(for: groupID), previous)
+    }
+
+    /// Height the interrupted-turn notice adds to a message row: the card plus
+    /// the row stack's inter-block spacing. Zero outside the chat profile and
+    /// away from the stopped turn's anchor.
+    private func interruptedNoticeExtraHeight(for groupID: String) -> CGFloat {
+        guard renderMode == .chat,
+              chatInterruptedItemIDs.contains(
+                TimelineListItem.group(groupID).itemID) else { return 0 }
+        return ChatInterruptedNoticeCard.estimatedHeight + CodePageTheme.interMessageSpacing
     }
 
     private struct CachedCodeHeight {
@@ -733,7 +848,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private func codeHeightDigest(rows: [CodeMessageRow],
                                   width: CGFloat,
-                                  hasActionBar: Bool = false) -> Int {
+                                  hasActionBar: Bool = false,
+                                  hasInterruptedNotice: Bool = false) -> Int {
         var hasher = TimelineStableHasher()
         for row in rows {
             hasher.combine(row.role.rawValue)
@@ -770,6 +886,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let scale = controller?.traitCollection.displayScale ?? 2
         hasher.combine(Int((scale * 100).rounded()))
         hasher.combine(hasActionBar)
+        hasher.combine(hasInterruptedNotice)
         return hasher.revision
     }
 
@@ -1204,12 +1321,42 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if let stepGroup = stepGroupsByID[id] {
                 let cwd = model.session.metadata?.cwd
                 let isLiveTail = id == chatLiveTailGroupID
+                let allowsPose = chatAllowsRunningPose
+                    || chatRunningPoseGroupIDs.contains(stepGroup.id)
+                // Probe for the intermittent "a stopped turn still drew the
+                // working pose" report (device 2026-11-14, fixed then; kept as
+                // a tripwire because it was layout-dependent). One diagnostics
+                // line per group per window when the pose is drawn while the
+                // turn is not streaming — the reader has that file only.
+                if !model.isTranscriptStreaming,
+                   stepGroup.showsRunningPose(isLiveTail: isLiveTail,
+                                              allowsRunningPose: allowsPose) {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.step.pose_after_stop",
+                        sessionID: model.session.id,
+                        detail: [
+                            "group": stepGroup.id,
+                            "liveTail": isLiveTail ? "1" : "0",
+                            "allowsPose": allowsPose ? "1" : "0",
+                            "fresh": model.session.runtime.isFresh ? "1" : "0",
+                            "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                            "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                            "status": String(describing: model.session.runtime.state?.status),
+                            "steps": String(stepGroup.steps.count),
+                        ])
+                }
                 // A group from the running turn opens at its newest step too:
                 // the gap between two steps has nothing running, and a group
                 // that body text follows is still the turn's work
                 // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
-                                                    isLiveTail: isLiveTail) { [weak self] in
+                                                    isLiveTail: isLiveTail,
+                                                    allowsRunningPose: allowsPose,
+                                                    treatsRunningAsFailed: model.treatsRunningStepsAsFailed,
+                                                    showsInterruptedNotice:
+                                                        chatInterruptedItemIDs.contains(
+                                                            TimelineListItem.group(stepGroup.id).itemID),
+                                                    interruptedAgentName: model.agentName) { [weak self] in
                     self?.onCodeStepGroupDetail?(CodeStepGroupDetailRequest(
                         group: stepGroup,
                         startsAtBottom: self?.stepDetailStartsAtBottom(id) ?? false))
@@ -1232,6 +1379,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     typography: codeTypography,
                     columnWidth: width,
                     turnActionCopyText: actionBarCopyText(for: id),
+                    showsInterruptedNotice: renderMode == .chat
+                        && chatInterruptedItemIDs.contains(
+                            TimelineListItem.group(group.id).itemID),
+                    interruptedAgentName: model.agentName,
                     onToolDetail: { [weak self] request in
                         self?.onCodeToolDetail?(request)
                     },
@@ -1266,7 +1417,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onFile: onFile,
                 turnAction: turnActions[group.id],
                 onSubAgent: onSubAgent,
-                inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] }))
+                inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
+                showsInterruptedNotice:
+                    chatInterruptedItemIDs.contains(
+                        TimelineListItem.group(group.id).itemID)))
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else { return AnyView(EmptyView()) }
             // The same row margins as a Code message row: these rows report 0
@@ -1286,6 +1440,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,
+                                                     onAttachment: onAttachment,
                                                      showsStatusLine: tailStatusLineVisible))
         }
     }
@@ -1602,6 +1757,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        controller?.diagnosticSessionID = model.session.id
 #if AA_TIMELINE_PROBE
         let probeRefreshStart = CACurrentMediaTime()
         let probeHadHistoryRequest = pendingHistoryRequest != nil
@@ -1722,8 +1878,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // working row once the live turn has a step group, not even between
         // steps or before the first body text. Only a live turn with no steps
         // yet shows the standalone row.
+        // The tail's queue bubble already shows the in-flight spinner. In the
+        // chat profile a standalone working row next to it is a second copy
+        // of the same fact, and stacking the two adds the working row's
+        // height on the send-success frame (+49, device 2026-11-14). Once the
+        // queue empties the working row takes the bubble's place in the same
+        // apply, so the swap stays height-neutral.
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && chatLiveTurnHasSteps)
+            && !(renderMode == .chat && (chatLiveTurnHasSteps
+                || !model.session.sendQueue.items.isEmpty))
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
@@ -1752,6 +1915,28 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             cancelWorkingStatusExit()
         } else if lastHasWorkingStatus, !workingStatusIsExiting {
             beginWorkingStatusExit()
+        }
+        if hasWorkingStatus != lastHasWorkingStatus {
+            // Which gate decided the standalone working row: this trail is the
+            // only record of the "half second with no working row after a
+            // send" report (device 2026-11-14).
+            let submitting = model.session.pendingMessages.contains {
+                $0.delivery == .sending || $0.delivery == .accepted
+            }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.working.row",
+                sessionID: model.session.id,
+                detail: [
+                    "has": hasWorkingStatus ? "1" : "0",
+                    "submitting": submitting ? "1" : "0",
+                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                    "queue": String(model.session.sendQueue.items.count),
+                    "liveSteps": chatLiveTurnHasSteps ? "1" : "0",
+                    "running": model.isRunning ? "1" : "0",
+                    "fresh": model.session.runtime.isFresh ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
         }
         lastHasWorkingStatus = hasWorkingStatus
         let showsWorkingStatus = hasWorkingStatus
@@ -1848,22 +2033,52 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 if case .stepGroup = last { return true }
                 return false
             }()
-            // The live tail follows the whole running turn, not just the
-            // optimistic send window: `sendingPlaceholder` alone clears while
-            // the turn is still running (stopping/blocked, or a stale status),
-            // and a tap in that gap opened the sheet at the top
-            // (pp 2026-11-03). Keep the old window as the fallback for the
-            // frames before the runtime reports the turn.
-            let turnActive = model.isRunning || model.sendingPlaceholder != nil
-            // While the runtime reports the turn running, a failed tool in the
-            // group is not residue — the agent moves on and the row must keep
-            // the live pose through the next gap (pp 2026-11-10: a mid-turn
-            // ⚠️ settled the row while the turn still ran). The residue rule
-            // only backs the optimistic send window, where a settled turn's
-            // interrupted group must not regain the mark.
+            // The live tail exists only while the turn really streams. The
+            // optimistic send window is deliberately excluded: it used to
+            // keep the dots on the previous turn's group, which is what made
+            // an interrupted row flash back to running the moment a new
+            // message was sent (pp 2026-11-10), and the same window re-opened
+            // on the stop ack before the idle frames landed (pp 2026-11-14).
+            let turnStreaming = model.isTranscriptStreaming
+            // A local outgoing message is still on screen (sending, accepted
+            // or awaiting its echo). Every group above it belongs to the
+            // previous turn, so none may inherit the new turn's mark while the
+            // runtime already reports running — that is the send-time flash
+            // (pp 2026-11-14). The new turn's own rows animate from their own
+            // running steps.
+            let hasPendingSend = !model.session.pendingMessages.isEmpty
+                || !model.timeline.pendingMessages.isEmpty
+            let turnActive = turnStreaming && !hasPendingSend
+            // A fresh idle — or the accepted stop's optimistic idle — proves
+            // every still-`running` step snapshot is stale. Only the group of
+            // the actively streaming turn may animate; keep drawing from row
+            // status only while live facts are not fresh (cold load).
+            // A stale projection is only a reason to trust row status when
+            // nothing better is known. A stop tap or its ack is better: the
+            // post-stop stale window revived the old step row's working pose
+            // (diagnostics 2026-11-14 19:22:41: allowsPose=1 fresh=0
+            // stopRequested=1), and that row's live/settled height difference
+            // also moved the bottom — the flash and the jump share this gate.
+            // A cold open has no runtime status yet; the local row snapshot
+            // can still say `running` from the previous launch, and drawing
+            // that pose before any live fact arrives is a false active row
+            // (device 2026-11-14 21:03:00: fresh=0, status=nil, 4 stale
+            // steps). Only trust row status once the runtime has reported
+            // something; the `!isFresh` fallback still covers a known-stale
+            // projection.
+            chatAllowsRunningPose = !model.session.runtime.isFresh
+                && !model.session.runtime.stopRequested
+                && !model.session.runtime.predictedIdle
+                && model.session.runtime.state != nil
+            chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
+            // While the turn streams, a failed tool in the group is not
+            // residue — the agent moves on and the row must keep the live
+            // pose through the next gap (pp 2026-11-10: a mid-turn ⚠️ settled
+            // the row while the turn still ran). A stopped turn falls back to
+            // the residue rule, so an interrupted group cannot regain it.
             let lastStepGroup = lastStepGroupID.flatMap { stepGroupsByID[$0] }
             let canCarryLiveMark = lastStepGroup?
-                .canCarryLiveMark(turnIsRunning: model.isRunning) ?? false
+                .canCarryLiveMark(turnIsRunning: turnActive) ?? false
             chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup && canCarryLiveMark)
                 ? lastStepGroupID : nil
         } else {
@@ -1897,6 +2112,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 groups.append(group)
             }
         }
+        // While a working status row narrates the turn, the compaction marker
+        // draws nothing (round31 §5: the official transcript has one working
+        // row, not a second progress line). Dropping the group keeps its
+        // height, list gap and turn-action participation out of the layout
+        // entirely. With no working row (the chat profile keeps it on a
+        // stepped turn's group) the marker stays and carries the progress
+        // label itself.
+        if showsWorkingStatus {
+            groups.removeAll { group in
+                guard group.explicitID == nil, group.rows.count == 1,
+                      let row = group.rows.first else { return false }
+                return TimelineEntryPresentation.isCompactItem(row.value)
+                    && TimelineEntryPresentation.isActiveCompactItem(row.value)
+            }
+        }
 #if AA_TIMELINE_PROBE
         let probeIndexStart = CACurrentMediaTime()
 #endif
@@ -1928,16 +2158,90 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowToItem[row.id] = item
             }
         }
+        // The interrupted-turn notice is a footer of the unit that carries the
+        // stopped turn's last row (a message group when there is a partial
+        // answer, otherwise the step group). A cold open can recover the
+        // marker from the runtime state's interrupt source.
+        model.noteAuthoritativeInterruptIfNeeded()
+        chatInterruptedItemIDs = Set(model.interruptedTurns.compactMap {
+            rowToItem[$0.anchorItemID]?.itemID
+        })
+        let newCardAnchors = chatInterruptedItemIDs.subtracting(lastInterruptedCardProbeIDs)
+        if !newCardAnchors.isEmpty {
+            let viewport = controller?.viewport
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.interrupt.card",
+                sessionID: model.session.id,
+                detail: [
+                    "anchors": newCardAnchors.sorted().joined(separator: ","),
+                    "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
+                    "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
+                    "tailH": {
+                        guard let height = controller?.tailCellHeight() else { return "-1" }
+                        return String(format: "%.1f", height)
+                    }(),
+                    "fresh": model.session.runtime.isFresh ? "1" : "0",
+                    "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                    "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
+        }
+        lastInterruptedCardProbeIDs = chatInterruptedItemIDs
         var inlineNoticesByRow: [String: [SessionNoticeModel]] = [:]
         for notice in visibleNotices where notice.notice.type == "interaction" {
             guard let target = notice.timelineTargetID else { continue }
             inlineNoticesByRow[target, default: []].append(notice)
         }
+        // The one-footer-per-turn rule waits for the turn to close. The
+        // runtime status alone flaps across tool steps, so the gate keys on
+        // the turn's opening user message and the authoritative end count.
+        // A `confirmed` record is retained by the presentation until its echo
+        // row publishes; it is still the new turn in that gap. Dropping it
+        // here made the gate fall back to the previous user row, suppress the
+        // previous footer for one refresh, and start the send's bottom follow
+        // 30 pt low (pp 2026-11-15).
+        let submittingPendingID = model.timeline.pendingMessages.last {
+            TimelineTurnActions.opensTurn($0.delivery)
+        }?.id
+        let latestUserRowID = model.timeline.rows.last(where: {
+            $0.value.type == .message && $0.value.role == .user
+        })?.id
+        // A pending bubble whose echo row is already in the timeline is no
+        // longer opening a new turn; it must not force the previous turn's
+        // commit or the new turn's footer.
+        let submittingPendingHasEcho = submittingPendingID.map { id in
+            model.timeline.rows.contains { row in
+                row.value.role == .user
+                    && row.value.source["clientMessageId"]?.stringValue == id
+            }
+        } ?? false
+        let latestTurnOpen = turnFooterGate.update(
+            userKey: submittingPendingID ?? latestUserRowID,
+            runtimeIsRunning: model.isRunning,
+            authoritativeTurnEnds: model.session.runtime.authoritativeTurnEnds,
+            // A command compaction opens a turn on the wire with no user
+            // bubble, so the finished turn before it would read as "still
+            // running" and lose its footer for the whole compaction
+            // (pp 2026-11-15: copy/share disappeared and the page jumped
+            // twice by the 30 pt action bar).
+            isCompacting: liveTurnIsCompacting())
         let turnActions = TimelineTurnActions.build(
             groups: groups,
-            suppressLatest: model.isRunning || model.session.hasNewerItems,
+            // The gate's authoritative end count is the primary boundary, but
+            // a turn that ended without a captured transition must not keep
+            // its footer suppressed until the next user message (device
+            // 2026-11-15: the copy/share buttons only appeared after the
+            // reader sent the following message). A confirmed idle overrides
+            // the open gate; a running tool step still suppresses, so the
+            // footer cannot hop between reply segments.
+            suppressLatest: (latestTurnOpen && model.isRunning)
+                || model.session.hasNewerItems,
+            // Only an outgoing bubble that has not been echoed starts a new
+            // turn for the previous footer. A confirmed record held by the
+            // presentation until its echo row publishes is not a new turn.
             hasPendingUserMessage: !model.session.hasNewerItems
-                && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty),
+                && submittingPendingID != nil && !submittingPendingHasEcho,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
@@ -1963,6 +2267,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
+        noteCompactRowState()
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)
@@ -2088,6 +2393,69 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             NSLog("timeline duplicates: %@", duplicates.joined(separator: ","))
         }
 #endif
+        noteQueueHandoffIfNeeded()
+    }
+
+    /// Diagnostic probe for the queued-send handoff (device 2026-11-14).
+    ///
+    /// The page moved and a settled row looked active exactly when a queued
+    /// message was sent. One line per queue roster change, carrying the
+    /// viewport numbers, the working-status gates and every step group the
+    /// drawn pose would animate — the next occurrence can then be read
+    /// instead of guessed.
+    private func noteQueueHandoffIfNeeded() {
+        let roster = model.session.sendQueue.items
+            .map { "\($0.id):\($0.state)" }.joined(separator: ",")
+        guard roster != lastQueueProbeRoster else { return }
+        let previous = lastQueueProbeRoster
+        lastQueueProbeRoster = roster
+        let viewport = controller?.viewport
+        let posing = stepGroupsByID.values.filter {
+            $0.showsRunningPose(
+                isLiveTail: $0.id == chatLiveTailGroupID,
+                allowsRunningPose: chatAllowsRunningPose
+                    || chatRunningPoseGroupIDs.contains($0.id))
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.queue.handoff",
+            sessionID: model.session.id,
+            detail: [
+                "from": previous ?? "none",
+                "to": roster.isEmpty ? "empty" : roster,
+                "head": model.session.sendQueue.head.map { "\($0.id):\($0.state)" } ?? "none",
+                "echo": {
+                    guard let head = model.session.sendQueue.head else { return "none" }
+                    let present = model.timeline.rows.contains { row in
+                        row.value.role == .user
+                            && row.value.source["clientMessageId"]?.stringValue == head.id
+                    }
+                    return present ? "1" : "0"
+                }(),
+                "tailH": {
+                    guard let controller,
+                          let height = controller.tailCellHeight() else { return "-1" }
+                    return String(format: "%.1f", height)
+                }(),
+                "working": lastHasWorkingStatus ? "1" : "0",
+                "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
+                "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
+                "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),
+                "atBottom": {
+                    guard let viewport, viewport.isMeasured else { return "0" }
+                    return viewport.visibleBottom >= viewport.contentHeight - 1 ? "1" : "0"
+                }(),
+                "running": model.isRunning ? "1" : "0",
+                "streaming": model.isTranscriptStreaming ? "1" : "0",
+                "placeholder": model.sendingPlaceholder != nil ? "1" : "0",
+                "statusLine": tailStatusLineVisible ? "1" : "0",
+                "fresh": model.session.runtime.isFresh ? "1" : "0",
+                "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                "status": String(describing: model.session.runtime.state?.status),
+                "liveTail": chatLiveTailGroupID ?? "none",
+                "posing": posing.map(\.id).joined(separator: ","),
+                "posingRunning": posing.filter(\.isRunning).map(\.id).joined(separator: ","),
+            ])
     }
 
     // MARK: - Working status exit
@@ -2228,12 +2596,39 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return hasher.revision
     }
 
+    /// The standalone compaction divider group: one marker row, no explicit
+    /// message key. It draws the divider and nothing turn-scoped.
+    private func compactGroupRow(_ id: String) -> ChatTimelineRowModel? {
+        guard let group = groupsByID[id], group.explicitID == nil,
+              group.rows.count == 1, let row = group.rows.first,
+              TimelineEntryPresentation.isCompactItem(row.value) else { return nil }
+        return row
+    }
+
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
         // The chat profile's step row draws the live step's text, so its
         // signature follows the drawn line (not the wire revision, which the
         // Code path deliberately avoids hashing per frame).
         if let stepGroup = stepGroupsByID[group.id] {
             return stepGroupSignature(stepGroup)
+        }
+        // The compaction divider draws one label: no turn action, suppression
+        // or notice reaches it. The generic signature hashed the turn state,
+        // so every turn-status change re-keyed the row and forced a fresh
+        // estimate→measure pass — the divider moved on its own with the anchor
+        // following (pp 2026-11-15). Sign only the marker row itself.
+        if let row = compactGroupRow(group.id) {
+            return TimelineGroupContentSignature(
+                rows: [TimelineRowContentSignature(id: row.id,
+                                                   revision: row.value.revision,
+                                                   updatedSeq: row.value.updatedSeq)],
+                disclosureExpanded: false,
+                inlineNotices: [],
+                attachments: [],
+                turnAction: nil,
+                turnSuppression: TimelineTurnSuppression(
+                    isRunning: false, hasNewerItems: false,
+                    hasPendingUserMessage: false))
         }
         // The Code row renders only its rows and those rows' attachments. The
         // generic signature also hashes the turn action, suppression and
@@ -2253,8 +2648,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // row is signed by its published text instead; every row that is
             // not streaming keeps the wire signature untouched, so non-Code
             // and settled rows do not change their refresh semantics.
-            return TimelineGroupContentSignature(
-                rows: group.rows.map { row in
+            var signatureRows = group.rows.map { row -> TimelineRowContentSignature in
                     // Reasoning streams a new wire revision per delta, but the
                     // row is invisible until it settles. Sign it by its
                     // rendered state so a thinking run does not reconfigure
@@ -2289,7 +2683,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     return TimelineRowContentSignature(id: row.id,
                                                        revision: row.value.revision,
                                                        updatedSeq: row.value.updatedSeq)
-                },
+            }
+            // The interrupted notice is part of this row's drawn height; a
+            // synthetic row makes the collection reconfigure when it appears
+            // even though the wire rows did not change.
+            if renderMode == .chat,
+               chatInterruptedItemIDs.contains(TimelineListItem.group(group.id).itemID) {
+                signatureRows.append(TimelineRowContentSignature(
+                    id: group.id + ":interrupted", revision: 1, updatedSeq: 0))
+            }
+            return TimelineGroupContentSignature(
+                rows: signatureRows,
                 disclosureExpanded: false,
                 expandedRowIDs: [],
                 revealingRowIDs: [],
@@ -2363,7 +2767,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // for the whole live turn, even between steps; the signature must
         // follow that drawn state, not only the running steps.
         let isLiveTail = group.id == chatLiveTailGroupID
-        if let live = group.liveStep, group.isRunning || isLiveTail {
+        let showsLivePose = group.showsRunningPose(
+            isLiveTail: isLiveTail,
+            allowsRunningPose: chatAllowsRunningPose
+                || chatRunningPoseGroupIDs.contains(group.id))
+        if let live = group.liveStep, showsLivePose {
             var hasher = TimelineStableHasher()
             hasher.combine(live.id)
             hasher.combine(live.status.rawValue)
@@ -2386,6 +2794,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var settled = TimelineStableHasher()
         settled.combine(group.steps.count)
         settled.combine(group.hasFailure ? 1 : 0)
+        settled.combine(chatInterruptedItemIDs.contains(
+            TimelineListItem.group(group.id).itemID) ? 1 : 0)
         settled.combine(summary.thinkingCount)
         settled.combine(summary.readFiles)
         settled.combine(summary.ranCommands)
@@ -2803,28 +3213,66 @@ private struct TimelineCollectionLatestPromptRow: View {
 /// in C5, where the controller computes scroll-edge visibility geometrically.
 private struct TimelineCollectionTailRow: View {
     let model: SessionChatModel
+    /// Opens a queued attachment through the same viewer as a sent bubble.
+    let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     /// False while a message row already shows the official working status
     /// line: one turn gets one mark, never two (device report 2026-10-23).
     let showsStatusLine: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
+    /// A queued message whose echo row is already on screen is the same
+    /// message twice: the tail bubble plus the timeline row. Hiding the
+    /// bubble in the same apply that inserts the row keeps the bottom height
+    /// stable; otherwise the echo adds its height (+49) and the bubble
+    /// removal takes it back (−51) in a later layout pass, so the
+    /// bottom-pinned page drops by one bubble height (device 2026-11-14).
+    /// The rule mirrors `SessionTimelinePresentation.isEchoed`.
+    private var visibleQueueItems: [V2QueuedMessage] {
+        let echoed = Set(model.timeline.rows.compactMap { row -> String? in
+            guard row.value.role == .user else { return nil }
+            return row.value.source["clientMessageId"]?.stringValue
+        })
+        // The drain stages the normal pending bubble for the head (same id).
+        // The queue row is only the pre-send shape, so it must stop drawing
+        // in the same apply that presents that pending row — one message, one
+        // visual object, from queue to echo.
+        let pending = Set(model.timeline.pendingMessages.map(\.id))
+        return model.session.sendQueue.items.filter {
+            !echoed.contains($0.id) && !pending.contains($0.id)
+        }
+    }
+
     private var queueRoster: String {
-        model.session.sendQueue.items.map { "\($0.id):\($0.state)" }.joined(separator: ",")
+        visibleQueueItems.map { "\($0.id):\($0.state)" }.joined(separator: ",")
     }
     private static let idleHeight: CGFloat = 12
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !model.session.sendQueue.items.isEmpty {
+            if !visibleQueueItems.isEmpty {
                 VStack(spacing: 6) {
-                    ForEach(model.session.sendQueue.items) { item in
-                        QueuedMessageRow(item: item, model: model)
+                    ForEach(visibleQueueItems) { item in
+                        QueuedMessageRow(item: item, model: model,
+                                         onAttachment: onAttachment)
                             .id(item.id)
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            // In on the bottom edge, out by fading in place: a drained
+                                // queued bubble used to slide *down* toward the
+                                // composer while disappearing, which read as
+                                // "the bubble jumped under the input box"
+                                // (device 2026-11-14).
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .opacity))
                     }
                 }
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
+                // No implicit animation for the queue block: the row that drains at
+                    // echo time sits inside the tail (the last measured cell), and
+                    // animating its removal made the bottom-pinned offset follow a
+                    // 0.25 s shrink while the echoed row was still landing — the
+                    // page slid down by one bubble height (device 2026-11-14).
+                    // Appearing and disappearing are single-layout-pass events.
+                    .animation(nil, value: queueRoster)
             }
             Group {
                 if showsStatusLine, model.isRunning {

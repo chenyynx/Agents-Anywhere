@@ -51,6 +51,20 @@ private func utcCalendar() -> Calendar {
         #expect(log.days().isEmpty)
     }
 
+    @Test func freshInstallRecordsByDefault() {
+        let suite = "ClientDiagnosticsLogTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: defaults,
+            calendar: utcCalendar()
+        )
+        #expect(log.isEnabled)
+        log.record(kind: "timeline.order.duplicate", sessionID: "s")
+        #expect(!log.days().isEmpty)
+    }
+
     @Test func rotatesToTheLastSevenDays() {
         let calendar = utcCalendar()
         let start = calendar.date(

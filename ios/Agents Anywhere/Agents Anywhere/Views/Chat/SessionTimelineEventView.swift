@@ -13,17 +13,27 @@ struct SessionTimelineGroupView: View, Equatable {
     /// Interaction cards targeting rows of this group. Passing the subset keeps
     /// unrelated groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
+    /// The official interrupted-response notice sits under this group (pp
+    /// 2026-11-14): the group holds the stopped turn's last row.
+    var showsInterruptedNotice: Bool = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.group == rhs.group && lhs.chat === rhs.chat && lhs.turnAction == rhs.turnAction
             && (lhs.onSubAgent == nil) == (rhs.onSubAgent == nil)
             && lhs.inlineNotices.elementsEqual(rhs.inlineNotices, by: ===)
+            && lhs.showsInterruptedNotice == rhs.showsInterruptedNotice
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             content
                 .traceChatLayout("group-content:\(group.id)")
+            if showsInterruptedNotice {
+                ChatInterruptedNoticeCard(agentName: chat.agentName)
+                    // The group's own 4pt spacing already separates this
+                    // footer; 4 more matches the official card's top gap.
+                    .padding(.top, 4)
+            }
             if let turnAction {
                 SessionTurnReviewFooter(action: turnAction, root: chat.session.metadata?.cwd,
                     hasOlderItems: chat.session.hasOlderItems, onFile: onFile)
@@ -129,11 +139,13 @@ struct SessionTimelineEventView: View {
                 }
             }
         case .compact:
-            HStack(spacing: 12) {
-                Rectangle().fill(.quaternary).frame(height: 1)
-                Text(value.title).font(.caption).foregroundStyle(row.value.status.isFailure ? Color.red : .secondary).fixedSize()
-                Rectangle().fill(.quaternary).frame(height: 1)
-            }.padding(.vertical, 8)
+            // The official `SquiggleDivider` (round31). The adapter drops a
+            // compact marker that a working status row is already narrating
+            // (`Compacting conversation…`), so a row reaching this view always
+            // draws: the settled label, the failure message, or — where the
+            // chat profile has no standalone working row — the compaction in
+            // progress.
+            CompactedDivider(title: value.title, failed: value.compactFailed)
         case .tool:
             if value.hasToolDetails {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status,

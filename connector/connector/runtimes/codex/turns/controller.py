@@ -125,6 +125,9 @@ class CodexTurnController:
         cwd: str | None = None,
     ) -> RuntimeOperationResult:
         _ = cwd
+        # A `/name args` prompt naming a live skill becomes a native
+        # SkillUserInput; the remaining text stays the turn's text input.
+        skill, skill_text = await self.commands.skill_invocation(content)
         return await self.actions.start_turn(
             session_id=session_id,
             external_session_id=external_session_id,
@@ -132,6 +135,8 @@ class CodexTurnController:
             selections=selections,
             attachments=attachments,
             client_message_id=client_message_id,
+            skill=skill,
+            skill_text=skill_text,
         )
 
     async def steer_turn(

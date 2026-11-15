@@ -36,7 +36,11 @@ permissions:
 jobs:
   server:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full suite has measured 11–19 minutes on this runner, so 20 left no
+    # headroom: run 43528974900 spent 20m 8s in pytest and was cancelled
+    # mid-test (a timeout, not a failure). 35 keeps a real hang bounded while
+    # the suite no longer dies on runner variance.
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:17-alpine

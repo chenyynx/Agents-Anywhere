@@ -695,12 +695,26 @@ private struct ChatTimelineContent: View, Equatable {
                 if !model.session.sendQueue.items.isEmpty {
                     VStack(spacing: 6) {
                         ForEach(model.session.sendQueue.items) { item in
-                            QueuedMessageRow(item: item, model: model)
+                            QueuedMessageRow(item: item, model: model,
+                                             onAttachment: onAttachment)
                                 .id(item.id)
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                // In on the bottom edge, out by fading in place: a drained
+                                // queued bubble used to slide *down* toward the
+                                // composer while disappearing, which read as
+                                // "the bubble jumped under the input box"
+                                // (device 2026-11-14).
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .opacity))
                         }
                     }
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: queueRoster)
+                    // No implicit animation for the queue block: the row that drains at
+                    // echo time sits inside the tail (the last measured cell), and
+                    // animating its removal made the bottom-pinned offset follow a
+                    // 0.25 s shrink while the echoed row was still landing — the
+                    // page slid down by one bubble height (device 2026-11-14).
+                    // Appearing and disappearing are single-layout-pass events.
+                    .animation(nil, value: queueRoster)
                 }
 
                 Group {

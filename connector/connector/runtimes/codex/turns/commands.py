@@ -18,6 +18,7 @@ from connector.runtime_protocol import (
     RuntimeSessionStateCache,
 )
 from connector.runtimes.codex.domain.commands import list_codex_commands
+from connector.runtimes.codex.domain.skills import CodexSkill, match_skill_invocation
 from connector.runtimes.codex.sdk.runtime_client import CodexRuntimeClient
 from connector.runtimes.codex.turns.command_input import command_input
 
@@ -29,15 +30,18 @@ class CodexCommandController:
     source_states: RuntimeSessionSourceStateCache
     ensure_started: Callable[[], Awaitable[None]]
 
-    def catalog(
+    async def catalog(
         self,
         session_id: str,
         thread_id: str | None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
         state = self.states.get(session_id)
         source = self.source_states.get(session_id)
+        skills = await self.list_skills() if include_skills else ()
         return list_codex_commands(
             thread_id,
             self.client is not None,
@@ -45,7 +49,20 @@ class CodexCommandController:
             limit,
             status=state.status if state else "idle",
             source_availability=source.state.availability if source else None,
+            skills=skills,
         )
+
+    async def list_skills(self) -> tuple[CodexSkill, ...]:
+        if self.client is None:
+            return ()
+        return await self.client.list_skills()
+
+    async def skill_invocation(self, text: str) -> tuple[CodexSkill | None, str]:
+        """Resolve a `/name args` prompt against the live Codex skills."""
+
+        if self.client is None or not text.lstrip().startswith("/"):
+            return None, text
+        return match_skill_invocation(text, await self.list_skills())
 
     async def execute_command(
         self,
@@ -61,7 +78,9 @@ class CodexCommandController:
             descriptor = next(
                 (
                     c
-                    for c in self.catalog(session_id, external_session_id)
+                    for c in await self.catalog(
+                        session_id, external_session_id, include_skills=False
+                    )
                     if c.id == name
                 ),
                 None,

@@ -60,6 +60,24 @@ struct CodeFileTile: View {
         }
         .frame(width: size.width, height: size.height, alignment: .top)
         .background(CodeFileCardColors.card.resolved(for: colorScheme))
+        // The state overlay must be clipped by the card shape. Applying it
+        // after `.clipShape` let the scrim fill the square bounds, so a
+        // pending card read as a gray square and only regained its rounded
+        // corners after the echo (pp 2026-11-14). Keep it before the clip.
+        .overlay {
+            // One overlay only: an overflow tile owns the +N overlay, which
+            // carries its own status child (CodeAttachmentCountOverlay).
+            if let overflow {
+                CodeAttachmentCountOverlay(count: overflow, state: state)
+            } else if state == .failed || state == .unopenable {
+                // A file card is not an image tile: while the upload is in
+                // flight the row's own spinner already reports the send, and
+                // the card must keep its successful white/rounded look. The
+                // image-style scrim + ring made the pending card a gray
+                // square that changed shape on success.
+                CodeAttachmentStateOverlay(state: state)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         // Same ShadowEffect as the artifact card: opacity 0.05, radius 2,
         // y offset 1 (E values: round25/CLOSURE.md §3 and
@@ -72,15 +90,6 @@ struct CodeFileTile: View {
                 .strokeBorder(CodeFileCardColors.border.resolved(for: colorScheme),
                               lineWidth: 1 / displayScale)
         )
-        .overlay {
-            // One overlay only: an overflow tile owns the +N overlay, which
-            // carries its own status child (CodeAttachmentCountOverlay).
-            if let overflow {
-                CodeAttachmentCountOverlay(count: overflow, state: state)
-            } else {
-                CodeAttachmentStateOverlay(state: state)
-            }
-        }
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 

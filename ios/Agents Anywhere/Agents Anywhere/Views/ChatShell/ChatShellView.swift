@@ -215,7 +215,11 @@ struct ChatShellView: View {
                     fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
                     onMenu: toggleSidebar)
                     .equatable()
-                    .id(id)
+                    // The model's identity, not the selection's: binding a
+                    // local creation renames the session in place, and re-keying
+                    // here remounted the page — replaying the send's entrance
+                    // (pp 2026-11-15).
+                    .id(session.presentationKey)
             } else {
                 NewSessionView(model: services.newSession, connectors: appState.connectors, sessions: appState.sessions, repository: services.dashboardRepository,
                     dashboardLoading: appState.isDashboardLoading,

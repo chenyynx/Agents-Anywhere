@@ -15,6 +15,7 @@ from connector.runtimes.claude.domain.capabilities import (
     resolve_session_binding,
 )
 from connector.runtimes.claude.domain.commands import list_claude_commands
+from connector.runtimes.claude.domain.skills import ClaudeSkill
 
 BUSY_STATUSES: tuple[RuntimeStatus, ...] = (
     "waiting",
@@ -243,6 +244,67 @@ def _state(external_session_id: str | None) -> SessionState:
         runtime="claude",
         status="idle",
     )
+
+
+def _skill(name: str, **kwargs) -> ClaudeSkill:
+    return ClaudeSkill(
+        name=name,
+        display_name=kwargs.pop("display_name", name),
+        description=kwargs.pop("description", f"{name} description"),
+        source=kwargs.pop("source", "user"),
+        state=kwargs.pop("state", "on"),
+        aliases=kwargs.pop("aliases", ()),
+        **kwargs,
+    )
+
+
+def test_skills_are_insert_commands_after_compact() -> None:
+    catalog = list_claude_commands(
+        "sess_ext_1",
+        skills=(_skill("morning"), _skill("deep-research", aliases=("research",))),
+    )
+
+    assert [c.id for c in catalog] == ["compact", "deep-research", "morning"]
+    skill = catalog[1]
+    assert skill.title == "deep-research"
+    assert skill.description == "deep-research description"
+    assert skill.accepts_args is True
+    assert skill.aliases == ("research",)
+    assert skill.metadata == {
+        "ui": {"kind": "insert", "acceptsMultiline": True},
+        "skill": {"name": "deep-research", "source": "user", "state": "on"},
+    }
+
+
+def test_skill_query_matches_name_and_description() -> None:
+    skills = (_skill("deep-research"), _skill("morning"))
+
+    assert [c.id for c in list_claude_commands("sess_ext_1", "deep", skills=skills)] == [
+        "deep-research"
+    ]
+    assert [c.id for c in list_claude_commands("sess_ext_1", "MORNING", skills=skills)] == [
+        "morning"
+    ]
+    assert list_claude_commands("sess_ext_1", "nothing", skills=skills) == ()
+
+
+def test_compact_keeps_its_id_when_a_skill_reuses_it() -> None:
+    catalog = list_claude_commands("sess_ext_1", skills=(_skill("compact"),))
+
+    assert [c.id for c in catalog] == ["compact"]
+    assert catalog[0].metadata["ui"]["kind"] == "execute"
+
+
+def test_limit_applies_after_skills_are_merged() -> None:
+    catalog = list_claude_commands(
+        "sess_ext_1", limit=2, skills=(_skill("a"), _skill("b"))
+    )
+
+    assert [c.id for c in catalog] == ["compact", "a"]
+
+
+def test_no_skills_keeps_the_existing_catalog() -> None:
+    assert [c.id for c in list_claude_commands("sess_ext_1")] == ["compact"]
 
 
 def test_runtime_capabilities_do_not_advertise_session_commands() -> None:

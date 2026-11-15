@@ -42,6 +42,34 @@ nonisolated struct TimelineAnchorReduction: Equatable {
     var action: TimelineAnchorAction
 }
 
+/// Whether a handless offset change should leave the page following `.end`.
+///
+/// While the page follows `.end`, offset writes without a finger are layout
+/// artifacts (the content height changing under the page, a Mover's final
+/// settle) or an accessibility scroll; a reader's own scroll arrives through
+/// the drag and coast events instead. Reading an artifact as a reader scroll
+/// flipped the placement to `.reading`, and every later follow was refused —
+/// a background-task wake-up's working row and its reply never scrolled into
+/// view (pp 2026-11-15; b1221 flipped `end` → `reading` at 06:36:22 and
+/// 06:41:38 while the content was growing).
+nonisolated enum TimelineHandlessScroll {
+    /// One row-ish: well above a height correction, far below a screenful —
+    /// VoiceOver's three-finger scroll stays a reader intent.
+    static let followTolerance: CGFloat = 64
+
+    static func staysFollowing(placement: TimelineAnchorPlacement,
+                               previousOffset: CGFloat?,
+                               liveOffset: CGFloat,
+                               contentHeightChanged: Bool) -> Bool {
+        guard case .end = placement else { return false }
+        // A height change under the page is UIKit correcting the layout, not
+        // the reader: keep following whatever the offset did.
+        if contentHeightChanged { return true }
+        guard let previousOffset else { return false }
+        return abs(liveOffset - previousOffset) <= followTolerance
+    }
+}
+
 /// The reducer's inputs. The named cases are the nine official events that
 /// are statically proven; the rest map AA's product/lifecycle edges onto the
 /// same state machine instead of letting each one write the offset itself.
@@ -137,8 +165,15 @@ nonisolated enum TimelineAnchorReducer {
             }
             action = .halt
 
-        case .coastingEnded(let atEnd, let id, let offsetIntoRow),
-             .scrolledWithoutAHand(let atEnd, let id, let offsetIntoRow):
+        case .coastingEnded(let atEnd, let id, let offsetIntoRow):
+            next.motion = .resting
+            if atEnd {
+                next.placement = .end
+            } else if let id {
+                next.placement = .reading(id: id, offsetIntoRow: offsetIntoRow)
+            }
+
+        case .scrolledWithoutAHand(let atEnd, let id, let offsetIntoRow):
             next.motion = .resting
             if atEnd {
                 next.placement = .end

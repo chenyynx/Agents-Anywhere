@@ -146,9 +146,17 @@ import Testing
         #expect(following.action == .move)
         #expect(following.state.isFollowingCatchUp)
 
-        let reading = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)), .contentChanged)
+        let reading = reduce(landed(.reading(id: "u1", offsetIntoRow: 40)),
+                             .contentChanged)
         #expect(reading.action == .none)
         #expect(!reading.state.isFollowingCatchUp)
+    }
+
+    @Test func aDraggingReaderKeepsOwnershipThroughContentGrowth() {
+        let dragging = reduce(landed(.reading(id: "u1", offsetIntoRow: 40), motion: .dragging),
+                              .contentChanged)
+        #expect(dragging.state.placement == .reading(id: "u1", offsetIntoRow: 40))
+        #expect(dragging.action == .none)
     }
 
     @Test func aSafeAreaChangePlacesDirectlyAndStopsTheMover() {
@@ -188,5 +196,47 @@ import Testing
 
         let resumed = reduce(suspended.state, .navigationSuspendedChanged(suspended: false))
         #expect(resumed.action == .placeDirect)
+    }
+}
+
+/// A handless offset change while the page follows `.end` must not read as a
+/// reader scroll: the small artifact (a Mover's final settle, a UIKit height
+/// correction) used to flip the placement to `.reading`, and every later
+/// follow was refused — a background-task wake-up's working row and its reply
+/// never scrolled into view (pp 2026-11-15; b1221 log 06:41:36.953).
+@Suite struct TimelineHandlessScrollTests {
+    @Test func aSmallHandlessMoveKeepsFollowingTheBottom() {
+        #expect(TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: 55_753, liveOffset: 55_723,
+            contentHeightChanged: false))
+        #expect(TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: 100, liveOffset: 164,
+            contentHeightChanged: false))
+    }
+
+    /// A grow under the page is UIKit correcting the layout (an estimated
+    /// height settling, a row measured late), never the reader.
+    @Test func aHeightChangeKeepsFollowingWhateverTheOffsetDid() {
+        #expect(TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: 55_723, liveOffset: 55_740,
+            contentHeightChanged: true))
+        #expect(TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: 1_000, liveOffset: 300,
+            contentHeightChanged: true))
+    }
+
+    @Test func aScreenfulOrAReadingPageIsNotAbsorbed() {
+        // VoiceOver and programmatic page moves land far outside the
+        // tolerance and stay a placement change.
+        #expect(!TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: 1_000, liveOffset: 300,
+            contentHeightChanged: false))
+        #expect(!TimelineHandlessScroll.staysFollowing(
+            placement: .reading(id: "u1", offsetIntoRow: 0),
+            previousOffset: 100, liveOffset: 120,
+            contentHeightChanged: true))
+        #expect(!TimelineHandlessScroll.staysFollowing(
+            placement: .end, previousOffset: nil, liveOffset: 0,
+            contentHeightChanged: false))
     }
 }

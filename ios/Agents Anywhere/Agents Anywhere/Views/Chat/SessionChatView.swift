@@ -214,9 +214,9 @@ struct SessionChatView: View, Equatable {
     /// step-group live row, `.code` keeps the official Code page. Both run on
     /// the collection engine; only the row presentation differs.
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.code.rawValue
+    private var renderModeRaw = TimelineRenderMode.chat.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .code
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
     }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The
@@ -305,9 +305,21 @@ struct SessionChatView: View, Equatable {
         // flag's edge: an optimistic turn end (an accepted interrupt before
         // its facts land) and any status no live read confirmed can no longer
         // announce a completion the user never saw.
-        .completionFeedback(trigger: session.runtime.authoritativeTurnEnds) { previous, current in
-            current > previous && model.isOpeningReady && session.runtime.isFresh
-                && session.runtime.state?.status == .idle
+        .completionFeedback(trigger: session.runtime.authoritativeTurnEnds,
+            sessionID: session.id,
+            diagnostic: {
+                ["stopRequested": session.runtime.stopRequested ? "1" : "0",
+                 "predictedIdle": session.runtime.predictedIdle ? "1" : "0",
+                 "lastTurnEndWasStop": session.runtime.lastTurnEndWasStop ? "1" : "0",
+                 "turnEnds": String(session.runtime.authoritativeTurnEnds)]
+            }) { previous, current in
+            current > previous && CompletionCue.allows(
+                isOpeningReady: model.isOpeningReady,
+                isFresh: session.runtime.isFresh,
+                isIdle: session.runtime.state?.status == .idle,
+                lastTurnEndWasStop: session.runtime.lastTurnEndWasStop,
+                stopRequested: session.runtime.stopRequested,
+                predictedIdle: session.runtime.predictedIdle)
         }
         // Context usage is asked for, not derived: once when the page opens,
         // again on every authoritative turn ending, and on a capability or

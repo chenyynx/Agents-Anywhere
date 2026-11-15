@@ -17,6 +17,10 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
+    @State private var keyboardVisible = false
+    /// Height of the welcome block, so the edit-state rise can be expressed as
+    /// one offset instead of a second layout pass (pp 2026-11-13).
+    @State private var welcomeHeight: CGFloat = 0
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
 
@@ -38,16 +42,38 @@ struct NewSessionView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             GeometryReader { viewport in
+                // The move is a transform of the whole block, not a change of
+                // its layout slot: re-placing the block ran a layout pass per
+                // frame and left the video behind the copy (pp 2026-11-13).
+                let restingHeight = max(0, viewport.size.height - 48)
+                // Before the block is measured the rise is unknown; that one
+                // pass keeps the old top-aligned slot, so arriving with the
+                // keyboard already up cannot misplace the block.
+                let measured = welcomeHeight > 0
+                let rise = max(0, (restingHeight - welcomeHeight) / 2)
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: max(0, viewport.size.height - 48)) {
-                        NewSessionWelcomeView(deviceName: model.connector?.name,
-                            agentName: model.runtime?.sessionDisplayName,
+                    NewSessionContentLayout(viewportHeight: isEditing && !measured ? 0 : restingHeight) {
+                        NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
                             onChooseTarget: chooseTarget)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                                welcomeHeight = $0
+                            }
+                            // The globe is an AVPlayerLayer-backed leaf: left to
+                            // itself it resolves its frame on the next layout while
+                            // the Text leaves interpolate their own, so on the way
+                            // up the copy was drawn over the ball's old position
+                            // (pp 2026-11-13). The group makes the parent resolve
+                            // this block's geometry once and pass it down.
+                            .geometryGroup()
                         statusContent
                     }
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
+                        // Transform only: no layout runs during the 0.25 s move,
+                        // so the video and the copy cannot drift apart.
+                        .offset(y: isEditing && measured ? -rise : 0)
+                        .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -75,6 +101,10 @@ struct NewSessionView: View, Equatable {
                 .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
             }
         }
+        // Same page ink as the session transcript, so the welcome page and the
+        // chat it opens do not flash between white and #F9F9F7.
+        .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
+            .ignoresSafeArea())
         .modifier(ChatPageToolbar(title: "", onMenu: onMenu))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -103,7 +133,22 @@ struct NewSessionView: View, Equatable {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
         }
+        // With the keyboard up the welcome is centered in a viewport that the
+        // composer inset shrinks; top-aligning it keeps the copy above the
+        // composer instead of behind it (pp 2026-11-13).
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
     }
+
+    /// Carrying the keyboard in from another page fires no willShow, so the
+    /// composer's own first-responder flag is the source of truth; the
+    /// notifications cover the case where focus was lost but the keyboard is
+    /// still up.
+    private var isEditing: Bool { model.draft.isFocused || keyboardVisible }
 
     private var statusContent: some View {
         VStack(alignment: .leading, spacing: 28) {

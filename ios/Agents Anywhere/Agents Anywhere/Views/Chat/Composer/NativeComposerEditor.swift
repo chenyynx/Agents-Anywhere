@@ -25,6 +25,19 @@ final class ComposerEditorController {
         synchronize()
     }
 
+    /// Replace the editor text and select all of it, so the next keystroke
+    /// replaces the inserted command. The autocomplete card owns the text
+    /// (it already wrote the same value into the draft); this only syncs the
+    /// native view and its selection, which `updateUIView` would otherwise
+    /// clamp back to a caret.
+    func selectAllAfterSync(_ text: String) {
+        guard let textView else { return }
+        if !textView.isFirstResponder { textView.becomeFirstResponder() }
+        if textView.text != text { textView.text = text }
+        textView.selectedRange = NSRange(location: 0, length: (text as NSString).length)
+        synchronize()
+    }
+
     /// Check native marked text before ending editing. unmarkText() only removes
     /// the mark; it cannot select the user's intended Chinese candidate.
     ///

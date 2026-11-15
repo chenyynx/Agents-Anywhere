@@ -67,6 +67,18 @@ def test_malformed_args_are_rejected_before_command_dispatch(tmp_path, args):
     assert rpc.command_calls == 0
 
 
+def test_catalog_include_skills_is_opt_in(tmp_path):
+    client, url, headers, rpc = command_client(tmp_path)
+
+    response = client.get(url, headers=headers, params={"includeSkills": "true"})
+    assert response.status_code == 200, response.text
+    assert rpc.requests[-1][2]["includeSkills"] is True
+
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200, response.text
+    assert "includeSkills" not in rpc.requests[-1][2]
+
+
 @pytest.mark.parametrize(
     "query, limit",
     [(" Goal ", 999), ("", 1), ("x" * 4096, 1000)],

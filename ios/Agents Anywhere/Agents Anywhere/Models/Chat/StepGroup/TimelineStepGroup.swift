@@ -85,6 +85,16 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// cost of a tool row. Same values, computed once at apply time.
     var summary: TimelineStepSummary = TimelineStepSummary()
 
+    /// True when any row of this group carries the connector's durable
+    /// `content.turnInterrupted` marker.
+    ///
+    /// Such a group belongs to a stopped turn and is residue even if a *new*
+    /// turn is already streaming: the adapter can still name it as the live
+    /// tail in the window between the new turn's start and its first own row
+    /// (queued-send handoff, device 2026-11-14). A plain mid-turn tool failure
+    /// has no marker, so it keeps the live pose while the turn runs.
+    var hasInterruptedStep = false
+
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
     /// Whether the chat profile's live mark may seat on this group while a turn
@@ -113,18 +123,40 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// The runtime's own turn state wins: while the turn really runs, a failed
     /// tool inside the group is just a failed tool — the agent moved on and
     /// the row must keep the live pose through the next gap, otherwise a
-    /// mid-turn ⚠️ settles the row while the turn still runs. Only the
-    /// optimistic send window (`turnIsRunning == false`, placeholder active)
-    /// falls back to the residue rule.
+    /// mid-turn ⚠️ settles the row while the turn still runs. Only a stopped
+    /// turn (`turnIsRunning == false`) falls back to the residue rule.
+    ///
+    /// Callers must pass "streaming", not the raw in-flight status: inside an
+    /// accepted stop's optimistic idle the runtime is still reported as
+    /// running, yet the turn is over and an interrupted group must not regain
+    /// the mark (pp 2026-11-14).
     func canCarryLiveMark(turnIsRunning: Bool) -> Bool {
-        turnIsRunning || canCarryLiveMark
+        // An interrupted group is residue, never the live turn. Without this
+        // guard a new turn's stream start re-seats the mark on the previous
+        // (stopped) group until the new turn's own first row arrives — the
+        // queued-send flash (device 2026-11-14). The mid-turn failure case
+        // carries no `turnInterrupted` marker, so it still falls through.
+        guard !hasInterruptedStep else { return false }
+        return turnIsRunning || canCarryLiveMark
     }
 
+    /// The settled row's failure icon: only a genuinely failed step draws it
+    /// (pp 2026-11-14 decided the interrupt cause does not need its own glyph;
+    /// a stopped tool already lands as `failed`).
     var hasFailure: Bool {
         steps.contains {
             if case .failed = $0.status { return true }
             return false
         }
+    }
+
+    /// Whether the row may draw the live pose. A step that still reports
+    /// `running` is stale whenever fresh live facts say the turn stopped
+    /// (idle, or an accepted stop's optimistic idle); only a truly streaming
+    /// turn may animate it. This is the stop-tap half of the 2026-11-14 fix:
+    /// the stop ack proves the turn is over even while row snapshots lag.
+    func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
+        isLiveTail || (isRunning && allowsRunningPose)
     }
 
     /// The step the live row shows: the trailing-most running step, else the
@@ -272,9 +304,12 @@ nonisolated enum TimelineChatGrouping {
             let steps = stepItems.map { step(for: $0, profile: profile) }
             let firstID = stepItems.first.map(spanID) ?? steps.first?.id ?? "steps"
             units.append(.stepGroup(
-                TimelineStepGroup(id: "steps:\(firstID)", steps: steps,
-                                  summary: TimelineStepSummarizer.summary(
-                                    steps: steps, cwd: cwd)),
+                TimelineStepGroup(
+                    id: "steps:\(firstID)", steps: steps,
+                    summary: TimelineStepSummarizer.summary(steps: steps, cwd: cwd),
+                    hasInterruptedStep: stepItems.contains {
+                        $0.raw["content"]?["turnInterrupted"]?.boolValue == true
+                    }),
                 rowIDs: stepItems.map(\.id)))
             stepItems.removeAll()
         }

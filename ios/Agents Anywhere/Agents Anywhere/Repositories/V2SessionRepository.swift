@@ -116,6 +116,12 @@ final class V2SessionRepository {
     private let healBackoff: V2SessionHealBackoff
     private let latestFillBackoff: V2SessionLatestFillBackoff
     private var entries: [V2SessionID: Entry] = [:]
+    /// Client ids retired by a creation handoff, mapped to the server id that
+    /// replaced them. `bindCreation` renames the staged entry in place, so
+    /// anything holding the local id from before the bind — a read coordinator,
+    /// a deferred-item closure, a live subscription — still reaches the one
+    /// live entry instead of minting an empty one under the dead id.
+    private var renamedIDs: [V2SessionID: V2SessionID] = [:]
     /// Last dashboard pin value per session, so a remote pin change is mirrored
     /// into the row store even when the session is not open.
     private var lastKnownPins: [V2SessionID: Bool] = [:]
@@ -171,16 +177,33 @@ final class V2SessionRepository {
     }
 
     func cached(sessionId: V2SessionID) -> V2SessionData? {
-        guard let entry = entries[sessionId] else { return nil }
+        guard let entry = existingEntry(sessionId) else { return nil }
         touch(entry)
         return entry.projection?.data
+    }
+
+    /// Follows creation renames to the id that currently owns the entry. Any
+    /// holder of a pre-bind id (closures, coordinators, subscriptions) goes
+    /// through here rather than minting an entry under the dead id.
+    private func resolvedID(_ id: V2SessionID) -> V2SessionID {
+        var current = id
+        var hops = 0
+        while let next = renamedIDs[current], next != current, hops < 8 {
+            current = next
+            hops += 1
+        }
+        return current
+    }
+
+    private func existingEntry(_ id: V2SessionID) -> Entry? {
+        entries[resolvedID(id)]
     }
 
     /// The recovery failures booked on one session, oldest first (a bounded
     /// ring). The disclosure path does not read this; it exists so a stall can
     /// be diagnosed — in tests and in the field — without server logs.
     func recoveryDiagnostics(sessionId: V2SessionID) -> [V2SessionRecoveryDiagnostic] {
-        entries[sessionId]?.recoveryDiagnostics ?? []
+        existingEntry(sessionId)?.recoveryDiagnostics ?? []
     }
 
     /// Clears the self-heal disclosure once the view has shown it. The notice
@@ -189,7 +212,7 @@ final class V2SessionRepository {
     /// already acknowledged. `snapshotRecoveryCount` is left untouched, so a
     /// later rebuild publishes a fresh, higher-numbered payload as before.
     func clearRecoveryNotice(sessionId: V2SessionID) {
-        guard let entry = entries[sessionId], entry.recoveryNotice != nil else { return }
+        guard let entry = existingEntry(sessionId), entry.recoveryNotice != nil else { return }
         entry.recoveryNotice = nil
         emit(entry)
     }
@@ -201,7 +224,7 @@ final class V2SessionRepository {
     /// at the same id — after `reconcileNotificationAcknowledgements` drops this
     /// bar — surfaces again. No-op when already acknowledged.
     func acknowledgeNotification(sessionId: V2SessionID, noticeId: String) {
-        guard let entry = entries[sessionId] else { return }
+        guard let entry = existingEntry(sessionId) else { return }
         guard !entry.acknowledgedNotifications.contains(noticeId) else { return }
         entry.acknowledgedNotifications.acknowledge(noticeId)
         emit(entry)
@@ -350,18 +373,51 @@ final class V2SessionRepository {
     }
 
     func bindCreation(_ submission: NewSessionSubmission, response: V2SessionCreateResponse) {
+        let localID = submission.session.id
+        for (attachment, uploaded) in zip(submission.pending.attachments, response.attachments ?? []) {
+            submission.pending.bindUpload(uploaded.reference(sessionID: response.session.id), localID: attachment.id)
+        }
+        submission.pending.update(.accepted)
+        // Rename the staged entry in place. The page the creation already
+        // mounted owns this entry's model; replacing it re-mounted the chat
+        // page, which replayed the send's entrance a second time
+        // (pp 2026-11-15). A server entry that already exists (a retry) keeps
+        // the old bind path below.
+        if entries[response.session.id] == nil, let staged = entries.removeValue(forKey: localID) {
+            staged.rename(to: response.session.id)
+            // The placeholder carries the server identity from here on. Its
+            // window is empty by construction, so no local row is lost.
+            staged.projection = V2SessionProjection.placeholder(
+                response.session, maximumItems: policy.maximumTimelineItems, now: now)
+            staged.needsSnapshot = true
+            staged.model.rebind(to: response.session.id)
+            staged.model.stage(submission.pending)
+            if let pin = lastKnownPins.removeValue(forKey: localID) {
+                lastKnownPins[response.session.id] = pin
+            }
+            renamedIDs[localID] = response.session.id
+            entries[response.session.id] = staged
+            emit(staged)
+            // The page mounted on the local id and its `start` was refused
+            // while the entry still read as a local creation; the renamed
+            // entry owes its observer a live connection now (the old path got
+            // one from the re-mounted page's opening read).
+            start(staged)
+            // The staged placeholder may already have persisted under the
+            // local id; that archive is a dead key once the entry moved.
+            if let localStore {
+                Task { await localStore.removeSession(localID) }
+            }
+            return
+        }
         let entry = entry(for: response.session.id)
         if entry.projection == nil {
             entry.projection = V2SessionProjection.placeholder(response.session, maximumItems: policy.maximumTimelineItems, now: now)
             entry.needsSnapshot = true
         }
-        for (attachment, uploaded) in zip(submission.pending.attachments, response.attachments ?? []) {
-            submission.pending.bindUpload(uploaded.reference(sessionID: response.session.id), localID: attachment.id)
-        }
-        submission.pending.update(.accepted)
         entry.model.stage(submission.pending)
         emit(entry)
-        remove(sessionIds: [submission.session.id])
+        remove(sessionIds: [localID])
     }
 
     func restoreCachedSession(id: String) async {
@@ -475,6 +531,9 @@ final class V2SessionRepository {
 
     /// Explicit refresh replaces the aggregate and then re-establishes live recovery.
     func refresh(sessionId: V2SessionID) async throws -> V2SessionData {
+        // A holder that captured the creation's local id before the bind still
+        // reads the renamed entry (see `resolvedID`).
+        let sessionId = resolvedID(sessionId)
         try requireNetwork()
         let entry = entry(for: sessionId)
         ClientDiagnosticsLog.shared.record(
@@ -498,6 +557,7 @@ final class V2SessionRepository {
 
     func loadOlder(sessionId: V2SessionID, limit: Int? = nil,
                    anchorOrderSeq: Int? = nil) async throws -> V2SessionData {
+        let sessionId = resolvedID(sessionId)
         let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
@@ -584,7 +644,7 @@ final class V2SessionRepository {
     /// paging stops anchoring there, so live creates append normally instead
     /// of being deferred until an explicit latest page.
     func followLatest(sessionId: V2SessionID) {
-        guard let entry = entries[sessionId] else { return }
+        guard let entry = existingEntry(sessionId) else { return }
         entry.projection?.followLatest()
         // Back at the newest edge with a window the server already got past:
         // the deferred rows cannot be recovered by scrolling, only by a read.
@@ -601,6 +661,7 @@ final class V2SessionRepository {
     /// and heal through `scheduleLatestFill`.
     func loadLatest(sessionId: V2SessionID, limit: Int? = nil,
                     authoritative: Bool = false) async throws -> V2SessionData {
+        let sessionId = resolvedID(sessionId)
         let pageLimit = limit ?? policy.networkPageSize
         _ = try await load(sessionId: sessionId)
         let entry = entry(for: sessionId)
@@ -912,7 +973,7 @@ final class V2SessionRepository {
     /// The reader left the bottom before a local-first latest page finished
     /// reconciling; its replacement must not land under a history reader.
     func cancelLatestReconcile(sessionId: V2SessionID) {
-        guard let entry = entries[sessionId] else { return }
+        guard let entry = existingEntry(sessionId) else { return }
         guard entry.latestRefreshTask != nil else { return }
         entry.latestRefreshTask?.cancel()
         entry.latestRefreshTask = nil
@@ -928,6 +989,10 @@ final class V2SessionRepository {
     /// and only when the window still holds it. A failure propagates unchanged
     /// so the caller owns the visible retry state.
     func loadDeferredItem(sessionId: V2SessionID, itemId: V2TimelineItemID) async throws {
+        // The chat model's deferred-item closure captures the id it was built
+        // with; after a creation bind that id is retired, and the item read
+        // must still name the live session on the wire.
+        let sessionId = resolvedID(sessionId)
         try requireNetwork()
         let entry = entry(for: sessionId)
         let item = try await detail.timelineItem(sessionId: sessionId, itemId: itemId)
@@ -953,12 +1018,16 @@ final class V2SessionRepository {
         beforeOrderSeq: Int? = nil,
         limit: Int = 100
     ) async throws -> V2SessionTimelinePage {
+        // The SubAgent store's fetch closure captures the id from model init;
+        // a creation bind retires it, so resolve before the wire call.
+        let sessionId = resolvedID(sessionId)
         try requireNetwork()
         return try await detail.childrenItems(
             sessionId: sessionId, parentItemId: parentItemId, beforeOrderSeq: beforeOrderSeq, limit: limit)
     }
 
     func catalogs(sessionId: V2SessionID, force: Bool = false, capabilities: V2RuntimeCapabilitySnapshot? = nil) async throws -> V2SessionCatalogs {
+        let sessionId = resolvedID(sessionId)
         let entry = entry(for: sessionId)
         let scopes = capabilities.map { value in Set(["model", "permission"].filter { value.allows("catalog.\($0)") }) }
         if entry.catalogScopes != scopes {
@@ -1001,6 +1070,7 @@ final class V2SessionRepository {
     /// The command catalog is read once per live connection; it is dropped with
     /// the option catalogs when the connection stops or selections change.
     func commands(sessionId: V2SessionID, force: Bool = false) async throws -> [V2RuntimeCommand] {
+        let sessionId = resolvedID(sessionId)
         let entry = entry(for: sessionId)
         if !force, let cached = entry.commands { return cached }
         try requireNetwork()
@@ -1013,6 +1083,7 @@ final class V2SessionRepository {
     }
 
     func executeCommand(sessionId: V2SessionID, request: RuntimeCommandRequest) async throws -> V2RuntimeCommandExecuteResponse {
+        let sessionId = resolvedID(sessionId)
         try requireNetwork()
         let entry = entry(for: sessionId)
         let response = try await interactions.executeCommand(sessionId: sessionId, command: request.command, arguments: request.args, raw: request.raw)
@@ -1022,12 +1093,12 @@ final class V2SessionRepository {
     }
 
     func draftDidChange(sessionID: V2SessionID) {
-        entries[sessionID]?.isDirty = true
+        existingEntry(sessionID)?.isDirty = true
         schedulePersistence()
     }
 
     func localWorkDidChange(sessionID: V2SessionID) {
-        if let entry = entries[sessionID] { emit(entry) }
+        if let entry = existingEntry(sessionID) { emit(entry) }
     }
 
     func send(sessionId: V2SessionID, content: String, attachmentIDs: [V2AttachmentID] = [], clientMessageID: String) async throws -> V2RuntimeActionResponse {
@@ -1207,7 +1278,7 @@ final class V2SessionRepository {
             Task { await localStore.updatePinned(pinUpdates) }
         }
         for session in sessions {
-            guard let entry = entries[session.id] else { continue }
+            guard let entry = existingEntry(session.id) else { continue }
             let previous = entry.projection?.data.session
             // Dashboard pushes repeat every session on each tick; unchanged
             // metadata must not re-project and re-persist every open session.
@@ -1274,10 +1345,14 @@ final class V2SessionRepository {
     }
 
     func remove(sessionIds: [V2SessionID]) {
-        for id in sessionIds {
+        for rawID in sessionIds {
+            let id = resolvedID(rawID)
             if let localStore { Task { await localStore.removeSession(id) } }
             guard let entry = entries.removeValue(forKey: id) else { continue }
             dispose(entry)
+            // A retired creation id must not resurrect the entry it was
+            // renamed away from.
+            renamedIDs = renamedIDs.filter { $0.value != id }
         }
     }
 
@@ -1286,6 +1361,7 @@ final class V2SessionRepository {
         persistenceTask?.cancel(); persistenceTask = nil
         let old = Array(entries.values)
         entries.removeAll()
+        renamedIDs.removeAll()
         for entry in old { dispose(entry) }
     }
 
@@ -1962,7 +2038,11 @@ final class V2SessionRepository {
         return false
     }
 
-    private func entry(for id: V2SessionID) -> Entry {
+    private func entry(for rawID: V2SessionID) -> Entry {
+        // A creation handoff retires the local id in favour of the server one;
+        // a caller that captured the local id before the bind must land on the
+        // renamed entry, never on a fresh empty one.
+        let id = resolvedID(rawID)
         // A view may look up its stable model while a containing sidebar moves.
         // Re-projecting here walks every historical item and also registers all
         // of those observable values as dependencies of the caller's view body.
@@ -2126,7 +2206,11 @@ final class V2SessionRepository {
 
 @MainActor
 private final class Entry {
-    let id: V2SessionID
+    /// Renamed in place by the creation handoff (`bindCreation`); every other
+    /// field — projection, observers, tasks — belongs to this object and
+    /// survives the rename.
+    private(set) var id: V2SessionID
+    fileprivate func rename(to newID: V2SessionID) { id = newID }
     let model: V2SessionModel
     var needsSnapshot = false
     /// Set once a window read **omitted** the `deferredActivity` echo: the

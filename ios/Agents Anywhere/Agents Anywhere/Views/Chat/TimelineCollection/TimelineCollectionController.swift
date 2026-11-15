@@ -33,6 +33,8 @@ nonisolated enum TimelineCollectionSection: Hashable, Sendable {
 final class TimelineCollectionController: UIViewController {
     let layout = TimelineListLayout()
     private(set) var collectionView: UICollectionView!
+    /// Session id for the diagnostics trail; set by the content adapter.
+    var diagnosticSessionID = ""
     private var dataSource: UICollectionViewDiffableDataSource<TimelineCollectionSection, TimelineListItem>!
     weak var content: TimelineCollectionContentProviding?
     private(set) var measurer: (any TimelineHeightMeasuring)?
@@ -289,8 +291,31 @@ final class TimelineCollectionController: UIViewController {
     var safeAreaInsets: UIEdgeInsets = .zero {
         didSet {
             guard oldValue != safeAreaInsets else { return }
-            anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+            applySafeAreaInsetsIfMounted()
         }
+    }
+
+    /// Whether the page inset has been installed once.
+    private var hasAppliedInsets = false
+    /// The page has finished appearing (fallback for devices whose scroll
+    /// view safe area stays zero, e.g. no home indicator).
+    private var hasAppeared = false
+
+    /// Applies the page inset only once the scroll view has its own safe area.
+    ///
+    /// The window alone is not enough: UIKit installs the scroll view's safe
+    /// area a pass later, and until then the home-indicator portion cannot be
+    /// subtracted — the driver lays the page out 34 pt short and its later
+    /// correction glides the visible page by ~113 pt (the "page moves up when
+    /// a session opens" report, pp 2026-11-15; b1221 still applied 0→94 then
+    /// 94→60 on every open). `applyInsets` is idempotent, so the first
+    /// correctly-derivable pass installs the one true value and later passes
+    /// are no-ops.
+    private func applySafeAreaInsetsIfMounted(wasAtBottom: Bool = false) {
+        guard isViewLoaded, view.window != nil else { return }
+        guard hasAppliedInsets || collectionView?.safeAreaInsets != .zero || hasAppeared else { return }
+        hasAppliedInsets = true
+        anchorDriver?.updateSafeAreaInsets(safeAreaInsets, wasAtBottom: wasAtBottom)
     }
 
     // MARK: - Lifecycle
@@ -352,9 +377,32 @@ final class TimelineCollectionController: UIViewController {
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
             readingAnchor: { [weak self] in self?.anchor(at: $0) },
             firstRowID: { [weak self] in self?.currentItems.first?.itemID },
-            onBottomArrived: { [weak self] in self?.onBottomArrived?() }))
+            onBottomArrived: { [weak self] in self?.onBottomArrived?() },
+            onPlacementChanged: { [weak self] from, to, event in
+                guard let self else { return }
+                // Reader gestures own their position; this line exists for
+                // layout-driven flips (the lost bottom follow after a send).
+                guard event.hasPrefix("contentChanged")
+                    || event.hasPrefix("safeAreaChanged")
+                    || event.hasPrefix("scrolledWithoutAHand") else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.anchor.placement",
+                    sessionID: self.diagnosticSessionID,
+                    detail: ["from": from, "to": to, "event": event],
+                    dedupe: false)
+            },
+            onMoverEvent: { [weak self] action, detail in
+                guard let self else { return }
+                var merged = detail
+                merged["action"] = action
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.mover",
+                    sessionID: self.diagnosticSessionID,
+                    detail: merged,
+                    dedupe: false)
+            }))
         anchorDriver?.setSuspended(navigationSuspended)
-        anchorDriver?.updateSafeAreaInsets(safeAreaInsets)
+        applySafeAreaInsetsIfMounted()
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.attach { [weak self] in
             guard let self else { return (false, false, "?") }
@@ -492,6 +540,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The first mounted pass installs the page inset; before the window
+        // there was no scroll-view safe area to subtract (see the helper).
+        applySafeAreaInsetsIfMounted()
         if let hosted = measurer as? TimelineHostingHeightMeasurer {
             hosted.updateTraitOverrides(from: traitCollection)
         }
@@ -562,14 +613,22 @@ final class TimelineCollectionController: UIViewController {
         // The last published viewport is the pre-change one: it tells the
         // driver whether the page was resting on the bottom before a
         // keyboard/composer transition.
-        anchorDriver?.updateSafeAreaInsets(
-            safeAreaInsets,
-            wasAtBottom: lastPublishedViewport.measuredAtBottom)
+        //
+        // This callback is also the first one that arrives before the scroll
+        // view has its own safe area installed: the gate defers the install to
+        // the adjusted-content-inset pass, so the page is never laid out 34 pt
+        // short and then corrected under the reader's eyes (pp 2026-11-15;
+        // b1224 still applied 0→94 here and 94→60 a few ms later).
+        applySafeAreaInsetsIfMounted(wasAtBottom: lastPublishedViewport.measuredAtBottom)
         handleContainerHeightChange()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Bounded fallback: a device whose scroll view safe area stays zero
+        // must still get its one page inset.
+        hasAppeared = true
+        applySafeAreaInsetsIfMounted()
         guard !didMarkActivation else { return }
         didMarkActivation = true
         UserDefaults.standard.set(Date(), forKey: TimelineCollectionSwitch.lastActiveKey)
@@ -1398,6 +1457,21 @@ final class TimelineCollectionController: UIViewController {
                 documentHeights.removeValue(forKey: item.itemID)
                 continue
             }
+            // A tail that just emptied has an exact height (the 12/32
+            // spacer). Write it for the new key even though the row was
+            // displayed: the self-reporting path below deliberately keeps a
+            // displayed row's old height until the cell reports, and for the
+            // tail that old height is the queued bubble — the bottom would
+            // then drop a bubble late (device 2026-11-14: "the page jumps
+            // when a queued message is sent"). The cell's later self-report
+            // still owns the final word.
+            if case .tail = item, case let .fixed(height) = content.estimateKind(for: item) {
+                let key = content.heightKey(for: item, width: width)
+                if !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                    layout.heights.set(height, for: key, tier: .precalc)
+                }
+                continue
+            }
             // Official hosted-cell contract rows measure themselves once when
             // the cell materializes and report later changes through
             // `heightDidChange`; the controller must not mark them measured.
@@ -2125,6 +2199,15 @@ final class TimelineCollectionController: UIViewController {
         TimelineListMetrics.column(containerWidth: collectionView?.bounds.width ?? 0).width
     }
 
+    /// The tail cell's current laid-out height, for the queue handoff
+    /// diagnostics. Nil until the tail is in the applied snapshot.
+    func tailCellHeight() -> CGFloat? {
+        guard collectionView != nil, dataSource != nil else { return nil }
+        guard let index = dataSource.snapshot().indexOfItem(.tail) else { return nil }
+        return collectionView.layoutAttributesForItem(
+            at: IndexPath(item: index, section: 0))?.frame.height
+    }
+
     var viewport: TimelineViewport {
         TimelineViewport(contentHeight: layout.contentHeight,
             containerHeight: collectionView.bounds.height,
@@ -2676,6 +2759,12 @@ final class TimelineCollectionController: UIViewController {
             guard let self, self.windowReturnToken == token else { return }
             self.windowReplacementReturn = false
         }
+    }
+
+    /// A send pins the page to the bottom until the reader scrolls: working
+    /// row → tool row swaps must not leave the page short of the new bottom.
+    func beginStickyFollow() {
+        anchorDriver?.beginStickyFollow()
     }
 
     /// Forced commands (pill / loadLatest / approval dismissed / window
@@ -3326,10 +3415,12 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewDidChangeAdjustedContentInset(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
-        // UIKit can install its own safe area after the first inset write; the
-        // official formula subtracts it from the page proxy, so recompute here
-        // or the proxy is counted twice (new session, 2026-10-28). Our own
-        // writes land here too and are a no-op (the value already matches).
+        // This is the pass where UIKit installs the scroll view's own safe
+        // area: install the deferred page inset first, then let the driver
+        // recompute (it subtracts that safe area — counting it twice is the
+        // new-session 2026-10-28 bug). Our own writes land here too and are
+        // no-ops (the value already matches).
+        applySafeAreaInsetsIfMounted()
         anchorDriver?.containerInsetsChanged()
     }
 

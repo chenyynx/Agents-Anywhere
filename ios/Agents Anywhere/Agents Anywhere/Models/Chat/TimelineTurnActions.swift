@@ -31,9 +31,116 @@ struct TimelineTurnAction: Equatable {
     }
 }
 
+/// Stable "the latest turn is still open" gate for the one-footer-per-turn
+/// rule.
+///
+/// The runtime status is not a turn boundary: it flaps running/idle across
+/// tool steps. A turn opens when a new user message (pending or echoed)
+/// appears and closes only on an authoritative running→idle transition.
+/// The footer waits for that close, so it never hops to each newly finished
+/// reply segment while the turn is still streaming (pp 2026-11-14).
+nonisolated struct TurnFooterGate: Equatable {
+    private(set) var isOpen = false
+    private var userKey: String?
+    private var endsSeen = 0
+    /// Whether the open state is anchored to a user bubble this client saw
+    /// arrive, rather than to a runtime status alone. A compaction's command
+    /// turn reports a turn in flight with no user bubble, so a gate that only
+    /// a status reopened must close again once the compaction is visible;
+    /// otherwise the finished turn loses its footer for the whole compaction
+    /// (pp 2026-11-15: copy/share disappeared and the page jumped twice by
+    /// the 30 pt action bar).
+    private var openedByTurn = false
+    /// Whether the running episode the gate closed on belongs to a compaction
+    /// that no user bubble opened. The compact row settles before the runtime
+    /// reports the turn's end, and that tail is still the compaction, not a
+    /// resumed turn: a status that reopened the gate there hid the finished
+    /// turn's footer until the runtime went idle (pp 2026-11-15 08:09:20.7 →
+    /// 08:09:22.1: content 66602 → 66572 → 66602, the 30 pt action bar
+    /// blinked for 1.3 s). Cleared when the episode ends or a user bubble
+    /// opens the next turn.
+    private var compactionEpisode = false
+
+    init() {}
+
+    /// Feeds one adapter refresh; returns whether the latest turn's footer
+    /// must stay suppressed.
+    ///
+    /// `isCompacting` separates a compaction from the latest turn's work. The
+    /// runtime reports a turn in flight while it compacts, but the reply on
+    /// screen is finished; treating that as a resumed turn reopened a closed
+    /// gate and hid the finished turn's footer — copy/share and the 30 pt
+    /// action bar — for the whole compaction (pp 2026-11-15).
+    mutating func update(userKey: String?, runtimeIsRunning: Bool,
+                         authoritativeTurnEnds: Int, isCompacting: Bool = false) -> Bool {
+        let turnIsRunning = runtimeIsRunning && !isCompacting
+        if self.userKey == nil {
+            // First refresh: a restored in-flight turn stays open; a restored
+            // finished turn is already closed. A compaction in flight is
+            // neither: the turn it follows is over. Nothing observable ties
+            // this state to a user bubble, so only a bubble may later claim
+            // it as a turn.
+            self.userKey = userKey
+            isOpen = turnIsRunning
+            openedByTurn = false
+            compactionEpisode = isCompacting
+            endsSeen = authoritativeTurnEnds
+            return isOpen
+        }
+        if userKey != self.userKey {
+            self.userKey = userKey
+            isOpen = true
+            openedByTurn = true
+            compactionEpisode = false
+            endsSeen = authoritativeTurnEnds
+            return isOpen
+        }
+        if authoritativeTurnEnds != endsSeen {
+            endsSeen = authoritativeTurnEnds
+            // An end seen while the runtime still reports a turn in flight is
+            // a tool-step flap, not the turn's end.
+            if !runtimeIsRunning {
+                isOpen = false
+                openedByTurn = false
+                compactionEpisode = false
+            }
+        }
+        if !runtimeIsRunning {
+            // The running episode is over; a compaction's claim on it ends
+            // here too. A later running status is a new turn and may reopen.
+            compactionEpisode = false
+        }
+        if turnIsRunning, !compactionEpisode {
+            // A cold open can initialize the gate before the live status
+            // arrives (the app was launched mid-turn), and a tool step can
+            // follow a transient idle. The turn is still in flight, so the
+            // footer must stay suppressed on the same user message. The tail
+            // of a compaction is the exception: the compact row has settled,
+            // but the runtime still reports the compaction's own turn until
+            // it ends, and the finished reply's footer must stay on screen.
+            isOpen = true
+        }
+        // A compaction detected on a turn no user bubble opened: the running
+        // episode belongs to the compaction, not to the latest turn. Closing
+        // here also repairs a gate the compaction's own status reopened in
+        // the window before its marker row reached the client.
+        if isCompacting, !openedByTurn {
+            isOpen = false
+            compactionEpisode = true
+        }
+        return isOpen
+    }
+}
+
 enum TimelineTurnActions {
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
+    ///
+    /// The footer is committed only when the turn is over (`suppressLatest`
+    /// false). It must not hop to each newly finished reply segment during a
+    /// running turn (pp 2026-11-14); the adapter's `TurnFooterGate` turns the
+    /// volatile runtime status into a stable open/closed boundary, so a
+    /// running/idle flap across tool steps cannot flicker the row.
     ///
     /// The footer host is the last group of the turn that actually draws one:
     /// divider groups (marker/system rows, e.g. a compaction boundary) and a
@@ -52,23 +159,6 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
-        // A running turn may still keep the footer of its last *finished*
-        // segment. A tool call continues the same turn; without this the
-        // completed reply lost its footer when the tool segment started and
-        // the row shrank 30 pt mid-turn (device 2026-10-31 14:25:
-        // g:msg_fbe3af45 164→134 at the step group's arrival, offset -30 in
-        // the same apply).
-        var settledEndGroupID: String?
-        var settledReplies: [ChatTimelineRowModel] = []
-        var settledChanges: [ChatTimelineRowModel] = []
-        /// The settled host itself draws assistant reply text. Only such a
-        /// host may show its footer before the turn reports idle; a tool-only
-        /// turn still waits for the turn end (its review footer belongs to
-        /// the finished turn, not to a tool that is still running).
-        var settledHostHasReply = false
-        /// A settled host is sticky once the turn continues past it: a tool
-        /// or a new text segment after the reply keeps the footer where it is.
-        var contentAfterSettled = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -92,8 +182,6 @@ enum TimelineTurnActions {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
-            settledEndGroupID = nil; settledReplies = []; settledChanges = []
-            settledHostHasReply = false; contentAfterSettled = false
         }
 
         for group in groups {
@@ -112,42 +200,39 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
-            if settledEndGroupID != nil { contentAfterSettled = true }
-            let hosts = hostsFooter(group)
-            if hosts { endGroupID = group.id }
+            if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
-            let active = group.rows.contains { $0.structure.status.isActive }
-            hasActiveItems = hasActiveItems || active
-            if hosts, !active {
-                settledEndGroupID = group.id
-                settledReplies = replies
-                settledChanges = changes
-                settledHostHasReply = !messages.isEmpty
-                contentAfterSettled = false
+            // A compaction marker is session maintenance, not turn content:
+            // while it runs, the finished turn keeps its footer and the 30 pt
+            // action bar with it (pp 2026-11-15: copy/share vanished for the
+            // whole compaction and the page jumped twice).
+            let active = group.rows.contains {
+                $0.structure.status.isActive
+                    && !TimelineEntryPresentation.isCompactItem($0.value)
             }
+            hasActiveItems = hasActiveItems || active
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
         if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
             commit()
-        } else if let settledEndGroupID, (!settledReplies.isEmpty || !settledChanges.isEmpty),
-                  contentAfterSettled || settledHostHasReply {
-            // The footer returns as soon as a reply segment is done, even while
-            // the runtime still reports the turn as running. The connector
-            // closes a message row on the message boundary, which lands before
-            // the CLI's turn result: waiting for idle made the footer appear one
-            // beat after the reply (device 2026-10-31 16:14: text final at
-            // t=390.74, footer at t=392.30). A tool or a new text segment that
-            // follows keeps the footer where it is; the turn end still commits
-            // the final host. `contentAfterSettled` covers the tool case and
-            // `settledHostHasReply` the last-reply case; a tool-only turn has
-            // neither and keeps waiting for the turn end. Keeping the settled
-            // host also absorbs the runtime's running/idle flaps across tool
-            // steps (device 2026-10-31 14:55: 146↔176).
-            actions[settledEndGroupID] = TimelineTurnAction(
-                replies: settledReplies, changes: settledChanges, startsMidTurn: startsMidTurn)
         }
         return actions
+    }
+
+    /// Whether a pending delivery still opens the new turn for the footer gate.
+    ///
+    /// `confirmed` records outlive the session model until their echo row is
+    /// published (`SessionTimelinePresentation.synchronizePending`). Excluding
+    /// them from the turn-opening set made the previous turn's footer vanish
+    /// for that one refresh — the group lost its 30 pt action bar, the bottom
+    /// clamped -30, and the working-row follow started from the corrected
+    /// offset ("jump then scroll", pp 2026-11-15).
+    static func opensTurn(_ delivery: V2PendingMessage.Delivery) -> Bool {
+        switch delivery {
+        case .sending, .accepted, .confirmed: return true
+        case .uncertain, .rejected: return false
+        }
     }
 }

@@ -15,6 +15,7 @@ from connector.runtime_protocol import (
 )
 from connector.runtime_protocol.host import RuntimeHostClient
 from connector.runtimes.codex.domain.notices import CodexNoticeRegistry
+from connector.runtimes.codex.domain.skills import CodexSkill
 from connector.runtimes.codex.domain.pending_messages import (
     PendingClientMessageRegistry,
 )
@@ -60,6 +61,8 @@ class CodexTurnActions:
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
         cwd: str | None = None,
+        skill: CodexSkill | None = None,
+        skill_text: str | None = None,
     ) -> RuntimeOperationResult:
         _ = cwd
         if self.client is None or external_session_id is None:
@@ -123,7 +126,11 @@ class CodexTurnActions:
             result = await self.client.start_turn(
                 CodexStartTurnRequest(
                     thread_id=external_session_id,
-                    content=content,
+                    # A skill turn carries SkillUserInput plus the text after
+                    # `/name`; the raw slash line must not reach the model.
+                    content=skill_text if skill is not None else content,
+                    skill_name=skill.name if skill is not None else None,
+                    skill_path=skill.path if skill is not None else None,
                     client_message_id=client_message_id,
                     model=selected_model.model,
                     effort=selected_model.effort,

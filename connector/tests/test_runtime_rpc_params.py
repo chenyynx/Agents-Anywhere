@@ -4,6 +4,7 @@ import pytest
 
 from connector.server.runtime_rpc_params import (
     CommandExecuteParams,
+    SessionCommandsParams,
     runtime_attachments,
 )
 
@@ -23,6 +24,21 @@ def test_command_rpc_preserves_exact_raw(raw: str) -> None:
 def test_command_rpc_rejects_malformed_input(field: str, value: object) -> None:
     with pytest.raises(TypeError):
         CommandExecuteParams.parse({"sessionId": "s", "command": "goal", field: value})
+
+
+def test_session_commands_skills_are_opt_in() -> None:
+    assert SessionCommandsParams.parse({"sessionId": "s"}).include_skills is False
+    assert (
+        SessionCommandsParams.parse(
+            {"sessionId": "s", "includeSkills": True}
+        ).include_skills
+        is True
+    )
+
+
+def test_session_commands_rejects_a_non_boolean_skill_flag() -> None:
+    with pytest.raises(TypeError):
+        SessionCommandsParams.parse({"sessionId": "s", "includeSkills": "yes"})
 
 
 def test_runtime_attachments_rejects_base64_content() -> None:

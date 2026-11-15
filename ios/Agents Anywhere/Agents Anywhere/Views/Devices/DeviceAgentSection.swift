@@ -4,6 +4,7 @@ struct DeviceAgentSection: View {
     @Bindable var model: DeviceAgentModel
     var showsConnectionNotice = true
     var onError: ((String?) -> Void)?
+    @Environment(\.colorScheme) private var colorScheme
     @State private var configuration: Configuration?
     @State private var showsAddAgents = false
     @State private var deleting: V2DeviceRuntime?
@@ -22,17 +23,30 @@ struct DeviceAgentSection: View {
         } content: {
             if showsConnectionNotice && !model.connected {
                 Label(String(localized: "设备或网络已离线，连接恢复后可继续。"), appSymbol: "wifi.slash")
-                    .font(.footnote).foregroundStyle(.secondary).padding(.bottom, 6)
+                    .font(SettingsStyle.text(15))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 2)
             }
-            DeviceRows {
-                ForEach(model.inventory.configuredInstances) { runtime in row(runtime) }
+            DeviceCard {
+                ForEach(Array(model.inventory.configuredInstances.enumerated()),
+                        id: \.element.id) { index, runtime in
+                    if index > 0 { DeviceRowDivider() }
+                    row(runtime)
+                }
+                if !model.inventory.configuredInstances.isEmpty { DeviceRowDivider() }
                 Button { showsAddAgents = true } label: {
-                    HStack(spacing: 12) {
-                        AppSymbol("plus", size: 14).frame(width: 14)
-                        Text(String(localized: "添加更多 Agent")).font(.body.weight(.medium))
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("plus", size: 17)
+                            .frame(width: SettingsStyle.iconFrame)
+                            .foregroundStyle(SettingsStyle.icon(colorScheme))
+                        Text(String(localized: "添加更多 Agent"))
+                            .font(SettingsStyle.text(16))
                         Spacer(minLength: 0)
                     }
-                    .frame(minHeight: 52).contentShape(.rect)
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
             }
@@ -72,17 +86,16 @@ struct DeviceAgentSection: View {
     private var canChange: Bool { model.connected && model.busyID == nil }
 
     private func row(_ runtime: V2DeviceRuntime) -> some View {
-        HStack(spacing: 12) {
+        DeviceCardRow {
+            DeviceStatusDot(tone: tone(runtime), isLoading: model.busyID == runtime.id)
+                .frame(width: SettingsStyle.iconFrame)
             Button { configure(runtime) } label: {
-                HStack(spacing: 12) {
-                    DeviceStatusDot(tone: tone(runtime), isLoading: model.busyID == runtime.id)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(runtime.sessionDisplayName).font(.body.weight(.semibold)).lineLimit(1)
-                        Text(verbatim: "\(runtime.typeDisplayName) · \(statusLabel(runtime))")
-                            .font(.footnote).lineLimit(1)
-                            .foregroundStyle(tone(runtime) == .error ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-                    }
-                    Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    DeviceRowLabel(
+                        title: runtime.sessionDisplayName,
+                        subtitle: "\(runtime.typeDisplayName) · \(statusLabel(runtime))",
+                        subtitleIsError: tone(runtime) == .error)
+                    Spacer(minLength: 8)
                 }
                 .contentShape(.rect)
             }
@@ -91,18 +104,19 @@ struct DeviceAgentSection: View {
             Menu {
                 actions(runtime)
             } label: {
-                AppSymbol("ellipsis", size: 18).foregroundStyle(.secondary)
-                    .frame(width: 36, height: 44).contentShape(.rect)
+                AppSymbol("ellipsis", size: 18)
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .frame(width: 32, height: 40).contentShape(.rect)
             }
             .buttonStyle(.plain).disabled(!canChange)
             .accessibilityLabel(Text(runtime.sessionDisplayName))
             Toggle(String(localized: "启用 \(runtime.sessionDisplayName)"), isOn: Binding(get: { runtime.active }, set: { active in
                 Task { try? await model.setActive(runtime, active) }
             }))
-            .labelsHidden().toggleStyle(.switch).tint(.green).fixedSize()
+            .labelsHidden().toggleStyle(.switch)
+            .tint(SettingsStyle.controlTint(colorScheme)).fixedSize()
             .disabled(!canChange)
         }
-        .frame(minHeight: 60)
         .contextMenu { actions(runtime) }
     }
 

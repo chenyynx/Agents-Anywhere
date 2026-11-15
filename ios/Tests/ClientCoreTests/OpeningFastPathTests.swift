@@ -320,6 +320,42 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.openingError == nil)
     }
 
+    /// A creation handoff: the server entry a local creation binds onto starts
+    /// with an empty projection and the unconfirmed bubble staged. It must open
+    /// like a cached visit — the bubble paints on the first frame and no cold
+    /// mask covers the page. Otherwise the bound page cold-opened and replayed
+    /// the send's entrance (pp 2026-11-15: the bubble and the working row
+    /// animated twice).
+    ///
+    /// A placeholder window carries neither the older nor the newer flag, so
+    /// `repository.open` returns it without a network read; the newest page
+    /// arrives later through the connection's snapshot (device b1216:
+    /// `timeline.snapshot.fetch trigger=reconnect` right after the bound
+    /// `session.open`). The assertions therefore pin the opening state, not a
+    /// gated request.
+    @Test func aBoundCreationOpensLikeACachedVisitInsteadOfColdOpening() async throws {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let project = try fixture("project", as: V2ProjectResponse.self).project
+        let runtime: V2DeviceRuntime = try fixture("runtime")
+        let submission = NewSessionSubmission(
+            project: project, runtime: runtime, text: "第一条", attachments: [])
+        repo.stageCreation(submission)
+        let response: V2SessionCreateResponse = try fixture("session")
+        repo.bindCreation(submission, response: response)
+
+        let model = chat(repo, http)
+        // The handoff entry carries the bubble the local page already showed;
+        // it must not cold-open over it.
+        #expect(model.opensFromCachedSnapshot)
+        #expect(!model.showsOpeningMask)
+        await model.prepareOpening()
+        #expect(model.openingError == nil)
+        #expect(model.isOpeningReady)
+        #expect(model.timeline.pendingMessages.map(\.id) == [submission.pending.id])
+    }
+
     @Test func coldMaskWaitsForTheFirstPositioningOrItsBoundedFallback() async throws {
         let http = TestHTTPTransport()
         let repo = repository(transport: http)

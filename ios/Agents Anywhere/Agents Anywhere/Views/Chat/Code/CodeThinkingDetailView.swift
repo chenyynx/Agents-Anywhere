@@ -100,7 +100,11 @@ struct CodeThinkingMarkdownView: View {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     var body: some View {
-        CodeMarkdownTextLeaf(text: text, typography: typography)
+        // The thinking detail forbids selection: on iOS 26 the sheet squared
+        // its own corners while a selection's edit menu was up (pp
+        // 2026-11-15), and this page trades selection away instead of chasing
+        // the system chrome. Links still tap.
+        CodeMarkdownTextLeaf(text: text, typography: typography, allowsSelection: false)
     }
 
     @MainActor

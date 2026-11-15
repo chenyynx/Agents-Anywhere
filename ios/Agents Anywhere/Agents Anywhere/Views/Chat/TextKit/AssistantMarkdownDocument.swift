@@ -1228,10 +1228,47 @@ enum AssistantMarkdownDocumentParser {
                 attributes[.assistantInlineCodeChipVerticalPadding] =
                     NSNumber(value: Double(chipStyle.verticalPadding))
             }
+            if !isCode {
+                text = replacingHTMLBreaks(text)
+            }
             output.append(NSAttributedString(string: text, attributes: attributes))
         }
         padInlineCodeChips(output)
         return output
+    }
+
+    /// Models sometimes write an HTML `<br>` to break a line inside a
+    /// paragraph or a table cell. Textual leaves the tag as text; outside code
+    /// the tag can only be markup, so draw a real line break instead
+    /// (pp 2026-11-13). Code blocks and inline code never reach this path.
+    private static func replacingHTMLBreaks(_ text: String) -> String {
+        let characters = Array(text)
+        let lowercased = Array(text.lowercased())
+        guard lowercased.count == characters.count else { return text }
+        var result = ""
+        var index = 0
+        while index < characters.count {
+            if index + 3 < characters.count,
+               lowercased[index] == "<",
+               lowercased[index + 1] == "b",
+               lowercased[index + 2] == "r" {
+                var close = index + 3
+                if close < characters.count, characters[close] == " " {
+                    close += 1
+                }
+                if close < characters.count, characters[close] == "/" {
+                    close += 1
+                }
+                if close < characters.count, characters[close] == ">" {
+                    result.append("\n")
+                    index = close + 1
+                    continue
+                }
+            }
+            result.append(characters[index])
+            index += 1
+        }
+        return result
     }
 
     /// Adds real layout space around every inline-code chip.

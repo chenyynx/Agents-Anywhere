@@ -19,6 +19,24 @@ struct CodeStepGroupRowView: View {
     /// this row for the whole live turn — including between steps, before any
     /// body text (pp 2026-10-29 device observation).
     let isLiveTail: Bool
+    /// Whether a step that still reports `running` may be drawn live. False
+    /// once fresh live facts prove the turn stopped (idle, or an accepted
+    /// stop's optimistic window); late row snapshots must not keep the row
+    /// spinning (pp 2026-11-14).
+    var allowsRunningPose: Bool = true
+    /// Draw a step that still reports `running` with the failure mark.
+    ///
+    /// True once the user stopped the turn: the tool that was running did not
+    /// finish, and the connector's terminal row is a round trip plus settle
+    /// away (device 2026-11-14: the ⚠️ trailed the notice by seconds). Display
+    /// only — the server's own status replaces this as soon as it lands.
+    var treatsRunningAsFailed: Bool = false
+    /// Draw the official interrupted-response notice under the row. The chat
+    /// profile's stopped turn is anchored to this group when it produced no
+    /// partial answer text (pp 2026-11-14).
+    var showsInterruptedNotice: Bool = false
+    /// The session's configured agent name for the notice copy.
+    var interruptedAgentName: String = "Claude"
     let onTap: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -36,16 +54,30 @@ struct CodeStepGroupRowView: View {
             + 2 * CodePageTheme.rowMarginTop
     }
 
+    /// One notice card plus its top gap; used by the collection's estimate.
+    static var interruptedNoticeExtraHeight: CGFloat {
+        ChatInterruptedNoticeCard.estimatedHeight + 8
+    }
+
     var body: some View {
-        row
-            .padding(.vertical, CodePageTheme.rowMarginTop)
+        VStack(alignment: .leading, spacing: 0) {
+            row
+            if showsInterruptedNotice {
+                ChatInterruptedNoticeCard(agentName: interruptedAgentName)
+                    .padding(.top, 8)
+            }
+        }
+        .padding(.vertical, CodePageTheme.rowMarginTop)
     }
 
     /// The live pose: the mark plus the current step's one-line text. It
     /// covers both a running step and the gap between steps while the turn is
     /// still live (`isLiveTail`), so the dots never hop to a separate row
     /// before the reply body.
-    private var showsMark: Bool { isLiveTail || group.isRunning }
+    private var showsMark: Bool {
+        group.showsRunningPose(isLiveTail: isLiveTail,
+                               allowsRunningPose: allowsRunningPose)
+    }
 
     @ViewBuilder
     private var row: some View {
@@ -73,7 +105,8 @@ struct CodeStepGroupRowView: View {
                 icon: summaryIcon,
                 iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
-                status: group.hasFailure ? .failed : .complete,
+                status: group.hasFailure || (treatsRunningAsFailed && group.isRunning)
+                    ? .failed : .complete,
                 failureExtent: nil,
                 hasDetails: true,
                 diffIndicator: nil,

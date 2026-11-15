@@ -96,9 +96,14 @@ final class SessionChatModel {
         // keeps session metadata after evicting rows, and treating that shell
         // as cached suppressed the cold mask while the newest page was still
         // downloading — the session looked broken (device 2026-11-01).
-        // A local creation is the exception: its placeholder is deliberately
-        // empty and the pending bubble must show without a mask.
+        // An unconfirmed outgoing bubble is local content that must show
+        // immediately. A local creation carries it on its placeholder, and
+        // the server entry a creation binds onto starts empty with the same
+        // bubble staged. Without this the bound page cold-opened — blank
+        // until the newest page returned — and replayed the send's entrance
+        // (pp 2026-11-15: the bubble and the working row animated twice).
         opensFromCachedSnapshot = session.isLocalCreation
+            || !session.pendingMessages.isEmpty
             || repository.cached(sessionId: session.id)?.items.isEmpty == false
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
@@ -111,11 +116,44 @@ final class SessionChatModel {
     var isRunning: Bool {
         session.runtime.state?.status.isTurnInFlight == true
     }
-    /// The composer's view of the turn window. It equals `isRunning` except
-    /// inside an accepted interrupt's optimistic window, where the send key is
-    /// already usable — before the frames that report the idle turn land.
-    var isComposerStreaming: Bool {
+    /// The transcript's view of the turn window: the runtime reports a turn
+    /// in flight and no accepted stop is being predicted. Everything that
+    /// paints "the agent is working" reads this instead of `isRunning`, so a
+    /// stop tap settles the UI on the ack rather than waiting for the frames
+    /// that report the idle turn (pp 2026-11-14).
+    var isTurnStreaming: Bool {
         isRunning && !session.runtime.isPredictedIdle
+    }
+    /// What the transcript may paint as working. Adds the stop tap's own
+    /// window to `isTurnStreaming`: from the tap until the ack, the turn is
+    /// still in flight on the wire, but the user has already decided it ended
+    /// — the step row must not keep spinning through that round trip
+    /// (device 2026-11-14). The composer keeps reading `isTurnStreaming`, so
+    /// the send key still waits for the ack.
+    var isTranscriptStreaming: Bool {
+        isTurnStreaming && !session.runtime.stopRequested
+    }
+    /// A step still reporting `running` after the user stopped the turn did
+    /// not finish: draw its failure mark with the interrupted notice instead
+    /// of waiting for the connector's terminal row (device 2026-11-14: the
+    /// ⚠️ trailed the card by seconds). Keyed on the accepted stop, so the
+    /// mark appears the moment the notice does; the server's own status
+    /// replaces it as soon as it lands.
+    var treatsRunningStepsAsFailed: Bool {
+        session.runtime.predictedIdle || session.runtime.stopRequested
+    }
+    /// The composer's view of the same window: inside an accepted interrupt's
+    /// optimistic window the send key is already usable.
+    var isComposerStreaming: Bool { isTurnStreaming }
+
+    /// The turns this client saw the user stop, anchored to their last
+    /// main-agent rows. Stored on the session so the archive restores them
+    /// across relaunches (pp 2026-11-14).
+    var interruptedTurns: [V2InterruptedTurnMarker] { session.interruptedTurns }
+
+    /// Cold-open recovery from the runtime state's interrupt source.
+    func noteAuthoritativeInterruptIfNeeded() {
+        session.noteAuthoritativeInterruptIfNeeded()
     }
     /// The configured instance name, like Web, then its runtime type. Status
     /// copy names the Agent the user chose instead of a generic "Agent".
@@ -227,6 +265,20 @@ final class SessionChatModel {
         return commands.exact(intent)
     }
 
+    /// Autocomplete insert: write `/name` back into the composer and keep
+    /// focus. The caller owns the text selection (the official card selects
+    /// the inserted command so typing replaces it). Sending is a normal
+    /// prompt, so the runtime dispatches the skill itself.
+    @discardableResult
+    func complete(_ command: V2RuntimeCommand) -> String {
+        let draft = session.composer
+        let text = "/\(command.id)"
+        draft.text = text
+        draft.isFocused = true
+        repository.draftDidChange(sessionID: session.id)
+        return text
+    }
+
     /// Menu choice: commands with arguments are completed into the draft.
     func choose(_ command: V2RuntimeCommand) async {
         if let block = commandBlock(command) { fail(commandBlockMessage(command, block)); return }
@@ -285,9 +337,13 @@ final class SessionChatModel {
         openingError = nil
         // A memory-cached visit presents before any network read so the page is
         // usable immediately (D3). Present the same opening window the store
-        // reads, so the later refresh cannot remove rows the reader sees.
+        // reads, so the later refresh cannot remove rows the reader sees. An
+        // unconfirmed bubble counts as presentable content: the entry a
+        // creation binds onto is empty but already carries it, and waiting for
+        // the network left the page blank and replayed the entrance
+        // (pp 2026-11-15).
         if session.isValid, let cached = repository.cached(sessionId: session.id),
-           !cached.items.isEmpty || session.isLocalCreation {
+           !cached.items.isEmpty || session.isLocalCreation || !session.pendingMessages.isEmpty {
             timeline.presentOpening(Array(cached.items.suffix(Self.openingWindow)),
                                     pendingMessages: session.pendingMessages)
             isOpeningPrepared = true
@@ -665,7 +721,8 @@ final class SessionChatModel {
     }
 
     func send(_ text: String, allowsCommands: Bool = true) async {
-        if allowsCommands, let command = await catalogCommand(for: text) {
+        if allowsCommands, let command = await catalogCommand(for: text),
+           !command.isInsertCommand {
             session.composer.text = text
             await runCommand(command, raw: text)
             return
@@ -789,7 +846,20 @@ final class SessionChatModel {
     /// way to be stopped.
     func interrupt() async {
         guard !isWorking else { return }
-        await perform { try await self.repository.interrupt(sessionId: self.session.id, preserveBackground: true) }
+        // The working pose and the running step's failure mark settle at the
+        // tap — both are the user's own decision made visible. The notice is
+        // deliberately *not* drawn here: its anchor is the stopped turn's last
+        // row, and that row is still being written while the turn unwinds, so
+        // an early card moved down when the final row landed (device
+        // 2026-11-14). It appears once, from the connector's durable stamp, at
+        // its final place. Only the composer's send window waits for the
+        // accepted ack.
+        session.runtime.beginStopRequest()
+        _ = await perform {
+            try await self.repository.interrupt(sessionId: self.session.id,
+                                                preserveBackground: true)
+        }
+        session.runtime.endStopRequest()
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

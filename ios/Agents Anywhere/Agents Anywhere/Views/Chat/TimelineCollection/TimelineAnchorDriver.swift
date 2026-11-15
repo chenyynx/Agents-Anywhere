@@ -23,6 +23,15 @@ final class TimelineAnchorDriver {
         var firstRowID: () -> String?
         /// The measured viewport reached the bottom (opening mask release).
         var onBottomArrived: (() -> Void)?
+        /// Placement transitions, for the client diagnostics trail. Args are
+        /// the previous placement, the new placement and the event that
+        /// caused it.
+        var onPlacementChanged: ((String, String, String) -> Void)?
+        /// Mover transitions for the client diagnostics trail: `start`,
+        /// `retarget` (only when the spring actually changes) and `arrived`.
+        /// The detail carries the spring, target/position/delta and whether
+        /// content growth or an explicit request started the motion.
+        var onMoverEvent: ((String, [String: String]) -> Void)?
     }
 
     private(set) weak var scrollView: UICollectionView?
@@ -35,6 +44,11 @@ final class TimelineAnchorDriver {
     /// between `.end` and `.row` is a real distance to animate, not content
     /// growth to track 1:1).
     private var moverPlacement: TimelineAnchorPlacement?
+    /// When the running motion was started. A second height change within one
+    /// insert (row insert then group remeasure, ~13 ms apart on device
+    /// 2026-11-15) must keep the crisp content spring; only a stream whose
+    /// next chunk arrives later than that window earns the 0.4 s catch-up.
+    private var moverStartedAt: CFTimeInterval = 0
     /// The next `.move` was requested by content growth, so a fresh motion
     /// uses the short content spring instead of the 0.4 s catch-up ease.
     private var pendingContentMove = false
@@ -49,6 +63,29 @@ final class TimelineAnchorDriver {
     private var lastTick: CFTimeInterval = 0
     private var pageInsets: UIEdgeInsets = .zero
     private var isApplying = false
+    /// The content height the last scroll event saw. A scroll callback whose
+    /// height differs is a UIKit layout correction from the content change,
+    /// not a reader scroll: while the reader follows `.end`, it must not flip
+    /// the placement to `.reading` (keyboard up + pending row insert, device
+    /// 2026-11-14).
+    private var lastObservedContentHeight: CGFloat?
+    /// The last offset seen outside a running Mover, for the diagnostics
+    /// trail. A scroll callback that moves the page by more than a few points
+    /// while the driver is not writing and the Mover is not running is an
+    /// external write (UIKit layout correction, inset apply) — the shape the
+    /// "page jumped instead of scrolling" report describes (device 2026-11-15).
+    private var lastObservedOffset: CGFloat?
+    /// The last `.end` target this driver followed and when. A target that
+    /// shrinks within the window is an estimated-height correction from the
+    /// same insert, not a new layout.
+    private var lastContentTarget: CGFloat?
+    private var lastContentTargetAt: CFTimeInterval = 0
+    /// A send pins the page to the bottom until the reader takes over. While
+    /// set, a UIKit layout correction following `.end` re-places the follow
+    /// instead of flipping to `.reading`: the working-row → tool-row swap is
+    /// exactly the correction that must not stop the page short of the new
+    /// bottom (device 2026-11-15 02:00:53). Cleared by any reader gesture.
+    private var stickyFollow = false
     private var isSuspended = false
     private var isInteractionPresented = false
     private var didReportOpeningArrival = false
@@ -188,6 +225,18 @@ final class TimelineAnchorDriver {
             || abs(current.bottom - target.bottom) > 0.5
             || abs(current.right - target.right) > 0.5
         guard changed else { return }
+        // Who moved the page when the composer/keyboard changed the inset:
+        // the before/after offset and inset are the only record of the
+        // "page jumped instead of scrolling" report (device 2026-11-15).
+        let diagnosticOffsetBefore = view.contentOffset.y
+        defer {
+            inputs.onMoverEvent?("inset", [
+                "insetBefore": String(format: "%.1f", current.bottom),
+                "insetAfter": String(format: "%.1f", target.bottom),
+                "offsetBefore": String(format: "%.1f", diagnosticOffsetBefore),
+                "offsetAfter": String(format: "%.1f", view.contentOffset.y),
+            ])
+        }
 #if AA_TIMELINE_PROBE
         let offsetBefore = view.contentOffset
         let insetBefore = current
@@ -265,6 +314,10 @@ final class TimelineAnchorDriver {
     // MARK: - Events
 
     func viewportChanged() {
+        // Seed the content-height baseline at the opening landing so the
+        // first post-landing scroll event can tell a content change from a
+        // hand.
+        lastObservedContentHeight = inputs.contentHeight()
         perform(.viewportChanged)
     }
 
@@ -363,8 +416,36 @@ final class TimelineAnchorDriver {
             position: scrollView?.contentOffset.y ?? -1,
             motion: String(describing: state.motion))
 #endif
+        lastObservedContentHeight = inputs.contentHeight()
+        let now = CACurrentMediaTime()
+        if state.placement == .end, let target = state.placement.target(in: geometry()) {
+            // A row inserted under a following reader is first laid out with
+            // its estimated height and corrected a frame or two later. That
+            // correction can shrink the target inside the same insert
+            // (device 2026-11-15 01:33:03: +53 → +2 → +49 in 44 ms); chasing
+            // the intermediate value made the Mover declare arrival 2 pt in
+            // and stall. Keep the last target instead; the next content
+            // change carries the settled height.
+            if let previous = lastContentTarget,
+               target < previous - 0.5,
+               now - lastContentTargetAt < 0.15 {
+                return
+            }
+            lastContentTarget = target
+            lastContentTargetAt = now
+        }
         if isHistoryPaging {
             enforceReadingPlacement()
+            return
+        }
+        if !didReportOpeningArrival {
+            // The opening visit's first content belongs to the opening
+            // landing, not to a follow: the window mounts above its newest
+            // rows and must arrive instantly. Animating it glided the whole
+            // page up while the sidebar closed — the "page moves up when a
+            // session opens" report (pp 2026-11-15; b1224 cold open: a 645 pt
+            // `content` spring started 30 ms after the rows landed).
+            placeDirect()
             return
         }
         // Content growth follows with the short content spring (official
@@ -376,8 +457,10 @@ final class TimelineAnchorDriver {
 
     func readerBeganDragging() {
         // The reader owns the viewport from this point; a slow history page
-        // must not keep the initial anchor.
+        // must not keep the initial anchor. A send's sticky follow ends here:
+        // once the reader scrolls, new content must not pull the page back.
         isHistoryPaging = false
+        stickyFollow = false
         guard let anchor = currentAnchor() else { return }
         perform(.readerBeganDragging(id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
     }
@@ -406,6 +489,22 @@ final class TimelineAnchorDriver {
     /// `scrolledWithoutAHand`). The driver's own writes set `isApplying`.
     func scrolledWithoutAHand() {
         guard state.hasLanded else { return }
+        let previousOffset = lastObservedOffset
+        let previousHeight = lastObservedContentHeight
+        let liveOffset = scrollView?.contentOffset.y ?? 0
+        let liveHeight = inputs.contentHeight()
+        if let previous = lastObservedOffset,
+           !mover.isRunning, !isApplying,
+           abs(liveOffset - previous) > 8 {
+            inputs.onMoverEvent?("scroll", [
+                "position": String(format: "%.1f", liveOffset),
+                "previous": String(format: "%.1f", previous),
+                "contentH": String(format: "%.1f", liveHeight),
+                "placement": String(describing: state.placement),
+            ])
+        }
+        lastObservedOffset = liveOffset
+        lastObservedContentHeight = liveHeight
         guard !isApplying, state.motion != .dragging, state.motion != .coasting else { return }
         if mover.isRunning {
             // A UIKit layout correction moved the page under the Mover. Adopt
@@ -423,8 +522,31 @@ final class TimelineAnchorDriver {
             // stayed at the new page's top).
             return
         }
+        if state.placement == .end, stickyFollow {
+            // A send pins the page to the bottom: a handless layout correction
+            // (working row → tool row, estimated heights) must not flip the
+            // placement to `.reading`. Do not start a motion here —
+            // `contentChanged` owns the follow, and starting one per
+            // correction read as several separate steps instead of one
+            // natural growth (pp 2026-11-15).
+            return
+        }
         guard let anchor = currentAnchor() else { return }
-        perform(.scrolledWithoutAHand(atEnd: isAtEnd(),
+        // While the page follows `.end`, a handless move is a layout artifact —
+        // the content height changed under the page, a Mover's final settle —
+        // not the reader. Reading it as a reader scroll flipped the placement
+        // to `.reading`, and every later follow was refused: a background-task
+        // wake-up's working row and its reply never scrolled into view
+        // (pp 2026-11-15; b1221 log 06:36:22 / 06:41:38 both flipped end →
+        // reading while the content was growing). A real reader scroll arrives
+        // through the drag/coast events above, and VoiceOver moves a
+        // screenful, well past the tolerance.
+        let absorbed = TimelineHandlessScroll.staysFollowing(
+            placement: state.placement,
+            previousOffset: previousOffset,
+            liveOffset: liveOffset,
+            contentHeightChanged: previousHeight.map { abs(liveHeight - $0) > 0.5 } ?? false)
+        perform(.scrolledWithoutAHand(atEnd: absorbed || isAtEnd(),
                                       id: anchor.id, offsetIntoRow: anchor.offsetIntoRow))
     }
 
@@ -434,6 +556,12 @@ final class TimelineAnchorDriver {
         if state.motion == .easing || state.motion == .flying {
             state.motion = .resting
         }
+    }
+
+    /// Pins the page to the bottom after a send. Any reader gesture clears
+    /// it (see `readerBeganDragging`).
+    func beginStickyFollow() {
+        stickyFollow = true
     }
 
     func requestEnd(animated: Bool) {
@@ -473,8 +601,15 @@ final class TimelineAnchorDriver {
     // MARK: - Reducer plumbing
 
     private func perform(_ event: TimelineAnchorEvent) {
+        let previousPlacement = state.placement
         let reduction = TimelineAnchorReducer.reduce(state, event)
         state = reduction.state
+        if state.placement != previousPlacement {
+            inputs.onPlacementChanged?(
+                String(describing: previousPlacement),
+                String(describing: state.placement),
+                String(describing: event))
+        }
         if reduction.action != .move { pendingContentMove = false }
         switch reduction.action {
         case .none:
@@ -499,7 +634,12 @@ final class TimelineAnchorDriver {
             return
         }
         writeOffset(target)
-        if state.placement == .end, !didReportOpeningArrival, isAtEnd() {
+        // An empty window is trivially "at the bottom": reporting the opening
+        // arrival there let the first real content animate in as a follow
+        // (b1226 cold open: a 645 pt `content` spring right after the rows
+        // landed). The arrival is the first landing over real content.
+        if state.placement == .end, !didReportOpeningArrival, isAtEnd(),
+           inputs.contentHeight() > 0 {
             didReportOpeningArrival = true
             inputs.onBottomArrived?()
         }
@@ -555,11 +695,30 @@ final class TimelineAnchorDriver {
             // a stream flush. This must outrank the dead band below, where a
             // live stream keeps a sub-pixel gap while the motion stays alive.
             if contentMove, moverIsContent {
-                mover.retarget(spring: .ease, usesPace: false)
+                // A second height change inside the same insert (working row,
+                // tool row, estimated-height correction — 13–40 ms apart on
+                // device) keeps the crisp content spring. Only a stream whose
+                // next chunk arrives later than this window earns the 0.4 s
+                // catch-up; retargeting every follow made the "正在处理中"
+                // row take 0.53 s to settle (device 2026-11-15 02:39:39).
+                let continuingStream = CACurrentMediaTime() - moverStartedAt > 0.1
+                let wanted: TimelineSpringFollow.Spring =
+                    continuingStream ? .ease : .content
+                let changed = mover.spring != wanted
+                mover.retarget(spring: wanted, usesPace: false)
+                if changed {
+                    reportMover("retarget", spring: wanted, target: target,
+                                position: mover.position, contentMove: contentMove)
+                }
             } else if !contentMove {
+                let changed = mover.spring != spring
                 mover.retarget(spring: spring)
                 if state.motion == .easing, spring == .fly {
                     state.motion = .flying
+                }
+                if changed {
+                    reportMover("retarget", spring: spring, target: target,
+                                position: mover.position, contentMove: contentMove)
                 }
             }
 #if AA_TIMELINE_PROBE
@@ -594,6 +753,9 @@ final class TimelineAnchorDriver {
         mover.start(at: view.contentOffset.y, spring: spring, usesPace: !contentMove)
         moverPlacement = state.placement
         moverIsContent = contentMove
+        moverStartedAt = CACurrentMediaTime()
+        reportMover("start", spring: spring, target: target,
+                    position: view.contentOffset.y, contentMove: contentMove)
 #if AA_TIMELINE_PROBE
         AnchorDeviceProbe.shared.recordMover(
             "start", spring: spring == .fly ? "fly" : "ease",
@@ -605,6 +767,26 @@ final class TimelineAnchorDriver {
 #endif
         state.motion = spring == .fly ? .flying : .easing
         startLink()
+    }
+
+    private func springLabel(_ spring: TimelineSpringFollow.Spring) -> String {
+        if spring == .content { return "content" }
+        if spring == .fly { return "fly" }
+        return "ease"
+    }
+
+    private func reportMover(_ action: String,
+                             spring: TimelineSpringFollow.Spring,
+                             target: CGFloat,
+                             position: CGFloat,
+                             contentMove: Bool) {
+        inputs.onMoverEvent?(action, [
+            "spring": springLabel(spring),
+            "target": String(format: "%.1f", target),
+            "position": String(format: "%.1f", position),
+            "delta": String(format: "%.1f", target - position),
+            "trigger": contentMove ? "content" : "explicit",
+        ])
     }
 
     private func startLink() {
@@ -662,6 +844,11 @@ final class TimelineAnchorDriver {
         // the emergency slack (see `writeOffset`).
         writeOffset(step.position, allowSlack: false)
         if step.arrived {
+            inputs.onMoverEvent?("arrived", [
+                "spring": springLabel(mover.spring),
+                "position": String(format: "%.1f", step.position),
+                "target": String(format: "%.1f", target),
+            ])
             stopMover()
             state.motion = .resting
             perform(.arrived)

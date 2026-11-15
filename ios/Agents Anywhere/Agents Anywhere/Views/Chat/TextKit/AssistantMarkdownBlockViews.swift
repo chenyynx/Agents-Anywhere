@@ -1145,22 +1145,16 @@ enum AssistantInlineCodeChipRenderer {
         drawPieces(pieces, lineWidth: lineWidth)
     }
 
-    /// Table path: cells are drawn with `NSAttributedString.draw`, i.e. the
-    /// TextKit 1 line machinery, so the chip rectangles come from the same
-    /// `NSLayoutManager` line fragments. Mixing a TextKit 2 layout here could
-    /// put a chip on a different line than the text when a cell wraps.
+    /// Table path: the caller supplies the one TextKit 1 layout that also
+    /// draws the cell's glyphs, so the chip rectangles and the drawn text share
+    /// the same line fragments. Building a second layout for the chips put
+    /// their baselines a few points below the text once a cell wrapped.
     static func drawChips(in attributed: NSAttributedString,
-                          width: CGFloat,
+                          layoutManager: NSLayoutManager,
+                          container: NSTextContainer,
                           origin: CGPoint,
                           traitCollection: UITraitCollection) {
-        guard attributed.length > 0, width > 0 else { return }
-        let storage = NSTextStorage(attributedString: attributed)
-        let layoutManager = NSLayoutManager()
-        storage.addLayoutManager(layoutManager)
-        let container = NSTextContainer(
-            size: CGSize(width: width, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        layoutManager.addTextContainer(container)
+        guard attributed.length > 0, container.size.width > 0 else { return }
         layoutManager.ensureLayout(for: container)
 
         let scale = traitCollection.displayScale > 0
@@ -1448,16 +1442,32 @@ private final class AssistantTableSurfaceView: UIView {
                 let text = textRect(row: row, column: column)
                 UIGraphicsGetCurrentContext()?.saveGState()
                 UIRectClip(cell)
-                // Inline-code runs in a cell carry the same chip marker as the
-                // body; paint their chips behind the text before `draw`.
+                // Inline-code cells build one TextKit 1 layout for both the
+                // chips and the glyphs. `NSAttributedString.draw` would lay the
+                // text out a second time, and on wrapped cells the two layouts
+                // put the glyph baseline and the chip a few points apart.
                 if AssistantInlineCodeChipRenderer.containsChip(string) {
+                    let storage = NSTextStorage(attributedString: string)
+                    let layoutManager = NSLayoutManager()
+                    storage.addLayoutManager(layoutManager)
+                    let container = NSTextContainer(
+                        size: CGSize(width: text.width,
+                                     height: .greatestFiniteMagnitude))
+                    container.lineFragmentPadding = 0
+                    layoutManager.addTextContainer(container)
+                    layoutManager.ensureLayout(for: container)
                     AssistantInlineCodeChipRenderer.drawChips(
-                        in: string, width: text.width, origin: text.origin,
+                        in: string, layoutManager: layoutManager,
+                        container: container, origin: text.origin,
                         traitCollection: traitCollection)
+                    layoutManager.drawGlyphs(
+                        forGlyphRange: layoutManager.glyphRange(for: container),
+                        at: text.origin)
+                } else {
+                    string.draw(with: text,
+                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                context: nil)
                 }
-                string.draw(with: text,
-                            options: [.usesLineFragmentOrigin, .usesFontLeading],
-                            context: nil)
                 UIGraphicsGetCurrentContext()?.restoreGState()
             }
         }

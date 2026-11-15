@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from connector.runtime_protocol import (
@@ -11,6 +12,7 @@ from connector.runtime_protocol import (
     RuntimeSessionStateCache,
 )
 from connector.runtimes.claude.domain.commands import list_claude_commands
+from connector.runtimes.claude.domain.skills import ClaudeSkill
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.turns.actions import ClaudeTurnActionHandler
 
@@ -36,6 +38,8 @@ class ClaudeCommandController:
         external_session_id: str | None,
         query: str | None = None,
         limit: int = 50,
+        *,
+        skills: Sequence[ClaudeSkill] = (),
     ) -> tuple[RuntimeCommand, ...]:
         state = self.session_states.get(session_id)
         if state is None and external_session_id is not None:
@@ -45,6 +49,7 @@ class ClaudeCommandController:
             query,
             limit,
             status=state.status if state is not None else "idle",
+            skills=skills,
         )
 
     async def execute_command(

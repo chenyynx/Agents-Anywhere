@@ -1742,6 +1742,7 @@ async def list_session_runtime_commands(
     session_id: str,
     query: str | None = Query(default=None, max_length=4096),
     limit: int = Query(default=100, ge=1, le=1000),
+    include_skills: bool = Query(default=False, alias="includeSkills"),
     user_id: str = Depends(current_user_id),
     db: Store = Depends(get_store),
     manager: ConnectorRpcManager = Depends(get_rpc),
@@ -1765,6 +1766,8 @@ async def list_session_runtime_commands(
     }
     if query is not None:
         params["query"] = query
+    if include_skills:
+        params["includeSkills"] = True
     if session.externalSessionId:
         params["externalSessionId"] = session.externalSessionId
     try:

@@ -44,6 +44,7 @@ Agents Anywhere 是一个跨设备的 Agent 工作台。工作设备上的 **Con
 - CI 覆盖：`.github/workflows/backend-ci.yml` 跑 Server 与 Connector 的 ruff + pytest（push 到 `dev` 或 PR 涉及 `server/`、`connector/` 时触发）；`.github/workflows/ios-build.yml` 跑 iOS 单测与 unsigned IPA。Web、Desktop、Android、dsh-bridge-next 仍要靠本地检查。
 - **测试跑在哪儿**：本地只跑与改动相关的测试文件（如 `uv run pytest tests/test_timeline.py -q`）。Server 全量套件（约 1200 个用例）在普通开发机上很慢且吃内存，放到资源更充足的内部测试机上跑全套；不要在本机串行跑全量。
 - **CI 是权威门禁**：push 到 `dev`（或开 PR）后以 `backend-ci.yml` 的结果为准。注意本仓库**不提交 lockfile**，依赖按版本下界解析，本地环境与 CI 拉到的版本可能不同——**本地绿不等于 CI 绿**，反之亦然。
+- **复杂 iOS bug 修完后要收尾**：Bug 经验库条目必须带证据（诊断 `kind` + 时间戳 + 具体数值、commit SHA、出包包号），真机确认后才标「已确认」；根因藏在日志看不见的状态里时，顺手补一条低频、只在变化时写的诊断行（例：`timeline.compact.row`）。
 
 ## 跨端修改的规则
 
@@ -59,7 +60,7 @@ Agents Anywhere 是一个跨设备的 Agent 工作台。工作设备上的 **Con
 
 ## 提交与 PR
 
-- **从最新的 `dev` 创建分支**。本仓库是上游 `anywhere-labs/Agents-Anywhere` 的下游镜像，`dev` 才是本仓库的集成线（当前比 `main` 领先 329 个提交、不落后），部署面也是从 `dev` 同步的；`main` 只用来同步上游，不要从它建分支。
+- **从最新的 `feat/code-profile-beta` 创建分支**。本仓库是上游 `anywhere-labs/Agents-Anywhere` 的下游镜像；当前集成与发布线是 `feat/code-profile-beta`（部署从 beta 同步），`dev` 已冻结、不再合入；`main` 只用来同步上游，不要从它建分支。
 - 分支名用朴素名（`fix/<topic>`、`feat/<topic>`、`docs/<topic>`），**不带工具或署名前缀**（`codex/`、`cc/` 都不用）。
 - 提交信息使用 Conventional Commits，并带上作用域，例如 `fix(dsh): ...`、`feat(android): ...`、`docs(ios): ...`。正文可以用中文或英文。
 - 一个 PR 只做一件事。不要顺手提交与任务无关的本地改动、部署检查点或调试产物（`.local-dev/`、截图、日志）。

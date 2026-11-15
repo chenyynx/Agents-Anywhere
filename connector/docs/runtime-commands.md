@@ -8,6 +8,12 @@ Selecting a command that accepts arguments inserts an editable draft. Submit the
 draft to execute it. The request preserves its original text, including whitespace
 and newlines; attachments remain in the draft and are not sent with commands.
 
+Rows with `metadata.ui.kind = "insert"` are prompt templates, not actions: the
+client writes their `/name` back into the composer (selecting the inserted text)
+and sending is an ordinary prompt. A session command list reads them only when
+the caller opts in with the `includeSkills` query flag, so clients that cannot
+render the autocomplete card keep the action-only catalog.
+
 ## Codex
 
 AA exposes only `/compact` for Codex. It takes no arguments and requests native
@@ -15,6 +21,14 @@ context compaction in the SDK session owned by AA. `/compact-thread` remains an
 alias of the same command, not a separate menu entry. Other Codex slash commands
 are absent from the catalog and rejected by the command API. Model, reasoning
 and permission settings remain available through the session selection controls.
+
+With `includeSkills=1`, the catalog also lists the enabled Codex skills from the
+app-server's `skills/list` as `kind: "insert"` rows. Selecting one returns
+`/name` to the composer; sending it makes the connector start the turn with a
+native `SkillUserInput(name, path)` (plus the remaining text), not the command
+API. A `/name` prompt naming no loaded skill stays ordinary user text, and the
+desktop-app IPC handoff path has no skill input — those sessions fall back to
+plain text.
 
 Compaction requires an idle or failed turn and respects known archived, missing,
 deleted and unavailable source states. The SDK adapter resumes the native thread
@@ -41,7 +55,16 @@ status when the native snapshot omits item status.
 AA exposes only `/compact` for Claude. It takes no arguments: the CLI compacts
 the whole conversation, so an appended remark is rejected before any prompt is
 sent. The CLI reports many more native slash commands, skills included; none of
-them reach the catalog, and every other name is rejected by the command API.
+them reach the command API, and every other name is rejected there.
+
+With `includeSkills=1`, the session catalog additionally carries the rows of
+the CLI's own skills menu (`get_skills_dialog`: `display_name`, `description`,
+source, state, advertised). They are `kind: "insert"` prompt templates:
+selecting one returns `/name` to the composer and sending it is a normal
+prompt, which the CLI dispatches as its skill invocation. Rows the CLI does not
+advertise as slash commands (`off`, not user-invocable) are omitted. The
+control is @internal; a missing subtype, timeout or malformed answer degrades
+to the action-only catalog.
 
 The command runs through the ordinary Claude turn path — the same session lock,
 turn state machine and SDK connection an interactive reply uses — so a busy
@@ -103,6 +126,13 @@ Agent's native registry before applying search and limits. If that Agent has no
 registered `compact` command, the catalog is empty. Both the bridge and Python
 connector reject other command names, including commands that depend on DSH's
 client UI. The connector also filters catalogs returned by older bridges.
+
+With `includeSkills=1`, the bridge also returns the session's user-invocable
+skills (`sessionSkillCatalog.list`) as `kind: "insert"` rows. The connector keeps
+only those insert rows alongside `/compact`; any other native command stays out.
+Sending `/name args` is currently an ordinary prompt — this bridge version has no
+skill-invoke API, so whether the DSH host dispatches the skill from that text is
+still a live-session probe, not a guaranteed path.
 
 Compaction still runs through the native registry's parser and handler, preserving
 the exact submitted line and native result text. The shipped DSH command takes

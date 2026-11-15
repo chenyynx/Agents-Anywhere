@@ -19,22 +19,24 @@ import Testing
         #expect(actions["first"] == nil && actions["second"] == nil)
     }
 
-    /// A finished reply gets its footer before the runtime reports idle. The
-    /// connector closes the message row on the message boundary; the CLI turn
-    /// result lands later, and waiting for it made the footer appear one beat
-    /// after the reply (device 2026-10-31 16:14: text final at t=390.74,
-    /// footer at t=392.30). A still-streaming reply must not gain one.
-    @Test func aFinishedReplyGetsItsFooterBeforeTheTurnReportsIdle() throws {
+    /// A finished reply waits for its turn to end. The footer must not hop to
+    /// the latest finished segment while the turn is still streaming
+    /// (pp 2026-11-14). A turn that is no longer the latest still commits
+    /// when the next user message starts it.
+    @Test func aFinishedReplyWaitsForTheTurnEnd() throws {
         let finishedRows = try [row("user-1", role: "user"), row("reply-1", text: "Done"),
             row("user-2", role: "user"), row("reply-2", text: "Also done")]
-        let finished = TimelineTurnActions.build(
+        let running = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(finishedRows, interactionTargets: []),
             suppressLatest: true)
-        #expect(finished.count == 2)
-        #expect(finished["reply-1"]?.copyText == "Done")
-        #expect(finished["reply-2"]?.copyText == "Also done")
-        #expect(TimelineTurnActions.build(groups: TimelineGrouping.groups(finishedRows,
-            interactionTargets: []), suppressLatest: false).count == 2)
+        #expect(running.count == 1)
+        #expect(running["reply-1"]?.copyText == "Done")
+        #expect(running["reply-2"] == nil)
+        let ended = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(finishedRows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(ended.count == 2)
+        #expect(ended["reply-2"]?.copyText == "Also done")
 
         let streamingRows = try [row("user-3", role: "user"),
             row("reply-3", text: "Streaming", status: "running")]
@@ -80,19 +82,16 @@ import Testing
     }
 
     /// A tool call continues the same turn. The finished reply's footer must
-    /// stay while the tool segment runs, or that row loses ~30 pt mid-turn and
-    /// the bottom-follow page jumps down (device 2026-10-31 14:25: the reply
-    /// measured 164→134 and the offset moved -30 in the same apply).
-    @Test func aToolSegmentKeepsTheFinishedReplysFooter() throws {
+    /// wait for the turn end instead of appearing on the reply mid-turn.
+    @Test func aToolSegmentWaitsForTheTurnEnd() throws {
         let runningRows = try [row("user", role: "user", text: "Question"),
                                row("reply", text: "Answer"),
                                row("tool", type: "tool", status: "running")]
         let running = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(runningRows, interactionTargets: []),
             suppressLatest: true, footerHostEligible: { $0.id != "tool" })
-        #expect(running["reply"]?.copyText == "Answer")
-        #expect(running["tool"] == nil)
-        // When the turn ends the footer stays on the final reply host.
+        #expect(running.isEmpty)
+        // When the turn ends the footer lands on the final reply host.
         let finishedRows = try [row("user", role: "user", text: "Question"),
                                 row("reply", text: "Answer"),
                                 row("tool", type: "tool", status: "done")]
@@ -100,22 +99,40 @@ import Testing
             groups: TimelineGrouping.groups(finishedRows, interactionTargets: []),
             suppressLatest: false, footerHostEligible: { $0.id != "tool" })
         #expect(finished["reply"]?.copyText == "Answer")
+        #expect(finished["tool"] == nil)
     }
 
-    /// The runtime status flaps between running and idle across tool steps.
-    /// When the flap looks idle but the tool row is still active, the footer
-    /// must stay on the finished reply instead of flickering away and back
-    /// (device 2026-10-31 14:55: the same row measured 146↔176 every few
-    /// seconds).
-    @Test func aRunningToolKeepsTheFooterWhenTheTurnLooksIdle() throws {
+    /// A running tool inside the turn keeps the commit closed even when the
+    /// runtime status briefly reads idle: the footer returns only after the
+    /// turn really ends.
+    @Test func aRunningToolKeepsTheFooterClosed() throws {
         let rows = try [row("user", role: "user", text: "Question"),
                         row("reply", text: "Answer"),
                         row("tool", type: "tool", status: "running")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
             suppressLatest: false, footerHostEligible: { $0.id != "tool" })
+        #expect(actions.isEmpty)
+    }
+
+    /// A compaction is session maintenance, not the latest turn's work: while
+    /// the connector's compact marker runs (status `running`, wire kind
+    /// `compact`), the finished turn keeps its footer. Counting the marker as
+    /// active turn content hid copy/share — and the 30 pt action bar with
+    /// them — for the whole compaction (pp 2026-11-15).
+    @Test func aRunningCompactMarkerDoesNotHideTheFinishedTurnsFooter() throws {
+        var marker = try itemObject(id: "compact")
+        marker["type"] = "marker"
+        marker["role"] = "system"
+        marker["status"] = "running"
+        marker["content"] = ["kind": "compact", "state": "started"]
+        let compact = ChatTimelineRowModel(try decode(marker))
+        let rows = try [row("user", role: "user", text: "Question"),
+                        row("reply", text: "Answer"), compact]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
         #expect(actions["reply"]?.copyText == "Answer")
-        #expect(actions["tool"] == nil)
     }
 
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
@@ -126,5 +143,184 @@ import Testing
         let echoed = TimelineGrouping.groups(rows + [try row("echo", role: "user")], interactionTargets: [])
         let after = TimelineTurnActions.build(groups: echoed, suppressLatest: true)
         #expect(after["reply"]?.copyText == pending["reply"]?.copyText)
+    }
+}
+
+/// Which pending deliveries still open the new turn for the footer gate.
+///
+/// A `confirmed` record is retained by the presentation until its echo row
+/// publishes (`SessionTimelinePresentation.synchronizePending`). Excluding it
+/// from the turn-opening set made the previous turn's footer vanish for that
+/// one refresh: the group lost its 30 pt action bar, the bottom clamped -30,
+/// and the send's working-row follow started from the corrected offset —
+/// the "jump then scroll" report (pp 2026-11-15).
+@Suite @MainActor struct TurnOpeningDeliveryTests {
+    @Test func aConfirmedPendingStillOpensTheTurnUntilItsEcho() {
+        #expect(TimelineTurnActions.opensTurn(.sending))
+        #expect(TimelineTurnActions.opensTurn(.accepted))
+        #expect(TimelineTurnActions.opensTurn(.confirmed))
+    }
+
+    @Test func failedDeliveriesDoNotOpenTheTurn() {
+        let failure = V2ClientFailure(kind: .transient, message: "boom")
+        #expect(!TimelineTurnActions.opensTurn(.uncertain(failure)))
+        #expect(!TimelineTurnActions.opensTurn(.rejected(failure)))
+    }
+}
+
+@Suite("Turn footer gate")
+struct TurnFooterGateTests {
+    @Test func aRestoredFinishedTurnStartsClosed() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!open)
+    }
+
+    @Test func aRestoredRunningTurnStartsOpen() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(open)
+    }
+
+    @Test func aNewUserMessageOpensTheTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let open = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(open)
+    }
+
+    @Test func anAuthoritativeEndClosesTheTurnAndAResumedTurnReopensIt() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        // A running/idle flap with no authoritative end keeps the turn open.
+        let flapWhileOpen = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(flapWhileOpen)
+        let afterEnd = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!afterEnd)
+        // The runtime reports a turn in flight on the same user message: a
+        // tool step resumed or the status was stale. Suppress again instead
+        // of leaving the footer mid-turn (device 2026-11-14).
+        let resumed = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(resumed)
+    }
+
+    @Test func aColdOpenMidTurnReopensWhenTheLiveStatusArrives() {
+        var gate = TurnFooterGate()
+        // The first refresh can precede the live runtime status; the app was
+        // launched while a turn was already running (device 2026-11-14).
+        let beforeStatus = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!beforeStatus)
+        let afterStatus = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(afterStatus)
+    }
+
+    @Test func theNextTurnReopensAfterAClosedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let reopened = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(reopened)
+        let closedAgain = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 2)
+        #expect(!closedAgain)
+    }
+
+    /// A command compaction opens a turn on the wire with no user bubble, so
+    /// the runtime reports a turn in flight while the reply on screen is
+    /// finished. The gate must not reopen on it (pp 2026-11-15: copy/share
+    /// disappeared for the whole compaction).
+    @Test func aCompactionDoesNotReopenAClosedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        let closed = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!closed)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!duringCompaction)
+    }
+
+    /// The compact row settles before the runtime reports the turn's end, and
+    /// that tail still belongs to the compaction. Reopening the gate on it
+    /// hid the finished turn's footer until the runtime went idle (pp
+    /// 2026-11-15 08:09:20.7 → 08:09:22.1, b1228: content 66602 → 66572 →
+    /// 66602, i.e. the 30 pt action bar blinked out and back for 1.3 s).
+    @Test func aCompactionTailDoesNotReopenAClosedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!duringCompaction)
+        // The marker row is finished on the wire; the runtime still runs.
+        let settledRowStillRunning = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                                 authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!settledRowStillRunning)
+        // The turn ends; the footer must have stayed visible throughout.
+        let idleAfterCompaction = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                              authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!idleAfterCompaction)
+        // A later user turn still opens and suppresses the new footer.
+        let nextTurn = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(nextTurn)
+    }
+
+    /// A cold open during a compaction must not start suppressed and must not
+    /// reopen on the compaction's tail either (same 30 pt blink as the
+    /// in-session case).
+    @Test func aColdOpenDuringACompactionStaysClosedThroughTheTail() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true,
+                               authoritativeTurnEnds: 0, isCompacting: true)
+        #expect(!open)
+        let settled = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                  authoritativeTurnEnds: 0, isCompacting: false)
+        #expect(!settled)
+        let idle = gate.update(userKey: "u1", runtimeIsRunning: false,
+                               authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!idle)
+    }
+
+    /// The compaction's own status can reopen the gate before its marker row
+    /// reaches the client. Once the compaction is visible, a turn that no
+    /// user bubble opened must close again, or the finished turn keeps its
+    /// footer hidden for the whole compaction (pp 2026-11-15).
+    @Test func aCompactionClosesATurnTheRuntimeStatusAloneReopened() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let statusWindow = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                       authoritativeTurnEnds: 1)
+        #expect(statusWindow)
+        let compactionVisible = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                            authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!compactionVisible)
+    }
+
+    /// A compaction inside the user's own running turn (automatic compaction
+    /// mid-turn) must not reveal the footer early: the turn is still working.
+    @Test func aCompactionLeavesAUserOpenedTurnOpen() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u0", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let userTurn = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(userTurn)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(duringCompaction)
+    }
+
+    /// A cold open during a compaction lands on a finished turn, not a
+    /// running one: the footer must not start suppressed.
+    @Test func aColdOpenDuringACompactionStartsClosed() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true,
+                               authoritativeTurnEnds: 0, isCompacting: true)
+        #expect(!open)
+    }
+
+    @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {
+        var gate = TurnFooterGate()
+        let first = gate.update(userKey: nil, runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!first)
+        let afterUserArrives = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!afterUserArrives)
     }
 }

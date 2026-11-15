@@ -60,7 +60,7 @@ import Testing
                                 ui: ["kind": "insert", "acceptsMultiline": true])
         #expect(skill.ui == .insert)
         #expect(skill.isInsertCommand)
-        #expect(skill.acceptsArgs)
+        #expect(skill.acceptsArgs == true)
         // Selecting a skill only writes text; a running turn must not grey it.
         #expect(skill.allowed(status: .running))
         #expect(skill.allowed(status: .idle))

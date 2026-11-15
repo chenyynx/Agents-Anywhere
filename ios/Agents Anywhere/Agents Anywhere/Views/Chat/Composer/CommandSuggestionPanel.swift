@@ -60,7 +60,11 @@ struct CommandSuggestionPanel: View {
         guard slashQuery != nil, dismissedFor != draft.text else { return false }
         // Typing "/" explains why commands cannot run; longer text stays a message.
         if chat.commandsUnavailableReason != nil { return draft.text.trimmingCharacters(in: .whitespaces) == "/" }
-        return !suggestions.isEmpty || (chat.commands.isEmpty && (chat.isLoadingCommands || chat.commandsError != nil))
+        // Stay visible while the catalog is still empty so the panel's `.task`
+        // can load it. Before this, typing `/` on a fresh session never
+        // opened the card at all: the old condition required the catalog to
+        // be loading, which only happened after the card was already shown.
+        return true
     }
 
     /// Official cap: five `rowMinHeight`s plus the 8 pt insets on both ends.

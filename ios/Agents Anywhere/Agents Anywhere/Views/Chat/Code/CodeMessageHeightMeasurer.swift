@@ -244,11 +244,23 @@ enum CodeMessageHeightMeasurer {
     /// fifth of a screen the first fit had to take back.
     private static func estimatedAssistantTextHeight(_ text: String, width: CGFloat,
                                                      typography: TimelineTypographySnapshot) -> CGFloat {
-        TimelineHeightEstimate.height(
+        // The measured layout (`AssistantMarkdownTextLayout`) gives the first
+        // line the body font's natural line box and applies the extra leading
+        // only between lines; the Code row plan owns the gap between blocks.
+        // Charging a full `body + lineSpacing` line plus a trailing paragraph
+        // gap made a one-line message estimate 15 pt too tall, so the follower
+        // sprang forward on the new message and retreated when the cell
+        // reported its height (pp 2026-11-16, `timeline.mover` start 44 →
+        // arrived target −15 on every new assistant message).
+        let bodyFont = MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                size: max(1, typography.body), weight: 400)
+        return TimelineHeightEstimate.height(
             rows: [TimelineHeightEstimate.TextRow(text: text)], width: width,
             bodySize: typography.body, lineSpacing: typography.lineSpacing,
             paragraphSpacing: typography.paragraphSpacing,
-            minimum: 0, cushion: 1)
+            minimum: 0, cushion: 1,
+            firstLineHeight: bodyFont.lineHeight,
+            countsParagraphSpacing: false)
     }
 
     /// The user bubble is plain `Text` in a 36 pt opposite gutter with 16 pt

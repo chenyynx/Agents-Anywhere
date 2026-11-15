@@ -247,6 +247,52 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last grouping shape written to diagnostics. A live turn changes it
     /// often; logging only changes keeps the trail useful without flooding it.
     private var lastGroupingSignature: String?
+
+    /// The last compact row's state and the words the divider would draw,
+    /// logged when it changes. A compaction leaves a handful of lines; a
+    /// missing settled line means the client never applied the marker's
+    /// update, while a settled line plus a stale label points at the renderer
+    /// (pp 2026-11-15, b1230: 「正在压缩对话…」stayed after the compaction
+    /// finished until the session was reopened).
+    private var lastCompactRowProbe: String?
+
+    private func noteCompactRowState() {
+        // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
+        // turn can still change sits after the last user row, so the scan
+        // stops there instead of walking the whole window every refresh.
+        var compact: V2TimelineItem?
+        for row in model.timeline.rows.reversed() {
+            let item = row.value
+            if item.role == .user { break }
+            if TimelineEntryPresentation.isCompactItem(item) { compact = item; break }
+        }
+        guard let item = compact else {
+            // The marker left the live turn (a new prompt arrived): forget
+            // the last line so the next compaction logs its own first state.
+            lastCompactRowProbe = nil
+            return
+        }
+        let state = item.raw["content"]?["state"]?.stringValue ?? "nil"
+        let probe = "\(item.id)|\(item.status.rawValue)|\(state)|\(item.revision)"
+        guard probe != lastCompactRowProbe else { return }
+        lastCompactRowProbe = probe
+        // The label is parsed only when the row's own state moved, not on
+        // every stream refresh.
+        let title = TimelineEntryPresentation(item: item,
+                                              cwd: model.session.metadata?.cwd).title
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.compact.row",
+            sessionID: model.session.id,
+            detail: [
+                "item": item.id,
+                "status": item.status.rawValue,
+                "state": state,
+                "revision": String(item.revision),
+                "title": title,
+            ],
+            dedupe: false)
+    }
+
     /// What the last chat refresh built for each unit, aligned by index.
     /// The grouping cache proves the leading units unchanged; their built
     /// groups are still exact, so the refresh rebuilds only the tail — the
@@ -2212,6 +2258,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.rowToItem = rowToItem
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
+        noteCompactRowState()
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)

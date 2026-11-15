@@ -38,6 +38,27 @@ import Testing
         #expect(!regrouped.isSet)
     }
 
+    /// The row body reads its parsed entry through a cache; that read must
+    /// keep the Observation dependency on `value` even when the cache
+    /// short-circuits. Losing it meant a status-only update (the compact
+    /// marker settling from running to done) never re-evaluated the row, and
+    /// the divider kept 「正在压缩对话…」 until the session was reopened
+    /// (pp 2026-11-15, b1230).
+    @Test @MainActor func aCachedEntryReadKeepsTheItemDependency() throws {
+        let row = ChatTimelineRowModel(try item("system", status: "running",
+                                                content: ["kind": "compact", "state": "started"]))
+        _ = row.entry(cwd: nil)  // the first read is a cache miss and fills it
+        let changed = ObservationFlag()
+        withObservationTracking {
+            _ = row.entry(cwd: nil)  // cached read: must still touch `value`
+        } onChange: { changed.set() }
+        row.flush(try item("system", status: "done",
+                           content: ["kind": "compact", "state": "completed"]),
+                  animate: false, now: 1)
+        #expect(changed.isSet)
+        #expect(row.entry(cwd: nil).title.contains("已压缩对话"))
+    }
+
     @Test func toolMarkerKeepsSummarySeparateFromDetailedOutputAndChanges() throws {
         let output = TimelineEntryPresentation(item: try item(content: ["kind": "command", "command": "build", "output": ["result": [1, 2, 3]]]), cwd: nil)
         #expect(output.title == "执行 build" && output.hasToolDetails)

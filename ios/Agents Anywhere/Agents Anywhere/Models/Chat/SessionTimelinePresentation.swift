@@ -89,6 +89,15 @@ final class ChatTimelineRowModel: Identifiable {
     /// Tool/marker rows parse their payload once per item version instead of
     /// on every body evaluation of the row and its expanded details.
     func entry(cwd: String?) -> TimelineEntryPresentation {
+        // Touch the stored item before the cache short-circuits. SwiftUI
+        // registers an Observation dependency per body evaluation, so a view
+        // re-running against the cached entry would otherwise drop its
+        // dependency on `value`; a later status-only update (the compact
+        // marker settling from running to done) then never re-evaluated the
+        // view, and its title kept the progress words until the session was
+        // reopened (pp 2026-11-15, b1230: 「正在压缩对话…」stayed after the
+        // compaction finished).
+        _ = value
         if let entryCache, entryCache.cwd == cwd { return entryCache.entry }
         let entry = TimelineEntryPresentation(item: value, cwd: cwd)
         entryCache = (cwd, entry)

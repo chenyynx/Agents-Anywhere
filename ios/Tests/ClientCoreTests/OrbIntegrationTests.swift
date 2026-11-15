@@ -44,6 +44,23 @@ import Testing
         return try decode(object, as: V2TimelineItem.self)
     }
 
+    /// A live Agent dispatch card: a top-level tool row whose status stays
+    /// `running` while the subagent works — the connector's task overlay keeps
+    /// the card "running" until a terminal frame
+    /// (connector/runtimes/claude/timeline/agent_calls.py).
+    private func agentCallItem(id: String = "agent-call", order: Int = 1,
+                               status: String = "running") throws -> V2TimelineItem {
+        var object = try itemObject(id: id, order: order)
+        object["type"] = "tool"
+        object["status"] = status
+        object.removeValue(forKey: "role")
+        let content: [String: Any] = ["kind": "agent_call",
+                                      "title": "Review the patch",
+                                      "agents": ["task-1": ["status": "running"]]]
+        object["content"] = content
+        return try decode(object, as: V2TimelineItem.self)
+    }
+
     /// A running assistant message payload for the socket harness.
     private func liveItemObject(id: String = "item", order: Int = 1, revision: Int = 1,
                                 seq: Int = 10, status: String = "running") throws -> [String: Any] {
@@ -235,6 +252,42 @@ import Testing
         // The tool layer sits above the thinking layer: a live file change must
         // read as tool work even while reasoning rows are also running.
         #expect(model.orbActivity == .toolRunning)
+    }
+
+    @Test func aRunningAgentDispatchDoesNotHoldTheMainTurnPhase() throws {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        let model = SessionChatModel(session: repo.session(id: "session"), repository: repo,
+            attachments: .init(attachmentAPI: V2AttachmentAPI(transport: http)))
+        // The subagent runs while the main agent streams its own text.
+        model.timeline.presentOpening([
+            try agentCallItem(status: "running"),
+            try orbItem(status: "running"),
+        ], pendingMessages: [])
+        let signals = model.orbActivitySignals
+        // The dispatch row is the subagent's work, not the main turn's tool
+        // work. Counting it pinned `ChatTurnPhase` at `usingTool` for the whole
+        // run, so the main agent's own tool calls never changed the phase and
+        // never played their cue (pp device, b1258).
+        #expect(!signals.hasActiveToolItem)
+        #expect(signals.isStreamingAssistantText)
+        #expect(ChatTurnPhase.resolve(toolActive: signals.hasActiveToolItem,
+                                      writing: signals.isStreamingAssistantText,
+                                      reasoning: signals.hasActiveReasoningItem) == .writing)
+        // The orb still reads the run as parallel work, so the capsule and the
+        // orb never disagree about what is running.
+        #expect(model.orbActivity == .parallelWork)
+
+        // A main-agent tool row still counts beside the dispatch.
+        let toolHTTP = TestHTTPTransport()
+        let toolRepo = repository(transport: toolHTTP)
+        let toolModel = SessionChatModel(session: toolRepo.session(id: "session"), repository: toolRepo,
+            attachments: .init(attachmentAPI: V2AttachmentAPI(transport: toolHTTP)))
+        toolModel.timeline.presentOpening([
+            try agentCallItem(status: "running"),
+            try orbItem(type: "tool", role: nil, status: "running"),
+        ], pendingMessages: [])
+        #expect(toolModel.orbActivitySignals.hasActiveToolItem)
     }
 
     // MARK: - Projection merge outcomes

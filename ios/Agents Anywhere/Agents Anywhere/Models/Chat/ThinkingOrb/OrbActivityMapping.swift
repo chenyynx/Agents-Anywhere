@@ -65,12 +65,24 @@ extension SessionChatModel {
         // child's thinking into the working row (pp 2026-11-16). The capsule
         // count still reads the full window: the cards are top-level rows.
         let mainItems = items.filter { SubAgentProgress.parentItemID($0) == nil }
+        // A running Agent dispatch is a tool row whose status stays `running`
+        // for the whole subagent lifetime (connector `agent_calls.py`:
+        // task events keep the card "running" until a terminal frame). Counting
+        // it as the main turn's tool work pins `ChatTurnPhase` at `usingTool`
+        // for the entire run, so the main agent's own tool calls never change
+        // the phase and never play their cue (pp device, 2026-11-16, b1258).
+        // The orb's own table already prefers `parallelWork` while a card runs,
+        // so dropping the dispatch row leaves the orb unchanged.
+        let mainToolIsActive = mainItems.contains {
+            TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive
+                && !SubAgentProgress.isAgentCall($0)
+        }
         let value = OrbActivitySignals(
             status: fresh ? session.runtime.state?.status : nil,
             hasRespondableNotice: session.notices.visibleNotices.contains { $0.canRespond(fresh: fresh) },
             runningSubagentCount: SubAgentProgress.capsuleState(
                 inWindow: items, activeCards: session.activeAgentCards).runningCount,
-            hasActiveToolItem: mainItems.contains { TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive },
+            hasActiveToolItem: mainToolIsActive,
             hasActiveCompactItem: mainItems.contains {
                 TimelineEntryPresentation.isCompactItem($0) && TimelineEntryPresentation.isActiveCompactItem($0)
             },

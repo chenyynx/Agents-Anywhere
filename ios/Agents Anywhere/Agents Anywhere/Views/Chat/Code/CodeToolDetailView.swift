@@ -141,8 +141,11 @@ struct CodeToolGroupCallRow: View {
         let runs = CodeToolLabels.runs(
             for: label, differentiateWithoutColor: differentiateWithoutColor)
         HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            // Same size class as the step sheet's rows: the 19 pt wrench
+            // read a size bigger than the sheet it was opened from
+            // (pp 2026-11-16).
             AnthropiconView(name: CodeToolLabels.anthropicon(for: call),
-                            size: .large)
+                            size: .medium)
                 .foregroundStyle(CodePageTheme.text500Color
                     .resolved(for: colorScheme))
                 .frame(width: CodePageTheme.toolRowIconFrameSize,
@@ -417,8 +420,11 @@ struct CodeToolCallDetailView: View {
     /// (`CodeDetailRowHooks`) rather than being invented per call site.
     private var summaryRow: some View {
         HStack(alignment: .center, spacing: CodeDetailRowHooks.iconSpacing) {
+            // Same size class as the step sheet's rows: the 19 pt wrench
+            // read a size bigger than the sheet it was opened from
+            // (pp 2026-11-16).
             AnthropiconView(name: CodeToolLabels.anthropicon(for: call),
-                            size: .large)
+                            size: .medium)
                 .foregroundStyle(CodeDetailRowHooks.iconTint)
                 .frame(width: CodePageTheme.toolRowIconFrameSize,
                        height: CodePageTheme.toolRowIconFrameSize)

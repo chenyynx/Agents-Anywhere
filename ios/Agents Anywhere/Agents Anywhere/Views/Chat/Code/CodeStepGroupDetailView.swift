@@ -259,9 +259,14 @@ struct CodeStepGroupDetailView: View {
                 path.append(.tool(call))
             } label: {
                 CodeStepDetailRow(
+                    // Same size class as the settled thinking row: at
+                    // `.large` the tool glyph (the 19 pt wrench) read a size
+                    // bigger than the neighbouring clocks inside one 24 pt
+                    // slot (pp 2026-11-16). The official artwork extents keep
+                    // each symbol's own proportions at every size.
                     leading: call.status == .running
                         ? .mark(CodeWorkingMarkPose.body(forToolName: call.name))
-                        : .icon(CodeToolLabels.anthropicon(for: call), .large),
+                        : .icon(CodeToolLabels.anthropicon(for: call), .medium),
                     text: CodeToolLabelRun.styledText(runs, scheme: colorScheme),
                     diff: label.diff,
                     shimmers: call.status == .running)

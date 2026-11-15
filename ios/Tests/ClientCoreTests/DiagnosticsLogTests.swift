@@ -8,7 +8,7 @@ import Testing
 /// `timeline.mover` scroll samples, keeps every state change, and opens with a
 /// window/build header.
 @Suite struct DiagnosticsLogTests {
-    private func makeLog(_ clock: DiagnosticsClock) -> (ClientDiagnosticsLog, UserDefaults, URL) {
+    private func makeLog(_ clock: WindowExportClock) -> (ClientDiagnosticsLog, UserDefaults, URL) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("diagnostics-test-\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: "diagnostics-test-\(UUID().uuidString)")!
@@ -34,7 +34,7 @@ import Testing
     }
 
     @Test func verboseEntriesStayOutUntilTheReaderTurnsThemOn() {
-        let clock = DiagnosticsClock(Date(timeIntervalSince1970: 1_760_000_000))
+        let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
         let (log, defaults, _) = makeLog(clock)
         scroll(log, placement: "end", contentH: "100", position: "1")
         log.record(kind: "session.open", detail: ["rows": "3"], dedupe: false)
@@ -49,7 +49,7 @@ import Testing
     }
 
     @Test func aWindowExportKeepsOnlyLinesInsideIt() throws {
-        let clock = DiagnosticsClock(Date(timeIntervalSince1970: 1_760_000_000))
+        let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
         let (log, _, _) = makeLog(clock)
         log.record(kind: "session.open", detail: ["marker": "before"], dedupe: false)
         clock.advance(600)
@@ -64,7 +64,7 @@ import Testing
     }
 
     @Test func aWindowExportFoldsPerFrameScrollSamples() throws {
-        let clock = DiagnosticsClock(Date(timeIntervalSince1970: 1_760_000_000))
+        let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
         let (log, defaults, _) = makeLog(clock)
         defaults.set(true, forKey: ClientDiagnosticsLog.verboseKey)
         for index in 0..<6 {
@@ -87,7 +87,7 @@ import Testing
     }
 
     @Test func theReportedSizeMatchesTheExportedFile() throws {
-        let clock = DiagnosticsClock(Date(timeIntervalSince1970: 1_760_000_000))
+        let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
         let (log, _, _) = makeLog(clock)
         log.record(kind: "session.open", detail: ["rows": "3"], dedupe: false)
         let size = log.exportWindowSize(since: nil)
@@ -97,7 +97,7 @@ import Testing
     }
 
     @Test func anEmptyWindowExportsNothing() {
-        let clock = DiagnosticsClock(Date(timeIntervalSince1970: 1_760_000_000))
+        let clock = WindowExportClock(Date(timeIntervalSince1970: 1_760_000_000))
         let (log, _, _) = makeLog(clock)
         #expect(log.exportWindow(since: nil) == nil)
         #expect(log.exportWindowSize(since: nil) == 0)
@@ -105,7 +105,7 @@ import Testing
 }
 
 /// A movable clock for the logger's injectable `now`.
-nonisolated private final class DiagnosticsClock: Sendable {
+nonisolated private final class WindowExportClock: Sendable {
     private let value: Mutex<Date>
     init(_ start: Date) { value = Mutex(start) }
     var now: Date { value.withLock { $0 } }

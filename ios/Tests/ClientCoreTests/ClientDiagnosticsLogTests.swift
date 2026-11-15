@@ -145,9 +145,11 @@ private func utcCalendar() -> Calendar {
         #expect(entries.first?.kind == "timeline.order.duplicate")
         #expect(log.rawText(for: firstDay).contains("timeline.order.duplicate"))
 
-        let export = try #require(log.exportFile())
+        // The whole retained window is the "all" slice of the windowed
+        // export; the header now carries the window/build line.
+        let export = try #require(log.exportWindow(since: nil))
         let text = try String(contentsOf: export, encoding: .utf8)
-        #expect(text.contains("# diagnostics"))
+        #expect(text.hasPrefix("# window:"))
         #expect(text.contains("timeline.order.duplicate"))
         #expect(text.contains("timeline.user_message.unrendered"))
     }

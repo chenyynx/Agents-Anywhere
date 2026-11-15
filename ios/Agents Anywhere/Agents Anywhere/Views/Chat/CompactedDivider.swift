@@ -11,7 +11,11 @@ import UIKit
 /// period, 15 pt / 400 label in the `text400` secondary grey, and the
 /// blockquote ink at 15 % for the line. The label is a single line
 /// (`.fixedSize()` + `.layoutPriority(1)`), so it keeps its width and the
-/// squiggle takes the rest.
+/// squiggles take the rest.
+///
+/// The official divider draws the line only on the leading side; pp
+/// 2026-11-15 asked for a line on both sides (`〰️ 已压缩对话 〰️`), so the
+/// text sits centred between two squiggles.
 struct CompactedDivider: View {
     let title: String
     /// The compaction failed: the official failure message in `danger00`.
@@ -21,12 +25,7 @@ struct CompactedDivider: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            CompactionSquiggle()
-                .stroke(ink,
-                        style: StrokeStyle(lineWidth: 1, lineCap: .butt,
-                                           lineJoin: .miter, miterLimit: 10))
-                .frame(height: 4)
-                .frame(maxWidth: .infinity)
+            squiggle
             Text(title)
                 // [E] 15 / 400; the official Typography preset scales relative
                 // to the surrounding text style (round31 §3.1).
@@ -39,9 +38,19 @@ struct CompactedDivider: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize()
                 .layoutPriority(1)
+            squiggle
         }
         .padding(.vertical, 16)
         .accessibilityElement(children: .combine)
+    }
+
+    private var squiggle: some View {
+        CompactionSquiggle()
+            .stroke(ink,
+                    style: StrokeStyle(lineWidth: 1, lineCap: .butt,
+                                       lineJoin: .miter, miterLimit: 10))
+            .frame(height: 4)
+            .frame(maxWidth: .infinity)
     }
 
     /// The blockquote ink at 15 % (`round31` §3.3) — the same dynamic colour

@@ -59,11 +59,21 @@ final class ComposerEditorController {
         )
         let bodyFont = UIFont.preferredFont(forTextStyle: .body)
         let attributed = NSMutableAttributedString(attachment: token)
+        // The attachment run carries the body font too. UITextView resolves
+        // `font` and the caret's typing attributes from the first run; an
+        // attachment-only run has no font, so text typed after the capsule
+        // fell back to the text view's default (much smaller) face
+        // (pp 2026-11-15: 「输入框输入的文字变小了」).
+        attributed.addAttribute(.font, value: bodyFont,
+                                range: NSRange(location: 0, length: attributed.length))
         attributed.append(NSAttributedString(string: " ", attributes: [
             .font: bodyFont,
             .foregroundColor: UIColor.label,
         ]))
         textView.attributedText = attributed
+        // Keep the property itself at body size: `attributedText` can replace
+        // it with the first run's font, and later plain-text resets use it.
+        textView.font = bodyFont
         textView.typingAttributes = [.font: bodyFont, .foregroundColor: UIColor.label]
         textView.selectedRange = NSRange(location: attributed.length, length: 0)
         if !textView.isFirstResponder { textView.becomeFirstResponder() }

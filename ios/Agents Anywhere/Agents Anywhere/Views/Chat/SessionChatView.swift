@@ -113,7 +113,9 @@ struct SessionChatView: View, Equatable {
                 // bottom 16 pt above the composer glass.
                 .overlay(alignment: .bottom) {
                     CommandSuggestionPanel(chat: model, draft: session.composer,
-                        forced: $showsCommandMenu, controls: controls, editor: composerEditor)
+                        forced: $showsCommandMenu, controls: controls, editor: composerEditor,
+                        availableHeight: proxy.size.height - proxy.safeAreaInsets.top
+                            - proxy.safeAreaInsets.bottom - 8)
                         .padding(.bottom, proxy.safeAreaInsets.bottom)
                 }
                 // The bridge owns one adapter for its lifetime; a mode switch

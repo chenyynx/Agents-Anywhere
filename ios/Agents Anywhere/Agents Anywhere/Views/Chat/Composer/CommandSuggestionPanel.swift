@@ -40,6 +40,10 @@ struct CommandSuggestionPanel: View {
     @Binding var forced: Bool
     let controls: ChatControlMetrics
     let editor: ComposerEditorController
+    /// Space between the top safe area (nav bar) and the composer bar; the
+    /// card shrinks to this when the keyboard + an expanded composer leave
+    /// less room than the five-row budget.
+    let availableHeight: CGFloat
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -75,8 +79,12 @@ struct CommandSuggestionPanel: View {
     /// Official cap: five `rowMinHeight`s plus the 8 pt insets on both ends.
     /// Rows can be taller than `rowMinHeight` (two-line descriptions), so the
     /// fifth row is intentionally clipped in the screenshot as well.
-    private var maximumHeight: CGFloat {
+    private var desiredHeight: CGFloat {
         rowMinHeight * CGFloat(min(suggestions.count, maxVisibleRows)) + contentInset * 2
+    }
+
+    private var maximumHeight: CGFloat {
+        max(0, min(desiredHeight, availableHeight))
     }
 
     var body: some View {
@@ -99,7 +107,9 @@ struct CommandSuggestionPanel: View {
             .clipShape(panelShape)
             .overlay(panelShape.strokeBorder(panelBorder, lineWidth: 0.5))
             .shadow(color: shadowColor, radius: 10, x: 0, y: 3)
-            .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
+            // Fixed to the keyboard-up (expanded) inset: the card must not
+            // shrink just because the composer is collapsed.
+            .padding(.horizontal, controls.horizontalInset(expanded: true))
             // The composer adds 8 pt of its own top margin; together they make
             // the 16 pt gap measured between the card and the composer.
             .padding(.bottom, 8)
@@ -165,11 +175,11 @@ struct CommandSuggestionPanel: View {
     /// around a ScrollView made its content its own height, so the list was
     /// clipped and could not scroll (only the first four rows were reachable).
     @ViewBuilder private var list: some View {
-        if suggestions.count > maxVisibleRows {
+        if suggestions.count > maxVisibleRows || desiredHeight > availableHeight {
             ScrollView(.vertical) {
                 rows
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.visible)
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: maximumHeight)
         } else {

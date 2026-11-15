@@ -123,7 +123,10 @@ extension CodeToolLabelRun {
 ///   nil for running/complete/unreadable), not a checkmark.
 struct CodeCollapsedStepsRow: View {
     var icon: String?
-    var iconSize: AnthropiconSize = .large
+    /// One size class for every row icon on the chat surfaces: the tool glyph
+    /// (the 19 pt wrench at `.large`) read a size bigger than the thinking
+    /// clocks it sat next to (pp 2026-11-16).
+    var iconSize: AnthropiconSize = .medium
     /// The pre-styled label. The caller owns the per-run fonts/colours, which
     /// keeps the failure rules in one place (`CodeToolLabels`).
     var text: Text
@@ -422,7 +425,7 @@ struct CodeCollapsedToolRow: View {
 
     init(label: CodeToolRowLabel,
          icon: String? = nil,
-         iconSize: AnthropiconSize = .large,
+         iconSize: AnthropiconSize = .medium,
          workingMark: WorkingMarkBody? = nil,
          status: CodeToolStatus = .complete,
          failureExtent: CodeFailureExtent? = nil,

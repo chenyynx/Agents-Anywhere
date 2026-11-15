@@ -285,7 +285,6 @@ struct SessionChatView: View, Equatable {
         GeometryReader { geometry in
             pageContent(geometry: geometry)
         }
-        .diagnosticsBreadcrumb("chat")
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
                 fallbackRuntimeName: fallbackRuntimeName),

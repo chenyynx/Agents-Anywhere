@@ -84,7 +84,6 @@ struct CodeThinkingDetailView: View {
                 SheetCloseToolbar { dismiss() }
             }
         }
-        .diagnosticsBreadcrumb("sheet.thinking")
         .presentationDetents([.medium, .large])
     }
 }

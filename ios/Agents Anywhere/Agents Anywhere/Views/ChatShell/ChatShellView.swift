@@ -21,7 +21,6 @@ struct ChatShellView: View {
             hasRegularWidth: horizontalSizeClass == .regular
         )
         sidebarLayout(layout)
-        .diagnosticsBreadcrumb("sessions")
         .onChange(of: layout, initial: true) { _, next in sidebar.setLayout(next) }
         .task(id: NewSessionLoadKey(target: appState.nativeChatServices?.newSession.refreshKey,
             presentationID: newSessionPresentationID)) {

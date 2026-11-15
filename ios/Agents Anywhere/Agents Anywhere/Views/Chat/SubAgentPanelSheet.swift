@@ -124,7 +124,6 @@ struct SubAgentPanelSheet: View {
             .toolbar { SheetCloseToolbar { dismiss() } }
         }
         .appSheetPresentation(.compact)
-        .diagnosticsBreadcrumb("sheet.subagent")
         .onChange(of: selection) { _, _ in showsFullPrompt = false }
         // Every presentation starts a refresh window: rows restored from the
         // archive (or read by an earlier presentation) show immediately but

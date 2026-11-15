@@ -788,21 +788,6 @@ final class TimelineListLayout: UICollectionViewLayout {
             isDecelerating: state.isDecelerating,
             keyboardTransition: state.keyboardTransition,
             hasCachedHeight: heights.isMeasured(itemID: itemID, width: key.width))
-        // Detailed level: a self-sizing row replaced its estimate. Anything
-        // ≥ 4 pt is what a reader sees as the page settling under them.
-        if abs(delta) >= 4 {
-            ClientDiagnosticsLog.shared.record(
-                kind: "timeline.height.delta",
-                detail: [
-                    "item": itemID,
-                    "before": String(format: "%.1f", attributes.frame.height),
-                    "after": String(format: "%.1f", height),
-                    "delta": String(format: "%.1f", delta),
-                    "deferred": decision.height == .deferUntilSettled ? "1" : "0",
-                ],
-                dedupe: false,
-                verbose: true)
-        }
         if decision.height == .deferUntilSettled {
             notePreferred("deferred")
             deferredHeights[itemID] = DeferredHeight(key: key, height: height)

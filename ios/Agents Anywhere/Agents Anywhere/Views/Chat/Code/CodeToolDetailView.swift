@@ -343,7 +343,6 @@ struct CodeToolCallDetailView: View {
         .toolbarBackground(CodeToolDetailMetrics.pageBackground.resolved(for: colorScheme),
                            for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .diagnosticsBreadcrumb("sheet.tool")
     }
 
     // MARK: - Sections (official order)

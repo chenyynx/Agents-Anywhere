@@ -50,6 +50,25 @@ struct ChatTimelineGroup: Identifiable, Equatable {
     }
 }
 
+extension ChatTimelineGroup {
+    /// The standalone compaction divider: one marker row with no declared
+    /// message key. It draws its own 16 pt vertical padding.
+    var isStandaloneCompactDivider: Bool {
+        explicitID == nil && rows.count == 1
+            && TimelineEntryPresentation.isCompactItem(rows[0].value)
+    }
+
+    /// Whether the row supplies its own vertical breathing room. Code/chat
+    /// message and step rows carry 5 pt row margins; the compaction divider
+    /// carries 16 pt padding. The list must not add its 20 pt gap after
+    /// these — paying it on the divider's trailing side alone left 20 pt
+    /// more space below the divider than above it (device 2026-11-15).
+    var isSelfMargined: Bool { explicitID != nil || isStandaloneCompactDivider }
+
+    /// The vertical gap the collection list adds after this group.
+    var listSpacing: CGFloat { isSelfMargined ? 0 : TimelineListMetrics.itemSpacing }
+}
+
 enum TimelineGrouping {
     static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
         grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)

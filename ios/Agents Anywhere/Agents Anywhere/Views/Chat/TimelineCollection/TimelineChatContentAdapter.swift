@@ -936,7 +936,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// Code row and 25 pt above the next one (review 2026-10-23).
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
         switch item {
-        case .group(let id) where groupsByID[id]?.explicitID != nil: return 0
+        // A group answers for itself: message and step rows carry 5 pt row
+        // margins and the compaction divider carries its own 16 pt padding,
+        // so none of them also pay the list gap (see `listSpacing`).
+        case .group(let id): return groupsByID[id]?.listSpacing ?? TimelineListMetrics.itemSpacing
         case .workingStatus, .notice, .pending: return 0
         default: return TimelineListMetrics.itemSpacing
         }
@@ -2599,10 +2602,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The standalone compaction divider group: one marker row, no explicit
     /// message key. It draws the divider and nothing turn-scoped.
     private func compactGroupRow(_ id: String) -> ChatTimelineRowModel? {
-        guard let group = groupsByID[id], group.explicitID == nil,
-              group.rows.count == 1, let row = group.rows.first,
-              TimelineEntryPresentation.isCompactItem(row.value) else { return nil }
-        return row
+        guard let group = groupsByID[id], group.isStandaloneCompactDivider else { return nil }
+        return group.rows[0]
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {

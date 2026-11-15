@@ -51,6 +51,15 @@ nonisolated struct TurnFooterGate: Equatable {
     /// (pp 2026-11-15: copy/share disappeared and the page jumped twice by
     /// the 30 pt action bar).
     private var openedByTurn = false
+    /// Whether the running episode the gate closed on belongs to a compaction
+    /// that no user bubble opened. The compact row settles before the runtime
+    /// reports the turn's end, and that tail is still the compaction, not a
+    /// resumed turn: a status that reopened the gate there hid the finished
+    /// turn's footer until the runtime went idle (pp 2026-11-15 08:09:20.7 →
+    /// 08:09:22.1: content 66602 → 66572 → 66602, the 30 pt action bar
+    /// blinked for 1.3 s). Cleared when the episode ends or a user bubble
+    /// opens the next turn.
+    private var compactionEpisode = false
 
     init() {}
 
@@ -74,6 +83,7 @@ nonisolated struct TurnFooterGate: Equatable {
             self.userKey = userKey
             isOpen = turnIsRunning
             openedByTurn = false
+            compactionEpisode = isCompacting
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
@@ -81,6 +91,7 @@ nonisolated struct TurnFooterGate: Equatable {
             self.userKey = userKey
             isOpen = true
             openedByTurn = true
+            compactionEpisode = false
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
@@ -91,13 +102,22 @@ nonisolated struct TurnFooterGate: Equatable {
             if !runtimeIsRunning {
                 isOpen = false
                 openedByTurn = false
+                compactionEpisode = false
             }
         }
-        if turnIsRunning {
+        if !runtimeIsRunning {
+            // The running episode is over; a compaction's claim on it ends
+            // here too. A later running status is a new turn and may reopen.
+            compactionEpisode = false
+        }
+        if turnIsRunning, !compactionEpisode {
             // A cold open can initialize the gate before the live status
             // arrives (the app was launched mid-turn), and a tool step can
             // follow a transient idle. The turn is still in flight, so the
-            // footer must stay suppressed on the same user message.
+            // footer must stay suppressed on the same user message. The tail
+            // of a compaction is the exception: the compact row has settled,
+            // but the runtime still reports the compaction's own turn until
+            // it ends, and the finished reply's footer must stay on screen.
             isOpen = true
         }
         // A compaction detected on a turn no user bubble opened: the running
@@ -106,6 +126,7 @@ nonisolated struct TurnFooterGate: Equatable {
         // the window before its marker row reached the client.
         if isCompacting, !openedByTurn {
             isOpen = false
+            compactionEpisode = true
         }
         return isOpen
     }

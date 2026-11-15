@@ -236,10 +236,47 @@ struct TurnFooterGateTests {
         let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
                                            authoritativeTurnEnds: 1, isCompacting: true)
         #expect(!duringCompaction)
-        // Once the compaction settles, the live status governs the turn again.
-        let resumed = gate.update(userKey: "u1", runtimeIsRunning: true,
-                                  authoritativeTurnEnds: 1, isCompacting: false)
-        #expect(resumed)
+    }
+
+    /// The compact row settles before the runtime reports the turn's end, and
+    /// that tail still belongs to the compaction. Reopening the gate on it
+    /// hid the finished turn's footer until the runtime went idle (pp
+    /// 2026-11-15 08:09:20.7 → 08:09:22.1, b1228: content 66602 → 66572 →
+    /// 66602, i.e. the 30 pt action bar blinked out and back for 1.3 s).
+    @Test func aCompactionTailDoesNotReopenAClosedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1, isCompacting: true)
+        #expect(!duringCompaction)
+        // The marker row is finished on the wire; the runtime still runs.
+        let settledRowStillRunning = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                                 authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!settledRowStillRunning)
+        // The turn ends; the footer must have stayed visible throughout.
+        let idleAfterCompaction = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                              authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!idleAfterCompaction)
+        // A later user turn still opens and suppresses the new footer.
+        let nextTurn = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(nextTurn)
+    }
+
+    /// A cold open during a compaction must not start suppressed and must not
+    /// reopen on the compaction's tail either (same 30 pt blink as the
+    /// in-session case).
+    @Test func aColdOpenDuringACompactionStaysClosedThroughTheTail() {
+        var gate = TurnFooterGate()
+        let open = gate.update(userKey: "u1", runtimeIsRunning: true,
+                               authoritativeTurnEnds: 0, isCompacting: true)
+        #expect(!open)
+        let settled = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                  authoritativeTurnEnds: 0, isCompacting: false)
+        #expect(!settled)
+        let idle = gate.update(userKey: "u1", runtimeIsRunning: false,
+                               authoritativeTurnEnds: 1, isCompacting: false)
+        #expect(!idle)
     }
 
     /// The compaction's own status can reopen the gate before its marker row

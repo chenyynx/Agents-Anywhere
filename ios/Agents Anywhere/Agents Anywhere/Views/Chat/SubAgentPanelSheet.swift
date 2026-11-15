@@ -41,8 +41,14 @@ struct SubAgentPanelSheet: View {
     /// Entry A's navigation: the list is the root; a tapped card pushes its
     /// detail. Entry B starts on the detail and never pushes.
     @State private var path: [String] = []
-    /// The floating pills' visual height (their tap target keeps 44 pt).
-    @ScaledMetric(relativeTo: .caption) private var pillHeight: CGFloat = 32
+    /// The live step-group map handed to the step sheet, so a running child
+    /// group keeps appending steps while the sheet is open.
+    @State private var liveStepGroups = TimelineLiveStepGroups()
+    /// A tapped step group pushes the same detail sheet the chat timeline uses.
+    @State private var stepGroupDetail: CodeStepGroupDetailRequest?
+    /// The floating stop capsule matches the chat page's SubAgent capsule
+    /// (41 pt tall, 15 pt side padding, 13 pt label); its tap target keeps 44.
+    @ScaledMetric(relativeTo: .footnote) private var capsuleHeight: CGFloat = 41
 
     /// C3: the on-demand child-row source. It lives on the session model so
     /// its per-card cache outlives the sheet and feeds the local archive; this
@@ -111,6 +117,13 @@ struct SubAgentPanelSheet: View {
             }
         }
         .appSheetPresentation(.compact)
+        .sheet(item: $stepGroupDetail) { request in
+            CodeStepGroupDetailView(group: request.group,
+                                    cwd: chat.session.metadata?.cwd,
+                                    chat: chat,
+                                    liveGroups: liveStepGroups,
+                                    startsAtBottom: request.startsAtBottom)
+        }
         // Every presentation starts a refresh window: rows restored from the
         // archive (or read by an earlier presentation) show immediately but
         // are fetched again online. Activation runs from both hooks so the
@@ -127,6 +140,12 @@ struct SubAgentPanelSheet: View {
         // copy that decides which rows the panel renders.
         .onChange(of: activityWindowRowSignature, initial: true) { _, _ in
             activity.updateWindow(childRows: liveActivityChildRows)
+            republishLiveStepGroupsIfNeeded()
+        }
+        // A presented step sheet follows the group while it streams: every
+        // published flush refreshes the map it reads.
+        .onChange(of: chat.timeline.flushRevision) { _, _ in
+            republishLiveStepGroupsIfNeeded()
         }
         .onDisappear { activity.cancel() }
     }
@@ -186,94 +205,41 @@ struct SubAgentPanelSheet: View {
                 // one (pp, device, 2026-10-05).
                 .id(card.id)
                 .padding(.horizontal, 20)
-                // Clear the floating pills at rest; content scrolls under
-                // them once the reader moves.
-                .padding(.top, 52)
-                .padding(.bottom, 24)
+                // Clear the floating stop capsule at the bottom.
+                .padding(.top, 8)
+                .padding(.bottom, 76)
         }
-        .overlay(alignment: .topLeading) {
-            statusPill(card).padding(.leading, 16).padding(.top, 6)
-        }
-        .overlay(alignment: .topTrailing) {
-            stopPills(card).padding(.trailing, 16).padding(.top, 6)
+        .overlay(alignment: .bottom) {
+            stopPills(card).padding(.bottom, 12)
         }
         // The chat page's own page colour (#F9F9F7 / #151515); the list uses
         // the same value through the composer-sheet token.
         .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea())
+        // Just the task name — no device/runtime subtitle (pp 2026-11-16).
         .navigationTitle(card.taskName)
-        .navigationSubtitle(SessionHeaderSubtitle.text(metadata: chat.session.metadata,
-            deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { SheetCloseToolbar { dismiss() } }
     }
 
     // MARK: Floating controls
 
-    /// The status capsule: phase dot + word and the trimmed telemetry, floating
-    /// over the chat body. Non-interactive; a running card's clock ticks
-    /// locally every second between the connector's publications.
-    @ViewBuilder private func statusPill(_ card: SubAgentCard) -> some View {
-        if card.phase.isActive {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                statusPillContent(card, now: context.date)
-            }
-        } else {
-            statusPillContent(card, now: nil)
-        }
-    }
-
-    private func statusPillContent(_ card: SubAgentCard, now: Date?) -> some View {
-        let phaseColor = SubAgentPalette.phase(card.phase)
-        let metrics = SubAgentProgress.metrics(for: card, now: now)
-        return HStack(spacing: 6) {
-            Circle().fill(phaseColor).frame(width: 6, height: 6)
-            Text(card.phase.word)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(phaseColor)
-                .lineLimit(1)
-            if !metrics.isEmpty {
-                // One telemetry strip: glyph + number pairs (⚒ 100 ◷ 37:48
-                // ↑ 380k ↓ 12k) — pp, 2026-10-21.
-                HStack(spacing: 8) {
-                    ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
-                        HStack(spacing: 3) {
-                            AppSymbol(metric.symbol, size: 10)
-                                .foregroundStyle(.secondary)
-                            Text(metric.value)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                                .lineLimit(1)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: pillHeight)
-        .glassEffect(.regular, in: .capsule)
-        // One element, one sentence; spoken from the stored numbers so the
-        // ticking clock cannot re-announce the element while VoiceOver is on it.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(SubAgentProgress.statsAccessibilityLabel(for: card))
-    }
-
-    /// The stop affordance as floating glass capsules, one per live task. 门控
-    /// 不渲染: nothing without the usable `session.subagent_control` capability
-    /// and nothing for a card without live tasks.
+    /// The stop affordance as a floating glass capsule at the bottom, sized
+    /// like the chat page's SubAgent capsule (41 pt tall, 15 pt side padding,
+    /// 13 pt label). 门控不渲染: nothing without the usable
+    /// `session.subagent_control` capability and nothing for a card without
+    /// live tasks.
     @ViewBuilder private func stopPills(_ card: SubAgentCard) -> some View {
         let tasks = SubAgentProgress.stopTasks(for: card, capabilities: chat.session.runtime.capabilities)
         if !tasks.isEmpty {
             HStack(spacing: 8) {
                 ForEach(tasks) { task in
                     Button { Task { await chat.stopSubagent(taskID: task.taskID) } } label: {
-                        Label(tasks.count > 1 ? (task.label ?? String(localized: "停止")) : String(localized: "停止"),
-                              appSymbol: "stop.fill")
-                            .font(.caption.weight(.medium))
+                        Label(String(localized: "结束任务"), appSymbol: "stop.fill")
+                            .font(.footnote.weight(.medium))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                            .padding(.horizontal, 12)
-                            .frame(height: pillHeight)
+                            .padding(.horizontal, 15)
+                            .frame(height: capsuleHeight)
                             .glassEffect(.regular.interactive(), in: .capsule)
                             .frame(minHeight: 44)
                             .contentShape(Rectangle())
@@ -291,7 +257,7 @@ struct SubAgentPanelSheet: View {
     /// The control is the feature's own body; the task's name joins only when
     /// controls are stacked, so VoiceOver can tell the buttons apart.
     private func stopAccessibilityLabel(task: SubAgentTask, multiple: Bool) -> String {
-        let base = String(localized: "停止子代理")
+        let base = String(localized: "结束任务")
         guard multiple, let label = task.label else { return base }
         return "\(base) \(label)"
     }
@@ -372,16 +338,14 @@ struct SubAgentPanelSheet: View {
         }
     }
 
-    /// The card's activity as one chronological list (pp 2026-10-05): tool
-    /// calls, reasoning and the subagent's text rows interleaved in the order
-    /// the connector published them, the way the main chat reads. The
-    /// per-kind 「工具调用」/「深度思考」 section headers are deliberately
-    /// gone; prompt and final output stay at the ends. Which rows qualify is
-    /// `SubAgentProgress.activityRows` — its lineage merge means a resume-alias
-    /// card shows the original dispatch card's rows — through the same
-    /// `isVisibleInChat` gate the chat applies, so hidden rows and empty
-    /// reasoning never enter the panel; the row component itself is unchanged
-    /// and gets no `onSubAgent` (v1 renders one nested layer).
+    /// The card's activity as one chronological list, rendered through the
+    /// current Chat page's grouping (pp 2026-11-16): step-group rows for runs
+    /// of thinking/tool calls and chat body rows for text, instead of the
+    /// retired per-row list. Prompt and final output stay at the ends. Which
+    /// rows qualify is `SubAgentProgress.activityRows` — its lineage merge
+    /// means a resume-alias card shows the original dispatch card's rows —
+    /// through the same `isVisibleInChat` gate the chat applies, so hidden
+    /// rows and empty reasoning never enter the panel.
     @ViewBuilder private func activitySection(_ card: SubAgentCard, in items: [V2TimelineItem]) -> some View {
         let rows = activityRows(of: card, in: items)
         // An empty, settled read renders nothing here (the not-loaded notice
@@ -412,20 +376,97 @@ struct SubAgentPanelSheet: View {
                     EmptyView()
                 }
                 if !rows.isEmpty {
+                    // pp 2026-10-30/11-16: the activity follows the current
+                    // Chat page — `TimelineChatGrouping` step groups for runs
+                    // of thinking/tool rows and the chat body rows for text —
+                    // instead of the retired per-row list.
                     // Lazy: after a few pages this list can hold hundreds of
-                    // rows, and eagerly building every row makes the sheet's
-                    // first layout (and every body tick) pay for all of them.
-                    // It stays above the final-output section, both inside the
-                    // ScrollView.
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(rows) { row in
-                            SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment,
-                                cwd: chat.session.metadata?.cwd, disclosures: chat.disclosures, onFile: onFile)
-                        }
+                    // rows.
+                    chatTranscript(rows, card: card)
+                }
+            }
+        }
+    }
+
+    /// The child transcript through the chat profile's own grouping: step
+    /// groups for runs of reasoning/tool rows, message rows for body text, and
+    /// the old row view only for a standalone fallback. `isLiveTail` matches
+    /// the chat page's rule — only the active card's trailing step group keeps
+    /// the dots.
+    @ViewBuilder private func chatTranscript(_ rows: [ChatTimelineRowModel],
+                                             card: SubAgentCard) -> some View {
+        let profile = chat.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
+        let units = TimelineChatGrouping.units(items: rows.map(\.value),
+                                               profile: profile,
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
+        let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let lastStepGroupID: String? = {
+            guard card.phase.isActive, let last = units.last else { return nil }
+            if case let .stepGroup(group, _) = last { return group.id }
+            return nil
+        }()
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(units) { unit in
+                switch unit {
+                case let .stepGroup(group, _):
+                    CodeStepGroupRowView(group: group,
+                                         cwd: chat.session.metadata?.cwd,
+                                         isLiveTail: group.id == lastStepGroupID) {
+                        // Publish once before opening so the sheet never shows
+                        // an older map than the tapped snapshot.
+                        publishLiveStepGroups(card)
+                        stepGroupDetail = CodeStepGroupDetailRequest(
+                            group: group, startsAtBottom: group.id == lastStepGroupID)
+                    }
+                case let .message(key, rowIDs):
+                    // The chat page's body rows are Code rows too; opt the
+                    // builder into the child rows the main timeline hides.
+                    let groupRows = rowIDs.compactMap { rowsByID[$0] }
+                    if !groupRows.isEmpty {
+                        CodeMessageRowView(
+                            group: ChatTimelineGroup(kind: .single, rows: groupRows,
+                                                     explicitID: key),
+                            profile: profile,
+                            includesSubAgentChildren: true,
+                            cwd: chat.session.metadata?.cwd,
+                            onAttachment: onAttachment)
+                    }
+                case let .standalone(rowID):
+                    if let row = rowsByID[rowID] {
+                        SessionTimelineRow(row: row, chat: chat,
+                                           onAttachment: onAttachment,
+                                           cwd: chat.session.metadata?.cwd,
+                                           disclosures: chat.disclosures,
+                                           onFile: onFile, onSubAgent: nil)
                     }
                 }
             }
         }
+    }
+
+    /// The step sheet reads this map while it is open: a running child group
+    /// settles and appends steps without closing/reopening the sheet. The
+    /// snapshot passed at tap time remains the fallback once the group leaves
+    /// the window.
+    private func publishLiveStepGroups(_ card: SubAgentCard) {
+        let profile = chat.session.metadata.map { CodeRuntimeProfile(meta: $0) } ?? .generic
+        let rows = activityRows(of: card, in: activityItems)
+        let units = TimelineChatGrouping.units(items: rows.map(\.value),
+                                               profile: profile,
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
+        var groups: [String: TimelineStepGroup] = [:]
+        for case let .stepGroup(group, _) in units { groups[group.id] = group }
+        liveStepGroups.publish(groups)
+    }
+
+    /// While the step sheet is open, every activity change republishes the
+    /// grouped steps so a running group settles and appends in place instead
+    /// of freezing at the tapped snapshot (review 2026-11-16).
+    private func republishLiveStepGroupsIfNeeded() {
+        guard stepGroupDetail != nil, let card = selectedCard else { return }
+        publishLiveStepGroups(card)
     }
 
     private func hasActivityStatus(rows: [ChatTimelineRowModel]) -> Bool {
@@ -463,7 +504,9 @@ struct SubAgentPanelSheet: View {
         // `activityItems` (not `window`) is the body actually rendered above: a
         // main-only window carries no child rows, so reading `window` here
         // would miss the reply the on-demand read did load and render it twice.
-        if let summary = SubAgentProgress.finalOutputSummary(of: card, in: activityItems),
+        if let summary = SubAgentProgress.finalOutputSummary(
+            of: card, in: activityItems,
+            lineage: activity.lineageIDs.isEmpty ? nil : activity.lineageIDs),
            !card.phase.isActive {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel(String(localized: "最终输出"))

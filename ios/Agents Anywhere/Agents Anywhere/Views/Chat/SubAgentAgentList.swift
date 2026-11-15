@@ -5,19 +5,21 @@ import SwiftUI
 /// on top and the live activity line underneath in the app's secondary gray.
 /// Tapping a card pushes the chat-like detail.
 ///
-/// Layout follows the reference pp sent (2026-11-15, 1179×2556 @3x): the card
-/// is 340 pt wide (26 pt side inset), 56 pt tall with a 22 pt continuous
-/// radius and one hairline border; the mark is ~20 pt of ink in a 24 pt frame,
-/// 18 pt from the card's leading edge and 16 pt from the text column. The
-/// colours are our existing composer-sheet surface + Code-page gray tokens,
-/// not the reference app's own values.
+/// Layout follows the reference pp sent (2026-11-15, 1179×2556 @3x) as later
+/// enlarged on device (pp 2026-11-16: 卡片有点小): the card is 340 pt wide
+/// (26 pt side inset), ~68 pt tall with a 22 pt continuous radius and one
+/// hairline border; the mark is ~25 pt of ink in a 30 pt frame, 18 pt from the
+/// card's leading edge and 16 pt from the text column; the title is 16 pt
+/// semibold over a 13 pt gray live line. The colours are our existing
+/// composer-sheet surface + Code-page gray tokens, not the reference app's own
+/// values.
 struct SubAgentAgentList: View {
     let cards: [SubAgentCard]
     let chat: SessionChatModel
     let onOpen: (String) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: .footnote) private var iconSize: CGFloat = 24
+    @ScaledMetric(relativeTo: .footnote) private var iconSize: CGFloat = 30
     @ScaledMetric(relativeTo: .footnote) private var cornerRadius: CGFloat = 22
     /// The live line refreshes from the same presented rows the detail reads,
     /// so a streaming token or a tool change reaches the list without a timer.
@@ -54,9 +56,9 @@ struct SubAgentAgentList: View {
     private func cardRow(_ card: SubAgentCard) -> some View {
         HStack(spacing: 16) {
             SubAgentStarGlyph(size: iconSize, tint: AppTheme.primaryText(colorScheme))
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(card.taskName)
-                    .font(.footnote.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(AppTheme.primaryText(colorScheme))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -70,7 +72,7 @@ struct SubAgentAgentList: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 11)
+        .padding(.vertical, 14)
         .background(AppTheme.composerTileBackground(colorScheme), in: cardShape)
         .overlay(cardShape.strokeBorder(AppTheme.composerTileBorder(colorScheme), lineWidth: 0.5))
         .contentShape(cardShape)

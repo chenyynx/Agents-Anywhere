@@ -10329,6 +10329,23 @@
         }
       }
     },
+    "结束任务": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "End task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结束任务"
+          }
+        }
+      }
+    },
     "停止": {
       "extractionState": "manual",
       "localizations": {

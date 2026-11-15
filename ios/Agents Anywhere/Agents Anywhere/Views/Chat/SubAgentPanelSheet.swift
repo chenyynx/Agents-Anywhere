@@ -195,22 +195,29 @@ struct SubAgentPanelSheet: View {
     /// and stop affordances float over the body as glass pills (pp 2026-11-15),
     /// the same family as the timeline's 「到底部」 pill.
     private func detail(_ card: SubAgentCard) -> some View {
-        ScrollView {
-            sections(card)
-                // Switching cards swaps the whole body in place, and the
-                // markdown block views are reused by block position while
-                // their reserved height only ever grows. Without an
-                // identity of its own the body keeps the previous card's
-                // heights, so a long block leaves a blank gap in a short
-                // one (pp, device, 2026-10-05).
-                .id(card.id)
-                .padding(.horizontal, 20)
-                // Clear the floating stop capsule at the bottom.
-                .padding(.top, 8)
-                .padding(.bottom, 76)
-        }
-        .overlay(alignment: .bottom) {
-            stopPills(card).padding(.bottom, 12)
+        // The transcript's horizontal inset comes from the chat column's own
+        // metric (16 pt on phones, 20 pt once the container is wide), so the
+        // prompt bubble lands exactly where the chat page's user bubble does
+        // instead of 4 pt narrower on a 393 pt phone (pp 2026-11-16).
+        GeometryReader { proxy in
+            ScrollView {
+                sections(card)
+                    // Switching cards swaps the whole body in place, and the
+                    // markdown block views are reused by block position while
+                    // their reserved height only ever grows. Without an
+                    // identity of its own the body keeps the previous card's
+                    // heights, so a long block leaves a blank gap in a short
+                    // one (pp, device, 2026-10-05).
+                    .id(card.id)
+                    .padding(.horizontal,
+                             TimelineListMetrics.horizontalInset(containerWidth: proxy.size.width))
+                    // Clear the floating stop capsule at the bottom.
+                    .padding(.top, 8)
+                    .padding(.bottom, 76)
+            }
+            .overlay(alignment: .bottom) {
+                stopPills(card).padding(.bottom, 12)
+            }
         }
         // The chat page's own page colour (#F9F9F7 / #151515); the list uses
         // the same value through the composer-sheet token.
@@ -218,7 +225,14 @@ struct SubAgentPanelSheet: View {
         // Just the task name — no device/runtime subtitle (pp 2026-11-16).
         .navigationTitle(card.taskName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { SheetCloseToolbar { dismiss() } }
+        // A pushed detail already carries the system Back button, so the
+        // sheet's leading X would sit right beside it as a second exit that
+        // does something else (pp 2026-11-16). Only the root detail — entry B,
+        // which has no Back — keeps the X; the pushed one closes by Back or by
+        // dragging the sheet down.
+        .toolbar {
+            if path.isEmpty { SheetCloseToolbar { dismiss() } }
+        }
     }
 
     // MARK: Floating controls
@@ -329,12 +343,14 @@ struct SubAgentPanelSheet: View {
             .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
     }
 
-    /// The dispatch prompt as the chat page's own user bubble — the detail is a
+    /// The dispatch prompt in the bubble the current chat page paints user
+    /// messages with (`CodeUserBubble`, neutral and right-aligned), not the
+    /// retired Chat row's accent `UserMessageBubble`. The detail is a
     /// miniature chat: the instruction on the right, the subagent's own rows
     /// (assistant bubbles, tool cards, thinking) underneath.
     @ViewBuilder private func promptSection(_ card: SubAgentCard) -> some View {
         if let prompt = card.prompt, !prompt.isEmpty {
-            UserMessageBubble(text: prompt)
+            CodeUserBubble(text: prompt)
         }
     }
 

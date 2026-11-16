@@ -1936,7 +1936,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     guard let row = rowsByID[rowID] else { builds.append(build); continue }
                     // Keyless on purpose: the standalone renderer carries the
                     // interaction cards, turn footer and interrupted notice.
-                    let group = ChatTimelineGroup(kind: .single, rows: [row])
+                    //
+                    // An interaction anchor is self-margined: its card docks
+                    // directly below, so the list's legacy 20 pt gap would read
+                    // as a blank band under the anchor row. The Code profile's
+                    // `codeGroups` already marks it; this chat-profile build
+                    // used to drop the flag, which is why the question card
+                    // still sat 20 pt low on b1270 (pp 2026-11-16).
+                    let group = ChatTimelineGroup(
+                        kind: .single, rows: [row],
+                        isInteractionAnchor: interactionTargets.contains(rowID))
                     groups.append(group)
                     build.group = group
                 }

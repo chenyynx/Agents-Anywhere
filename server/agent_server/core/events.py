@@ -124,6 +124,37 @@ def timeline_events_from_items(
     return events
 
 
+# Frames of one bucket share the bucket's session sequence. Their semantic
+# order on the live socket is: rows (own sequences), then the level runtime
+# state — the turn-end UI (footer, completion cue) keys on it — then the
+# session meta and capability projections. The old tie-break on the hashed
+# event id flipped two same-sequence frames arbitrarily; on the turn-end bucket
+# it put `session.meta.updated` before `runtime.state.updated` on roughly half
+# the turns, and the client reads the meta's global session sequence as a ~4k
+# timeline gap and synchronously recovers, so the idle frame behind it waited
+# out the round (copy/share footer, device 2026-11-17).
+_BUCKET_EVENT_ORDER = {
+    "runtime.state.updated": 0,
+    "session.meta.updated": 1,
+    "runtime.capability.updated": 2,
+}
+
+
+def order_bucket_events(
+    events: list[ProtocolEventEnvelope],
+) -> list[ProtocolEventEnvelope]:
+    """Order one bucket's frames: sequence first, then the semantic priority."""
+
+    return sorted(
+        events,
+        key=lambda event: (
+            event.sequence,
+            _BUCKET_EVENT_ORDER.get(event.type, 1),
+            event.eventId,
+        ),
+    )
+
+
 def events_from_invalidation(payload: dict[str, Any]) -> list[ProtocolEventEnvelope]:
     session_id = payload.get("sessionId")
     if not isinstance(session_id, str):
@@ -237,8 +268,7 @@ def events_from_invalidation(payload: dict[str, Any]) -> list[ProtocolEventEnvel
                 payload={"eventCursor": event_cursor(next_sequence)},
             )
         )
-    events.sort(key=lambda event: (event.sequence, event.eventId))
-    return events
+    return order_bucket_events(events)
 
 
 def notice_with_event_sequence(

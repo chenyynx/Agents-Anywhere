@@ -79,8 +79,10 @@ extension ChatTimelineGroup {
 }
 
 enum TimelineGrouping {
-    static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)
+    static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>,
+                       standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets, includeAgentRows: false)
     }
 
     /// C0 fallback (2026-10-23): the whole window can be rows the connector
@@ -90,8 +92,10 @@ enum TimelineGrouping {
     /// window exactly as the card's own fold does (consecutive rows of one
     /// parent merge); the panel still reads `chat.timeline.rows`, so nothing is
     /// hidden from it.
-    static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: true)
+    static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>,
+                               standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets, includeAgentRows: true)
     }
 
     /// The fallback applies only when the window holds no main-agent row: the
@@ -114,8 +118,13 @@ enum TimelineGrouping {
     private static func grouped(
         _ rows: [ChatTimelineRowModel],
         interactionTargets: Set<String>,
+        standaloneTargets: Set<String>?,
         includeAgentRows: Bool
     ) -> [ChatTimelineGroup] {
+        // Session-blocking cards are docked above the composer; their rows can
+        // merge into a step group. Only the inline (non-blocking) anchors need
+        // a standalone row (pp 2026-11-16).
+        let standalone = standaloneTargets ?? interactionTargets
         var groups: [ChatTimelineGroup] = []
         var pending: [ChatTimelineRowModel] = []
         var pendingKind = ChatTimelineGroup.Kind.single
@@ -139,7 +148,7 @@ enum TimelineGrouping {
             // parentItemId, but reading the value would let a streaming token or
             // tool-output refresh invalidate the list and regroup history.
             if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id), !includeAgentRows { continue }
-            let isInteractionAnchor = interactionTargets.contains(row.id)
+            let isInteractionAnchor = standalone.contains(row.id)
             let kind: ChatTimelineGroup.Kind = isInteractionAnchor ? .single : row.structure.groupKind
             if kind == .single {
                 flush()
@@ -182,7 +191,9 @@ enum TimelineGrouping {
     /// blocks twice.
     static func codeGroups(_ rows: [ChatTimelineRowModel],
                            profile: CodeRuntimeProfile,
-                           interactionTargets: Set<String>) -> [ChatTimelineGroup] {
+                           interactionTargets: Set<String>,
+                           standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        let standalone = standaloneTargets ?? interactionTargets
         // The projection hands over one version per item id; the first
         // occurrence wins, the same rule the planner applies. Keeping the row
         // model alongside its item lets the unit list map back without a
@@ -224,7 +235,7 @@ enum TimelineGrouping {
                 // its card docks directly below, so the list's 20 pt gap
                 // would read as a blank band under the card's anchor row
                 // (pp 2026-11-16).
-                let isInteractionAnchor = unitRows.contains { interactionTargets.contains($0.id) }
+                let isInteractionAnchor = unitRows.contains { standalone.contains($0.id) }
                 groups.append(ChatTimelineGroup(kind: .single, rows: unitRows,
                                                isInteractionAnchor: isInteractionAnchor))
             }

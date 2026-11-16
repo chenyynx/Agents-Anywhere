@@ -305,9 +305,16 @@ nonisolated enum TimelineChatGrouping {
     ///   grouping a suffix of a longer timeline must seed it: otherwise the
     ///   first `turnId` in the suffix looks like no change and a step group or
     ///   message that the full pass would close at that row stays merged.
+    /// - Parameter standaloneTargets: the interaction targets that still need
+    ///   a row of their own. A session-blocking card (approvals, questions) is
+    ///   drawn in the composer dock, so its row can merge into the running step
+    ///   group like any other step; only a non-blocking (inline) card needs the
+    ///   standalone row to live under (pp 2026-11-16). Defaults to
+    ///   `interactionTargets` to keep the older one-set callers unchanged.
     static func units(items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
                       interactionTargets: Set<String>,
+                      standaloneTargets: Set<String>? = nil,
                       cwd: String? = nil,
                       startingTurnID: V2TurnID? = nil,
                       excludesSubAgentChildren: Bool = true) -> [TimelineChatUnit] {
@@ -317,6 +324,7 @@ nonisolated enum TimelineChatGrouping {
         var messageRows: [V2TimelineItem] = []
         var consumed: Set<String> = []
         var currentTurnID: V2TurnID? = startingTurnID
+        let standalone = standaloneTargets ?? interactionTargets
 
         func flushSteps() {
             guard !stepItems.isEmpty else { return }
@@ -352,7 +360,7 @@ nonisolated enum TimelineChatGrouping {
         for item in items.sorted(by: wireOrder) {
             guard consumed.insert(item.id).inserted else { continue }
             if excludesSubAgentChildren, isSubAgentChild(item) { continue }
-            if interactionTargets.contains(item.id) {
+            if standalone.contains(item.id) {
                 flushAll()
                 units.append(.standalone(rowID: item.id))
                 continue

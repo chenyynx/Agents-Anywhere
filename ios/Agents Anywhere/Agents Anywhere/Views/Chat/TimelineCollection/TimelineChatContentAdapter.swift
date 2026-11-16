@@ -1712,6 +1712,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
+        // A session-blocking card is drawn in the composer dock, so its row
+        // does not need a transcript row of its own: it merges into the
+        // running step group like any other step (pp 2026-11-16). Only a
+        // non-blocking (inline) card still needs the standalone anchor row.
+        let standaloneTargets = Set(notices.filter {
+            $0.isVisible && !$0.blocks(model.session.id)
+        }.compactMap(\.timelineTargetID))
         // W7: the timeline is the Code page. One planner unit = one group: a
         // message row keeps its declared id (`nativeMessageId ?? itemId`), and
         // a cross-message tool run keeps the first tool's `tool_use` id, so a
@@ -1742,6 +1749,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 items: timelineRows,
                 profile: profile,
                 interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets,
                 cwd: model.session.metadata?.cwd)
             TimelineDiagnostics.validateUnits(
                 sessionID: model.session.id,
@@ -1787,7 +1795,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             chatUnits = []
             codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,
-                                                     interactionTargets: interactionTargets)
+                                                     interactionTargets: interactionTargets,
+                                                     standaloneTargets: standaloneTargets)
             for group in codeGroups {
                 guard let explicitID = group.explicitID else { continue }
                 let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)

@@ -63,6 +63,38 @@ private func userItem(_ id: String, order: Int) throws -> V2TimelineItem {
 
 @Suite("Chat step-group grouping")
 struct TimelineStepGroupingTests {
+
+    /// A session-blocking interaction card is drawn in the composer dock, so
+    /// its anchor row merges into the running step group like any other step.
+    /// Only a non-blocking (inline) card keeps the standalone row it renders
+    /// under (pp 2026-11-16).
+    @Test func aBlockingInteractionAnchorMergesIntoTheStepGroup() throws {
+        let items = [
+            try thinkingItem("r1", order: 1),
+            try toolItem("q1", order: 2, name: "AskUserQuestion",
+                         input: ["questions": [["question": "弹窗表现如何？"]]]),
+        ]
+        let merged = TimelineChatGrouping.units(items: items, profile: .generic,
+                                                interactionTargets: ["q1"],
+                                                standaloneTargets: [])
+        #expect(merged.count == 1)
+        guard case let .stepGroup(_, rowIDs) = merged[0] else {
+            Issue.record("blocking anchor did not merge")
+            return
+        }
+        #expect(rowIDs == ["r1", "q1"])
+
+        let inline = TimelineChatGrouping.units(items: items, profile: .generic,
+                                                interactionTargets: ["q1"],
+                                                standaloneTargets: ["q1"])
+        #expect(inline.count == 2)
+        guard case let .standalone(rowID) = inline[1] else {
+            Issue.record("inline anchor lost its standalone row")
+            return
+        }
+        #expect(rowID == "q1")
+    }
+
     @Test func consecutiveStepsFormOneGroupAndBodyBreaksIt() throws {
         let items = [
             try thinkingItem("r1", order: 1),

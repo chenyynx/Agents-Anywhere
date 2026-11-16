@@ -48,6 +48,10 @@ final class NewSessionModel {
     @ObservationIgnored private let files: V2WorkspaceFilesService
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let preferenceKey: String
+    /// The last explicit model+effort choice for this target, written by any
+    /// session's options sheet as well as this page. See
+    /// `RuntimeSelectionMemoryStore`.
+    @ObservationIgnored private let selectionMemory: RuntimeSelectionMemoryStore
     @ObservationIgnored private var preference: NewSessionPreference
     @ObservationIgnored private var preparationVersion = 0
     @ObservationIgnored private var inventoryTasks: [String: Task<[V2DeviceRuntime], Error>] = [:]
@@ -61,6 +65,7 @@ final class NewSessionModel {
         files = V2WorkspaceFilesService(connectorAPI: devices.connectorAPI, serverURL: scope.serverURL)
         self.devices = devices; self.preparation = preparation; self.creation = creation; self.defaults = defaults
         preferenceKey = "aa.native.new-session.v1." + Data((scope.serverURL.absoluteString + "\n" + scope.accountID).utf8).base64EncodedString()
+        selectionMemory = RuntimeSelectionMemoryStore(scope: scope, defaults: defaults)
         preference = defaults.data(forKey: preferenceKey).flatMap { try? JSONDecoder().decode(NewSessionPreference.self, from: $0) } ?? .init()
         connectorID = preference.connectorID; runtimeID = preference.runtimeID
         projectID = preference.projectIDs?[preference.connectorID]
@@ -269,6 +274,14 @@ final class NewSessionModel {
             }
             prepared = value
             settings.replace(ChatSettingsCatalog(value.catalogs), selections: savedSelections)
+            // The last explicit choice from any session outranks this page's
+            // older sheet preference — that is what makes "I changed the
+            // model in a session" the default for the next one. A model the
+            // catalog no longer offers leaves the sheet/default choice in
+            // place instead of clearing the selection.
+            if let remembered = selectionMemory.load(connectorID: connectorID, runtimeID: runtimeID) {
+                _ = settings.selectModel(remembered.modelID, preferredEffort: remembered.effortID)
+            }
         } catch { if isValid, version == preparationVersion { self.error = error.localizedDescription } }
     }
 
@@ -276,6 +289,10 @@ final class NewSessionModel {
         guard prepared != nil, !connectorID.isEmpty, !runtimeID.isEmpty else { return }
         preference.selections[targetKey] = Dictionary(uniqueKeysWithValues: settings.selections.map { ($0.key.rawValue, $0.value) })
         persist()
+        // Keep the cross-session memory in the same place the session sheet
+        // writes, so both entry points agree on the next session's default.
+        selectionMemory.save(.init(modelID: settings.modelID, effortID: settings.rememberedReasoningID),
+                             connectorID: connectorID, runtimeID: runtimeID)
     }
 
     func create(text: String) async -> V2SessionMeta? {

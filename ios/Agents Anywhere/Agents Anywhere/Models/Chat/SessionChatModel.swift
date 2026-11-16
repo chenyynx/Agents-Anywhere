@@ -80,11 +80,17 @@ final class SessionChatModel {
     @ObservationIgnored let repository: V2SessionRepository
     @ObservationIgnored private let attachments: V2AttachmentService
     @ObservationIgnored private let files: V2WorkspaceFilesService?
+    /// The next session's default, updated when this session's options sheet
+    /// lands a model/effort change. See `RuntimeSelectionMemoryStore`.
+    @ObservationIgnored private let selectionMemory: RuntimeSelectionMemoryStore
 
     init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService, files: V2WorkspaceFilesService? = nil,
-         subagentStopReleaseDelay: Duration = SessionChatModel.subagentStopDeadline) {
+         subagentStopReleaseDelay: Duration = SessionChatModel.subagentStopDeadline,
+         selectionMemoryDefaults: UserDefaults = .standard) {
         self.session = session; self.repository = repository; self.attachments = attachments
         self.files = files
+        self.selectionMemory = RuntimeSelectionMemoryStore(scope: repository.scope,
+                                                           defaults: selectionMemoryDefaults)
         self.subagentStopReleaseDelay = subagentStopReleaseDelay
         let sessionID = session.id
         deferredItems = DeferredItemStore { [weak repository] itemID in
@@ -442,6 +448,13 @@ final class SessionChatModel {
                 }
                 try await repository.setSelection(sessionId: session.id, scope: scope, selectionId: value)
                 if scope == .model { switchedModel = true }
+            }
+            if switchedModel, let meta = session.metadata {
+                // The selection landed on the server: remember it for the
+                // next new session. A failed interrupt below does not undo
+                // the write.
+                selectionMemory.save(.init(modelID: settings.modelID, effortID: settings.rememberedReasoningID),
+                                     connectorID: meta.connectorId, runtimeID: meta.effectiveRuntimeId)
             }
             if switchedModel {
                 if needsInterruptAfterModelSwitch() {

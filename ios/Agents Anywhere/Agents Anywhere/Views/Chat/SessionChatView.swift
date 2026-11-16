@@ -265,13 +265,14 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var toasts = ChatToastStore()
-    /// The transcript's rendering mode (pp 2026-10-29): `.chat` renders the
-    /// step-group live row, `.code` keeps the official Code page. Both run on
-    /// the collection engine; only the row presentation differs.
+    /// The transcript's rendering mode (pp 2026-10-29): `.steps` (UI 分步)
+    /// renders the step-group live row, `.merged` (UI 合并) merges thinking and
+    /// tool calls. Both run on the collection engine; only the row presentation
+    /// differs.
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.chat.rawValue
+    private var renderModeRaw = TimelineRenderMode.steps.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The

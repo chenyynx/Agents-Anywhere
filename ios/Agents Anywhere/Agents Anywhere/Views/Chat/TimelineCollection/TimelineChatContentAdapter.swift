@@ -350,7 +350,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.onAttachment = onAttachment
         self.onFile = onFile
@@ -849,7 +849,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// the row stack's inter-block spacing. Zero outside the chat profile and
     /// away from the stopped turn's anchor.
     private func interruptedNoticeExtraHeight(for groupID: String) -> CGFloat {
-        guard renderMode == .chat,
+        guard renderMode == .steps,
               chatInterruptedItemIDs.contains(
                 TimelineListItem.group(groupID).itemID) else { return 0 }
         return ChatInterruptedNoticeCard.estimatedHeight + CodePageTheme.interMessageSpacing
@@ -1226,7 +1226,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // observable box so the mounted `WorkingMarkView` is updated in
             // place; a reconfigure would recreate it already exited.
             return AnyView(WorkingStatusRowHost(state: workingStatusExitState,
-                                                usesChatWorkingStyle: renderMode == .chat))
+                                                usesChatWorkingStyle: renderMode == .steps))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             // The chat profile's step-group row: one line that follows the
@@ -1293,7 +1293,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     typography: codeTypography,
                     columnWidth: width,
                     turnActionCopyText: actionBarCopyText(for: id),
-                    showsInterruptedNotice: renderMode == .chat
+                    showsInterruptedNotice: renderMode == .steps
                         && chatInterruptedItemIDs.contains(
                             TimelineListItem.group(group.id).itemID),
                     interruptedAgentName: model.agentName,
@@ -1727,7 +1727,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// summary must never carry the mark.
         var chatLastUserOrder = Int.min
         var chatLiveTurnHasSteps = false
-        if renderMode == .chat {
+        if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
             // never merges across messages the way the Code planner does.
@@ -1807,7 +1807,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // queue empties the working row takes the bubble's place in the same
         // apply, so the swap stays height-neutral.
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && (chatLiveTurnHasSteps
+            && !(renderMode == .steps && (chatLiveTurnHasSteps
                 || !model.session.sendQueue.items.isEmpty))
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
@@ -1830,7 +1830,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // (CANONICAL/20-working-mark.md §6), then leaves on its own refresh.
         if hasWorkingStatus {
             cancelWorkingStatusExit()
-        } else if renderMode == .chat {
+        } else if renderMode == .steps {
             // The chat profile moves the one mark onto the step group's row in
             // the same update; keeping the old row mounted for its 0.4 s exit
             // would draw two marks at once.
@@ -1862,10 +1862,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         lastHasWorkingStatus = hasWorkingStatus
         let showsWorkingStatus = hasWorkingStatus
-            || (renderMode != .chat && workingStatusIsExiting)
+            || (renderMode != .steps && workingStatusIsExiting)
         var groups: [ChatTimelineGroup] = []
         var stepGroupsByID: [String: TimelineStepGroup] = [:]
-        if renderMode == .chat {
+        if renderMode == .steps {
             var rowsByID: [String: ChatTimelineRowModel] = [:]
             for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
@@ -2616,7 +2616,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // The interrupted notice is part of this row's drawn height; a
             // synthetic row makes the collection reconfigure when it appears
             // even though the wire rows did not change.
-            if renderMode == .chat,
+            if renderMode == .steps,
                chatInterruptedItemIDs.contains(TimelineListItem.group(group.id).itemID) {
                 signatureRows.append(TimelineRowContentSignature(
                     id: group.id + ":interrupted", revision: 1, updatedSeq: 0))

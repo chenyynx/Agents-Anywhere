@@ -43,7 +43,7 @@ struct TimelineChatTimelineView: View {
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
@@ -418,7 +418,7 @@ final class TimelineChatBridge: ObservableObject {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
                                                  onFile: onFile, onSubAgent: onSubAgent,

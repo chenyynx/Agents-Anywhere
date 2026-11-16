@@ -137,6 +137,8 @@ final class V2SessionRuntimeModel {
 
     func update(_ data: V2SessionData?, connection: V2SessionConnectionState) {
         let previousStatus = state?.status
+        let previousFresh = isFresh
+        let previousEnds = authoritativeTurnEnds
         if state != data?.state { state = data?.state }
         if capabilities != data?.capabilities { capabilities = data?.capabilities }
         let notices = data?.notices ?? []
@@ -158,6 +160,29 @@ final class V2SessionRuntimeModel {
             // the stop's ending will never arrive, so do not let the flag
             // mute a later completion.
             pendingStopEnd = false
+        }
+        // Probe (b1287): the turn-end UI (footer gate, completion cue) keys on
+        // this transition, but the device log could not say whether the state
+        // event, the freshness gate or the observed model update is what
+        // delays it (~1.3 s between the server's idle event and the footer on
+        // 2026-11-17). One line per status change / freshness flip / end
+        // count — never per streaming flush.
+        let appliedStatus = data?.state?.status
+        if previousStatus != appliedStatus || previousFresh != isFresh
+            || previousEnds != authoritativeTurnEnds {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.state",
+                sessionID: data?.session.id,
+                detail: [
+                    "from": previousStatus.map { String(describing: $0) } ?? "-",
+                    "to": appliedStatus.map { String(describing: $0) } ?? "-",
+                    "seq": String(data?.state?.updatedSeq ?? 0),
+                    "fresh": isFresh ? "1" : "0",
+                    "turnEnds": String(authoritativeTurnEnds),
+                    "hasState": data?.state == nil ? "0" : "1",
+                    "connection": String(describing: connection),
+                ],
+                dedupe: false)
         }
     }
 }

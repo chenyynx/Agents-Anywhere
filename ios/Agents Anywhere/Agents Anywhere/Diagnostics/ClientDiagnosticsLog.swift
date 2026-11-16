@@ -80,7 +80,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "timeline.row.inserted", "timeline.row.moved", "timeline.row.overlap",
         "timeline.interrupt.card", "timeline.anchor.placement", "timeline.mover",
         "timeline.working.row", "timeline.haptic",
-        "timeline.compact.row",
+        "timeline.compact.row", "timeline.turn.footer",
         "ws.connecting", "ws.connect", "ws.disconnect",
         "timeline.event.gap",
     ]

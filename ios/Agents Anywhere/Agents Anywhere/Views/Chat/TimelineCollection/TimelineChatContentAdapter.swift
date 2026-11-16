@@ -255,6 +255,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// finished until the session was reopened).
     private var lastCompactRowProbe: String?
 
+    /// The last turn-footer host set written to diagnostics. The action bar's
+    /// presence is otherwise invisible in a log: a disappearance only shows up
+    /// as a 30 pt content drop (`timeline.mover`), and the reason has to be
+    /// inferred from `timeline.grouping` counts. One line per change names the
+    /// groups that carry copy/share, so a report like pp's 2026-11-16 「压缩
+    /// 之后复制/分享出现又消失」 is read directly instead of reconstructed.
+    private var lastTurnFooterProbe: String?
+
+    private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
+        // Hosts, in timeline order; the copy text itself is never logged.
+        let hosts = groups.compactMap { actionBarCopyText(for: $0.id) == nil ? nil : $0.id }
+        let probe = hosts.joined(separator: ",")
+        guard probe != lastTurnFooterProbe else { return }
+        lastTurnFooterProbe = probe
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.turn.footer",
+            sessionID: model.session.id,
+            detail: ["hosts": probe, "count": String(hosts.count)],
+            dedupe: false)
+    }
+
     private func noteCompactRowState() {
         // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
         // turn can still change sits after the last user row, so the scan
@@ -2210,6 +2231,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
         noteCompactRowState()
+        noteTurnFooterState(groups: groups)
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)

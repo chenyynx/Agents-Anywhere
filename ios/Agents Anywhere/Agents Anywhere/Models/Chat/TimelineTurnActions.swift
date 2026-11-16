@@ -159,6 +159,14 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+        /// The declared turn id of the open bucket (its first naming row).
+        /// Used only around a compaction separator; ordinary turns are still
+        /// split by a user bubble, not by whichever id the wire stamps.
+        var bucketTurnID: V2TurnID?
+        /// A compact marker closed the open bucket's turn. The rows after it
+        /// belong to a turn no user bubble opened, so the first declared
+        /// turn-id change is the footer's commit boundary (pp 2026-11-16).
+        var compactBoundaryPending = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -182,6 +190,8 @@ enum TimelineTurnActions {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
+            bucketTurnID = nil
+            compactBoundaryPending = false
         }
 
         for group in groups {
@@ -190,6 +200,22 @@ enum TimelineTurnActions {
                 turnOpen = true
                 startsMidTurn = false
             }
+            let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
+            if compactBoundaryPending, let declaredTurnID, let bucketTurnID,
+               declaredTurnID != bucketTurnID {
+                // A turn that begins after a compaction has no user bubble:
+                // the CLI resumes with a scheduled reader turn. Keeping the
+                // finished turn's replies in the same bucket made its footer
+                // depend on the new turn's rows, so every active step withdrew
+                // it and every idle gap put it back — the copy/share bar
+                // blinked 30 pt in and out (pp 2026-11-16: 「已压缩对话」 then
+                // immediately 任务中). A declared turn-id change after the
+                // separator closes the finished turn on its own last reply.
+                // An automatic compaction inside one turn keeps the same id
+                // on both sides, so this cannot reveal a footer mid-turn.
+                commit()
+            }
+            if compactBoundaryPending, declaredTurnID != nil { compactBoundaryPending = false }
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
             // conversation (they can still place the footer via the group).
@@ -200,6 +226,7 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
+            if bucketTurnID == nil { bucketTurnID = declaredTurnID }
             if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
@@ -207,6 +234,9 @@ enum TimelineTurnActions {
             // while it runs, the finished turn keeps its footer and the 30 pt
             // action bar with it (pp 2026-11-15: copy/share vanished for the
             // whole compaction and the page jumped twice).
+            if group.rows.contains(where: { TimelineEntryPresentation.isCompactItem($0.value) }) {
+                compactBoundaryPending = true
+            }
             let active = group.rows.contains {
                 $0.structure.status.isActive
                     && !TimelineEntryPresentation.isCompactItem($0.value)

@@ -346,6 +346,28 @@ struct TimelineChatTimelineView: View {
                     ],
                     dedupe: false)
             }
+            // The working row's text is the "the server has this message"
+            // signal; its first appearance plays one selection cue. The send
+            // itself and the bubble stay silent (pp 2026-11-16).
+            .sensoryFeedback(.selection, trigger: bridge.sendConfirmedTick) { _, _ in
+                !sidebarIsTransitioning && HapticGate.statusAllowed()
+                    && !model.session.runtime.stopRequested
+                    && !model.session.runtime.predictedIdle
+            }
+            .onChange(of: bridge.sendConfirmedTick) { _, _ in
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.haptic",
+                    sessionID: model.session.id,
+                    detail: [
+                        "source": "send-confirmed",
+                        "allowed": (!sidebarIsTransitioning && HapticGate.statusAllowed()
+                            && !model.session.runtime.stopRequested
+                            && !model.session.runtime.predictedIdle) ? "1" : "0",
+                        "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
+                        "predictedIdle": model.session.runtime.predictedIdle ? "1" : "0",
+                    ],
+                    dedupe: false)
+            }
             // The Code page's tool detail (official full-screen presentation).
             // Rows report taps through the adapter; this page-level sheet
             // survives the streaming reconfigures that rebuild every cell.
@@ -402,6 +424,9 @@ final class TimelineChatBridge: ObservableObject {
     /// row: a streaming reconfigure rebuilds the hosted cell's view, and a
     /// cell-local `@State` sheet could be dismissed mid-read.
     @Published var codeDetailRequest: CodePageDetailRequest?
+    /// One tick per server-acknowledged send: the page plays the send's
+    /// confirmation haptic on this edge (pp 2026-11-16).
+    @Published private(set) var sendConfirmedTick = 0
     private(set) var readerTookOver = false
     private var navigationSuspended = false
     private var reduceMotion = false
@@ -433,6 +458,9 @@ final class TimelineChatBridge: ObservableObject {
         }
         adapter.onCodeStepGroupDetail = { [weak self] request in
             self?.codeDetailRequest = .stepGroup(request)
+        }
+        adapter.onWorkingTextShown = { [weak self] in
+            self?.sendConfirmedTick &+= 1
         }
     }
 

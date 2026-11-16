@@ -43,22 +43,29 @@ struct CodeWorkingStatusRow: View {
     /// neutral localized status, painted with the shared shimmer sweep
     /// (pp 2026-10-30). The Code page keeps the official rotation.
     let usesChatWorkingStyle: Bool
+    /// False while the send is still optimistic: the row draws only its
+    /// three-dot mark. The text is the "the server has the message" signal,
+    /// so it must not appear before the acknowledgement (pp 2026-11-16).
+    let showsText: Bool
 
     init(isRunning: Bool = true,
          markBody: WorkingMarkBody = .think,
          phase: CodeWorkingStatusPhase = .working(startedAt: Date()),
-         usesChatWorkingStyle: Bool = false) {
+         usesChatWorkingStyle: Bool = false,
+         showsText: Bool = true) {
         self.isRunning = isRunning
         self.markBody = markBody
         self.phase = phase
         self.usesChatWorkingStyle = usesChatWorkingStyle
+        self.showsText = showsText
     }
 
     var body: some View {
         CodeThinkingStatusLine(isRunning: isRunning,
                                markBody: markBody,
                                phase: phase,
-                               usesChatWorkingStyle: usesChatWorkingStyle)
+                               usesChatWorkingStyle: usesChatWorkingStyle,
+                               showsText: showsText)
             .padding(.vertical, CodePageTheme.segmentVerticalPadding)
             .padding(.vertical, CodePageTheme.rowMarginTop)
             .frame(maxWidth: .infinity, alignment: .leading)

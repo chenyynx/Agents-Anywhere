@@ -41,6 +41,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     var onCodeThinkingDetail: ((CodeThinkingDetailRequest) -> Void)?
     /// The chat profile's step-group row tap; same page-level sheet.
     var onCodeStepGroupDetail: ((CodeStepGroupDetailRequest) -> Void)?
+    /// The working row's text just appeared after a server-acknowledged send —
+    /// the page turns this edge into the "message is in" haptic. Called
+    /// asynchronously: the refresh that detects it runs inside a SwiftUI
+    /// update, and publishing from there is a view-update mutation.
+    var onWorkingTextShown: (() -> Void)?
 
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
@@ -205,6 +210,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var workingStatusIsExiting = false
     private var workingStatusExitWorkItem: DispatchWorkItem?
     private var lastHasWorkingStatus = false
+    /// The text gate at the last refresh. The row's visibility does not change
+    /// when the send is acknowledged; only this flag does, and it is the
+    /// send's "the server has it" signal (pp 2026-11-16).
+    private var lastWorkingStatusShowsText = true
     private static let workingStatusExitDuration: TimeInterval = 0.4
     /// In-place exit flag for the mounted working row. See
     /// `WorkingStatusRowHost`: a reconfigure would reset `WorkingMarkView`.
@@ -1844,14 +1853,46 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // height on the send-success frame (+49, device 2026-11-14). Once the
         // queue empties the working row takes the bubble's place in the same
         // apply, so the swap stays height-neutral.
-        let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .steps && (chatLiveTurnHasSteps
-                || !model.session.sendQueue.items.isEmpty))
+        // Send-frame visibility (pp 2026-11-16): the pending bubble and the
+        // standalone working row must enter the same apply. The bubble comes
+        // from the presentation's own tick; when the working row ran ahead,
+        // its +38 follow started first and the 53 pt bubble joined mid-flight
+        // (probe `timeline.rows.frame`). Waiting for the published row makes
+        // one +91 follow — the page scrolls once and the tool row is already
+        // in place. The bubble's old spinner is gone, so this row is the
+        // send's only progress signal.
+        let openPending = model.session.pendingMessages.filter {
+            $0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed
+        }
+        let publishedPendingIDs = Set(model.timeline.pendingMessages.map(\.id))
+        var echoedPendingIDs: Set<String> = []
+        if let latest = openPending.last,
+           latest.delivery != .sending, !publishedPendingIDs.contains(latest.id) {
+            // The echo retires the pending row from the presentation on the
+            // same transition; its timeline row is the published send frame.
+            echoedPendingIDs = Set(model.timeline.rows.compactMap { row -> String? in
+                guard row.value.role == .user else { return nil }
+                return row.value.source["clientMessageId"]?.stringValue
+            }.filter { $0 == latest.id })
+        }
+        let runtimeIsInFlight = model.session.runtime.state?.status.isTurnInFlight == true
+        let hasWorkingStatus = SendFramePresentation.showsWorkingRow(
+            placeholderVisible: model.sendingPlaceholder != nil,
+            pendingIDs: openPending.map(\.id),
+            publishedPendingIDs: publishedPendingIDs,
+            echoedPendingIDs: echoedPendingIDs,
+            isStepsProfile: renderMode == .steps,
+            hasLiveSteps: chatLiveTurnHasSteps,
+            queueCount: model.session.sendQueue.items.count)
+        let workingStatusShowsText = SendFramePresentation.showsWorkingRowText(
+            latestDelivery: openPending.last?.delivery,
+            runtimeIsInFlight: runtimeIsInFlight)
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
         if hasWorkingStatus {
             workingStatusExitState.markBody = liveWorkingMarkBody()
+            workingStatusExitState.showsText = workingStatusShowsText
             // A new working block anchors its own verb phase; the first block
             // after launch starts now.
             if workingStatusPhaseStart == nil || !lastHasWorkingStatus {
@@ -1876,10 +1917,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         } else if lastHasWorkingStatus, !workingStatusIsExiting {
             beginWorkingStatusExit()
         }
-        if hasWorkingStatus != lastHasWorkingStatus {
-            // Which gate decided the standalone working row: this trail is the
-            // only record of the "half second with no working row after a
-            // send" report (device 2026-11-14).
+        if hasWorkingStatus != lastHasWorkingStatus
+            || (hasWorkingStatus && workingStatusShowsText != lastWorkingStatusShowsText) {
+            // Which gate decided the standalone working row, and whether the
+            // send is acknowledged yet: this trail is the only record of the
+            // "half second with no working row after a send" report
+            // (device 2026-11-14) and of the ack turning the mark into text.
             let submitting = model.session.pendingMessages.contains {
                 $0.delivery == .sending || $0.delivery == .accepted
             }
@@ -1888,6 +1931,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 sessionID: model.session.id,
                 detail: [
                     "has": hasWorkingStatus ? "1" : "0",
+                    "workingText": workingStatusShowsText ? "1" : "0",
                     "submitting": submitting ? "1" : "0",
                     "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
                     "queue": String(model.session.sendQueue.items.count),
@@ -1898,7 +1942,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 ],
                 dedupe: false)
         }
+        if hasWorkingStatus, workingStatusShowsText, !lastWorkingStatusShowsText,
+           let latest = openPending.last,
+           latest.delivery == .accepted || latest.delivery == .confirmed {
+            // The text that just appeared is the server's acknowledgement:
+            // hand the page one edge for its "message is in" haptic. Deferred
+            // out of the update that computed it (see `onWorkingTextShown`).
+            DispatchQueue.main.async { [weak self] in self?.onWorkingTextShown?() }
+        }
         lastHasWorkingStatus = hasWorkingStatus
+        lastWorkingStatusShowsText = workingStatusShowsText
         let showsWorkingStatus = hasWorkingStatus
             || (renderMode != .steps && workingStatusIsExiting)
         var groups: [ChatTimelineGroup] = []
@@ -2364,6 +2417,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
                     "items": String(identity.items.count),
                     "working": model.sendingPlaceholder != nil ? "1" : "0",
+                    "workingText": workingStatusShowsText ? "1" : "0",
                     "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
                     "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
                     "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
@@ -2902,9 +2956,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// `.server` payload is not displayed (`0x102a8507c` discards it).
     private func liveWorkingStatusPhase(startedAt: Date) -> CodeWorkingStatusPhase {
         if liveTurnIsCompacting() { return .compacting }
-        if model.session.awaitingReplyID != nil { return .connecting }
-        if let status = model.session.runtime.state?.status,
-           status == .waiting || status == .pending {
+        // "Connecting" is reserved for transport that is genuinely not ready.
+        // An accepted message waiting for the agent is work in progress, not a
+        // connection problem: mapping `awaitingReplyID`/`waiting` here showed
+        // "正在连接" after every send and read as a network fault (pp
+        // 2026-11-16). Those states now fall through to the working label.
+        if !model.session.runtime.isFresh
+            || model.session.network.availability == .offline
+            || model.session.metadata?.connectorStatus == .offline {
             return .connecting
         }
         // Official precedence (R24 §6.5): `.compacting`/`.connecting` go
@@ -3160,6 +3219,9 @@ private final class WorkingStatusExitState {
     /// The official working-status phase (connecting / compacting / verb
     /// rotation); same in-place update rule.
     var phase: CodeWorkingStatusPhase = .working(startedAt: Date())
+    /// False while the send is still unacknowledged: the mark draws alone and
+    /// only the server's acknowledgement adds the text (pp 2026-11-16).
+    var showsText = true
 }
 
 /// The chat profile's step groups, shared with the step-group detail sheet.
@@ -3192,7 +3254,8 @@ private struct WorkingStatusRowHost: View {
         CodeWorkingStatusRow(isRunning: state.isRunning,
                              markBody: state.markBody,
                              phase: state.phase,
-                             usesChatWorkingStyle: usesChatWorkingStyle)
+                             usesChatWorkingStyle: usesChatWorkingStyle,
+                             showsText: state.showsText)
     }
 }
 

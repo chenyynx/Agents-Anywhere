@@ -41,6 +41,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     var onCodeThinkingDetail: ((CodeThinkingDetailRequest) -> Void)?
     /// The chat profile's step-group row tap; same page-level sheet.
     var onCodeStepGroupDetail: ((CodeStepGroupDetailRequest) -> Void)?
+    /// The working row's text just appeared after a server-acknowledged send —
+    /// the page turns this edge into the "message is in" haptic. Called
+    /// asynchronously: the refresh that detects it runs inside a SwiftUI
+    /// update, and publishing from there is a view-update mutation.
+    var onWorkingTextShown: (() -> Void)?
 
     /// The representable marks the list stale once per SwiftUI update; reading
     /// the generation rebuilds the maps, and every later `item(at:)` /
@@ -205,6 +210,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var workingStatusIsExiting = false
     private var workingStatusExitWorkItem: DispatchWorkItem?
     private var lastHasWorkingStatus = false
+    /// The text gate at the last refresh. The row's visibility does not change
+    /// when the send is acknowledged; only this flag does, and it is the
+    /// send's "the server has it" signal (pp 2026-11-16).
+    private var lastWorkingStatusShowsText = true
     private static let workingStatusExitDuration: TimeInterval = 0.4
     /// In-place exit flag for the mounted working row. See
     /// `WorkingStatusRowHost`: a reconfigure would reset `WorkingMarkView`.
@@ -1844,14 +1853,63 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // height on the send-success frame (+49, device 2026-11-14). Once the
         // queue empties the working row takes the bubble's place in the same
         // apply, so the swap stays height-neutral.
-        let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .steps && (chatLiveTurnHasSteps
-                || !model.session.sendQueue.items.isEmpty))
+        // Send-frame visibility (pp 2026-11-16): the pending bubble and the
+        // standalone working row must enter the same apply. The bubble comes
+        // from the presentation's own tick; when the working row ran ahead,
+        // its +38 follow started first and the 53 pt bubble joined mid-flight
+        // (probe `timeline.rows.frame`). Waiting for the published row makes
+        // one +91 follow — the page scrolls once and the tool row is already
+        // in place. The bubble's old spinner is gone, so this row is the
+        // send's only progress signal.
+        let openPending = model.session.pendingMessages.filter {
+            $0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed
+        }
+        let publishedPendingIDs = Set(model.timeline.pendingMessages.map(\.id))
+        // The session clears its record when the echo confirms; the
+        // presentation retires the bubble one refresh later. In that gap
+        // `openPending` is empty while the old turn's steps are still after
+        // the last presented user row, so the working row dropped for a frame
+        // and came back with the echo — −38 then +38 scrolls (pp 2026-11-16,
+        // b1285: 22:44:16.105 / 16.142). The presentation's pending row keeps
+        // the send frame anchored across the gap.
+        let anchorPendingIDs = SendFramePresentation.anchorPendingIDs(
+            sessionIDs: openPending.map(\.id),
+            presentedIDs: model.timeline.pendingMessages.map(\.id))
+        var echoedPendingIDs: Set<String> = []
+        if let latest = openPending.last,
+           latest.delivery != .sending, !publishedPendingIDs.contains(latest.id) {
+            // The echo retires the pending row from the presentation on the
+            // same transition; its timeline row is the published send frame.
+            echoedPendingIDs = Set(model.timeline.rows.compactMap { row -> String? in
+                guard row.value.role == .user else { return nil }
+                return row.value.source["clientMessageId"]?.stringValue
+            }.filter { $0 == latest.id })
+        }
+        let runtimeIsInFlight = model.session.runtime.state?.status.isTurnInFlight == true
+        let hasWorkingStatus = SendFramePresentation.showsWorkingRow(
+            placeholderVisible: model.sendingPlaceholder != nil,
+            pendingIDs: anchorPendingIDs,
+            publishedPendingIDs: publishedPendingIDs,
+            echoedPendingIDs: echoedPendingIDs,
+            isStepsProfile: renderMode == .steps,
+            // A pending send already starts the next turn: the step groups
+            // after the last *echoed* user row belong to the previous turn,
+            // and counting them here deferred the working row past the echo —
+            // a second +38 scroll ~1.1 s after the bubble (pp 2026-11-16,
+            // b1284 log: bubble +53 at 22:22:11.170, row +38.3 at 12.327).
+            // The anchor spans the pending→echo gap as well, or the row drops
+            // for one refresh and returns with the echo.
+            hasLiveSteps: chatLiveTurnHasSteps && anchorPendingIDs.isEmpty,
+            queueCount: model.session.sendQueue.items.count)
+        let workingStatusShowsText = SendFramePresentation.showsWorkingRowText(
+            latestDelivery: openPending.last?.delivery,
+            runtimeIsInFlight: runtimeIsInFlight)
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
         // plays its exit, so the exit animates the sprite that was on screen.
         if hasWorkingStatus {
             workingStatusExitState.markBody = liveWorkingMarkBody()
+            workingStatusExitState.showsText = workingStatusShowsText
             // A new working block anchors its own verb phase; the first block
             // after launch starts now.
             if workingStatusPhaseStart == nil || !lastHasWorkingStatus {
@@ -1876,10 +1934,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         } else if lastHasWorkingStatus, !workingStatusIsExiting {
             beginWorkingStatusExit()
         }
-        if hasWorkingStatus != lastHasWorkingStatus {
-            // Which gate decided the standalone working row: this trail is the
-            // only record of the "half second with no working row after a
-            // send" report (device 2026-11-14).
+        if hasWorkingStatus != lastHasWorkingStatus
+            || (hasWorkingStatus && workingStatusShowsText != lastWorkingStatusShowsText) {
+            // Which gate decided the standalone working row, and whether the
+            // send is acknowledged yet: this trail is the only record of the
+            // "half second with no working row after a send" report
+            // (device 2026-11-14) and of the ack turning the mark into text.
             let submitting = model.session.pendingMessages.contains {
                 $0.delivery == .sending || $0.delivery == .accepted
             }
@@ -1888,6 +1948,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 sessionID: model.session.id,
                 detail: [
                     "has": hasWorkingStatus ? "1" : "0",
+                    "workingText": workingStatusShowsText ? "1" : "0",
                     "submitting": submitting ? "1" : "0",
                     "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
                     "queue": String(model.session.sendQueue.items.count),
@@ -1898,7 +1959,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 ],
                 dedupe: false)
         }
+        if hasWorkingStatus, workingStatusShowsText, !lastWorkingStatusShowsText {
+            // The text just appeared — the send is confirmed enough to start
+            // work (a running runtime proves the message reached the backend,
+            // even when the HTTP ack is still in flight). Hand the page one
+            // edge for its confirmation haptic; deferred out of the update
+            // that computed it (see `onWorkingTextShown`).
+            DispatchQueue.main.async { [weak self] in self?.onWorkingTextShown?() }
+        }
         lastHasWorkingStatus = hasWorkingStatus
+        lastWorkingStatusShowsText = workingStatusShowsText
         let showsWorkingStatus = hasWorkingStatus
             || (renderMode != .steps && workingStatusIsExiting)
         var groups: [ChatTimelineGroup] = []
@@ -2197,6 +2267,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
             isCompacting: liveTurnIsCompacting())
+        // The live user turn's bucket keeps the bubble-only split so a
+        // queued-send turn-id flap cannot commit a footer mid-turn. Only that
+        // trailing bucket is live: everything before it is finished history
+        // and still splits on the wire's ids. Suppressing the ids for the
+        // whole build re-merged each finished turn with the scheduled turn
+        // that followed it, so every send and every turn end toggled six
+        // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
+        let liveTurnGroupID: String? = {
+            guard turnFooterGate.isLiveUserTurn else { return nil }
+            // An outgoing bubble without an echo row has no group yet; the
+            // trailing bucket is the previous turn, live only while the
+            // runtime still runs it. Once it ended, the window is history.
+            if submittingPendingID != nil, !submittingPendingHasEcho, !model.isRunning {
+                return nil
+            }
+            guard let latestUserRowID else { return nil }
+            return groups.last { group in
+                group.rows.contains { $0.id == latestUserRowID }
+            }?.id
+        }()
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2218,10 +2308,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // sends — has only its declared turn id as a boundary. Without it
             // the previous turn's footer slides onto the new turn's reply
             // (pp 2026-11-16 10:05:54: host msg_577ba3bc → msg_1e1de664 with
-            // the footer count unchanged). A user-opened turn keeps the
-            // bubble-only split so a queued-send turn-id flap cannot commit a
-            // footer mid-turn.
-            allowsTurnIdBoundary: !turnFooterGate.isAnchoredToUserBubble,
+            // the footer count unchanged). Only the live user turn keeps the
+            // bubble-only split; history still splits, or the same wake-up
+            // turn re-merges on every send (same day 11:09–11:25).
+            liveTurnGroupID: liveTurnGroupID,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
@@ -2323,6 +2413,37 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         TimelineProbeStore.shared.noteStage(
             "adapter.signature", seconds: CACurrentMediaTime() - probeSignatureStart)
 #endif
+        // Send-frame probe (pp 2026-11-16): the standalone working row and the
+        // pending bubble come from two sources — `session.pendingMessages`
+        // (synchronous) and the presentation's `pendingMessages` (published on
+        // its own tick). Whichever lands in a later apply grows the content
+        // inside the running follow, so it never gets its own entrance: one
+        // send reads "bubble lands, working row follows", the next reads
+        // "working row already there". One line per item-set change names the
+        // order and the two sources; read it beside `timeline.mover`.
+        let previousItemIDs = Set(itemsValue.map(\.itemID))
+        let nextItemIDs = Set(identity.items.map(\.itemID))
+        if previousItemIDs != nextItemIDs {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.rows.frame",
+                sessionID: model.session.id,
+                detail: [
+                    "added": identity.items.map(\.itemID)
+                        .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
+                    "removed": itemsValue.map(\.itemID)
+                        .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
+                    "items": String(identity.items.count),
+                    "working": model.sendingPlaceholder != nil ? "1" : "0",
+                    "workingText": workingStatusShowsText ? "1" : "0",
+                    "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
+                    "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
+                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                    "queue": String(model.session.sendQueue.items.count),
+                    "running": model.isRunning ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
+        }
         itemsValue = identity.items
         signaturesByItem = signatures
         if estimateCache.count > 256 { estimateCache.removeAll(keepingCapacity: true) }
@@ -2852,9 +2973,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// `.server` payload is not displayed (`0x102a8507c` discards it).
     private func liveWorkingStatusPhase(startedAt: Date) -> CodeWorkingStatusPhase {
         if liveTurnIsCompacting() { return .compacting }
-        if model.session.awaitingReplyID != nil { return .connecting }
-        if let status = model.session.runtime.state?.status,
-           status == .waiting || status == .pending {
+        // "Connecting" is reserved for transport that is genuinely not ready.
+        // An accepted message waiting for the agent is work in progress, not a
+        // connection problem: mapping `awaitingReplyID`/`waiting` here showed
+        // "正在连接" after every send and read as a network fault (pp
+        // 2026-11-16). Those states now fall through to the working label.
+        if !model.session.runtime.isFresh
+            || model.session.network.availability == .offline
+            || model.session.metadata?.connectorStatus == .offline {
             return .connecting
         }
         // Official precedence (R24 §6.5): `.compacting`/`.connecting` go
@@ -3110,6 +3236,9 @@ private final class WorkingStatusExitState {
     /// The official working-status phase (connecting / compacting / verb
     /// rotation); same in-place update rule.
     var phase: CodeWorkingStatusPhase = .working(startedAt: Date())
+    /// False while the send is still unacknowledged: the mark draws alone and
+    /// only the server's acknowledgement adds the text (pp 2026-11-16).
+    var showsText = true
 }
 
 /// The chat profile's step groups, shared with the step-group detail sheet.
@@ -3142,7 +3271,8 @@ private struct WorkingStatusRowHost: View {
         CodeWorkingStatusRow(isRunning: state.isRunning,
                              markBody: state.markBody,
                              phase: state.phase,
-                             usesChatWorkingStyle: usesChatWorkingStyle)
+                             usesChatWorkingStyle: usesChatWorkingStyle,
+                             showsText: state.showsText)
     }
 }
 

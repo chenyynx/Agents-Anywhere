@@ -22,7 +22,10 @@ struct PendingMessageRow: View {
             text: pending.content,
             attachments: chat.session.attachmentPreviews.resolve(
                 pending.attachments.map(\.content), clientID: pending.id),
-            isPending: pending.delivery == .sending || pending.delivery == .accepted,
+            // The working row is the send's progress signal (pp 2026-11-16):
+            // the bubble itself draws no spinner. A failed delivery still puts
+            // its retry affordance in the same gutter.
+            isPending: false,
             onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
             attachmentState: { content in
                 pending.codeAttachmentState(for: content)

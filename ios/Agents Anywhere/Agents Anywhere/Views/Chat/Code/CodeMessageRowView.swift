@@ -416,12 +416,24 @@ struct CodeMessageRowView: View {
 
 // MARK: - Running status line
 
+/// VoiceOver needs a label while the row draws only its mark; once the text is
+/// shown, the combined children already read it.
+private struct SendMarkOnlyAccessibility: ViewModifier {
+    let showsText: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if showsText { content } else { content.accessibilityLabel(String(localized: "正在发送消息")) }
+    }
+}
+
 /// `••• Computing...` — the official working row
 /// (`CANONICAL/20-working-mark.md` §1–§4): the 20×20 flipbook mark plus the
 /// status text. Normal work rotates the 20 verbs with the official phase
 /// timing (0–3 s, 3–7 s, then every 6 s — `0x102a85174`); `compacting` and
 /// `connecting` are fixed localised strings. The mark is decorative and
-/// hidden from accessibility; the text carries the announcement.
+/// hidden from accessibility; the text carries the announcement (a mark-only
+/// send gains a label through `SendMarkOnlyAccessibility`).
 struct CodeThinkingStatusLine: View {
     /// Mirrors `WorkingMarkView.isRunning`: false starts the mark's 0.4 s exit
     /// while the status text stays on screen until the parent removes the row
@@ -439,66 +451,74 @@ struct CodeThinkingStatusLine: View {
     /// neutral localized label painted with the shared shimmer sweep, not the
     /// Code page's official English verb rotation (pp 2026-10-30).
     let usesChatWorkingStyle: Bool
+    /// False while the send is still optimistic: the row draws only its mark.
+    /// The text is reserved for "the server holds this message" (pp 2026-11-16).
+    let showsText: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     init(isRunning: Bool = true,
          markBody: WorkingMarkBody = .think,
          phase: CodeWorkingStatusPhase = .working(startedAt: Date()),
-         usesChatWorkingStyle: Bool = false) {
+         usesChatWorkingStyle: Bool = false,
+         showsText: Bool = true) {
         self.isRunning = isRunning
         self.markBody = markBody
         self.phase = phase
         self.usesChatWorkingStyle = usesChatWorkingStyle
+        self.showsText = showsText
     }
 
     var body: some View {
         HStack(spacing: CodePageTheme.workingStatusSpacing) {
             WorkingMarkView(body: markBody, isRunning: isRunning)
-            switch phase {
-            case .connecting:
-                statusLabel(String(localized: "正在连接"))
-            case .compacting:
-                statusLabel(String(localized: "正在压缩对话…"))
-            case let .working(startedAt):
-                if usesChatWorkingStyle {
-                    statusLabel(Self.processingLabel)
-                } else {
-                    // The 1 s tick only lets the phase boundary land on time;
-                    // the text changes at 0 / 3 / 7 / 13 … seconds, not every
-                    // tick.
-                    statusTimeline { date in
-                        CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
-                    }
-                }
-            case let .thinking(startedAt):
-                // Official live tiers are refreshed by the same 1 Hz
-                // `PeriodicTimelineSchedule` (`0x102a83314` in
-                // CodeThinkingView's body).
-                statusTimeline { date in
-                    CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
-                }
-            case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
-                // `思考了 X` is the Code (合并) profile's official closed
-                // label, visible for 2 s after the block ends; past that the
-                // selector returns nil and the row falls back to the rotating
-                // verbs (`0x102a88f20-f50`). The chat (分步) profile never
-                // shows it (pp 2026-11-16): it keeps the neutral processing
-                // label while the turn continues.
-                statusTimeline { date in
-                    if !usesChatWorkingStyle,
-                       date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
-                        return CodeThinkingText.closedText(seconds: seconds)
-                    }
+            if showsText {
+                switch phase {
+                case .connecting:
+                    statusLabel(String(localized: "正在连接"))
+                case .compacting:
+                    statusLabel(String(localized: "正在压缩对话…"))
+                case let .working(startedAt):
                     if usesChatWorkingStyle {
-                        return Self.processingLabel
+                        statusLabel(Self.processingLabel)
+                    } else {
+                        // The 1 s tick only lets the phase boundary land on time;
+                        // the text changes at 0 / 3 / 7 / 13 … seconds, not every
+                        // tick.
+                        statusTimeline { date in
+                            CodeWorkingStatusText.verb(elapsed: date.timeIntervalSince(startedAt)) + "..."
+                        }
                     }
-                    return CodeWorkingStatusText.verb(
-                        elapsed: date.timeIntervalSince(fallbackStartedAt)) + "..."
+                case let .thinking(startedAt):
+                    // Official live tiers are refreshed by the same 1 Hz
+                    // `PeriodicTimelineSchedule` (`0x102a83314` in
+                    // CodeThinkingView's body).
+                    statusTimeline { date in
+                        CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
+                    }
+                case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
+                    // `思考了 X` is the Code (合并) profile's official closed
+                    // label, visible for 2 s after the block ends; past that the
+                    // selector returns nil and the row falls back to the rotating
+                    // verbs (`0x102a88f20-f50`). The chat (分步) profile never
+                    // shows it (pp 2026-11-16): it keeps the neutral processing
+                    // label while the turn continues.
+                    statusTimeline { date in
+                        if !usesChatWorkingStyle,
+                           date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
+                            return CodeThinkingText.closedText(seconds: seconds)
+                        }
+                        if usesChatWorkingStyle {
+                            return Self.processingLabel
+                        }
+                        return CodeWorkingStatusText.verb(
+                            elapsed: date.timeIntervalSince(fallbackStartedAt)) + "..."
+                    }
                 }
             }
         }
         .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
         .accessibilityElement(children: .combine)
+        .modifier(SendMarkOnlyAccessibility(showsText: showsText))
     }
 
     /// The official thinking row re-renders on a 1 Hz timeline; every

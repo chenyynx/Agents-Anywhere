@@ -54,8 +54,20 @@ struct ChatSettingsCatalog: Equatable {
 final class ConversationSettings {
     private(set) var catalog = ChatSettingsCatalog()
     private(set) var modelID = ""
+    /// The effort in effect for the current model. A model that lacks the
+    /// user's preferred level runs at a clamped one instead; see
+    /// `preferredReasoningID`.
     private(set) var reasoningID = ""
+    /// The level the user actually picked (or a session restored). It is not
+    /// overwritten by a clamp, so switching back to a model that supports it
+    /// restores the choice instead of leaving the clamped level behind.
+    private(set) var preferredReasoningID = ""
     private(set) var permissionID = ""
+
+    /// What the next session should remember: the preference, not a clamp.
+    var rememberedReasoningID: String {
+        preferredReasoningID.isEmpty ? reasoningID : preferredReasoningID
+    }
 
     var model: ChatModelOption? { catalog.models.first { $0.id == modelID } }
     var reasoning: CatalogOption? { model?.reasoning.first { $0.id == reasoningID } }
@@ -91,14 +103,14 @@ final class ConversationSettings {
 
     func replace(_ catalog: ChatSettingsCatalog, selections: [V2RuntimeSelectionScope: V2SelectionID] = [:], defaults: Bool = true) {
         self.catalog = catalog
-        modelID = ""; reasoningID = ""; permissionID = ""
+        modelID = ""; reasoningID = ""; preferredReasoningID = ""; permissionID = ""
         let selection = selections[.model]
         for model in catalog.models where model.option.isEnabled {
             if let selection, model.option.selectionID == selection {
                 modelID = model.id; break
             }
             if let selection, let reasoning = model.reasoning.first(where: { $0.isEnabled && $0.selectionID == selection }) {
-                modelID = model.id; reasoningID = reasoning.id; break
+                modelID = model.id; reasoningID = reasoning.id; preferredReasoningID = reasoning.id; break
             }
         }
         if modelID.isEmpty, defaults,
@@ -113,15 +125,71 @@ final class ConversationSettings {
         }
     }
 
+    /// The levels every Claude catalog shares, in ascending order. Only these
+    /// ids can be carried across a model switch: a custom model's own ids
+    /// have no comparable scale.
+    private static let effortOrder = ["low", "medium", "high", "xhigh", "max"]
+
+    /// Switches models while keeping the user's reasoning effort.
+    ///
+    /// The effort is a preference, not a property of the model: when the next
+    /// model offers the same level it stays, when the level is missing the
+    /// nearest one is used (a tie goes lower, so an unknown level never
+    /// silently spends more), and a model with no effort control drops it.
+    /// An explicit `reasoning` argument stays strict — the caller picked that
+    /// row, and substituting another level would write one the user never
+    /// chose (pp 2026-11-16: switching models reset the effort to the first
+    /// entry of the new model's list, which is what "回到初始值" looked like).
     @discardableResult func selectModel(_ id: String, reasoning reasoningID: String = "") -> Bool {
         guard let model = catalog.models.first(where: { $0.id == id && $0.option.isEnabled }) else { return false }
-        let chosen = reasoningID.isEmpty
-            ? model.reasoning.first(where: { $0.isDefault && $0.isEnabled }) ?? model.reasoning.first(where: { $0.isEnabled })
-            : model.reasoning.first(where: { $0.id == reasoningID && $0.isEnabled })
-        guard reasoningID.isEmpty || chosen != nil,
-              model.option.selectionID != nil || chosen?.selectionID != nil else { return false }
-        modelID = id; self.reasoningID = chosen?.id ?? ""
+        let enabled = model.reasoning.filter { $0.isEnabled }
+        let chosen: CatalogOption?
+        if reasoningID.isEmpty {
+            let preference = preferredReasoningID.isEmpty ? self.reasoningID : preferredReasoningID
+            chosen = Self.resolvedEffort(preferring: preference, in: enabled)
+            if preferredReasoningID.isEmpty, let chosen { preferredReasoningID = chosen.id }
+        } else if let exact = enabled.first(where: { $0.id == reasoningID }) {
+            chosen = exact
+            preferredReasoningID = reasoningID
+        } else {
+            return false
+        }
+        return apply(model: model, reasoning: chosen)
+    }
+
+    /// Restores a choice remembered from another session. Unlike an explicit
+    /// pick, a level the model no longer offers clamps instead of failing the
+    /// whole selection — the model half is still valid, and the preference
+    /// stays on the remembered level so a later model can restore it.
+    @discardableResult func selectModel(_ id: String, preferredEffort effortID: String) -> Bool {
+        guard let model = catalog.models.first(where: { $0.id == id && $0.option.isEnabled }) else { return false }
+        preferredReasoningID = effortID
+        return apply(model: model,
+                     reasoning: Self.resolvedEffort(preferring: effortID,
+                                                    in: model.reasoning.filter { $0.isEnabled }))
+    }
+
+    private func apply(model: ChatModelOption, reasoning chosen: CatalogOption?) -> Bool {
+        guard model.option.selectionID != nil || chosen?.selectionID != nil else { return false }
+        modelID = model.id; reasoningID = chosen?.id ?? ""
         return true
+    }
+
+    private static func resolvedEffort(preferring id: String, in options: [CatalogOption]) -> CatalogOption? {
+        guard !options.isEmpty else { return nil }
+        if !id.isEmpty, let same = options.first(where: { $0.id == id }) { return same }
+        if let nearest = nearestEffort(to: id, in: options) { return nearest }
+        return options.first { $0.isDefault } ?? options.first
+    }
+
+    private static func nearestEffort(to id: String, in options: [CatalogOption]) -> CatalogOption? {
+        guard let target = effortOrder.firstIndex(of: id) else { return nil }
+        return options.compactMap { option -> (distance: Int, index: Int, option: CatalogOption)? in
+            guard let index = effortOrder.firstIndex(of: option.id) else { return nil }
+            return (abs(index - target), index, option)
+        }.min { lhs, rhs in
+            lhs.distance != rhs.distance ? lhs.distance < rhs.distance : lhs.index < rhs.index
+        }?.option
     }
 
     @discardableResult func selectPermission(_ id: String) -> Bool {

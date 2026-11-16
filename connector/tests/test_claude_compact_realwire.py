@@ -408,7 +408,11 @@ def test_real_wire_command_replay_returns_to_idle() -> None:
             ]
         )
     )
-    assert host.lifecycle_events[-1] == "state:idle"
+    # The state goes first so clients paint the turn end without waiting on
+    # the ledger's timeline fence (see `publish_terminal_state`); the replay
+    # still ends idle and still reports the completed turn.
+    assert host.lifecycle_events[-2:] == ["state:idle", "turn_end"]
+    assert host.session_state_updates[-1]["status"] == "idle"
     assert host.session_turn_ends[-1]["outcome"] == "completed"
 
 

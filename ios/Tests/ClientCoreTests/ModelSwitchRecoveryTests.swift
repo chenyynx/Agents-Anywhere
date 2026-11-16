@@ -133,6 +133,7 @@ import Testing
         _ http: TestHTTPTransport,
         _ realtime: TestRealtimeAPI,
         _ running: RunningSession,
+        selectionMemoryDefaults: UserDefaults = .standard,
         healBackoff: V2SessionHealBackoff = V2SessionHealBackoff(),
         sleep: @escaping (Duration) async throws -> Void = { _ in try await Task.sleep(for: .milliseconds(1)) }
     ) throws -> (V2SessionRepository, V2SessionModel, SessionChatModel) {
@@ -201,7 +202,8 @@ import Testing
         )
         let session = repo.session(id: "session")
         let chat = SessionChatModel(session: session, repository: repo,
-            attachments: .init(attachmentAPI: V2AttachmentAPI(transport: http)))
+            attachments: .init(attachmentAPI: V2AttachmentAPI(transport: http)),
+            selectionMemoryDefaults: selectionMemoryDefaults)
         return (repo, session, chat)
     }
 
@@ -284,6 +286,31 @@ import Testing
         // The turn really ends: the accepted interrupt's background
         // reconciliation proves the live facts — never a synchronous lie.
         try await eventually { !chat.isRunning }
+    }
+
+    /// A switch that landed on the server is remembered for the next new
+    /// session; a failed write must not be. pp 2026-11-16: a model changed
+    /// inside a session never showed up in a new one.
+    @Test func aSuccessfulModelSwitchIsRememberedForTheNextSession() async throws {
+        let suite = "aa-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
+        let running = RunningSession()
+        let (repo, session, chat) = try makeSession(
+            http, realtime, running, selectionMemoryDefaults: defaults)
+        defer { repo.reset() }
+        let connection = try await connect(session)
+        defer { connection.cancel() }
+
+        await chat.loadSettings()
+        #expect(chat.settings.selectModel("model-a", reasoning: "high"))
+        #expect(await chat.applySettings())
+
+        let meta = try #require(session.metadata)
+        let stored = RuntimeSelectionMemoryStore(scope: repo.scope, defaults: defaults)
+            .load(connectorID: meta.connectorId, runtimeID: meta.effectiveRuntimeId)
+        #expect(stored == RuntimeSelectionMemory(modelID: "model-a", effortID: "high"))
     }
 
     // MARK: - A2: interrupt acknowledgement and the local turn window

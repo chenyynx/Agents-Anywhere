@@ -136,6 +136,10 @@ struct CodeCollapsedStepsRow: View {
     /// and the frame-less mark skeleton. The chat profile's live step row
     /// passes the real animated `WorkingMarkView` here (pp 2026-10-29).
     var leadingOverride: AnyView?
+    /// An icon drawn right after the label. The running question uses the
+    /// thinking row's clock here so 「正在提问」 reads as a status line rather
+    /// than a bare label (pp 2026-11-16).
+    var trailingIcon: String? = nil
     var isTextHidden: Bool = false
     /// D10 (R28 §U 收口二 二-E): the official `ToolRowCompanions` container
     /// draws settled rows first and `AttachmentTiles` second, and skips the
@@ -169,6 +173,15 @@ struct CodeCollapsedStepsRow: View {
                         .frame(minHeight: textLineHeight, alignment: .leading)
                         .layoutPriority(1)
                         .modifier(CodeCollapsedRowShimmer(active: isRunning))
+
+                    if let trailingIcon {
+                        // Small: the official reference row keeps the clock
+                        // under the label's line height (pp 2026-11-16).
+                        AnthropiconView(name: trailingIcon, size: .small)
+                            .foregroundStyle(CodePageTheme.text400Color
+                                .resolved(for: colorScheme))
+                            .accessibilityHidden(true)
+                    }
                 }
 
                 CodeTimelineStatusGlyph(status: status,

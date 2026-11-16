@@ -374,10 +374,17 @@ struct SessionChatView: View, Equatable {
         .completionFeedback(trigger: session.runtime.authoritativeTurnEnds,
             sessionID: session.id,
             diagnostic: {
+                // `fresh`/`status`/`openingReady` separate a late model update
+                // from a delayed view render: the cue only fires when the
+                // counter changes, and this line lands with that change
+                // (b1287 probe for the ~1 s post-turn footer delay).
                 ["stopRequested": session.runtime.stopRequested ? "1" : "0",
                  "predictedIdle": session.runtime.predictedIdle ? "1" : "0",
                  "lastTurnEndWasStop": session.runtime.lastTurnEndWasStop ? "1" : "0",
-                 "turnEnds": String(session.runtime.authoritativeTurnEnds)]
+                 "turnEnds": String(session.runtime.authoritativeTurnEnds),
+                 "fresh": session.runtime.isFresh ? "1" : "0",
+                 "status": String(describing: session.runtime.state?.status),
+                 "openingReady": model.isOpeningReady ? "1" : "0"]
             }) { previous, current in
             current > previous && CompletionCue.allows(
                 isOpeningReady: model.isOpeningReady,

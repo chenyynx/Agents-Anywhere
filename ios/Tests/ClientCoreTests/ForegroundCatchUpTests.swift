@@ -327,6 +327,37 @@ private func catchUpRepository(
         #expect(model.failure == nil)
     }
 
+    /// A live runtime state is level-triggered: it must neither be turned
+    /// into a gap-recovery nor move the timeline cursor. Treating its forward
+    /// sequence as a gap sent every turn end through a full reconcile before
+    /// the idle state could apply — the copy/share footer and the completion
+    /// cue waited out that round (~1 s, device 2026-11-17). Keeping the
+    /// cursor put lets the next durable event recover the rows it skipped.
+    @Test func aLiveStateFrameAppliesWithoutForcingARecovery() async throws {
+        let http = TestHTTPTransport()
+        let realtime = TestRealtimeAPI()
+        let repo = catchUpRepository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        repo.updateConnectivity(V2NetworkStatus(availability: .online))
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        let recoveries = realtime.recoveries.count
+
+        var state = try fixtureObject("state")["state"] as! [String: Any]
+        state["status"] = "running"
+        state["updatedSeq"] = (model.runtime.state?.updatedSeq ?? 0) + 10
+        // A sequence this far past the cursor used to read as a gap.
+        realtime.yield(try event("runtime.state.updated", seq: 500, id: "state",
+                                 payload: ["state": state]))
+        try await eventually { model.runtime.state?.status == .running }
+        #expect(realtime.recoveries.count == recoveries,
+                "A live state frame must not trigger a recovery")
+        #expect(repo.cached(sessionId: "session")?.cursor == "seq:10",
+                "A state frame must not advance the timeline cursor")
+    }
+
     /// D5 — the default cache window keeps the recent working set resident.
     @Test func cacheWindowKeepsTheRecentWorkingSetResident() {
         let repo = repository(transport: TestHTTPTransport())

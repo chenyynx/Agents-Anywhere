@@ -107,10 +107,16 @@ class Store(
         *,
         operation: str,
         result: Any,
+        publish: bool = True,
     ) -> None:
         publisher = self._session_revision_publisher
         if publisher is not None:
-            await publisher(session_id, operation=operation, result=result)
+            await publisher(
+                session_id,
+                operation=operation,
+                result=result,
+                publish=publish,
+            )
 
     @asynccontextmanager
     async def session_revision_fence(self, session_id: str) -> AsyncIterator[None]:

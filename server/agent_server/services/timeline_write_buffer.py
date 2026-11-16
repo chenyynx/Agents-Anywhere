@@ -573,11 +573,24 @@ class TimelineWriteBuffer:
         *,
         operation: str,
         result: object,
+        publish: bool = True,
     ) -> None:
-        """Publish a durable low-frequency writer before releasing its fence."""
+        """Publish a durable low-frequency writer before releasing its fence.
+
+        ``publish=False`` only advances the published head: the caller's own
+        envelope already carries this revision, and a second session-only
+        envelope would race ahead of it. That early frame carried the global
+        session sequence (~4k past the timeline cursor), so the iOS client read
+        a gap and synchronously recovered before the idle state frame behind it
+        could land — the copy/share footer appeared ~1 s after the turn
+        (device 2026-11-17).
+        """
 
         durable_sequence = await self._store.get_session_seq(session_id)
         published_through = await self._sequences.published_head(session_id)
+        if not publish:
+            await self._sequences.mark_published(session_id, durable_sequence)
+            return
         deleted = tuple(getattr(result, "deleted", ()) or ())
         if (
             isinstance(result, TimelineBatchWriteResult)

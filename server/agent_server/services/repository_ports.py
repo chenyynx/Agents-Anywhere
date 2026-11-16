@@ -128,6 +128,7 @@ class SessionStateRepository(SessionLookupRepository, Protocol):
         *,
         expected_status: SessionStatus | None = None,
         mark_read_on_change: bool = False,
+        publish_revision: bool = True,
     ) -> SessionView: ...
 
     async def get_session_runtime_state(
@@ -285,7 +286,17 @@ class ConnectorIngestRepository(DashboardEventRepository, Protocol):
         *,
         expected_status: SessionStatus | None = None,
         mark_read_on_change: bool = False,
+        publish_revision: bool = True,
     ) -> SessionView: ...
+
+    async def publish_session_revision_result(
+        self,
+        session_id: str,
+        *,
+        operation: str,
+        result: Any,
+        publish: bool = True,
+    ) -> None: ...
 
     async def list_sessions_for_connector(
         self,

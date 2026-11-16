@@ -68,6 +68,57 @@ import Testing
         #expect(projection.data.cursor == "seq:10")
     }
 
+    /// The runtime state is a level, ordered by its own `updatedSeq` — never by
+    /// the session's timeline cursor. The live idle frame shares its bucket's
+    /// sequence with the row upserts, so the cursor has already advanced past
+    /// it; dropping that frame left the turn looking open until the next gap's
+    /// recovery delivered it again, which delayed the copy/share footer and
+    /// the completion cue by ~1 s (device 2026-11-17).
+    @Test func aStateFrameBehindTheCursorStillAppliesByItsOwnRevision() throws {
+        var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 100)
+        let base = projection.data.state?.updatedSeq ?? 0
+        var state = try fixtureObject("state")["state"] as! [String: Any]
+        state["status"] = "running"
+        state["updatedSeq"] = base + 10
+        try projection.apply(event("runtime.state.updated", seq: 1000, id: "run", payload: ["state": state]))
+        #expect(projection.data.state?.status == .running)
+        // The state frame applies but never advances the timeline cursor: a
+        // recovery reads `after` this cursor, so advancing it across rows the
+        // client never received would lose them for good.
+        #expect(projection.data.cursor == "seq:10")
+        // The timeline moves the cursor past the state's own sequence.
+        try projection.apply(event("timeline.item_updated", seq: 1010, id: "row", payload: [
+            "item": itemObject(id: "item", order: 1, revision: 2, seq: 1010)]))
+        state["status"] = "idle"
+        state["updatedSeq"] = base + 15
+        try projection.apply(event("runtime.state.updated", seq: 1020, id: "idle", payload: ["state": state]))
+        #expect(projection.data.state?.status == .idle)
+        #expect(projection.data.cursor == "seq:1010")
+        // An older state never regresses the projection, whatever its frame
+        // sequence says.
+        state["status"] = "running"
+        state["updatedSeq"] = base + 14
+        try projection.apply(event("runtime.state.updated", seq: 1005, id: "stale", payload: ["state": state]))
+        #expect(projection.data.state?.status == .idle)
+    }
+
+    @Test func aLiveReadDoesNotRollBackANewerStateFrame() throws {
+        var projection = V2SessionProjection(snapshot: try snapshot(), maximumItems: 100)
+        let base = projection.data.state?.updatedSeq ?? 0
+        var state = try fixtureObject("state")["state"] as! [String: Any]
+        state["status"] = "idle"
+        state["updatedSeq"] = base + 30
+        try projection.apply(event("runtime.state.updated", seq: 1030, id: "idle", payload: ["state": state]))
+        state["status"] = "running"
+        state["updatedSeq"] = base + 20
+        let liveState = try decode(state, as: V2RuntimeState.self)
+        projection.applyLive(V2SessionLiveState(
+            state: liveState,
+            capabilities: try fixture("capabilities", as: V2RuntimeCapabilityResponse.self).capabilitySet,
+            notices: []))
+        #expect(projection.data.state?.status == .idle)
+    }
+
     @Test func timelineUsesRevisionAndHistoryDoesNotAcknowledgeEvents() throws {
         var projection = V2SessionProjection(snapshot: try snapshot(hasMore: true), maximumItems: 3)
         let newer = try itemObject(revision: 3, seq: 11, text: "Streamed")

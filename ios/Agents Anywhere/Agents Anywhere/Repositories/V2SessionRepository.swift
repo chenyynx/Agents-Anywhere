@@ -1592,10 +1592,25 @@ final class V2SessionRepository {
     private func receive(_ event: V2SessionEvent, entry: Entry) async throws {
         guard event.sessionId == entry.id else { return }
         if let pending = entry.loadTask { _ = try await pending.value }
+        // A runtime state is level-triggered, ordered by its own `updatedSeq`:
+        // applying it must not force a recovery first. Its frame shares the
+        // bucket's sequence with the row upserts around it, so treating a
+        // forward sequence as a gap sent every turn end through a full
+        // reconcile before the idle state could land — the copy/share footer
+        // and the completion cue waited out that round (~1 s, device
+        // 2026-11-17). The frame never advances the timeline cursor (see
+        // `V2SessionProjection.apply`), so the next durable event still sees
+        // the gap and recovers the rows.
+        let isLevelState = event.type == "runtime.state.updated"
         // Let an in-flight recovery finish before merging this frame; a failed
-        // round has already been quieted or reported to its own caller.
+        // round has already been quieted or reported to its own caller. A
+        // state frame that arrives during a round keeps this path too: the
+        // round's live read is the newer fact and the barrier below drops the
+        // frame.
         if let pending = entry.recoveryTask { _ = await pending.value }
-        if event.type == "session.refetch_required" || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
+        if !isLevelState,
+           event.type == "session.refetch_required"
+               || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
             if event.type != "session.refetch_required" {
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.event.gap",
@@ -1611,7 +1626,9 @@ final class V2SessionRepository {
         }
         try requireCurrent(entry)
         let readTypes = ["runtime.state.updated", "runtime.capability.updated", "runtime.notice.snapshot", "runtime.notice.updated"]
-        if readTypes.contains(event.type), event.receivedAt < entry.projectionBarrier { return }
+        if readTypes.contains(event.type), event.receivedAt < entry.projectionBarrier {
+            return
+        }
         let wasOnline = entry.projection?.data.session.connectorStatus == .online
         let previousRuntime = entry.projection?.data.session.effectiveRuntimeId
         if event.type == "timeline.snapshot", event.sequence >= (entry.projection?.sequence ?? 0) {

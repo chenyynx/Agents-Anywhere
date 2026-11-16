@@ -102,7 +102,11 @@ struct V2SessionProjection {
     mutating func applyLive(_ live: V2SessionLiveState) {
         guard live.state.sessionId == data.session.id,
               (live.state.runtimeId ?? live.state.runtime) == data.session.effectiveRuntimeId else { return }
-        data.state = live.state
+        // Same ordering as `applyState`: a live read that raced a newer state
+        // frame must not roll the state back.
+        if data.state == nil || live.state.updatedSeq >= (data.state?.updatedSeq ?? 0) {
+            data.state = live.state
+        }
         data.capabilities = live.capabilities
         data.notices = live.notices
         data.liveStateIsFresh = data.session.connectorStatus == .online
@@ -122,6 +126,10 @@ struct V2SessionProjection {
     mutating func applyState(_ state: V2RuntimeState) {
         guard state.sessionId == data.session.id,
               (state.runtimeId ?? state.runtime) == data.session.effectiveRuntimeId else { return }
+        // The state's own revision is its only ordering: a state frame that is
+        // behind the timeline cursor may still be the newest state, and an
+        // older one must never regress it.
+        guard data.state == nil || state.updatedSeq >= (data.state?.updatedSeq ?? 0) else { return }
         data.state = state
     }
 
@@ -146,7 +154,14 @@ struct V2SessionProjection {
     @discardableResult
     mutating func apply(_ event: V2SessionEvent) throws -> V2TimelineMergeOutcome? {
         guard event.sessionId == data.session.id else { return nil }
-        guard event.sequence >= sequence else { return nil }
+        // A runtime state is level-triggered: its own `updatedSeq` orders it,
+        // not the session's timeline cursor. The live idle frame shares its
+        // bucket's sequence with the row upserts around it, so the cursor had
+        // already advanced past it and the guard dropped the frame — the
+        // client then only learned the turn had ended from the next gap's
+        // recovery, ~1 s late (device 2026-11-17: copy/share footer).
+        let isLevelState = event.type == "runtime.state.updated"
+        guard isLevelState || event.sequence >= sequence else { return nil }
         if !event.isLiveProjection, eventIDs.contains(event.eventId) { return nil }
         var outcome: V2TimelineMergeOutcome?
         switch event.type {
@@ -182,7 +197,12 @@ struct V2SessionProjection {
         default:
             data.lastExtensionEvent = event
         }
-        advanceCursor(event.cursor)
+        // A level state frame never advances the timeline cursor: it can leap
+        // over durable rows this client never received, and recovery reads
+        // `after` this cursor — advancing it here would drop those rows for
+        // good. The next durable frame still sees the gap and recovers them
+        // (Android keeps the same split for the same reason).
+        if !isLevelState { advanceCursor(event.cursor) }
         if !event.isLiveProjection {
             eventIDs.insert(event.eventId)
             if eventOrder.count < Self.dedupeWindow {

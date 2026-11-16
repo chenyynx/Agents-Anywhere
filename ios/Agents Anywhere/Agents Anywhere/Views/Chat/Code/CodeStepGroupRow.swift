@@ -103,9 +103,7 @@ struct CodeStepGroupRowView: View {
         } else {
             CodeCollapsedStepsRow(
                 icon: summaryIcon,
-                // Same size class as the thinking row and the sheet rows:
-                // the 19 pt tool glyph read bigger than its neighbours (pp 2026-11-16).
-                iconSize: .medium,
+                iconSize: group.toolCalls.isEmpty ? .medium : .large,
                 text: summaryText,
                 status: group.hasFailure || (treatsRunningAsFailed && group.isRunning)
                     ? .failed : .complete,

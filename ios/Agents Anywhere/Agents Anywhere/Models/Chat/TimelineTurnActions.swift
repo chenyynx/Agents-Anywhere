@@ -79,6 +79,12 @@ nonisolated struct TurnFooterGate: Equatable {
     /// turn exists whose mid-turn flap the boundary could disturb.
     var isAnchoredToUserBubble: Bool { openedByTurn }
 
+    /// Whether the gate stands open on a user bubble this client saw — the
+    /// turn on screen is the one still running. Only that trailing bucket
+    /// keeps the bubble-only split; everything before it is finished history
+    /// and must still split on the wire's turn ids.
+    var isLiveUserTurn: Bool { isOpen && openedByTurn }
+
     /// Feeds one adapter refresh; returns whether the latest turn's footer
     /// must stay suppressed.
     ///
@@ -164,16 +170,17 @@ enum TimelineTurnActions {
     /// host it. Hosting it on a divider read as a 91 pt jump on device
     /// (2026-10-31 05:40: the compact boundary carried the review + copy
     /// footer, then lost it when the next step group arrived).
-    /// - Parameter allowsTurnIdBoundary: whether a declared turn-id change
-    ///   without a user bubble closes the open bucket. The adapter passes it
-    ///   while the footer gate's turn was **not** opened by a user bubble —
-    ///   the closed state, a compaction command turn, or the scheduled turn a
-    ///   background-task notification wakes. A user turn keeps the older
-    ///   bubble-only splitting: a queued-send turn-id flap must not commit a
-    ///   footer mid-turn (pp 2026-11-14).
+    /// - Parameter liveTurnGroupID: the group that opened the turn still in
+    ///   flight, when a user bubble opened it. A declared turn-id change at
+    ///   or after it is a queued-send flap, not a turn boundary, and must not
+    ///   close the bucket mid-turn (pp 2026-11-14). Every bucket before it is
+    ///   history and still splits on the declared turn id: a finished user
+    ///   turn followed by a scheduled turn keeps its own footer, or it fell
+    ///   into the next turn's bucket and six copy/share bars vanished and
+    ///   returned with every send and turn end (pp 2026-11-16, b1279).
     static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
                       hasPendingUserMessage: Bool = false,
-                      allowsTurnIdBoundary: Bool = false,
+                      liveTurnGroupID: String? = nil,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
         -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
@@ -184,9 +191,12 @@ enum TimelineTurnActions {
         var turnOpen = false
         var hasActiveItems = false
         /// The declared turn id of the open bucket (its first naming row).
-        /// The boundary is read from the wire's ids only when the caller
-        /// allows it; ordinary turns are still split by a user bubble.
+        /// Ordinary turns are still split by a user bubble; the wire's id
+        /// only closes buckets that are no longer live.
         var bucketTurnID: V2TurnID?
+        /// The live user turn's bucket keeps the bubble-only split once its
+        /// opening group is reached; history before it splits as usual.
+        var pastLiveTurnStart = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -214,13 +224,14 @@ enum TimelineTurnActions {
         }
 
         for group in groups {
+            if group.id == liveTurnGroupID { pastLiveTurnStart = true }
             if group.rows.contains(where: { $0.structure.startsTurn }) {
                 commit()
                 turnOpen = true
                 startsMidTurn = false
             }
             let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
-            if allowsTurnIdBoundary, let declaredTurnID, let currentTurnID = bucketTurnID,
+            if !pastLiveTurnStart, let declaredTurnID, let currentTurnID = bucketTurnID,
                declaredTurnID != currentTurnID {
                 // A turn that begins with no user bubble — a compaction
                 // continuation, or the scheduled turn a background-task

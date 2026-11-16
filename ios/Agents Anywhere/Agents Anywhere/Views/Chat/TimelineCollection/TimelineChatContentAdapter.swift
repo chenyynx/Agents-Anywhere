@@ -2197,6 +2197,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
             isCompacting: liveTurnIsCompacting())
+        // The live user turn's bucket keeps the bubble-only split so a
+        // queued-send turn-id flap cannot commit a footer mid-turn. Only that
+        // trailing bucket is live: everything before it is finished history
+        // and still splits on the wire's ids. Suppressing the ids for the
+        // whole build re-merged each finished turn with the scheduled turn
+        // that followed it, so every send and every turn end toggled six
+        // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
+        let liveTurnGroupID: String? = {
+            guard turnFooterGate.isLiveUserTurn else { return nil }
+            // An outgoing bubble without an echo row has no group yet; the
+            // trailing bucket is the previous turn, live only while the
+            // runtime still runs it. Once it ended, the window is history.
+            if submittingPendingID != nil, !submittingPendingHasEcho, !model.isRunning {
+                return nil
+            }
+            guard let latestUserRowID else { return nil }
+            return groups.last { group in
+                group.rows.contains { $0.id == latestUserRowID }
+            }?.id
+        }()
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2218,10 +2238,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // sends — has only its declared turn id as a boundary. Without it
             // the previous turn's footer slides onto the new turn's reply
             // (pp 2026-11-16 10:05:54: host msg_577ba3bc → msg_1e1de664 with
-            // the footer count unchanged). A user-opened turn keeps the
-            // bubble-only split so a queued-send turn-id flap cannot commit a
-            // footer mid-turn.
-            allowsTurnIdBoundary: !turnFooterGate.isAnchoredToUserBubble,
+            // the footer count unchanged). Only the live user turn keeps the
+            // bubble-only split; history still splits, or the same wake-up
+            // turn re-merges on every send (same day 11:09–11:25).
+            liveTurnGroupID: liveTurnGroupID,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact

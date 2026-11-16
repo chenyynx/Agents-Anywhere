@@ -167,7 +167,7 @@ import Testing
                         row("resumed", text: "Working again", status: "running", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true, allowsTurnIdBoundary: true)
+            suppressLatest: true)
         #expect(actions["reply"]?.copyText == "Answer")
         #expect(actions["resumed"] == nil)
     }
@@ -182,7 +182,7 @@ import Testing
                         row("resumed", text: "Working again", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false, allowsTurnIdBoundary: true)
+            suppressLatest: false)
         #expect(actions["reply"]?.copyText == "Answer")
         #expect(actions["resumed"]?.copyText == "Working again")
     }
@@ -196,15 +196,9 @@ import Testing
                         row("woken", text: "Woken answer", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false, allowsTurnIdBoundary: true)
+            suppressLatest: false)
         #expect(actions["previous"]?.copyText == "Previous answer")
         #expect(actions["woken"]?.copyText == "Woken answer")
-        // A user-opened turn does not split on the wire's ids (see below).
-        let merged = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false)
-        #expect(merged["previous"] == nil)
-        #expect(merged["woken"]?.copyText == "Previous answer\n\nWoken answer")
     }
 
     /// An automatic compaction inside the user's own running turn is not a
@@ -216,17 +210,17 @@ import Testing
                         row("reply", text: "First part", turnId: "turn-1"),
                         compactRow("compact", state: "completed", status: "done", turnId: "turn-1"),
                         row("more", text: "Second part", status: "running", turnId: "turn-1")]
-        for allowsBoundary in [true, false] {
+        for liveTurnGroupID in [nil, "user"] as [String?] {
             let actions = TimelineTurnActions.build(
                 groups: TimelineGrouping.groups(rows, interactionTargets: []),
-                suppressLatest: true, allowsTurnIdBoundary: allowsBoundary)
+                suppressLatest: true, liveTurnGroupID: liveTurnGroupID)
             #expect(actions.isEmpty)
         }
     }
 
     /// A mid-turn turn-id flap (queued sends re-key rows between two ids)
-    /// must not commit a footer while the user's turn still runs: the adapter
-    /// only allows the wire boundary when no user bubble opened the turn.
+    /// must not commit a footer while the user's turn still runs: the live
+    /// user turn's bucket keeps the bubble-only split.
     @Test func aMidTurnIdFlapDoesNotCommitAFooter() throws {
         let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
                         row("reply", text: "First part", turnId: "turn-1"),
@@ -234,9 +228,30 @@ import Testing
                         row("more", text: "Second part", status: "running", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true, allowsTurnIdBoundary: false,
+            suppressLatest: true, liveTurnGroupID: "user",
             footerHostEligible: { $0.id != "tool" })
         #expect(actions.isEmpty)
+    }
+
+    /// Only the trailing bucket keeps the bubble-only split; history splits
+    /// on the wire's ids even while the next user turn runs. Splitting only
+    /// when the gate stood closed re-merged each finished user turn with the
+    /// scheduled turn that followed it, so its copy/share bar vanished for
+    /// the whole next turn and returned at its end — six bars toggled 94 ↔ 88
+    /// with every send and turn end (pp 2026-11-16, b1279, the six hosts were
+    /// exactly the user turns followed by a wake-up turn).
+    @Test func historySplitsOnTheWireIdsWhileTheNextUserTurnRuns() throws {
+        let rows = try [row("user-a", role: "user", text: "Question A", turnId: "turn-a"),
+                        row("reply-a", text: "Answer A", turnId: "turn-a"),
+                        row("wake", text: "Wake-up answer", turnId: "turn-wake"),
+                        row("user-b", role: "user", text: "Question B", turnId: "turn-b"),
+                        row("reply-b", text: "Streaming B", status: "running", turnId: "turn-b")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true, liveTurnGroupID: "user-b")
+        #expect(actions["reply-a"]?.copyText == "Answer A")
+        #expect(actions["wake"]?.copyText == "Wake-up answer")
+        #expect(actions["reply-b"] == nil)
     }
 
     /// A background task completing wakes the runtime with no user bubble

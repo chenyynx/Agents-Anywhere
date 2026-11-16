@@ -63,6 +63,15 @@ nonisolated struct TurnFooterGate: Equatable {
 
     init() {}
 
+    /// A running turn that no user bubble opened: a compaction command turn,
+    /// or the scheduled turn a background-task notification wakes (the
+    /// connector logs both as `claude.scheduled.running`). The reply on
+    /// screen is a *finished* turn, so its footer must survive the episode —
+    /// the adapter keeps the closed state's footers for exactly this window
+    /// (pp 2026-11-16: copy/share vanished each time a background CI monitor
+    /// completed and woke the agent).
+    var isUserlessEpisode: Bool { isOpen && !openedByTurn }
+
     /// Feeds one adapter refresh; returns whether the latest turn's footer
     /// must stay suppressed.
     ///
@@ -249,6 +258,34 @@ enum TimelineTurnActions {
             commit()
         }
         return actions
+    }
+
+    /// Keep the footers a finished turn already had while the footer gate
+    /// stood closed.
+    ///
+    /// A userless episode (see `TurnFooterGate.isUserlessEpisode`) reopens the
+    /// gate and makes `build` suppress its final commit. The bucket on screen
+    /// is the *finished* turn, so those suppressions take away a footer that
+    /// was already correct: pp saw copy/share blink out every time a
+    /// background task completed and the runtime received its wake-up message
+    /// (2026-11-16, session `sess_iHSpxWxWtZWkXQ`: connector
+    /// `claude.scheduled.running` 09:51:35 → idle 09:51:41).
+    ///
+    /// The closed state is the authoritative map of finished turns, so
+    /// restoring it cannot reveal the open turn's own footer — `build` still
+    /// withholds that until the turn ends. A group that left the window is
+    /// dropped rather than restored.
+    static func restoringFinishedFooters(
+        _ current: [String: TimelineTurnAction],
+        from closed: [String: TimelineTurnAction],
+        groupIDs: Set<String>
+    ) -> [String: TimelineTurnAction] {
+        guard !closed.isEmpty else { return current }
+        var merged = current
+        for (groupID, action) in closed where merged[groupID] == nil && groupIDs.contains(groupID) {
+            merged[groupID] = action
+        }
+        return merged
     }
 
     /// Whether a pending delivery still opens the new turn for the footer gate.

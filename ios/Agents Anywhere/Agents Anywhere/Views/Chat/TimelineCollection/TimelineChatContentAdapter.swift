@@ -255,6 +255,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// finished until the session was reopened).
     private var lastCompactRowProbe: String?
 
+    /// The footers committed while the footer gate stood closed — i.e. while
+    /// the latest turn was finished. A userless episode (a compaction
+    /// continuation or the scheduled turn a background-task notification
+    /// wakes) reopens the gate and suppresses the final commit, which used to
+    /// drop the finished turn's footer for the whole episode (pp 2026-11-16:
+    /// the bar blinked out whenever a background CI monitor completed).
+    private var closedTurnActions: [String: TimelineTurnAction] = [:]
+
     /// The last turn-footer host set written to diagnostics. The action bar's
     /// presence is otherwise invisible in a log: a disappearance only shows up
     /// as a 30 pt content drop (`timeline.mover`), and the reason has to be
@@ -2189,7 +2197,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
             isCompacting: liveTurnIsCompacting())
-        let turnActions = TimelineTurnActions.build(
+        var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
             // a turn that ended without a captured transition must not keep
@@ -2210,6 +2218,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
             footerHostEligible: { stepGroupsByID[$0.id] == nil })
+        // A userless episode must not take the finished turn's footer away:
+        // the build suppresses the latest bucket, but the bucket on screen is
+        // already finished, so the closed state's footers stay. Browsing an
+        // older page keeps its own rule (`hasNewerItems` suppresses the
+        // latest bucket by design).
+        if latestTurnOpen {
+            if turnFooterGate.isUserlessEpisode, !model.session.hasNewerItems {
+                turnActions = TimelineTurnActions.restoringFinishedFooters(
+                    turnActions, from: closedTurnActions,
+                    groupIDs: Set(groupsByID.keys))
+            }
+        } else {
+            closedTurnActions = turnActions
+        }
 
         self.groupsByID = groupsByID
         self.codeProfile = profile

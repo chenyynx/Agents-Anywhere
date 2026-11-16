@@ -202,6 +202,51 @@ import Testing
         #expect(actions.isEmpty)
     }
 
+    /// A background task completing wakes the runtime with no user bubble
+    /// (connector `claude.scheduled.running`). While that episode runs the
+    /// build suppresses the latest bucket, so the finished turn's footer must
+    /// come from the closed state — otherwise copy/share disappears until the
+    /// wake-up turn ends (pp 2026-11-16, `sess_iHSpxWxWtZWkXQ` 09:51:35 →
+    /// 09:51:41).
+    @Test func aWakeUpTurnWithoutAUserBubbleKeepsTheFinishedTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "Answer", turnId: "turn-1")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        // The turn is finished: the gate is closed and the footer commits.
+        let closed = TimelineTurnActions.build(groups: groups, suppressLatest: false)
+        #expect(closed["reply"]?.copyText == "Answer")
+        // The wake-up turn runs without a user bubble.
+        let duringWakeup = TimelineTurnActions.build(groups: groups, suppressLatest: true)
+        #expect(duringWakeup.isEmpty)
+        let restored = TimelineTurnActions.restoringFinishedFooters(
+            duringWakeup, from: closed, groupIDs: ["user", "reply"])
+        #expect(restored["reply"]?.copyText == "Answer")
+    }
+
+    /// Restoring never resurrects a footer for a group that left the window,
+    /// and never overwrites an action the current build committed.
+    @Test func restoringOnlyFillsGroupsThatStillExist() throws {
+        let closed = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(try [row("user", role: "user"), row("gone", text: "Old")],
+                                            interactionTargets: []),
+            suppressLatest: false)
+        #expect(closed["gone"] != nil)
+        let merged = TimelineTurnActions.restoringFinishedFooters(
+            [:], from: closed, groupIDs: ["user"])
+        #expect(merged.isEmpty)
+        let kept = TimelineTurnActions.restoringFinishedFooters(
+            [:], from: closed, groupIDs: ["user", "gone"])
+        #expect(kept["gone"]?.copyText == "Old")
+        // A group the current build already committed keeps its own action.
+        let own = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(try [row("user", role: "user"), row("gone", text: "New")],
+                                            interactionTargets: []),
+            suppressLatest: false)
+        let untouched = TimelineTurnActions.restoringFinishedFooters(
+            own, from: closed, groupIDs: ["user", "gone"])
+        #expect(untouched["gone"]?.copyText == "New")
+    }
+
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
         let rows = try [row("user", role: "user"), row("reply", text: "Completed answer")]
         let before = TimelineGrouping.groups(rows, interactionTargets: [])
@@ -381,6 +426,22 @@ struct TurnFooterGateTests {
         let open = gate.update(userKey: "u1", runtimeIsRunning: true,
                                authoritativeTurnEnds: 0, isCompacting: true)
         #expect(!open)
+    }
+
+    /// A background-task notification wakes the runtime as a scheduled turn:
+    /// the gate reopens without a user bubble, so the finished turn's footer
+    /// must be restored from the closed state (pp 2026-11-16).
+    @Test func aWakeUpTurnIsAUserlessEpisode() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!gate.isUserlessEpisode)
+        _ = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(!gate.isUserlessEpisode)
+        _ = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!gate.isUserlessEpisode)
+        let wakeup = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(wakeup)
+        #expect(gate.isUserlessEpisode)
     }
 
     @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {

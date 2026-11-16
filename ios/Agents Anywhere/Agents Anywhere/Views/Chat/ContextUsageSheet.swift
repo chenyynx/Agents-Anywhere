@@ -7,11 +7,29 @@ import SwiftUI
 /// warning / critical reuse the app's amber / red severity palette.
 struct ContextUsageRing: View {
     let usage: V2ContextUsage
+    /// Measured from the official toolbar screenshot (1179×2556 @3x,
+    /// 2026-11-16): the ring spans ~20.7 pt and its track is ~1.5 pt wide;
+    /// the progress arc runs from a lighter blue at the top to the deep
+    /// #2156A2 at the bottom. Ours was a 3 pt flat ring (pp 2026-11-16).
     var diameter: CGFloat = 21
-    var lineWidth: CGFloat = 3
+    var lineWidth: CGFloat = 1.5
 
     private var fraction: Double { usage.fraction ?? 0 }
     private var tint: Color { Self.tint(forPercent: usage.percentUsed ?? 0) }
+
+    /// The official arc is a gradient, not a flat tint. Below the escalation
+    /// thresholds it runs light-blue → deep blue top-to-bottom; at 75 %/90 %
+    /// the solid warning/red tint keeps its meaning.
+    private var progressStyle: AnyShapeStyle {
+        let percent = usage.percentUsed ?? 0
+        guard percent < 75 else { return AnyShapeStyle(tint) }
+        return AnyShapeStyle(LinearGradient(
+            colors: [
+                Color(red: 89 / 255, green: 140 / 255, blue: 204 / 255),
+                Color(red: 33 / 255, green: 86 / 255, blue: 162 / 255),
+            ],
+            startPoint: .top, endPoint: .bottom))
+    }
 
     var body: some View {
         ZStack {
@@ -23,7 +41,8 @@ struct ContextUsageRing: View {
             if usage.fraction != nil {
                 Circle()
                     .trim(from: 0, to: max(fraction, 0.02))
-                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .stroke(progressStyle,
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
         }

@@ -1882,7 +1882,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             publishedPendingIDs: publishedPendingIDs,
             echoedPendingIDs: echoedPendingIDs,
             isStepsProfile: renderMode == .steps,
-            hasLiveSteps: chatLiveTurnHasSteps,
+            // A pending send already starts the next turn: the step groups
+            // after the last *echoed* user row belong to the previous turn,
+            // and counting them here deferred the working row past the echo —
+            // a second +38 scroll ~1.1 s after the bubble (pp 2026-11-16,
+            // b1284 log: bubble +53 at 22:22:11.170, row +38.3 at 12.327).
+            hasLiveSteps: chatLiveTurnHasSteps && openPending.isEmpty,
             queueCount: model.session.sendQueue.items.count)
         let workingStatusShowsText = SendFramePresentation.showsWorkingRowText(
             latestDelivery: openPending.last?.delivery,
@@ -1942,12 +1947,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 ],
                 dedupe: false)
         }
-        if hasWorkingStatus, workingStatusShowsText, !lastWorkingStatusShowsText,
-           let latest = openPending.last,
-           latest.delivery == .accepted || latest.delivery == .confirmed {
-            // The text that just appeared is the server's acknowledgement:
-            // hand the page one edge for its "message is in" haptic. Deferred
-            // out of the update that computed it (see `onWorkingTextShown`).
+        if hasWorkingStatus, workingStatusShowsText, !lastWorkingStatusShowsText {
+            // The text just appeared — the send is confirmed enough to start
+            // work (a running runtime proves the message reached the backend,
+            // even when the HTTP ack is still in flight). Hand the page one
+            // edge for its confirmation haptic; deferred out of the update
+            // that computed it (see `onWorkingTextShown`).
             DispatchQueue.main.async { [weak self] in self?.onWorkingTextShown?() }
         }
         lastHasWorkingStatus = hasWorkingStatus

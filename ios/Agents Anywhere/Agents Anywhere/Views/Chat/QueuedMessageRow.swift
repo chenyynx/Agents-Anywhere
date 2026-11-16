@@ -58,7 +58,8 @@ struct QueuedMessageRow: View {
                     CodeAttachmentRow(files: attachments,
                                       state: { _ in .complete },
                                       onAttachment: onAttachment,
-                                      loadThumbnail: model.thumbnail)
+                                      loadThumbnail: model.thumbnail,
+                                      leadingAccessory: attachmentOnlyAccessory)
                 }
                 if !item.content.isEmpty {
                     // The same text view, face and line metrics as the settled
@@ -92,14 +93,6 @@ struct QueuedMessageRow: View {
         // Code row reserves; without it the tail cell clips the shadow.
         .padding(.trailing, attachments.contains { !$0.content.isImage }
             ? CodePageTheme.userRowShadowInset : 0)
-        .overlay(alignment: .bottomLeading) {
-            // An attachment-only queued message has no bubble to anchor on;
-            // its spinner/pause glyph sits on the row's leading edge, like the
-            // optimistic Code row.
-            if item.content.isEmpty, !attachments.isEmpty, hasAccessory {
-                accessory.padding(.leading, 9).padding(.bottom, 9)
-            }
-        }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: item.state)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: isPaused)
@@ -143,6 +136,18 @@ struct QueuedMessageRow: View {
     /// wire, the pause mark while the queue is held. A plain waiting bubble
     /// carries none.
     private var hasAccessory: Bool { isOnWire || isPaused }
+
+    /// An attachment-only queued message has no bubble to anchor the send
+    /// state on. The attachment stack carries it in its leading gutter: the
+    /// row spans the page, so anchoring to the row's own leading edge put the
+    /// spinner at the screen's far left while the card hugged the right
+    /// (pp 2026-11-16 — the optimistic row was fixed first; this queued row
+    /// is the one still on screen while the send is in flight).
+    private var attachmentOnlyAccessory: AnyView? {
+        guard item.content.isEmpty, !resolvedAttachments.isEmpty, hasAccessory
+        else { return nil }
+        return AnyView(accessory.padding(.bottom, 9))
+    }
 
     @ViewBuilder private var accessory: some View {
         if isOnWire {

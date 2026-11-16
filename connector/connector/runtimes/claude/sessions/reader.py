@@ -583,6 +583,64 @@ class ClaudeSessionReader:
             return None
 
 
+def _adopt_published_turn_ids(
+    session: ClaudeSession,
+    rows: Sequence[RuntimeTimelineItem],
+) -> list[RuntimeTimelineItem]:
+    """Keep the turn id the live side already published for these rows.
+
+    ``ClaudeSessionStore.record_timeline_item`` stores every row the live
+    projector publishes, so the history projection can tell which rows are
+    already on the client. It must not re-key one: the client groups a step
+    run by the declared ``turnId``, and a mid-session change splits one turn
+    into two buckets — the page jumps by the height of the extra row (b1259
+    02:26:32 items=8; b1278 10:05:55 items=5: rows unchanged, stepGroups ±1,
+    content +46 retracted). The first publisher is the single source, so a
+    divergence here is a projection rule that drifted: it is logged once and
+    not applied.
+    """
+
+    live_ids = {
+        published.turn_id
+        for row in rows
+        if (published := session.timeline_items.get(row.id)) is not None
+        and published.turn_id
+    }
+    if not live_ids:
+        return list(rows)
+    live_turn_id = min(live_ids)
+    if len(live_ids) > 1:
+        logger.warning(
+            "Claude history turn id: published rows disagree session_id={} "
+            "turn_ids={} items={}",
+            session.session_id,
+            sorted(live_ids),
+            [row.id for row in rows],
+        )
+    if all(row.turn_id == live_turn_id for row in rows):
+        return list(rows)
+    logger.warning(
+        "Claude history turn id diverged: kept the live id session_id={} "
+        "live_turn_id={} projected_turn_ids={} items={}",
+        session.session_id,
+        live_turn_id,
+        sorted(
+            {row.turn_id for row in rows if row.turn_id} - {live_turn_id}
+        ),
+        [row.id for row in rows],
+    )
+    return [
+        row
+        if row.turn_id == live_turn_id
+        else replace(
+            row,
+            turn_id=live_turn_id,
+            source={**row.source, "turnId": live_turn_id},
+        )
+        for row in rows
+    ]
+
+
 def _history_items_from_messages(
     session: ClaudeSession,
     messages: tuple[Any, ...],
@@ -673,6 +731,7 @@ def _history_items_from_messages(
             # control never starts a turn), so the fact lands on the turn the
             # user actually stopped.
             stopped_turns.add(turn_id)
+        message_start = len(items)
         items.extend(
             projector.tool_items_for_message(
                 session=session,
@@ -694,59 +753,67 @@ def _history_items_from_messages(
             attachment_base = attachment_echo_base_text(visible_text)
             if attachment_base is not None:
                 visible_text = attachment_base
-        if (
+        keep_message_item = not (
             synthetic_control
             or role not in {"user", "assistant", "system"}
             or (
                 not visible_text
                 and not (client_message is not None and client_message.attachments)
             )
-        ):
-            continue
-        items.append(
-            projector.message_item(
-                session=session,
-                turn_id=turn_id,
-                role=role,
-                text=visible_text,
-                event=f"claude.history.{role}",
-                native_item_id=native_id or f"history_{index}",
-                item_id=(
-                    client_message.platform_item_id
-                    if client_message is not None
-                    else None
-                ),
-                client_message_id=(
-                    client_message.client_message_id
-                    if client_message is not None
-                    else None
-                ),
-                attachments=(
-                    client_message.attachments if client_message is not None else ()
-                ),
-                # The transcript's assistant message carries the per-call
-                # usage; attaching it here makes a replayed item converge with
-                # the live one, which published the same numbers under the same
-                # stable id (the main chain's context stays measurable on old
-                # sessions too). Non-assistant roles never carry usage. The
-                # transcript's own `message.model` is the model fallback; the
-                # session's engine probe, when it has landed, overrides it.
-                usage=message_usage(message) if role == "assistant" else None,
-                usage_model=message_model(message) if role == "assistant" else None,
-            )
         )
+        if keep_message_item:
+            items.append(
+                projector.message_item(
+                    session=session,
+                    turn_id=turn_id,
+                    role=role,
+                    text=visible_text,
+                    event=f"claude.history.{role}",
+                    native_item_id=native_id or f"history_{index}",
+                    item_id=(
+                        client_message.platform_item_id
+                        if client_message is not None
+                        else None
+                    ),
+                    client_message_id=(
+                        client_message.client_message_id
+                        if client_message is not None
+                        else None
+                    ),
+                    attachments=(
+                        client_message.attachments if client_message is not None else ()
+                    ),
+                    # The transcript's assistant message carries the per-call
+                    # usage; attaching it here makes a replayed item converge
+                    # with the live one, which published the same numbers under
+                    # the same stable id (the main chain's context stays
+                    # measurable on old sessions too). Non-assistant roles never
+                    # carry usage. The transcript's own `message.model` is the
+                    # model fallback; the session's engine probe, when it has
+                    # landed, overrides it.
+                    usage=message_usage(message) if role == "assistant" else None,
+                    usage_model=message_model(message) if role == "assistant" else None,
+                )
+            )
+        # The live projector is the first publisher of these rows; a history
+        # sync may re-project them (a settled tool, a finalised message) but
+        # must not re-key the turn under the client (see the helper's note).
+        items[message_start:] = _adopt_published_turn_ids(session, items[message_start:])
+    missing_start = len(items)
     items.extend(
         projector.missing_history_tool_result_items(
             session=session,
             interrupted_turns=stopped_turns,
         )
     )
+    items[missing_start:] = _adopt_published_turn_ids(session, items[missing_start:])
     # The folds come last so the dedupe merge below never lets the synthetic
     # "no tool result was recorded" row — minted for a dispatch whose receipt
     # has not been written yet — clobber the terminal overlay with its
     # boilerplate: last writer wins, and the notice is the last true writer.
     for index in sorted(notification_folds):
         for fold in notification_folds[index]:
+            fold_start = len(items)
             items.extend(
                 projector.fold_agent_task_items(
                     session,
@@ -757,6 +824,7 @@ def _history_items_from_messages(
                     turn_id=fold.turn_id,
                 )
             )
+            items[fold_start:] = _adopt_published_turn_ids(session, items[fold_start:])
     resequenced = _resequence_history_items(_dedupe_history_items(items))
     if oracle is None:
         result = resequenced
@@ -2369,6 +2437,10 @@ def _history_turn_ids(
     is the FIRST assistant message after that row. That is exactly the frame
     the live reader mints the turn on (``message_start`` carries the same
     ``message.id``), so both paths hash the same anchor.
+
+    A background-task wake-up has the same shape: its ``<task-notification>``
+    row is chrome, but it still opens a turn, and the first assistant message
+    after it is the anchor both sides hash.
     """
 
     boundary_lines = (
@@ -2397,7 +2469,16 @@ def _history_turn_ids(
         role = message_role(message)
         text = message_text(message)
         synthetic_control = is_synthetic_control_message(message)
-        if role == "user" and text and not synthetic_control:
+        if is_task_notification_message(message):
+            # A background-task wake-up opens a scheduled turn of its own. The
+            # CLI persists it as an ordinary user row carrying text, but it is
+            # chrome, and the live reader casts the turn on the first assistant
+            # ``message_start``. Without this boundary the wake-up rows keep
+            # the previous user turn's seed, and the turn-end sync re-keys them
+            # to it (pp 2026-11-16, b1278 10:05:55: five rows, the client split
+            # and merged a step group, the page jumped 46 pt).
+            pending_scheduled = True
+        elif role == "user" and text and not synthetic_control:
             turn_index += 1
             turn_seed = _history_user_turn_seed(message) or (
                 f"{session.session_id}:{turn_index}"

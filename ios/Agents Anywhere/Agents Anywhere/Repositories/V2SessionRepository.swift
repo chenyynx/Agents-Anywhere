@@ -1523,7 +1523,6 @@ final class V2SessionRepository {
                     for try await event in events {
                         try self.requireCurrent(entry)
                         guard entry.connectionID == connectionID else { return }
-                        #if AA_TIMELINE_PROBE
                         if event.type == "runtime.state.updated" {
                             // Wire receipt, before any gate can drop the frame.
                             // Ordered against `timeline.event.gap` and
@@ -1542,7 +1541,6 @@ final class V2SessionRepository {
                                 dedupe: false
                             )
                         }
-                        #endif
                         if event.type == "session.subscribed" {
                             // The socket is registered before recovery, closing
                             // the snapshot/subscribe race. Only a round launched
@@ -1627,11 +1625,8 @@ final class V2SessionRepository {
         // state frame that arrives during a round keeps this path too: the
         // round's live read is the newer fact and the barrier below drops the
         // frame.
-        #if AA_TIMELINE_PROBE
         let levelStateWaitsForRecovery = isLevelState && entry.recoveryTask != nil
-        #endif
         if let pending = entry.recoveryTask { _ = await pending.value }
-        #if AA_TIMELINE_PROBE
         if levelStateWaitsForRecovery {
             ClientDiagnosticsLog.shared.record(
                 kind: "timeline.ws.state",
@@ -1644,7 +1639,6 @@ final class V2SessionRepository {
                 dedupe: false
             )
         }
-        #endif
         if !isLevelState,
            event.type == "session.refetch_required"
                || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
@@ -1664,7 +1658,6 @@ final class V2SessionRepository {
         try requireCurrent(entry)
         let readTypes = ["runtime.state.updated", "runtime.capability.updated", "runtime.notice.snapshot", "runtime.notice.updated"]
         if readTypes.contains(event.type), event.receivedAt < entry.projectionBarrier {
-            #if AA_TIMELINE_PROBE
             if event.type == "runtime.state.updated" {
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.ws.state",
@@ -1677,7 +1670,6 @@ final class V2SessionRepository {
                     dedupe: false
                 )
             }
-            #endif
             return
         }
         let wasOnline = entry.projection?.data.session.connectorStatus == .online
@@ -1689,11 +1681,8 @@ final class V2SessionRepository {
             entry.latestRefreshTask?.cancel()
             entry.latestRefreshTask = nil
         }
-        #if AA_TIMELINE_PROBE
         let levelStateSeqBefore = isLevelState ? (entry.projection?.data.state?.updatedSeq ?? 0) : 0
-        #endif
         let mergedOutcome = try entry.projection?.apply(event)
-        #if AA_TIMELINE_PROBE
         if isLevelState {
             // What the projection holds right after the frame went through:
             // unchanged `stateSeq` is a rejected/duplicate frame; changed means
@@ -1713,7 +1702,6 @@ final class V2SessionRepository {
                 dedupe: false
             )
         }
-        #endif
         // Confirm a pending send only from the row the projection actually
         // merged. Half-applied sends used to be confirmed straight from the
         // event payload while the window guard dropped the row; the bubbles

@@ -10,6 +10,17 @@ import Foundation
 /// `timeline.rows.frame`). Waiting for the bubble makes one +91 follow: the
 /// page scrolls once and the row arrives already in place.
 enum SendFramePresentation {
+    /// The send frame's pending anchor.
+    ///
+    /// The session clears its record on the echo confirmation, while the
+    /// presentation retires the bubble one refresh later. Falling back to the
+    /// presentation's list across that gap keeps the working row from dropping
+    /// for a frame and returning with the echo (−38 then +38 scrolls; pp
+    /// 2026-11-16, b1285 22:44:16).
+    static func anchorPendingIDs(sessionIDs: [String], presentedIDs: [String]) -> [String] {
+        sessionIDs.isEmpty ? presentedIDs : sessionIDs
+    }
+
     /// Whether the standalone working row may join the list.
     ///
     /// - Parameters:

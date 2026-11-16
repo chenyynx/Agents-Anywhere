@@ -1865,6 +1865,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             $0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed
         }
         let publishedPendingIDs = Set(model.timeline.pendingMessages.map(\.id))
+        // The session clears its record when the echo confirms; the
+        // presentation retires the bubble one refresh later. In that gap
+        // `openPending` is empty while the old turn's steps are still after
+        // the last presented user row, so the working row dropped for a frame
+        // and came back with the echo — −38 then +38 scrolls (pp 2026-11-16,
+        // b1285: 22:44:16.105 / 16.142). The presentation's pending row keeps
+        // the send frame anchored across the gap.
+        let anchorPendingIDs = SendFramePresentation.anchorPendingIDs(
+            sessionIDs: openPending.map(\.id),
+            presentedIDs: model.timeline.pendingMessages.map(\.id))
         var echoedPendingIDs: Set<String> = []
         if let latest = openPending.last,
            latest.delivery != .sending, !publishedPendingIDs.contains(latest.id) {
@@ -1878,7 +1888,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let runtimeIsInFlight = model.session.runtime.state?.status.isTurnInFlight == true
         let hasWorkingStatus = SendFramePresentation.showsWorkingRow(
             placeholderVisible: model.sendingPlaceholder != nil,
-            pendingIDs: openPending.map(\.id),
+            pendingIDs: anchorPendingIDs,
             publishedPendingIDs: publishedPendingIDs,
             echoedPendingIDs: echoedPendingIDs,
             isStepsProfile: renderMode == .steps,
@@ -1887,7 +1897,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // and counting them here deferred the working row past the echo —
             // a second +38 scroll ~1.1 s after the bubble (pp 2026-11-16,
             // b1284 log: bubble +53 at 22:22:11.170, row +38.3 at 12.327).
-            hasLiveSteps: chatLiveTurnHasSteps && openPending.isEmpty,
+            // The anchor spans the pending→echo gap as well, or the row drops
+            // for one refresh and returns with the echo.
+            hasLiveSteps: chatLiveTurnHasSteps && anchorPendingIDs.isEmpty,
             queueCount: model.session.sendQueue.items.count)
         let workingStatusShowsText = SendFramePresentation.showsWorkingRowText(
             latestDelivery: openPending.last?.delivery,

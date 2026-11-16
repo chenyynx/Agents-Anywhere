@@ -7,6 +7,18 @@ import Testing
 /// bubble, so its +38 follow started first and the 53 pt bubble landed inside
 /// that flight (probe `timeline.rows.frame`).
 @Suite struct SendFramePresentationTests {
+    /// The session drops its record on the echo; the presentation retires the
+    /// bubble one refresh later. The anchor must span that gap, or the working
+    /// row drops and returns with the echo (two extra scrolls).
+    @Test func theAnchorFallsBackToThePresentationAcrossTheEchoGap() {
+        #expect(SendFramePresentation.anchorPendingIDs(
+            sessionIDs: ["p1"], presentedIDs: ["p1"]) == ["p1"])
+        #expect(SendFramePresentation.anchorPendingIDs(
+            sessionIDs: [], presentedIDs: ["p1"]) == ["p1"])
+        #expect(SendFramePresentation.anchorPendingIDs(
+            sessionIDs: [], presentedIDs: []).isEmpty)
+    }
+
     @Test func theWorkingRowWaitsForItsPublishedBubble() {
         #expect(!SendFramePresentation.showsWorkingRow(
             placeholderVisible: true, pendingIDs: ["p1"],

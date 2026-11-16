@@ -3203,7 +3203,32 @@ class ClaudeTurnRunner:
             # WARN) and out of the labour count.
             turn_started = cast_frame is None and client.prompt_uuid is None
             emitted_final_assistant_content = False
+            # Probe (2026-11-17): the turn-end tail. Between the last frame the
+            # user can see and the SDK's ResultMessage the connector logged
+            # nothing, and one turn measured 3.5 s there (01:21:13.583 →
+            # 01:21:17.127 `claude.turn.completed`). One INFO line per terminal
+            # names the wait since the previous frame and the frames before it.
+            tail_last_frame_at = time.monotonic()
+            tail_last_assistant_at: float | None = None
+            tail_recent_frames: list[str] = []
             async for message in receive_response_messages(client):
+                tail_now = time.monotonic()
+                tail_gap_ms = int((tail_now - tail_last_frame_at) * 1000)
+                tail_assistant_gap_ms = (
+                    -1
+                    if tail_last_assistant_at is None
+                    else int((tail_now - tail_last_assistant_at) * 1000)
+                )
+                tail_last_frame_at = tail_now
+                if message_role(message) == "assistant":
+                    tail_last_assistant_at = tail_now
+                tail_kind = message.__class__.__name__
+                tail_role = message_role(message)
+                if tail_role:
+                    tail_kind = f"{tail_kind}:{tail_role}"
+                tail_recent_frames.append(tail_kind)
+                if len(tail_recent_frames) > 8:
+                    del tail_recent_frames[:-8]
                 if scheduled and not turn_anchor_bound:
                     # Deferred half of the scheduled anchor: the cast frame
                     # was one that carries no transcript id (a reconnect can
@@ -3347,6 +3372,21 @@ class ClaudeTurnRunner:
                 # send leaves them recoverable by the settle-time flush.
                 boundary_items = stream_accumulator.peek_pending_items()
                 terminal_message = terminal_event_from_message(message)
+                if terminal_message is not None:
+                    # The tail line: how long the result frame waited after the
+                    # frame before it, and what those frames were (see the
+                    # probe note above the read loop).
+                    logger.info(
+                        "claude_turn_tail session_id={} turn_id={} status={} "
+                        "since_last_frame_ms={} since_last_assistant_ms={} "
+                        "recent={}",
+                        session.session_id,
+                        turn_id,
+                        terminal_message.status,
+                        tail_gap_ms,
+                        tail_assistant_gap_ms,
+                        ",".join(tail_recent_frames),
+                    )
                 if terminal_message is not None and not counts_as_labour:
                     # B1's position rule promoted to settlement: the cast frame
                     # and everything the reader flushed ahead of it are passive

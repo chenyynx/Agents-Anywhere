@@ -94,6 +94,7 @@ struct CodeStepGroupRowView: View {
                     WorkingMarkView(body: workingMark(for: live), isRunning: true)
                         .frame(width: CodePageTheme.toolRowIconFrameSize,
                                height: CodePageTheme.toolRowIconFrameSize)),
+                trailingIcon: liveTrailingIcon(for: live),
                 isTextHidden: false,
                 includesImages: false,
                 voiceControlName: nil,
@@ -133,11 +134,31 @@ struct CodeStepGroupRowView: View {
                               relativeTo: CodePageTheme.toolRowBodyTextStyle))
                 .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
         case let .tool(call):
+            // A running question reads as a status, not a tool label: the
+            // group row says 「正在提问」 while the card waits for the answer
+            // (pp 2026-11-16). An answered question keeps its label in the
+            // settled summary/sheet.
+            if call.kind == .question {
+                return Text(String(localized: "正在提问"))
+                    .font(.custom(CodePageTheme.sansFontName,
+                                  size: CodePageTheme.toolRowFontSize,
+                                  relativeTo: CodePageTheme.toolRowBodyTextStyle))
+                    .foregroundStyle(CodePageTheme.text400Color.resolved(for: colorScheme))
+            }
             let label = CodeToolLabels.label(for: [call], cwd: cwd)
             let runs = CodeToolLabels.runs(for: label,
                                            differentiateWithoutColor: differentiateWithoutColor)
             return CodeToolLabelRun.styledText(runs, scheme: colorScheme)
         }
+    }
+
+    /// The running question carries the thinking row's clock after its label
+    /// (pp 2026-11-16).
+    private func liveTrailingIcon(for step: TimelineStep) -> String? {
+        if case let .tool(call) = step, call.kind == .question {
+            return "anthropicon.extendedThinking"
+        }
+        return nil
     }
 
     private func workingMark(for step: TimelineStep) -> WorkingMarkBody {

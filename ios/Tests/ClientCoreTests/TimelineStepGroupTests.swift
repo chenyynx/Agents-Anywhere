@@ -36,12 +36,14 @@ private func toolItem(_ id: String, order: Int, name: String,
                       message: String = "msg-1",
                       turn: String? = "turn-1",
                       status: String = "done",
-                      interrupted: Bool = false) throws -> V2TimelineItem {
+                      interrupted: Bool = false,
+                      parent: String? = nil) throws -> V2TimelineItem {
     var source: [String: Any] = ["itemId": id, "nativeMessageId": message,
                                  "blockIndex": order]
     if let turn { source["turnId"] = turn }
     var content: [String: Any] = ["kind": "tool", "toolName": name, "input": input]
     if interrupted { content["turnInterrupted"] = true }
+    if let parent { content["parentItemId"] = parent }
     return try stepItem(id: id, order: order, type: "tool", status: status,
                         content: content, source: source)
 }
@@ -61,6 +63,38 @@ private func userItem(_ id: String, order: Int) throws -> V2TimelineItem {
 
 @Suite("Chat step-group grouping")
 struct TimelineStepGroupingTests {
+
+    /// A session-blocking interaction card is drawn in the composer dock, so
+    /// its anchor row merges into the running step group like any other step.
+    /// Only a non-blocking (inline) card keeps the standalone row it renders
+    /// under (pp 2026-11-16).
+    @Test func aBlockingInteractionAnchorMergesIntoTheStepGroup() throws {
+        let items = [
+            try thinkingItem("r1", order: 1),
+            try toolItem("q1", order: 2, name: "AskUserQuestion",
+                         input: ["questions": [["question": "弹窗表现如何？"]]]),
+        ]
+        let merged = TimelineChatGrouping.units(items: items, profile: .generic,
+                                                interactionTargets: ["q1"],
+                                                standaloneTargets: [])
+        #expect(merged.count == 1)
+        guard case let .stepGroup(_, rowIDs) = merged[0] else {
+            Issue.record("blocking anchor did not merge")
+            return
+        }
+        #expect(rowIDs == ["r1", "q1"])
+
+        let inline = TimelineChatGrouping.units(items: items, profile: .generic,
+                                                interactionTargets: ["q1"],
+                                                standaloneTargets: ["q1"])
+        #expect(inline.count == 2)
+        guard case let .standalone(rowID) = inline[1] else {
+            Issue.record("inline anchor lost its standalone row")
+            return
+        }
+        #expect(rowID == "q1")
+    }
+
     @Test func consecutiveStepsFormOneGroupAndBodyBreaksIt() throws {
         let items = [
             try thinkingItem("r1", order: 1),
@@ -173,6 +207,28 @@ struct TimelineStepGroupingTests {
         #expect(group.hasInterruptedStep)
     }
 
+    /// The SubAgent panel renders exactly the rows the main timeline hides
+    /// (L2.1). Its grouping call must opt out of the child-row filter; the
+    /// default stays the timeline's rule.
+    @Test func subAgentChildRowsGroupOnlyWhenThePanelAsks() throws {
+        let child = try toolItem("t1", order: 1, name: "Read",
+                                 input: ["file_path": "/repo/a.swift"],
+                                 parent: "card-1")
+        let timeline = TimelineChatGrouping.units(items: [child], profile: .generic,
+                                                  interactionTargets: [])
+        #expect(timeline.isEmpty)
+        let panel = TimelineChatGrouping.units(items: [child], profile: .generic,
+                                               interactionTargets: [],
+                                               excludesSubAgentChildren: false)
+        #expect(panel.count == 1)
+        guard case let .stepGroup(group, rowIDs) = panel.first else {
+            Issue.record("panel grouping did not produce a step group")
+            return
+        }
+        #expect(rowIDs == ["t1"])
+        #expect(group.steps.count == 1)
+    }
+
     @Test func aPlainFailureDoesNotMarkTheGroupAsInterrupted() throws {
         let items = [
             try thinkingItem("r1", order: 1),
@@ -214,6 +270,26 @@ struct TimelineStepGroupSummaryTests {
         #expect(summary.toolCount == 4)
         let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
         #expect(line.contains("1"))
+    }
+
+    @Test func aQuestionIsItsOwnCountedCategory() throws {
+        // A step group with 2 thinking + 1 question used to title itself
+        // 「思考 2 次」 while its sheet listed three rows: the summarizer's
+        // verb switch never sees a question because `CodeToolLabelPlan`
+        // folds it into the generic `other/.tools` phrase (pp 2026-11-16).
+        let steps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            try tool("q1", name: "AskUserQuestion",
+                     input: ["questions": [["question": "弹窗表现如何？"]]]),
+            .thinking(id: "r2", text: "think again", status: .done),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.thinkingCount == 2)
+        #expect(summary.askedCount == 1)
+        #expect(summary.toolCount == 1)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("思考 2 次"))
+        #expect(line.contains("询问 1 次"))
     }
 
     @Test func liveThinkingLineIsTheLastNonEmptyLine() {

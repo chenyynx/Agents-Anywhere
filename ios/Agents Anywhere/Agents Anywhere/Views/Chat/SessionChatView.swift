@@ -105,12 +105,66 @@ struct SessionChatView: View, Equatable {
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 safeAreaInsets: proxy.safeAreaInsets,
                 renderMode: renderMode)
+                // The command card floats over the page, not inside the
+                // composer's overlay: an overlay drawn outside its base frame
+                // renders but cannot be tapped. The timeline fills the screen,
+                // so this base owns the hit area; the anchor is the measured
+                // composer dock top (see `CommandPanelAnchoring`), placing the
+                // card 16 pt above the composer glass with the keyboard up or
+                // down.
+                .overlay(alignment: .bottom) {
+                    let anchor = commandPanelAnchor(proxy: proxy)
+                    CommandSuggestionPanel(chat: model, draft: session.composer,
+                        forced: $showsCommandMenu, controls: controls, editor: composerEditor,
+                        availableHeight: anchor.availableHeight)
+                        .padding(.bottom, anchor.bottomPadding)
+                }
                 // The bridge owns one adapter for its lifetime; a mode switch
                 // must rebuild it, exactly like the old switch rebuilt the
                 // branch it replaced.
                 .id(renderModeRaw)
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
+                // Measure the expanded base the card draws in. Global frames
+                // give the anchor one coordinate system: the card clears the
+                // measured composer dock top, and its free height runs from
+                // the same base top to that dock. Insets are only the
+                // pre-measurement fallback.
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    panelBaseTop = frame.minY
+                    panelBaseBottom = frame.maxY
+                }
+                .onChange(of: showsCommandMenu) { _, open in
+                    guard open else { return }
+                    recordCommandPanelGeometry(proxy: proxy)
+                }
         }
+    }
+
+    private func commandPanelAnchor(proxy: GeometryProxy) -> CommandPanelAnchoring {
+        CommandPanelAnchoring.resolve(
+            baseTop: panelBaseTop, baseBottom: panelBaseBottom,
+            insetBottom: proxy.safeAreaInsets.bottom,
+            height: proxy.size.height)
+    }
+
+    /// One line per open. If the card ever fails to draw with the keyboard up,
+    /// these numbers separate a wrong anchor from a wrong height without
+    /// re-deriving what safe-area insets meant on that build.
+    private func recordCommandPanelGeometry(proxy: GeometryProxy) {
+        let anchor = commandPanelAnchor(proxy: proxy)
+        ClientDiagnosticsLog.shared.record(
+            kind: "composer.panel.geometry",
+            sessionID: model.session.id,
+            detail: [
+                "available": String(Int(anchor.availableHeight.rounded())),
+                "padding": String(Int(anchor.bottomPadding.rounded())),
+                "baseTop": panelBaseTop.map { String(Int($0.rounded())) } ?? "nil",
+                "baseBottom": panelBaseBottom.map { String(Int($0.rounded())) } ?? "nil",
+                "insetTop": String(Int(proxy.safeAreaInsets.top.rounded())),
+                "insetBottom": String(Int(proxy.safeAreaInsets.bottom.rounded())),
+                "height": String(Int(proxy.size.height.rounded())),
+                "focused": session.composer.isFocused ? "1" : "0",
+            ])
     }
 
     /// The page's layering, in its own method: the `GeometryReader` closure's
@@ -161,6 +215,7 @@ struct SessionChatView: View, Equatable {
                 .traceChatLayout("interaction-dock")
             ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
+                editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                 canSend: session.canSend, canAttach: model.canAttach,
                 canSelectModel: session.runtime.allows("catalog.model"),
                 canSelectPermission: session.runtime.allows("catalog.permission"),
@@ -210,13 +265,14 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var toasts = ChatToastStore()
-    /// The transcript's rendering mode (pp 2026-10-29): `.chat` renders the
-    /// step-group live row, `.code` keeps the official Code page. Both run on
-    /// the collection engine; only the row presentation differs.
+    /// The transcript's rendering mode (pp 2026-10-29): `.steps` (UI 分步)
+    /// renders the step-group live row, `.merged` (UI 合并) merges thinking and
+    /// tool calls. Both run on the collection engine; only the row presentation
+    /// differs.
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.chat.rawValue
+    private var renderModeRaw = TimelineRenderMode.steps.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The
@@ -227,6 +283,16 @@ struct SessionChatView: View, Equatable {
     }
     @State private var pendingTakeover: Bool?
     @State private var hasStartedLoading = false
+    @State private var composerEditor = ComposerEditorController()
+    @State private var showsCommandMenu = false
+    /// The timeline's measured frame: its top is the navigation bar and its
+    /// bottom is the composer bar, so its height is exactly the room the
+    /// command card may use. Device diagnostics pinned these numbers
+    /// (113→414 with the keyboard up, 113→758 down); deriving the card from
+    /// safe-area arithmetic instead mixed two coordinate spaces and put the
+    /// card under the composer (pp 2026-11-15).
+    @State private var panelBaseTop: CGFloat?
+    @State private var panelBaseBottom: CGFloat?
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
@@ -433,8 +499,8 @@ struct SessionChatView: View, Equatable {
             session.clearRecoveryNotice()
         }
         // Notification-type notices ("切换已延后") float as top toasts instead of
-        // seating in the timeline; the timeline's own render points exclude them
-        // (ChatTimelineView / SessionTimelineEventView). `pendingNotifications`
+        // seating in the timeline; the timeline's own renderers exclude them.
+        // `pendingNotifications`
         // is pre-filtered by the session's durable per-episode acknowledgements,
         // so a notice the user already closed in this open episode does not come
         // back on the next page visit; reconciling the store against the same

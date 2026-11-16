@@ -244,6 +244,17 @@ nonisolated enum TimelineText {
 
 extension V2TimelineItem {
     var isReasoning: Bool { type == .reasoning || type == .system && raw["content"]?["kind"] == .string("reasoning") }
+    /// A file change riding its own row (Codex stamps `file_change` on an
+    /// artifact item; Claude publishes it as a tool row). Lived in the deleted
+    /// turn-review file until 2026-11-16; `TimelineRowStructure` reads it.
+    var isFileChange: Bool { type == .fileChange || raw["content"]?["kind"] == .string("file_change") }
+    /// Whether this row opens a turn the reader sees: a user message that is
+    /// not a steer. Also from the deleted turn-review file.
+    var startsVisibleTurn: Bool {
+        guard type == .message, role == .user else { return false }
+        if TimelineText.first(source["itemType"], source["rawType"]) == "steeringUserMessage" { return false }
+        return true
+    }
     var isVisibleInChat: Bool {
         guard status != .hidden, ![.turnStart, .turnEnd].contains(type) else { return false }
         if type == .artifact && raw["content"]?["kind"] == .string("diff") { return false }

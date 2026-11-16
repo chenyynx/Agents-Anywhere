@@ -3,32 +3,36 @@ import Foundation
 /// The transcript's rendering mode (pp 2026-10-29). Both modes run on the
 /// collection engine; only the row presentation differs.
 ///
-/// - `.chat`: one step-group row per run of thinking/tool steps — while it
-///   runs the row shows the current step, when it settles the row shows the
-///   counts summary. See `TimelineStepGroup`.
-/// - `.code`: the official Code page replica (message rows, merged
-///   `thinkingContent`, collapsed tool spans). Unchanged by this mode's work.
+/// The case names describe what the transcript does; the raw values are the
+/// historical page names and stay frozen because `aa.timeline.renderMode`
+/// stores them (renaming one would silently reset every device's choice):
+///
+/// - `.steps` (raw `"chat"`, UI 「分步」): one step-group row per run of
+///   thinking/tool steps — while it runs the row shows the current step, when
+///   it settles the row shows the counts summary. See `TimelineStepGroup`.
+/// - `.merged` (raw `"code"`, UI 「合并」): thinking merges into one block and
+///   tool calls group by category, collapsed by default.
 nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
-    case chat
-    case code
+    case steps = "chat"
+    case merged = "code"
 
     var id: String { rawValue }
 
     /// The user-facing names describe what the transcript does to the
     /// thinking/tool steps, not which page they came from (pp 2026-10-30):
-    /// `.chat` shows every step as it happens, `.code` merges them.
+    /// `.steps` shows every step as it happens, `.merged` merges them.
     var title: String {
         switch self {
-        case .chat: return String(localized: "分步")
-        case .code: return String(localized: "合并")
+        case .steps: return String(localized: "分步")
+        case .merged: return String(localized: "合并")
         }
     }
 
     var detail: String {
         switch self {
-        case .chat:
+        case .steps:
             return String(localized: "思考和每次工具调用各占一条，执行中实时刷新，结束后收成一行摘要。")
-        case .code:
+        case .merged:
             return String(localized: "思考合并成一段「思考过程」；工具调用按类别归组、默认收起。")
         }
     }
@@ -44,15 +48,20 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
 /// - a fresh install gets `.chat` (pp 2026-11-13).
 enum TimelineRenderModeSwitch {
     static let key = "aa.timeline.renderMode"
-    static let legacyCollectionKey = TimelineCollectionSwitch.key
-    static let lastActiveKey = TimelineCollectionSwitch.lastActiveKey
+    /// The retired A/B switch's key, read once by the migration below. The
+    /// switch and the container it gated are gone; the string stays so a
+    /// device that set the old Bool keeps its visual choice.
+    static let legacyCollectionKey = "aa.timeline.collectionView"
+    /// Written by the controller on first appearance and shown in Settings, so
+    /// a device test can prove the collection container actually ran.
+    static let lastActiveKey = "aa.timeline.collectionViewLastActive"
 
     static func current(defaults: UserDefaults = .standard) -> TimelineRenderMode {
         if let raw = defaults.string(forKey: key),
            let mode = TimelineRenderMode(rawValue: raw) {
             return mode
         }
-        return defaults.bool(forKey: legacyCollectionKey) ? .code : .chat
+        return defaults.bool(forKey: legacyCollectionKey) ? .merged : .steps
     }
 
     /// Writes the new key once. Runs from the app entry before any view reads
@@ -61,9 +70,9 @@ enum TimelineRenderModeSwitch {
         guard defaults.string(forKey: key) == nil else { return }
         let mode: TimelineRenderMode
         if defaults.object(forKey: legacyCollectionKey) == nil {
-            mode = .chat
+            mode = .steps
         } else {
-            mode = defaults.bool(forKey: legacyCollectionKey) ? .code : .chat
+            mode = defaults.bool(forKey: legacyCollectionKey) ? .merged : .steps
         }
         defaults.set(mode.rawValue, forKey: key)
     }

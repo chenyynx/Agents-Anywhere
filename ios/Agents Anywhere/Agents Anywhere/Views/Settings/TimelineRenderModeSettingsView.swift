@@ -8,16 +8,16 @@ import SwiftUI
 /// explains whichever mode is selected.
 struct TimelineRenderModeSettingsView: View {
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.chat.rawValue
+    private var renderModeRaw = TimelineRenderMode.steps.rawValue
 
     private var mode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
 
     private var stepByStep: Binding<Bool> {
         Binding(
-            get: { mode == .chat },
-            set: { renderModeRaw = ($0 ? TimelineRenderMode.chat : .code).rawValue }
+            get: { mode == .steps },
+            set: { renderModeRaw = ($0 ? TimelineRenderMode.steps : .merged).rawValue }
         )
     }
 

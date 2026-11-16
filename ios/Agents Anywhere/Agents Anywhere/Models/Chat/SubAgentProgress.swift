@@ -333,6 +333,30 @@ enum SubAgentProgress {
             .sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
     }
 
+    /// The capsule panel's one-line live status for a running SubAgent: what
+    /// the newest visible activity row is doing — a tool's name, thinking, a
+    /// compact, a streaming reply. Before the first row arrives (and for a
+    /// settled card) it falls back to the phase word, so the card never shows
+    /// an empty second line.
+    static func liveActivityText(for card: SubAgentCard, in items: [V2TimelineItem],
+                                 cwd: String? = nil) -> String {
+        guard card.phase.isActive else { return card.phase.word }
+        guard let last = activityRows(of: card, in: items).last else { return card.phase.word }
+        if last.isReasoning { return String(localized: "正在思考") }
+        if TimelineEntryPresentation.isCompactItem(last) { return String(localized: "正在压缩上下文") }
+        if TimelineEntryPresentation.isToolKindItem(last) {
+            let raw = last.raw["content"] ?? .object([:])
+            if let name = TimelineText.first(raw["toolName"], raw["name"], raw["tool"]), !name.isEmpty {
+                return String(localized: "正在运行 \(name) 指令")
+            }
+            // No tool name on the wire: the row's own title already reads as a
+            // verb phrase («执行 ls» / «Modified foo.swift»), so use it as is.
+            return TimelineEntryPresentation(item: last, cwd: cwd).title
+        }
+        if last.isStreamingText { return String(localized: "正在回复") }
+        return card.phase.word
+    }
+
     /// The subagent's final reply to pin under the panel's 「最终输出」, or nil
     /// when the panel would otherwise render that same text twice.
     ///
@@ -352,10 +376,11 @@ enum SubAgentProgress {
     /// duplicate). Comparison trims surrounding whitespace because the
     /// connector strips the tag while the projected row may keep a trailing
     /// newline.
-    static func finalOutputSummary(of card: SubAgentCard, in items: [V2TimelineItem]) -> String? {
+    static func finalOutputSummary(of card: SubAgentCard, in items: [V2TimelineItem],
+                                   lineage: Set<String>? = nil) -> String? {
         guard let summary = card.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
               !summary.isEmpty else { return nil }
-        let alreadyShown = activityRows(of: card, in: items).contains {
+        let alreadyShown = activityRows(of: card, in: items, lineage: lineage).contains {
             $0.displayText.trimmingCharacters(in: .whitespacesAndNewlines) == summary
         }
         return alreadyShown ? nil : summary
@@ -407,7 +432,6 @@ enum SubAgentProgress {
         return SubAgentCapsuleState(
             runningCount: running.count,
             hasFailure: hasLiveFailure(in: cards),
-            singleTaskName: running.count == 1 ? running[0].taskName : nil,
             // The glyph phase is known only while exactly one SubAgent runs
             // (§3): with several the icon auto-cycles, so no card can claim it.
             glyphPhase: running.count == 1 ? SubAgentGlyphPhase.livePhase(for: running[0], in: items) : nil,
@@ -682,7 +706,6 @@ enum SubAgentProgress {
 struct SubAgentCapsuleState: Equatable {
     let runningCount: Int
     let hasFailure: Bool
-    let singleTaskName: String?
     /// The glyph's two-phase class while exactly one SubAgent runs and its rows
     /// support it; nil with several (or unknown) — the icon then auto-cycles.
     let glyphPhase: SubAgentGlyphPhase?
@@ -696,10 +719,11 @@ struct SubAgentCapsuleState: Equatable {
 
     var isVisible: Bool { runningCount > 0 }
 
-    /// "任务名" for one running SubAgent, "N 项任务进行中" for several.
+    /// "N 个 Agent 正在运行" — the count form the reference capsule uses, for
+    /// one running SubAgent as well (pp 2026-11-15). The task name keeps its
+    /// own card and panel entry; the capsule itself only reports the count.
     var title: String {
-        if runningCount == 1, let singleTaskName, !singleTaskName.isEmpty { return singleTaskName }
-        return String(localized: "\(runningCount) 项任务进行中")
+        String(localized: "\(runningCount) 个 Agent 正在运行")
     }
 
     var accessibilityText: String {

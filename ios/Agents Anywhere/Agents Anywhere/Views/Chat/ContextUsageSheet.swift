@@ -1,46 +1,74 @@
 import SwiftUI
 
 /// The session toolbar's context-window ring — the official Code page carries
-/// this beside the overflow menu. A 21 pt ring, 3 pt stroke, arc from twelve
-/// o'clock clockwise over a light track. The colour follows the usage level:
-/// normal is the official blue sampled from the 1.261023 build's screenshot;
-/// warning / critical reuse the app's amber / red severity palette.
+/// this beside the overflow menu.
+///
+/// Reconstructed from the 1.261023 binary (task `R-AA-CONTEXT-RING`):
+/// `ContextRing.body` passes `CircularMeterStyle.Size(outerDiameter: 21.5,
+/// lineWidth: 1.5)`; `CircularMeterStyle.makeBody` lays the stroked circles
+/// out in a frame of `outerDiameter - lineWidth` (20) and pads by
+/// `lineWidth / 2` (0.75). The track is the app's foreground ink at 20 %
+/// (`#0B0B0B` light, `#FFFFFF` dark, both `.opacity(0.2)`); the progress arc
+/// is a **solid** colour per severity — there is no gradient anywhere in the
+/// style — with a round cap over a butt-capped track, trimmed `0 → fraction`
+/// and rotated −90° so it starts at twelve o'clock. The style animates only
+/// `fractionCompleted`, on `timingCurve(0.165, 0.84, 0.44, 1.0, duration:
+/// 0.2)`.
+///
+/// The official ring carries no percentage thresholds: its colour follows the
+/// model's `LimitSeverity`. AA derives that severity from the percentage
+/// (75 % warning, 90 % critical) until the model-side thresholds are located
+/// (the decompile's open item U2).
 struct ContextUsageRing: View {
     let usage: V2ContextUsage
-    var diameter: CGFloat = 21
-    var lineWidth: CGFloat = 3
+    var outerDiameter: CGFloat = 21.5
+    var lineWidth: CGFloat = 1.5
+    @Environment(\.colorScheme) private var colorScheme
 
     private var fraction: Double { usage.fraction ?? 0 }
-    private var tint: Color { Self.tint(forPercent: usage.percentUsed ?? 0) }
+    private var progressColor: Color { Self.tint(forPercent: usage.percentUsed ?? 0) }
+
+    /// The official track: the app's foreground ink at 20 % (dynamic light /
+    /// dark pair, resolved here because SwiftUI has no per-scheme Color
+    /// literal).
+    private var trackColor: Color {
+        (colorScheme == .dark ? Color(white: 1) : Color(white: 0.043)).opacity(0.2)
+    }
 
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.secondary.opacity(0.22), lineWidth: lineWidth)
-            // An unknown window has no fraction; the old ring's neutral track
-            // is the whole signal. A measurement with a known window keeps the
-            // 2% minimum so a true zero still reads as a ring, not a hole.
+                .stroke(trackColor,
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
+            // An unknown window has no fraction; the track alone is then the
+            // whole signal. A known window trims to its measured share.
             if usage.fraction != nil {
                 Circle()
-                    .trim(from: 0, to: max(fraction, 0.02))
-                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                    .trim(from: 0, to: fraction)
+                    .stroke(progressColor,
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(-90), anchor: .center)
             }
         }
-        .frame(width: diameter, height: diameter)
-        .animation(.smooth(duration: 0.35), value: fraction)
-        .animation(.smooth(duration: 0.35), value: tint)
+        // Frame inside, padding outside: the circle's path is 20 pt across and
+        // the 1.5 pt stroke reaches the official 21.5 pt outer diameter.
+        .frame(width: outerDiameter - lineWidth, height: outerDiameter - lineWidth)
+        .padding(lineWidth / 2)
+        .animation(.timingCurve(0.165, 0.84, 0.44, 1.0, duration: 0.2), value: fraction)
         .accessibilityHidden(true)
     }
 
+    /// The official `MeterStyle.Variant` colours (sRGB, opacity 1) mapped onto
+    /// AA's percentage-derived severity. Accent `#2A78D6` is the ring's normal
+    /// ink — the 1.261023 build's own constant, not a screenshot sample.
     static func tint(forPercent percent: Int) -> Color {
         if percent < 75 {
-            return Color(red: 33 / 255, green: 86 / 255, blue: 162 / 255)
+            return Color(.sRGB, red: 0.165, green: 0.471, blue: 0.839, opacity: 1)
         }
         if percent < 90 {
-            return Color(red: 239 / 255, green: 159 / 255, blue: 39 / 255)
+            return Color(.sRGB, red: 0.980, green: 0.698, blue: 0.098, opacity: 1)
         }
-        return Color(red: 226 / 255, green: 75 / 255, blue: 74 / 255)
+        return Color(.sRGB, red: 0.816, green: 0.231, blue: 0.231, opacity: 1)
     }
 
     static func accessibilityValue(_ usage: V2ContextUsage) -> String {

@@ -204,7 +204,15 @@ nonisolated struct CodeToolLabelPlan: Hashable, Sendable {
             return TimelineText.first(input?["description"], input?["prompt"],
                                       content["description"], content["title"])
         case .plan, .question:
-            return TimelineText.first(content["question"], input?["question"])
+            // A question's text lives in the call's own payload: a flat
+            // `question` in older rows, and the connector's flattened
+            // `questions` array in every Claude `AskUserQuestion` row
+            // (`connector/runtimes/claude/timeline/messages.py`, the
+            // `InputRequestToolContent` branch). Without the array the row
+            // could only read a bare "Asked".
+            let questions = (content["questions"] ?? input?["questions"])?.arrayValue
+            return TimelineText.first(content["question"], input?["question"],
+                                      questions?.first.flatMap { $0["question"] })
         case .todo:
             return nil
         case .mcp:

@@ -197,7 +197,17 @@ final class TimelineAnchorDriver {
     /// 06:44).
     func updateSafeAreaInsets(_ insets: UIEdgeInsets, wasAtBottom: Bool = false) {
         pageInsets = insets
-        adoptEndOnNextInsetChange = wasAtBottom
+        // The caller's flag is an *asynchronously published* viewport sample,
+        // so it can lag the inset change arriving now — and it lies exactly
+        // when the inset moves (Bug 经验库 Agents-Anywhere「输入条上滑弹不起
+        // 键盘」再终章：静息几何 gap=213 而标记仍报"在底"＝标记说谎). Live geometry is
+        // the truth the driver's own placement uses, so either source counts:
+        // a page resting on the bottom follows the new bottom instead of
+        // staying put and leaving the last rows short of the composer by the
+        // inset delta, until the next gesture re-answers the placement
+        // (pp 2026-11-16: the keyboard/dock transition left 「中间空了一大截，
+        // 滑一下就落下来」).
+        adoptEndOnNextInsetChange = wasAtBottom || isAtEnd()
         applyInsets()
     }
 
@@ -583,9 +593,30 @@ final class TimelineAnchorDriver {
         guard isInteractionPresented != presented else { return }
         isInteractionPresented = presented
         let anchor = currentAnchor()
+        // A page in `.end` placement is bottomed even while the layout still
+        // owes it a few points: the card's dock inset and its anchored row
+        // land in one update. Halting that in-flight follow is the b1264 bug
+        // this `atEnd` was added for, one frame wider — the b1266 log still
+        // shows the +64 follow with no `arrived` and the return control
+        // appearing under the card (pp 2026-11-16).
         perform(.interactionPresentedChanged(presented: presented,
+                                             atEnd: TimelineInteractionFollow.keepsFollowing(
+                                                 placement: state.placement,
+                                                 liveAtEnd: isEffectivelyAtEnd()),
                                              id: anchor?.id,
                                              offsetIntoRow: anchor?.offsetIntoRow ?? 0))
+    }
+
+    /// Live "resting on the bottom" verdict with the product's dead zone. The
+    /// return control tolerates 16 pt of remaining travel; an approval that
+    /// arrives while the page sits within 8 pt of the bottom is a bottomed-out
+    /// page that must keep following — the residual comes from the inset and
+    /// the anchored row landing in two steps, not from the reader.
+    private func isEffectivelyAtEnd(tolerance: CGFloat = 8) -> Bool {
+        guard let view = scrollView else { return false }
+        let target = bottomTarget(topInset: view.adjustedContentInset.top,
+                                  bottomInset: view.adjustedContentInset.bottom)
+        return view.contentOffset.y >= target - tolerance
     }
 
     func navigationSuspendedChanged(_ suspended: Bool) {

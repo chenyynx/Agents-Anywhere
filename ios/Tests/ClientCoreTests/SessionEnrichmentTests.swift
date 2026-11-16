@@ -75,40 +75,7 @@ import Testing
         return try decode(object)
     }
 
-    @Test func reviewDeduplicatesRevisionsAndRetainsSeparatePatches() throws {
-        let old = try item("change", order: 2, content: ["kind": "file_change", "changes": [["path": "src/a.swift", "action": "modify", "diff": "@@\n+old"]]])
-        let new = try item("change", order: 2, content: ["kind": "file_change", "changes": [["path": "src/a.swift", "action": "update", "diff": "--- a\n+++ b\n@@\n-before\n+after\n+two"]]], revision: 2, seq: 2)
-        let other = try item("second", order: 3, content: ["kind": "file_change", "path": "/repo/src/a.swift", "action": "modify", "patch": "@@\n+three"])
-        let review = TimelineTurnReview.build(items: [new, old, other], root: "/repo")
-        #expect(review.files.count == 1)
-        #expect(review.files[0].displayPath == "src/a.swift" && review.files[0].patches.count == 2)
-        #expect(review.additions == 3 && review.deletions == 1)
-        #expect(review.files[0].action == .modify)
-    }
-
-    @Test func reviewNormalizesMapPayloadWindowsPathsAndRawNewFiles() throws {
-        let a = try item("a", order: 1, content: ["kind": "file_change", "changes": [#"C:\Repo\new.txt"#: ["action": "add", "content": "first\r\nsecond\r\n"]]])
-        let b = try item("b", order: 2, content: ["kind": "file_change", "changes": [["path": "c:/repo/NEW.txt", "action": "modify", "diff": "@@\n-third\n+fourth"]]])
-        let review = TimelineTurnReview.build(items: [a, b], root: "C:/Repo", caseInsensitive: true)
-        #expect(review.files.count == 1 && review.files[0].action == .add)
-        #expect(review.additions == 3 && review.deletions == 1)
-        #expect(review.files[0].patches.first?.text == "+first\n+second")
-        let deleted = try item("delete", order: 3, content: ["kind": "file_change", "path": "C:/Repo/new.txt", "action": "delete"])
-        #expect(TimelineTurnReview.build(items: [a, b, deleted], root: "C:/Repo", caseInsensitive: true).files.isEmpty)
-    }
-
-    /// A created Markdown file's bullets/front matter are body text, not diff
-    /// lines: the Chat review must count them as additions (device report
-    /// 2026-11-03, the same `_file_diff` contract as the Code badge).
-    @Test func reviewCountsCreatedMarkdownBodyAsAdditions() throws {
-        let created = try item("md", order: 1, content: ["kind": "file_change", "changes": [
-            ["path": "notes.md", "action": "add", "diff": "---\nname: a\n---\n- one\n"],
-        ]])
-        let review = TimelineTurnReview.build(items: [created], root: "/repo")
-        #expect(review.additions == 4 && review.deletions == 0)
-    }
-
-    @Test func toolOnlyTurnsGetACompletedReviewFooterAndStreamingDoesNot() throws {
+    @Test func toolOnlyTurnsGetATurnActionAndAStreamingTurnDoesNot() throws {
         let change = ChatTimelineRowModel(try item("change", order: 1, content: ["kind": "file_change", "path": "a.swift", "action": "add", "diff": "a"] ))
         let groups = TimelineGrouping.groups([change], interactionTargets: [])
         #expect(TimelineTurnActions.build(groups: groups, suppressLatest: true).isEmpty)

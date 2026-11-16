@@ -243,8 +243,8 @@ struct AssistantTurnFooter {
     let copyText: String
     let timestampText: String
 
-    /// `SessionTimelineGroupView` puts a 4pt VStack gap between the reply and
-    /// its footer; the action row itself is fixed by `SessionTurnActionsRow`.
+    /// The group stack puts a 4pt VStack gap between the reply and its footer;
+    /// the action row itself is fixed by `SessionTurnActionsRow`.
     static let topSpacing: CGFloat = 4
     static var height: CGFloat { topSpacing + SessionTurnActionsRow.rowHeight }
 }

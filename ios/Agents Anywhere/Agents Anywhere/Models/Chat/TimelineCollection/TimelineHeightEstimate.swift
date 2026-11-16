@@ -35,12 +35,24 @@ nonisolated enum TimelineHeightEstimate {
     ///   assembled from exact structural parts and passes 1 so the estimate
     ///   does not reserve a fifth of a screen it will give back on first fit
     ///   (device report 2026-10-23).
+    /// - Parameter firstLineHeight: The natural line box of the block's first
+    ///   line. The extra leading sits *between* lines, so charging the full
+    ///   `bodySize + lineSpacing` for a one-line block over-reserves (the Code
+    ///   page's measured layout uses the font's line box for the first line).
+    ///   `nil` keeps the historical per-line arithmetic for the Chat scheme.
+    /// - Parameter countsParagraphSpacing: Whether to add the average
+    ///   paragraph gap after every block. Callers whose layout already puts an
+    ///   explicit gap *between* blocks (the Code row plan's `blockGap`) pass
+    ///   `false`; otherwise a one-block row pays a gap it never draws.
     static func height(rows: [TextRow], width: CGFloat, bodySize: CGFloat,
                        lineSpacing: CGFloat, paragraphSpacing: CGFloat,
                        minimum: CGFloat = 44,
-                       cushion: CGFloat = 1.2) -> CGFloat {
+                       cushion: CGFloat = 1.2,
+                       firstLineHeight: CGFloat? = nil,
+                       countsParagraphSpacing: Bool = true) -> CGFloat {
         guard width > 0, bodySize > 0 else { return max(minimum, 92) }
         let lineHeight = max(1, bodySize + lineSpacing)
+        let firstLine = max(1, firstLineHeight ?? lineHeight)
         // 0.55 em is a conservative average advance for mixed Latin text. CJK
         // and emoji scalars count double below, so the same line count holds
         // for Chinese content without a second constant.
@@ -49,8 +61,10 @@ nonisolated enum TimelineHeightEstimate {
         for row in rows {
             let units = textUnits(row.text)
             let lines = max(1, Int(ceil(Double(units) / Double(unitsPerLine))))
-            height += CGFloat(lines) * lineHeight
-            height += paragraphSpacing * 0.6
+            height += firstLine + CGFloat(lines - 1) * lineHeight
+            if countsParagraphSpacing {
+                height += paragraphSpacing * 0.6
+            }
             height += CGFloat(row.attachmentCount) * 180
         }
         height += CGFloat(max(0, rows.count - 1)) * 4

@@ -131,7 +131,6 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         return .group(TimelineGroupContentSignature(
             rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
                                                updatedSeq: entry.revision)],
-            disclosureExpanded: false,
             revealingRowIDs: [],
             inlineNotices: [],
             attachments: [],

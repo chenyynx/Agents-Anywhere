@@ -2,9 +2,26 @@ import Testing
 @testable import ClientCore
 
 @Suite @MainActor struct TimelineTurnActionsTests {
-    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done") throws -> ChatTimelineRowModel {
+    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done", turnId: String? = nil) throws -> ChatTimelineRowModel {
         var value = try itemObject(id: id, text: text)
         value["type"] = type; value["role"] = role; value["status"] = status
+        if let turnId {
+            var source = value["source"] as? [String: Any] ?? [:]
+            source["turnId"] = turnId
+            value["source"] = source
+        }
+        return ChatTimelineRowModel(try decode(value))
+    }
+
+    /// The connector's compaction separator: a `marker` row whose wire kind is
+    /// `compact`. It owns its own group in both render profiles.
+    private func compactRow(_ id: String, state: String, status: String, turnId: String) throws -> ChatTimelineRowModel {
+        var value = try itemObject(id: id, text: "")
+        value["type"] = "marker"; value["role"] = "system"; value["status"] = status
+        value["content"] = ["kind": "compact", "state": state]
+        var source = value["source"] as? [String: Any] ?? [:]
+        source["turnId"] = turnId
+        value["source"] = source
         return ChatTimelineRowModel(try decode(value))
     }
 
@@ -133,6 +150,138 @@ import Testing
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
             suppressLatest: false)
         #expect(actions["reply"]?.copyText == "Answer")
+    }
+
+    /// The turn that follows a compaction opens with no user bubble (the CLI
+    /// resumes with a scheduled reader turn). Without a boundary the finished
+    /// turn is re-absorbed into the new one: its active rows block the final
+    /// commit and the footer flickers with every step (pp 2026-11-16: after
+    /// 「已压缩对话」 the copy/share bar appeared, then vanished as the new
+    /// turn streamed — content ±30 in `timeline.mover` at 09:29:53/59, b1270).
+    /// The compact marker's own turn id differs from the finished turn's, and
+    /// the rows that follow name a third turn: that change is the boundary.
+    @Test func aTurnAfterACompactionKeepsTheFinishedTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "Answer", turnId: "turn-1"),
+                        compactRow("compact", state: "completed", status: "done", turnId: "turn-compact"),
+                        row("resumed", text: "Working again", status: "running", turnId: "turn-2")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true, allowsTurnIdBoundary: true)
+        #expect(actions["reply"]?.copyText == "Answer")
+        #expect(actions["resumed"] == nil)
+    }
+
+    /// The same rows with the new turn settled: the finished turn keeps its
+    /// own footer and the resumed turn gets its own, instead of both buckets
+    /// collapsing into one action on the newest reply.
+    @Test func aSettledTurnAfterACompactionGetsItsOwnFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "Answer", turnId: "turn-1"),
+                        compactRow("compact", state: "completed", status: "done", turnId: "turn-compact"),
+                        row("resumed", text: "Working again", turnId: "turn-2")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false, allowsTurnIdBoundary: true)
+        #expect(actions["reply"]?.copyText == "Answer")
+        #expect(actions["resumed"]?.copyText == "Working again")
+    }
+
+    /// A wake-up turn that ends must not take the previous turn's footer with
+    /// it. pp 2026-11-16 10:05:54 (b1278): the wake-up turn's own reply
+    /// replaced the previous reply as the footer host, copy text included.
+    @Test func aWakeUpTurnsReplyKeepsThePreviousTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("previous", text: "Previous answer", turnId: "turn-1"),
+                        row("woken", text: "Woken answer", turnId: "turn-2")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false, allowsTurnIdBoundary: true)
+        #expect(actions["previous"]?.copyText == "Previous answer")
+        #expect(actions["woken"]?.copyText == "Woken answer")
+        // A user-opened turn does not split on the wire's ids (see below).
+        let merged = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(merged["previous"] == nil)
+        #expect(merged["woken"]?.copyText == "Previous answer\n\nWoken answer")
+    }
+
+    /// An automatic compaction inside the user's own running turn is not a
+    /// boundary: every row before and after the marker names the same turn,
+    /// so the footer stays suppressed until the turn really ends. Committing
+    /// here would show copy/share mid-turn.
+    @Test func anAutomaticCompactionInsideATurnIsNotAFooterBoundary() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "First part", turnId: "turn-1"),
+                        compactRow("compact", state: "completed", status: "done", turnId: "turn-1"),
+                        row("more", text: "Second part", status: "running", turnId: "turn-1")]
+        for allowsBoundary in [true, false] {
+            let actions = TimelineTurnActions.build(
+                groups: TimelineGrouping.groups(rows, interactionTargets: []),
+                suppressLatest: true, allowsTurnIdBoundary: allowsBoundary)
+            #expect(actions.isEmpty)
+        }
+    }
+
+    /// A mid-turn turn-id flap (queued sends re-key rows between two ids)
+    /// must not commit a footer while the user's turn still runs: the adapter
+    /// only allows the wire boundary when no user bubble opened the turn.
+    @Test func aMidTurnIdFlapDoesNotCommitAFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "First part", turnId: "turn-1"),
+                        row("tool", type: "tool", text: "", status: "done", turnId: "turn-1"),
+                        row("more", text: "Second part", status: "running", turnId: "turn-2")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true, allowsTurnIdBoundary: false,
+            footerHostEligible: { $0.id != "tool" })
+        #expect(actions.isEmpty)
+    }
+
+    /// A background task completing wakes the runtime with no user bubble
+    /// (connector `claude.scheduled.running`). While that episode runs the
+    /// build suppresses the latest bucket, so the finished turn's footer must
+    /// come from the closed state — otherwise copy/share disappears until the
+    /// wake-up turn ends (pp 2026-11-16, `sess_iHSpxWxWtZWkXQ` 09:51:35 →
+    /// 09:51:41).
+    @Test func aWakeUpTurnWithoutAUserBubbleKeepsTheFinishedTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "Answer", turnId: "turn-1")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        // The turn is finished: the gate is closed and the footer commits.
+        let closed = TimelineTurnActions.build(groups: groups, suppressLatest: false)
+        #expect(closed["reply"]?.copyText == "Answer")
+        // The wake-up turn runs without a user bubble.
+        let duringWakeup = TimelineTurnActions.build(groups: groups, suppressLatest: true)
+        #expect(duringWakeup.isEmpty)
+        let restored = TimelineTurnActions.restoringFinishedFooters(
+            duringWakeup, from: closed, groupIDs: ["user", "reply"])
+        #expect(restored["reply"]?.copyText == "Answer")
+    }
+
+    /// Restoring never resurrects a footer for a group that left the window,
+    /// and never overwrites an action the current build committed.
+    @Test func restoringOnlyFillsGroupsThatStillExist() throws {
+        let closed = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(try [row("user", role: "user"), row("gone", text: "Old")],
+                                            interactionTargets: []),
+            suppressLatest: false)
+        #expect(closed["gone"] != nil)
+        let merged = TimelineTurnActions.restoringFinishedFooters(
+            [:], from: closed, groupIDs: ["user"])
+        #expect(merged.isEmpty)
+        let kept = TimelineTurnActions.restoringFinishedFooters(
+            [:], from: closed, groupIDs: ["user", "gone"])
+        #expect(kept["gone"]?.copyText == "Old")
+        // A group the current build already committed keeps its own action.
+        let own = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(try [row("user", role: "user"), row("gone", text: "New")],
+                                            interactionTargets: []),
+            suppressLatest: false)
+        let untouched = TimelineTurnActions.restoringFinishedFooters(
+            own, from: closed, groupIDs: ["user", "gone"])
+        #expect(untouched["gone"]?.copyText == "New")
     }
 
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {
@@ -314,6 +463,26 @@ struct TurnFooterGateTests {
         let open = gate.update(userKey: "u1", runtimeIsRunning: true,
                                authoritativeTurnEnds: 0, isCompacting: true)
         #expect(!open)
+    }
+
+    /// A background-task notification wakes the runtime as a scheduled turn:
+    /// the gate reopens without a user bubble, so the finished turn's footer
+    /// must be restored from the closed state (pp 2026-11-16).
+    @Test func aWakeUpTurnIsAUserlessEpisode() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
+        #expect(!gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
+        _ = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 0)
+        #expect(!gate.isUserlessEpisode)
+        #expect(gate.isAnchoredToUserBubble)
+        _ = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1)
+        #expect(!gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
+        let wakeup = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
+        #expect(wakeup)
+        #expect(gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
     }
 
     @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {

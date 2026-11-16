@@ -67,6 +67,10 @@ nonisolated struct TimelineChatGroupingCache {
     private var profile: CodeRuntimeProfile?
     private var cwd: String?
     private var interactionTargets: Set<String> = []
+    /// The subset of `interactionTargets` that still needs a standalone row
+    /// (non-blocking, inline cards). Session-blocking cards are docked, so
+    /// their rows merge into the running step group (pp 2026-11-16).
+    private var standaloneTargets: Set<String> = []
     private var rows: [V2TimelineItem] = []
     private var fingerprints: [RowFingerprint] = []
     private var units: [TimelineChatUnit] = []
@@ -86,7 +90,9 @@ nonisolated struct TimelineChatGroupingCache {
     mutating func units(items: [V2TimelineItem],
                         profile: CodeRuntimeProfile,
                         interactionTargets: Set<String>,
+                        standaloneTargets: Set<String>? = nil,
                         cwd: String? = nil) -> [TimelineChatUnit] {
+        let standalone = standaloneTargets ?? interactionTargets
         let sorted = items.sorted(by: TimelineChatGrouping.wireOrder)
         var fingerprints: [RowFingerprint] = []
         fingerprints.reserveCapacity(sorted.count)
@@ -102,9 +108,11 @@ nonisolated struct TimelineChatGroupingCache {
               self.profile == profile,
               self.cwd == cwd,
               self.interactionTargets == interactionTargets,
+              self.standaloneTargets == standalone,
               !hasDuplicates else {
             return rebuild(sorted, fingerprints: fingerprints,
-                           profile: profile, interactionTargets: interactionTargets, cwd: cwd)
+                           profile: profile, interactionTargets: interactionTargets,
+                           standaloneTargets: standalone, cwd: cwd)
         }
         let old = self.fingerprints
         let common = min(old.count, fingerprints.count)
@@ -128,7 +136,8 @@ nonisolated struct TimelineChatGroupingCache {
               let boundaryID = units[unitIndex].rowIDs.first,
               let start = sorted.firstIndex(where: { $0.id == boundaryID }) else {
             return rebuild(sorted, fingerprints: fingerprints,
-                           profile: profile, interactionTargets: interactionTargets, cwd: cwd)
+                           profile: profile, interactionTargets: interactionTargets,
+                           standaloneTargets: standalone, cwd: cwd)
         }
         // The grouping pass carries the declared turn across rows and flushes
         // on a change; a suffix pass cannot rediscover the turns that were
@@ -140,6 +149,7 @@ nonisolated struct TimelineChatGroupingCache {
             items: Array(sorted[start...]),
             profile: profile,
             interactionTargets: interactionTargets,
+            standaloneTargets: standalone,
             cwd: cwd,
             startingTurnID: TimelineChatGrouping.turnContext(
                 before: start, in: sorted, interactionTargets: interactionTargets))
@@ -168,13 +178,16 @@ nonisolated struct TimelineChatGroupingCache {
                                   fingerprints: [RowFingerprint],
                                   profile: CodeRuntimeProfile,
                                   interactionTargets: Set<String>,
+                                  standaloneTargets: Set<String>,
                                   cwd: String?) -> [TimelineChatUnit] {
         let rebuilt = TimelineChatGrouping.units(
             items: sorted, profile: profile,
-            interactionTargets: interactionTargets, cwd: cwd)
+            interactionTargets: interactionTargets,
+            standaloneTargets: standaloneTargets, cwd: cwd)
         self.profile = profile
         self.cwd = cwd
         self.interactionTargets = interactionTargets
+        self.standaloneTargets = standaloneTargets
         self.rows = sorted
         self.fingerprints = fingerprints
         self.units = rebuilt

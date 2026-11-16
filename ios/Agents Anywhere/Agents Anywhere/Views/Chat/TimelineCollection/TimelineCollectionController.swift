@@ -150,6 +150,15 @@ final class TimelineCollectionController: UIViewController {
     var isReaderScrolling: Bool { phase.userIsScrolling }
     /// C4: the single content-offset writer (placement state + Mover + inset).
     private var anchorDriver: TimelineAnchorDriver?
+    /// Overlap probe for the rare 「点回到底部时最新气泡短暂压住正文」report
+    /// (pp 2026-11-16). It runs only between one explicit fly's start and its
+    /// arrival, records at most one `timeline.row.overlap` line, and stops
+    /// after that. Remove once the root cause is fixed.
+    private var flightProbeActive = false
+    private var flightProbeLogged = false
+    private var flightProbeHeightChanges = 0
+    private var flightProbeArmedAt: CFTimeInterval = 0
+    private var flightProbeLink: CADisplayLink?
     private var didStartAnchorDriver = false
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
@@ -395,6 +404,13 @@ final class TimelineCollectionController: UIViewController {
                 guard let self else { return }
                 var merged = detail
                 merged["action"] = action
+                // Arm the overlap probe for exactly one explicit fly; any other
+                // motion start or an arrival disarms it again.
+                if action == "start" {
+                    self.setFlightProbe(merged["spring"] == "fly")
+                } else if action == "arrived" {
+                    self.setFlightProbe(false)
+                }
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.mover",
                     sessionID: self.diagnosticSessionID,
@@ -550,6 +566,75 @@ final class TimelineCollectionController: UIViewController {
         handleContainerHeightChange()
         startAnchorDriverIfNeeded()
         scheduleVisibleCellFrameSync()
+        probeFlightOverlapIfNeeded()
+    }
+
+    /// Arms the probe for one fly. The display link matters: a fly changes the
+    /// offset on its own timer and does not necessarily run a layout pass, so
+    /// a layout-only check would miss the very frames the report describes.
+    /// A fly that never reports its arrival disarms after 3 s.
+    private func setFlightProbe(_ active: Bool) {
+        flightProbeActive = active
+        if active {
+            flightProbeLogged = false
+            flightProbeHeightChanges = 0
+            flightProbeArmedAt = CACurrentMediaTime()
+            if flightProbeLink == nil {
+                let link = CADisplayLink(target: self, selector: #selector(flightProbeTick))
+                link.add(to: .main, forMode: .common)
+                flightProbeLink = link
+            }
+        } else {
+            flightProbeLink?.invalidate()
+            flightProbeLink = nil
+        }
+    }
+
+    @objc private func flightProbeTick() {
+        guard flightProbeActive else { return }
+        if CACurrentMediaTime() - flightProbeArmedAt > 3 {
+            setFlightProbe(false)
+            return
+        }
+        probeFlightOverlapIfNeeded()
+    }
+
+    /// Records the first adjacent-row overlap seen while an explicit
+    /// 「回到底部」fly is running (pp 2026-11-16). Uses the presentation frame
+    /// when one exists: a row whose height is being animated mid-flight is the
+    /// case this probe is looking for, and the model frame alone would hide it.
+    private func probeFlightOverlapIfNeeded() {
+        guard flightProbeActive, !flightProbeLogged, let collectionView else { return }
+        let frames: [(id: String, frame: CGRect)] = collectionView.visibleCells.compactMap { cell in
+            guard let cell = cell as? TimelineHostingCell else { return nil }
+            let frame = cell.layer.presentation()?.frame ?? cell.frame
+            return (cell.itemID ?? "?", frame)
+        }.sorted { $0.frame.minY < $1.frame.minY }
+        guard frames.count > 1 else { return }
+        for index in 0..<(frames.count - 1) {
+            let upper = frames[index], lower = frames[index + 1]
+            let overlap = upper.frame.maxY - lower.frame.minY
+            guard overlap > 0.5 else { continue }
+            flightProbeLogged = true
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.row.overlap",
+                sessionID: diagnosticSessionID,
+                detail: [
+                    "source": "explicit-return",
+                    "upper": upper.id,
+                    "lower": lower.id,
+                    "overlap": String(format: "%.1f", overlap),
+                    "upperY": String(format: "%.1f", upper.frame.minY),
+                    "upperH": String(format: "%.1f", upper.frame.height),
+                    "lowerY": String(format: "%.1f", lower.frame.minY),
+                    "lowerH": String(format: "%.1f", lower.frame.height),
+                    "heightChanges": String(flightProbeHeightChanges),
+                    "offsetY": String(format: "%.1f", collectionView.contentOffset.y),
+                    "contentH": String(format: "%.1f", collectionView.contentSize.height),
+                ],
+                dedupe: false)
+            return
+        }
     }
 
     /// A finger resting on the list is still `isDragging == true`, but the
@@ -631,7 +716,7 @@ final class TimelineCollectionController: UIViewController {
         applySafeAreaInsetsIfMounted()
         guard !didMarkActivation else { return }
         didMarkActivation = true
-        UserDefaults.standard.set(Date(), forKey: TimelineCollectionSwitch.lastActiveKey)
+        UserDefaults.standard.set(Date(), forKey: TimelineRenderModeSwitch.lastActiveKey)
         Self.log.notice("aa.timeline.collectionView active")
     }
 
@@ -1761,6 +1846,7 @@ final class TimelineCollectionController: UIViewController {
         let key = content.heightKey(for: item, width: width)
         guard let height = measuredHeight(for: item, width: width) else { return }
         measurementPipeline.complete(item.itemID)
+        if flightProbeActive { flightProbeHeightChanges += 1 }
         layout.applyMeasuredHeight(height, for: item.itemID, key: key)
     }
 
@@ -1845,6 +1931,7 @@ final class TimelineCollectionController: UIViewController {
     private func applyHostedHeight(_ height: CGFloat, id: String, key: TimelineHeightKey,
                                    suppressOffsetAdjustment: Bool = false) {
         guard layout.heights.currentKey(for: id) == key else { return }
+        if flightProbeActive { flightProbeHeightChanges += 1 }
         UIView.performWithoutAnimation {
             layout.applyMeasuredHeight(
                 height, for: id, key: key,

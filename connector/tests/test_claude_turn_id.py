@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -63,6 +64,7 @@ from connector.runtimes.claude.history.cursor import (
     ClaudeHistoryCursor,
     messages_after_cursor,
 )
+from connector.runtimes.claude.sessions import reader as reader_module
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_turn_id,
@@ -145,6 +147,49 @@ def _visible_user_row(uuid: str, text: str) -> str:
             "uuid": uuid,
             "message": {"role": "user", "content": text},
         }
+    )
+
+
+def _task_notification_row(uuid: str, text: str) -> str:
+    """The CLI's persisted background-task notice (real 2.1.285 shape).
+
+    A plain user row with text, distinguished only by its origin metadata —
+    the connector's ``is_task_notification_message`` also accepts the text
+    wrapper, which is what the SDK-stripped top-level read leaves.
+    """
+
+    return json.dumps(
+        {
+            "type": "user",
+            "uuid": uuid,
+            "origin": {
+                "kind": "task-notification",
+                "producer": "session-task",
+                "runId": f"run-{uuid}",
+            },
+            "promptSource": "system",
+            "message": {
+                "role": "user",
+                "content": f"<task-notification>\n{text}\n</task-notification>",
+            },
+        }
+    )
+
+
+def _task_notification(uuid: str, text: str) -> Any:
+    return SimpleNamespace(
+        type="user",
+        uuid=uuid,
+        origin={
+            "kind": "task-notification",
+            "producer": "session-task",
+            "runId": f"run-{uuid}",
+        },
+        promptSource="system",
+        message={
+            "role": "user",
+            "content": f"<task-notification>\n{text}\n</task-notification>",
+        },
     )
 
 
@@ -313,6 +358,114 @@ def test_scheduled_turn_does_not_inherit_the_previous_user_turn() -> None:
         session.session_id, "assistant-scheduled"
     )
     assert by_text["scheduled answer"] != by_text["answer"]
+
+
+def test_task_notification_starts_a_scheduled_turn_anchored_on_its_first_assistant() -> None:
+    """A background-task wake-up is a user-less turn, not the previous turn.
+
+    The CLI persists the fired task as a ``<task-notification>`` user row. It
+    is chrome (`is_synthetic_control_message`), so history used to skip it and
+    keep the previous user turn's seed — while the live reader cast a new
+    scheduled turn on the first assistant ``message_start``. At the turn's end
+    the history sync then re-keyed the wake-up rows to the previous turn's id
+    (b1278 10:05:55: 5 rows, the client split and merged a step group, the page
+    jumped 46 pt). The boundary seed must be the first assistant message, the
+    same anchor live hashes.
+    """
+
+    prompt_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    raw = (
+        _visible_user_row(prompt_uuid, "ask"),
+        _assistant_row("assistant-user-turn", "answer"),
+        _task_notification_row("notice-1", "background task done"),
+        _assistant_row("assistant-wakeup", "wake-up answer"),
+    )
+    session = _session()
+    messages = (
+        _user(prompt_uuid, "ask"),
+        _assistant("assistant-user-turn", "answer"),
+        _task_notification("notice-1", "background task done"),
+        _assistant("assistant-wakeup", "wake-up answer"),
+    )
+    items = _history_items_from_messages(session, messages, raw_lines=raw)
+    by_text = {item.content.get("text"): item.turn_id for item in items}
+    assert by_text["answer"] == _history_turn_id(session.session_id, prompt_uuid)
+    assert by_text["wake-up answer"] == _history_turn_id(
+        session.session_id, "assistant-wakeup"
+    )
+    assert by_text["wake-up answer"] != by_text["answer"]
+
+
+def test_two_task_notifications_get_distinct_scheduled_ids() -> None:
+    raw = (
+        _task_notification_row("notice-1", "one"),
+        _assistant_row("assistant-1", "one"),
+        _task_notification_row("notice-2", "two"),
+        _assistant_row("assistant-2", "two"),
+    )
+    session = _session()
+    messages = (
+        _task_notification("notice-1", "one"),
+        _assistant("assistant-1", "one"),
+        _task_notification("notice-2", "two"),
+        _assistant("assistant-2", "two"),
+    )
+    items = _history_items_from_messages(session, messages, raw_lines=raw)
+    by_text = {item.content.get("text"): item.turn_id for item in items}
+    assert by_text["one"] == _history_turn_id(session.session_id, "assistant-1")
+    assert by_text["two"] == _history_turn_id(session.session_id, "assistant-2")
+    assert by_text["one"] != by_text["two"]
+
+
+class _RecordingLogger:
+    """Captures the WARN the history projector owes on a turn-id divergence."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str, *args: object) -> None:
+        # The connector logger is loguru: `{}` placeholders, not `%s`.
+        try:
+            text = message.format(*args)
+        except (IndexError, KeyError, ValueError):
+            text = message
+        self.warnings.append(text)
+
+
+def test_history_keeps_the_turn_id_the_live_side_published(monkeypatch) -> None:
+    """History must never rewrite the turn id of a row live already published.
+
+    The client groups by the declared id, so a mid-session re-key splits one
+    step run into two turn buckets. When a projection rule drifts, the live
+    id stays and the divergence is logged instead of silently re-keying.
+    """
+
+    prompt_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    raw = (
+        _visible_user_row(prompt_uuid, "ask"),
+        _assistant_row("assistant-1", "answer"),
+    )
+    session = _session()
+    messages = (_user(prompt_uuid, "ask"), _assistant("assistant-1", "answer"))
+    live_items = _history_items_from_messages(session, messages, raw_lines=raw)
+    reply = next(item for item in live_items if item.content.get("text") == "answer")
+    live_turn_id = "turn_claude_live_published"
+    session.timeline_items[reply.id] = replace(
+        reply,
+        turn_id=live_turn_id,
+        source={**reply.source, "turnId": live_turn_id},
+    )
+    drifted = {
+        key: "turn_claude_projection_drift"
+        for key in _history_turn_ids(session, messages, scan_raw_transcript(raw))
+    }
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(reader_module, "logger", recorder)
+    items = _history_items_from_messages(
+        session, messages, raw_lines=raw, turn_ids=drifted
+    )
+    assert _turn_id_by_text(items, "answer") == live_turn_id
+    assert any("turn id diverged" in message for message in recorder.warnings)
 
 
 def test_incremental_window_reuses_the_full_chain_turn_ids() -> None:

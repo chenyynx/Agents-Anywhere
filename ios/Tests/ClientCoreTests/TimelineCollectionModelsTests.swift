@@ -23,7 +23,6 @@ private func heightKey(_ itemID: String = "g:a", revision: Int = 1, width: CGFlo
 
 private func groupSignature(rowRevision: Int = 1,
                             updatedSeq: Int = 3,
-                            disclosureExpanded: Bool = false,
                             revealingRowIDs: [String] = [],
                             inlineNotices: [TimelineInlineNoticeSignature] = [],
                             attachments: [TimelineAttachmentPreviewSignature] = [],
@@ -33,7 +32,6 @@ private func groupSignature(rowRevision: Int = 1,
     -> TimelineGroupContentSignature {
     TimelineGroupContentSignature(
         rows: [TimelineRowContentSignature(id: "row-1", revision: rowRevision, updatedSeq: updatedSeq)],
-        disclosureExpanded: disclosureExpanded,
         revealingRowIDs: revealingRowIDs,
         inlineNotices: inlineNotices,
         attachments: attachments,
@@ -276,7 +274,6 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         let base = TimelineContentSignature.group(groupSignature())
         let variants: [TimelineContentSignature] = [
             .group(groupSignature(rowRevision: 2)),
-            .group(groupSignature(disclosureExpanded: true)),
             .group(groupSignature(inlineNotices: [
                 TimelineInlineNoticeSignature(id: "n", status: .open, revision: 1)
             ])),
@@ -319,18 +316,6 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
         let pending = TimelineContentSignature.pending(
             id: "p", attachments: [], deliveryState: 0)
-        var oneFold = groupSignature()
-        oneFold.expandedRowIDs = ["a"]
-        var twoFolds = groupSignature()
-        twoFolds.expandedRowIDs = ["a", "b"]
-        var noFolds = groupSignature()
-        noFolds.expandedRowIDs = []
-        #expect(oneFold.contentRevision != twoFolds.contentRevision)
-        #expect(oneFold.contentRevision != noFolds.contentRevision)
-        var reordered = groupSignature()
-        reordered.expandedRowIDs = ["b", "a"]
-        #expect(twoFolds.contentRevision == reordered.contentRevision)
-
         #expect(pending != .pending(id: "p", attachments: [
             TimelineAttachmentPreviewSignature(id: "a", pixelWidth: 1, pixelHeight: 1)
         ], deliveryState: 0))
@@ -384,9 +369,8 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         #expect(store.signature(for: .tail) == nil)
     }
 
-    @Test func disclosureNoticeAndPreviewChangeTheGroupContentRevision() {
+    @Test func noticeAndPreviewChangeTheGroupContentRevision() {
         let base = groupSignature()
-        #expect(base.contentRevision != groupSignature(disclosureExpanded: true).contentRevision)
         #expect(base.contentRevision != groupSignature(inlineNotices: [
             TimelineInlineNoticeSignature(id: "n", status: .open, revision: 1)
         ]).contentRevision)

@@ -25,17 +25,62 @@ final class ComposerEditorController {
         synchronize()
     }
 
-    /// Replace the editor text and select all of it, so the next keystroke
-    /// replaces the inserted command. The autocomplete card owns the text
-    /// (it already wrote the same value into the draft); this only syncs the
-    /// native view and its selection, which `updateUIView` would otherwise
-    /// clamp back to a caret.
-    func selectAllAfterSync(_ text: String) {
-        guard let textView else { return }
+    /// Canonical plain text for persistence and sending: command tokens are
+    /// inline attachments in the native view, so U+FFFC must be expanded back
+    /// to `/name`. The draft and every consumer keep seeing plain text.
+    func canonicalText(of view: UITextView) -> String {
+        let attributed = view.attributedText ?? NSAttributedString(string: view.text ?? "")
+        let source = attributed.string as NSString
+        var result = ""
+        attributed.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributed.length)
+        ) { value, range, _ in
+            if let token = value as? ComposerCommandTokenAttachment {
+                result += "/" + token.commandName
+            } else {
+                result += source.substring(with: range)
+            }
+        }
+        return result
+    }
+
+    /// Insert the selected skill as one capsule token. The token is a single
+    /// attachment character: typing appends arguments after it and backspace
+    /// removes the whole command. Returns the canonical text, or nil when the
+    /// native view is not mounted (the caller falls back to plain text).
+    @discardableResult
+    func insertCommandToken(_ commandName: String) -> String? {
+        guard let textView else { return nil }
+        let token = ComposerCommandTokenAttachment(
+            commandName: commandName,
+            traits: textView.traitCollection,
+            scale: textView.traitCollection.displayScale
+        )
+        let bodyFont = UIFont.preferredFont(forTextStyle: .body)
+        let attributed = NSMutableAttributedString(attachment: token)
+        // The attachment run carries the body font too. UITextView resolves
+        // `font` and the caret's typing attributes from the first run; an
+        // attachment-only run has no font, so text typed after the capsule
+        // fell back to the text view's default (much smaller) face
+        // (pp 2026-11-15: 「输入框输入的文字变小了」).
+        attributed.addAttribute(.font, value: bodyFont,
+                                range: NSRange(location: 0, length: attributed.length))
+        attributed.append(NSAttributedString(string: " ", attributes: [
+            .font: bodyFont,
+            .foregroundColor: UIColor.label,
+        ]))
+        textView.attributedText = attributed
+        // Keep the property itself at body size: `attributedText` can replace
+        // it with the first run's font, and later plain-text resets use it.
+        textView.font = bodyFont
+        textView.typingAttributes = [.font: bodyFont, .foregroundColor: UIColor.label]
+        textView.selectedRange = NSRange(location: attributed.length, length: 0)
         if !textView.isFirstResponder { textView.becomeFirstResponder() }
-        if textView.text != text { textView.text = text }
-        textView.selectedRange = NSRange(location: 0, length: (text as NSString).length)
-        synchronize()
+        let canonical = "/\(commandName) "
+        draft?.text = canonical
+        draft?.isFocused = true
+        return canonical
     }
 
     /// Check native marked text before ending editing. unmarkText() only removes
@@ -53,18 +98,19 @@ final class ComposerEditorController {
             // Without the resign there is no turn boundary to wait for; the
             // marked-text guard above already settled the composition state.
             synchronize()
-            return textView.text ?? ""
+            return canonicalText(of: textView)
         }
         textView.resignFirstResponder()
         await Task.yield()
         guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }
         synchronize()
-        return textView.text ?? ""
+        return canonicalText(of: textView)
     }
 
     func synchronize() {
         guard let textView, let draft, draft.isValid else { return }
-        if draft.text != textView.text { draft.text = textView.text ?? "" }
+        let canonical = canonicalText(of: textView)
+        if draft.text != canonical { draft.text = canonical }
         draft.isComposing = textView.markedTextRange != nil
         let focused = textView.isFirstResponder
         guard draft.isFocused != focused else { return }
@@ -80,8 +126,93 @@ final class ComposerEditorController {
     }
 }
 
+/// One inserted skill rendered as an inline capsule token. It is a single
+/// attachment character in the text view, so backspace deletes the whole
+/// command and typing appends arguments after it; the canonical `/name`
+/// text is recovered by `ComposerEditorController.canonicalText`.
+final class ComposerCommandTokenAttachment: NSTextAttachment {
+    let commandName: String
+
+    @MainActor
+    init(commandName: String, traits: UITraitCollection, scale: CGFloat) {
+        self.commandName = commandName
+        super.init(data: nil, ofType: nil)
+        let image = CommandTokenRenderer.image(for: commandName, traits: traits, scale: scale)
+        self.image = image
+        // Bottom sits just below the baseline so the capsule centers on the
+        // body line instead of floating above it.
+        bounds = CGRect(x: 0, y: -3, width: image.size.width, height: image.size.height)
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+@MainActor
+private enum CommandTokenRenderer {
+    private static var cache: [String: UIImage] = [:]
+
+    static func image(for commandName: String, traits: UITraitCollection, scale: CGFloat) -> UIImage {
+        let dark = traits.userInterfaceStyle == .dark
+        let key = "\(commandName)|\(dark)|\(scale)"
+        if let cached = cache[key] { return cached }
+
+        // The official card measures 21 pt tall at 15 pt mono, but that
+        // proportion sits on a body line of 20.5 pt: with the composer's
+        // font bug rendering body at 12 pt the chip read as a bubble
+        // (pp 2026-11-15: 「把这个胶囊缩小 别这么大」). 18 pt / 13 pt stays
+        // inside the body line and reads as one token, not a filled field.
+        let font = UIFont(name: "JetBrainsMono-Regular", size: 13)
+            ?? UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let text = "/\(commandName)" as NSString
+        let textSize = text.size(withAttributes: [.font: font])
+        // 3 pt side padding, capsule ends. The command name keeps the
+        // panel's accent color.
+        let size = CGSize(width: ceil(textSize.width) + 6, height: 18)
+        let background = dark
+            ? UIColor(red: 54 / 255, green: 68 / 255, blue: 90 / 255, alpha: 1)
+            : UIColor(red: 208 / 255, green: 216 / 255, blue: 228 / 255, alpha: 1)
+        let foreground = CodePageTheme.uiColor(CodePageTheme.accentSecondary100Color)
+            .resolvedColor(with: traits)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+            background.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: size.height / 2).fill()
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: foreground,
+            ]
+            let drawn = text.size(withAttributes: attributes)
+            text.draw(
+                at: CGPoint(x: (size.width - drawn.width) / 2,
+                            y: (size.height - drawn.height) / 2),
+                withAttributes: attributes
+            )
+        }
+        cache[key] = image
+        return image
+    }
+}
+
 final class ComposerTextView: UITextView {
     var commandSend: (() -> Void)?
+    /// A text view created before its window's traits are attached resolves
+    /// `preferredFont` against an unspecified category and can render at
+    /// UIKit's default face instead of body; plain typing then inherits it.
+    /// Resolve again once the real traits exist (pp 2026-11-15: 「输入框输入
+    /// 的文字变小了」). `adjustsFontForContentSizeCategory` covers later
+    /// category changes.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard let window else { return }
+        let body = UIFont.preferredFont(forTextStyle: .body,
+                                        compatibleWith: window.traitCollection)
+        guard font?.pointSize != body.pointSize else { return }
+        font = body
+        typingAttributes[.font] = body
+    }
     /// Long pasted logs leave the editor at paste time, not at send time: the
     /// reply returns true when the text became an attachment instead.
     var onLongPaste: ((String) -> Bool)?
@@ -127,7 +258,9 @@ struct NativeComposerEditor: UIViewRepresentable {
         let view = ComposerTextView()
         view.delegate = context.coordinator
         view.backgroundColor = .clear
-        view.font = .preferredFont(forTextStyle: .body)
+        // Resolve against the view's own traits: at `makeUIView` the hosting
+        // window's content-size category may not be attached yet.
+        view.font = .preferredFont(forTextStyle: .body, compatibleWith: view.traitCollection)
         view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.tintColor = .label
@@ -155,8 +288,23 @@ struct NativeComposerEditor: UIViewRepresentable {
         controller.expandAnimation = expandAnimation
         view.commandSend = onCommandSend
         view.onLongPaste = onLongPaste
+        // UIKit drops back to its own default face when an `attributedText`
+        // run carries no font (the command-token path), and a text view first
+        // laid out before its window traits arrive starts at that default
+        // too. Either way later plain typing inherits it and the composer
+        // renders visibly smaller than body (pp 2026-11-15). Repair the font
+        // off the live traits; this also rewrites any run that already
+        // rendered at the wrong size.
+        if view.markedTextRange == nil {
+            let bodyFont = UIFont.preferredFont(forTextStyle: .body,
+                                                compatibleWith: view.traitCollection)
+            if view.font?.pointSize != bodyFont.pointSize {
+                view.font = bodyFont
+                view.typingAttributes[.font] = bodyFont
+            }
+        }
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
-        if view.markedTextRange == nil, view.text != draft.text {
+        if view.markedTextRange == nil, controller.canonicalText(of: view) != draft.text {
             let selection = view.selectedRange
             view.text = draft.text
             let end = (draft.text as NSString).length

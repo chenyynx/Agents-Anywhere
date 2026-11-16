@@ -21,6 +21,23 @@ nonisolated struct TimelineAnchorState: Equatable {
     var isFollowingCatchUp = false
 }
 
+/// Whether an approval / interaction card keeps the end follow.
+///
+/// `.end` placement already means "no reader motion since the page was last
+/// bottomed": a reader scroll arrives through the drag/coast events and flips
+/// the placement to `.reading`. So while the placement is `.end`, a live
+/// shortfall is layout debt, not a reader position — the card's dock inset and
+/// its anchored row land in one update and the follow needs a frame or two to
+/// pay it. Judging that window "not at the end" halted the follow and showed
+/// the return control under a question card (pp 2026-11-16, b1264 and b1266
+/// logs: `start delta=64` with no `arrived`).
+nonisolated enum TimelineInteractionFollow {
+    static func keepsFollowing(placement: TimelineAnchorPlacement,
+                               liveAtEnd: Bool) -> Bool {
+        placement == .end || liveAtEnd
+    }
+}
+
 /// What the driver should do after a reduction. Offset writes happen in one
 /// place (`placeDirect`), or through the one Mover (`move`).
 nonisolated enum TimelineAnchorAction: Equatable {
@@ -123,8 +140,10 @@ nonisolated enum TimelineAnchorEvent: Equatable {
     /// recovery snapshot).
     case windowReplaced(readerTookOver: Bool)
 
-    /// An approval/interaction card appeared or left.
-    case interactionPresentedChanged(presented: Bool, id: String?, offsetIntoRow: CGFloat)
+    /// An approval/interaction card appeared or left. `atEnd` is the live
+    /// geometric verdict taken at the moment it appeared.
+    case interactionPresentedChanged(presented: Bool, atEnd: Bool,
+                                     id: String?, offsetIntoRow: CGFloat)
 
     /// The drawer hides or reveals the page.
     case navigationSuspendedChanged(suspended: Bool)
@@ -240,8 +259,17 @@ nonisolated enum TimelineAnchorReducer {
                 action = .placeDirect
             }
 
-        case .interactionPresentedChanged(let presented, let id, let offsetIntoRow):
-            if presented {
+        case .interactionPresentedChanged(let presented, let atEnd,
+                                          let id, let offsetIntoRow):
+            // An approval appearing stops automatic following — but not for a
+            // reader resting on the bottom. The card docks above the composer,
+            // and its anchored row (with the composer bar's inset growth)
+            // lands in the same update; stopping the in-flight follow there
+            // left the page a few points short, with the return control
+            // showing under a question card (pp 2026-11-16:
+            // 「我本来就是在最底部，弹询问卡片过后提问工具没有在最底部」).
+            // A reader higher up keeps the reading anchor and the stop.
+            if presented, !atEnd {
                 next.motion = .resting
                 if let id {
                     next.placement = .reading(id: id, offsetIntoRow: offsetIntoRow)

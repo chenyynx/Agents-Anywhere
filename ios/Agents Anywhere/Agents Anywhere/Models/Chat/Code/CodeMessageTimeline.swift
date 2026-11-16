@@ -128,13 +128,16 @@ nonisolated enum CodeMessageBuilder {
     static func units(for items: [V2TimelineItem],
                       profile: CodeRuntimeProfile,
                       interactionTargets: Set<String> = [],
-                      isTurnBoundary: ((V2TimelineItem) -> Bool)? = nil) -> [CodeMessageUnit] {
+                      isTurnBoundary: ((V2TimelineItem) -> Bool)? = nil,
+                      includeSubAgentChildren: Bool = false) -> [CodeMessageUnit] {
         guard profile.mergesToolRowsAcrossMessages else {
-            return legacyUnits(items, interactionTargets: interactionTargets)
+            return legacyUnits(items, interactionTargets: interactionTargets,
+                               includeSubAgentChildren: includeSubAgentChildren)
         }
         return mergedUnits(items, profile: profile,
                            interactionTargets: interactionTargets,
-                           isTurnBoundary: isTurnBoundary ?? isUserTurnBoundary)
+                           isTurnBoundary: isTurnBoundary ?? isUserTurnBoundary,
+                           includeSubAgentChildren: includeSubAgentChildren)
     }
 
     /// Timeline rows → Code rows.
@@ -143,8 +146,10 @@ nonisolated enum CodeMessageBuilder {
     /// first tool's `tool_use` id, so a new serial call grows the same row
     /// instead of inserting a new top-level item.
     static func rows(for items: [V2TimelineItem],
-                     profile: CodeRuntimeProfile) -> [CodeMessageRow] {
-        units(for: items, profile: profile).compactMap { unit -> CodeMessageRow? in
+                     profile: CodeRuntimeProfile,
+                     includeSubAgentChildren: Bool = false) -> [CodeMessageRow] {
+        units(for: items, profile: profile,
+              includeSubAgentChildren: includeSubAgentChildren).compactMap { unit -> CodeMessageRow? in
             switch unit {
             case let .message(key, items):
                 return messageRow(id: key, items: items, profile: profile)
@@ -174,7 +179,8 @@ nonisolated enum CodeMessageBuilder {
     private static func mergedUnits(_ items: [V2TimelineItem],
                                     profile: CodeRuntimeProfile,
                                     interactionTargets: Set<String>,
-                                    isTurnBoundary: (V2TimelineItem) -> Bool) -> [CodeMessageUnit] {
+                                    isTurnBoundary: (V2TimelineItem) -> Bool,
+                                    includeSubAgentChildren: Bool) -> [CodeMessageUnit] {
         var units: [CodeMessageUnit] = []
         var messageIndexByKey: [String: Int] = [:]
         var target: MergeTarget?
@@ -278,8 +284,9 @@ nonisolated enum CodeMessageBuilder {
                 continue
             }
             // Sub-agent child rows stay in the panel, not the main timeline.
-            // A child row never breaks a run (it is not rendered here).
-            if isChild { continue }
+            // A child row never breaks a run; the panel opts in to render
+            // them with the same builder.
+            if !includeSubAgentChildren, isChild { continue }
 
             if isToolRow(item) {
                 // `ExitPlanMode` and an answered `AskUserQuestion` are pulled
@@ -290,10 +297,13 @@ nonisolated enum CodeMessageBuilder {
                     continue
                 }
                 guard let key = groupKey(for: item) else {
-                    // No declared grouping key: the row cannot join a span.
+                    // No declared grouping key (a legacy payload without
+                    // `source.itemId`): the row still ends the run and keeps
+                    // its own Code row, exactly like the Agent card below —
+                    // the retired Chat row never draws tools now.
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item: item))
+                    units.append(.span(id: spanID(for: item), items: [item]))
                     continue
                 }
                 // The Agent card is the official `threadSessionCard` shape: it
@@ -334,9 +344,18 @@ nonisolated enum CodeMessageBuilder {
 
             if isReasoning(item) {
                 guard let key = groupKey(for: item) else {
+                    // A keyless reasoning row keeps its own row. A settled one
+                    // becomes a Code thinking block keyed by its own id; a
+                    // running/failed one keeps the standalone line, because
+                    // the Code builder only draws settled reasoning and a
+                    // dropped unit would erase the row entirely.
                     flushPending()
                     breakRun()
-                    units.append(.standalone(item: item))
+                    if item.status == .done {
+                        units.append(.message(key: item.id, items: [item]))
+                    } else {
+                        units.append(.standalone(item: item))
+                    }
                     continue
                 }
                 // Thinking is transparent (rule 3): whatever row is open —
@@ -361,7 +380,8 @@ nonisolated enum CodeMessageBuilder {
             }
 
             // A body row, or any other row the Code page does not stack.
-            if isStackable(item), let key = groupKey(for: item) {
+            if isStackable(item) {
+                let key = groupKey(for: item) ?? item.id
                 if !pendingReasoning.isEmpty,
                    !pendingReasoning.contains(where: { groupKey(for: $0) == key }) {
                     flushPending()
@@ -400,7 +420,8 @@ nonisolated enum CodeMessageBuilder {
     /// The pre-round27 grouping: one message key = one row, first-seen key
     /// order. Codex/DSH/generic keep this until their own engine is read.
     private static func legacyUnits(_ items: [V2TimelineItem],
-                                    interactionTargets: Set<String>) -> [CodeMessageUnit] {
+                                    interactionTargets: Set<String>,
+                                    includeSubAgentChildren: Bool) -> [CodeMessageUnit] {
         var order: [LegacySlot] = []
         var seen: Set<LegacySlot> = []
         var consumed: Set<String> = []
@@ -415,8 +436,21 @@ nonisolated enum CodeMessageBuilder {
                 if seen.insert(slot).inserted { order.append(slot) }
                 continue
             }
-            if isSubAgentChild(item) { continue }
-            if isStackable(item), let key = groupKey(for: item) {
+            if !includeSubAgentChildren, isSubAgentChild(item) { continue }
+            if isStackable(item) {
+                let declaredKey = groupKey(for: item)
+                // Same rule as the merge path: the Code builder draws only
+                // settled reasoning, so a running/failed keyless row keeps the
+                // standalone line instead of a row that would draw nothing.
+                if isReasoning(item), item.status != .done, declaredKey == nil {
+                    standalone[item.id] = item
+                    let itemSlot = LegacySlot.item(item.id)
+                    if seen.insert(itemSlot).inserted { order.append(itemSlot) }
+                    continue
+                }
+                // Legacy runtimes get the same id fallback: a keyless row keeps
+                // its own Code row, never the retired Chat row.
+                let key = declaredKey ?? item.id
                 let slot = LegacySlot.message(key)
                 if seen.insert(slot).inserted { order.append(slot) }
                 grouped[key, default: []].append(item)

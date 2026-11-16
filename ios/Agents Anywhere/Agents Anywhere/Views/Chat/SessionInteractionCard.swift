@@ -56,6 +56,12 @@ struct SessionInteractionCard: View {
             .frame(height: height ?? metrics.compactHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .glassEffect(.regular, in: .rect(cornerRadius: 24))
+            // The card is inline in a timeline cell, and the cell clips its
+            // bounds: the glass's own drop shadow escaped the rounded card
+            // and painted a grey plate around it (pp device, 2026-11-16).
+            // Clipping to the card's shape keeps the glass and drops the
+            // escaped shadow.
+            .clipShape(.rect(cornerRadius: 24))
         }
         .sheet(item: $destination) { target in
             switch target {

@@ -21,9 +21,9 @@ enum TimelineHistoryLoadDirection {
 /// the row views stay unchanged.
 ///
 /// It is not `@Observable` on purpose: the wrapper re-evaluates on the model's
-/// own observable fields (`flushRevision`, pending, notices, queue, disclosure
-/// revision) and calls into the controller, which asks for `contentGeneration`.
-/// Rebuilding the item list happens once per wrapper update.
+/// own observable fields (`flushRevision`, pending, notices, queue) and calls
+/// into the controller, which asks for `contentGeneration`. Rebuilding the
+/// item list happens once per wrapper update.
 @MainActor
 final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     let model: SessionChatModel
@@ -96,7 +96,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.timeline.windowRevision)
         hasher.combine(model.timeline.rows.count)
         hasher.combine(model.responseRevision)
-        hasher.combine(model.disclosures.revision)
         hasher.combine(model.isRunning)
         // The drawn posing reads streaming (not raw in-flight): the stop tap
         // itself settles it (`stopRequested`), the ack flips `predictedIdle`
@@ -256,6 +255,35 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// finished until the session was reopened).
     private var lastCompactRowProbe: String?
 
+    /// The footers committed while the footer gate stood closed — i.e. while
+    /// the latest turn was finished. A userless episode (a compaction
+    /// continuation or the scheduled turn a background-task notification
+    /// wakes) reopens the gate and suppresses the final commit, which used to
+    /// drop the finished turn's footer for the whole episode (pp 2026-11-16:
+    /// the bar blinked out whenever a background CI monitor completed).
+    private var closedTurnActions: [String: TimelineTurnAction] = [:]
+
+    /// The last turn-footer host set written to diagnostics. The action bar's
+    /// presence is otherwise invisible in a log: a disappearance only shows up
+    /// as a 30 pt content drop (`timeline.mover`), and the reason has to be
+    /// inferred from `timeline.grouping` counts. One line per change names the
+    /// groups that carry copy/share, so a report like pp's 2026-11-16 「压缩
+    /// 之后复制/分享出现又消失」 is read directly instead of reconstructed.
+    private var lastTurnFooterProbe: String?
+
+    private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
+        // Hosts, in timeline order; the copy text itself is never logged.
+        let hosts = groups.compactMap { actionBarCopyText(for: $0.id) == nil ? nil : $0.id }
+        let probe = hosts.joined(separator: ",")
+        guard probe != lastTurnFooterProbe else { return }
+        lastTurnFooterProbe = probe
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.turn.footer",
+            sessionID: model.session.id,
+            detail: ["hosts": probe, "count": String(hosts.count)],
+            dedupe: false)
+    }
+
     private func noteCompactRowState() {
         // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
         // turn can still change sits after the last user row, so the scan
@@ -263,6 +291,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var compact: V2TimelineItem?
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // Sub-agent child rows belong to their own transcript; the main
+            // page's live state never reads them (pp 2026-11-16).
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if TimelineEntryPresentation.isCompactItem(item) { compact = item; break }
         }
@@ -348,7 +379,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.onAttachment = onAttachment
         self.onFile = onFile
@@ -536,33 +567,33 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if group.explicitID != nil {
                 return codeEstimateKind(for: item, groupID: id)
             }
-            // A folded group renders its header only; estimating the hidden
-            // rows would park a large blank block above the fold.
-            let expanded = group.kind == .single || model.disclosures.isExpanded("group:\(group.id)")
-            let rows = expanded ? group.rows : []
+            // No row expands in place on this page: every group draws its own
+            // rows, so the estimate walks all of them.
+            let rows = group.rows
             let cwd = model.session.metadata?.cwd
             var textRows: [TimelineHeightEstimate.TextRow] = []
             textRows.reserveCapacity(rows.count)
             for row in rows {
-                // A collapsed fold renders its header, not its body. Counting
-                // the hidden reasoning/tool text would park a large blank
-                // block above the fold until the cell fit corrects it.
+                // A reasoning / tool / marker / compact row is one line, not
+                // body text. Counting the hidden payload would park a large
+                // blank block above the row until the cell fit corrects it.
                 let kind = row.entry(cwd: cwd).kind
-                let folded: Bool
+                let oneLine: Bool
                 switch kind {
                 case .reasoning, .compact, .tool:
-                    folded = !model.disclosures.isExpanded(row.id)
+                    oneLine = true
                 case .marker:
-                    folded = row.structure.type != .message
-                        && !model.disclosures.isExpanded(row.id)
+                    // `TimelineEntryPresentation` classifies a plain message as
+                    // `.marker`; only a real marker row is one line.
+                    oneLine = row.structure.type != .message
                 case .artifact:
-                    folded = false
+                    oneLine = false
                 }
                 textRows.append(TimelineHeightEstimate.TextRow(
-                    text: folded ? "" : row.text,
-                    attachmentCount: folded ? 0 : attachments(of: row.value).count))
+                    text: oneLine ? "" : row.text,
+                    attachmentCount: oneLine ? 0 : attachments(of: row.value).count))
             }
-            return .text(textEstimate(for: item, rows: textRows, minimum: expanded ? 44 : 64))
+            return .text(textEstimate(for: item, rows: textRows, minimum: 44))
         }
     }
 
@@ -737,13 +768,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// skipped: hosting the growing text on every 0.1 s flush would be
     /// quadratic, and its estimate is only visible while the reader is
     /// watching the streaming row.
-    /// Code message rows follow the official hosted-cell contract: the cell
-    /// self-measures once and reports later content changes. The Chat rows keep
-    /// the legacy controller polling path for now.
+    /// Code message rows and standalone rows follow the official hosted-cell
+    /// contract: the cell self-measures once and reports later content changes.
+    /// Only the compaction divider keeps the legacy preferred-fit path.
     func usesCellReportedHeight(for item: TimelineListItem) -> Bool {
         if case .workingStatus = item { return true }
-        guard case .group(let id) = item else { return false }
-        return groupsByID[id]?.explicitID != nil
+        guard case .group(let id) = item, let group = groupsByID[id] else { return false }
+        // A standalone row draws the Code message / tool rows and the
+        // turn-scoped footers, so its height follows content no estimate can
+        // predict. Left on the legacy Chat preferred-fit path its first fit
+        // latched `isMeasured` and nothing ever asked the cell again: a row
+        // that outlived a shrink kept the old, taller frame and painted blank
+        // space under its content until a scroll re-fit it (pp 2026-11-16:
+        // 「中间空了一大截，滑一下就落下来」). The cell's own geometry report
+        // is what keeps that class of row honest.
+        if group.explicitID == nil, group.isStandaloneCompactDivider {
+            // The compaction divider declares an exact fixed height and was
+            // tuned on the preferred-height path; it keeps it.
+            return false
+        }
+        return true
     }
 
     func measuredCodeGroupHeight(for item: TimelineListItem, width: CGFloat) -> CGFloat? {
@@ -834,7 +878,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// the row stack's inter-block spacing. Zero outside the chat profile and
     /// away from the stopped turn's anchor.
     private func interruptedNoticeExtraHeight(for groupID: String) -> CGFloat {
-        guard renderMode == .chat,
+        guard renderMode == .steps,
               chatInterruptedItemIDs.contains(
                 TimelineListItem.group(groupID).itemID) else { return 0 }
         return ChatInterruptedNoticeCard.estimatedHeight + CodePageTheme.interMessageSpacing
@@ -936,7 +980,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// Code row and 25 pt above the next one (review 2026-10-23).
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
         switch item {
-        case .group(let id) where groupsByID[id]?.explicitID != nil: return 0
+        // A group answers for itself: message and step rows carry 5 pt row
+        // margins and the compaction divider carries its own 16 pt padding,
+        // so none of them also pay the list gap (see `listSpacing`).
+        case .group(let id): return groupsByID[id]?.listSpacing ?? TimelineListMetrics.itemSpacing
         case .workingStatus, .notice, .pending: return 0
         default: return TimelineListMetrics.itemSpacing
         }
@@ -1081,8 +1128,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             textIsEmpty: row.text.isEmpty,
             hasInlineNotice: inlineNoticesByRow[row.id] != nil,
             hasAttachments: !attachments(of: row.value).isEmpty,
-            footerSupported: footerIsSupported(turnActions[group.id],
-                                               groupID: group.id),
             isFallback: streamingFallbacks.contains(row.id),
             holdsEngineThroughDisqualifiers: holdsEngine)
         guard admitted else {
@@ -1156,123 +1201,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         forceRefresh()
     }
 
-    // MARK: - Footer
+    // MARK: - Turn action bar
 
-    /// What the footer will contain. Presence and counts are deterministic at
-    /// a given revision (`TimelineTurnReview` parses the diffs synchronously
-    /// and is memoized), and the height is a constant, so no fitting pass is
-    /// involved.
-    private struct FooterPlan {
-        let hasReview: Bool
-        let hasReplies: Bool
-
-        var height: CGFloat {
-            AssistantFooterMetrics.contentHeight(
-                hasReview: hasReview, hasReplies: hasReplies,
-                actionRowHeight: SessionTurnActionsRow.rowHeight)
-        }
-    }
-
-    /// The Code page's turn action bar is a separate transcript row; the Chat
-    /// collection timeline keeps the Chat reference row (`SessionTurnActionsRow`).
-    /// A generic runtime is a plain chat session, not a Code page.
+    /// The Code page's turn action bar is a separate transcript row drawn inside
+    /// the Code message row. A generic runtime is a plain chat session, not a
+    /// Code page.
     private var usesCodeActionBar: Bool { codeProfile.family != .generic }
 
     /// The turn action bar is drawn inside the Code row (hosted cells do not
-    /// receive the assistant footer). Only the group that ends a finished
-    /// turn has an action; an empty copy text draws no bar.
+    /// receive an assistant footer). Only the group that ends a finished turn
+    /// has an action; an empty copy text draws no bar.
     private func actionBarCopyText(for groupID: String) -> String? {
         guard usesCodeActionBar,
               let text = turnActions[groupID]?.copyText,
               !text.isEmpty else { return nil }
         return text
-    }
-
-    private struct FooterReviewKey: Equatable {
-        struct Item: Equatable {
-            let id: String
-            let revision: Int
-            let updatedSeq: Int
-        }
-
-        let root: String?
-        let items: [Item]
-    }
-
-    /// Last parsed review per group. `SessionTurnReviewFooter.ReviewMemo` does
-    /// the same inside the view; the TextKit path cannot rely on that memo
-    /// because it builds the view on every measurement.
-    private var footerReviews: [String: (key: FooterReviewKey, review: TimelineTurnReview)] = [:]
-
-    private func footerReview(_ action: TimelineTurnAction,
-                              groupID: String) -> TimelineTurnReview {
-        let root = model.session.metadata?.cwd
-        let key = FooterReviewKey(
-            root: root,
-            items: action.changes.map {
-                FooterReviewKey.Item(id: $0.id,
-                                     revision: $0.value.revision,
-                                     updatedSeq: $0.value.updatedSeq)
-            })
-        if let cached = footerReviews[groupID], cached.key == key {
-            return cached.review
-        }
-        let windows = root?.range(of: #"^[A-Za-z]:[/\\]|^\\\\"#,
-                                  options: .regularExpression) != nil
-        let review = TimelineTurnReview.build(
-            items: action.changes.map(\.value), root: root,
-            caseInsensitive: windows)
-        footerReviews[groupID] = (key, review)
-        return review
-    }
-
-    /// Nil means "keep hosting": an extreme Dynamic Type size can push the
-    /// summary line past its fixed 44pt row. M4.5 handles that scale.
-    private func footerPlan(for action: TimelineTurnAction,
-                            groupID: String) -> FooterPlan? {
-        let hasReview = action.changes.isEmpty
-            ? false : !footerReview(action, groupID: groupID).files.isEmpty
-        let hasReplies = !action.replies.isEmpty
-        guard hasReview || hasReplies else {
-            return FooterPlan(hasReview: false, hasReplies: false)
-        }
-        if hasReview,
-           UIFont.preferredFont(forTextStyle: .footnote).lineHeight
-            > AssistantFooterMetrics.reviewRowHeight {
-            return nil
-        }
-        return FooterPlan(hasReview: hasReview, hasReplies: hasReplies)
-    }
-
-    private func footerIsSupported(_ action: TimelineTurnAction?,
-                                   groupID: String) -> Bool {
-        guard let action else { return true }
-        return footerPlan(for: action, groupID: groupID) != nil
-    }
-
-    func assistantFooter(for item: TimelineListItem) -> AssistantFooterHost? {
-        guard case .group(let id) = item,
-              let action = turnActions[id],
-              let plan = footerPlan(for: action, groupID: id),
-              plan.hasReview || plan.hasReplies else { return nil }
-        let review = plan.hasReview ? footerReview(action, groupID: id) : nil
-        let content = VStack(alignment: .leading,
-                             spacing: AssistantFooterMetrics.groupSpacing) {
-            if let review {
-                SessionTurnReviewFooter(
-                    action: action,
-                    root: model.session.metadata?.cwd,
-                    hasOlderItems: model.session.hasOlderItems,
-                    onFile: onFile)
-                .equatable()
-            }
-            if plan.hasReplies {
-                SessionTurnActionsRow(copyText: action.copyText,
-                                      timestampText: action.timestampText)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        return AssistantFooterHost(height: plan.height, view: AnyView(content))
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
@@ -1312,7 +1255,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // observable box so the mounted `WorkingMarkView` is updated in
             // place; a reconfigure would recreate it already exited.
             return AnyView(WorkingStatusRowHost(state: workingStatusExitState,
-                                                usesChatWorkingStyle: renderMode == .chat))
+                                                usesChatWorkingStyle: renderMode == .steps))
         case .group(let id):
             guard let group = groupsByID[id] else { return AnyView(EmptyView()) }
             // The chat profile's step-group row: one line that follows the
@@ -1379,7 +1322,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     typography: codeTypography,
                     columnWidth: width,
                     turnActionCopyText: actionBarCopyText(for: id),
-                    showsInterruptedNotice: renderMode == .chat
+                    showsInterruptedNotice: renderMode == .steps
                         && chatInterruptedItemIDs.contains(
                             TimelineListItem.group(group.id).itemID),
                     interruptedAgentName: model.agentName,
@@ -1410,17 +1353,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     },
                     onAttachment: onAttachment))
             }
-            return AnyView(SessionTimelineGroupView(
+            // A group with no declared message key is one standalone row
+            // (compaction divider, marker, artifact, interaction anchor). The
+            // Code-side fallback draws it; the retired Chat group container —
+            // whose only caller this was — is gone.
+            return AnyView(CodeStandaloneRowView(
                 group: group,
                 chat: model,
+                profile: codeProfile,
                 onAttachment: onAttachment,
                 onFile: onFile,
-                turnAction: turnActions[group.id],
-                onSubAgent: onSubAgent,
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
                 showsInterruptedNotice:
                     chatInterruptedItemIDs.contains(
-                        TimelineListItem.group(group.id).itemID)))
+                        TimelineListItem.group(group.id).itemID),
+                onToolDetail: { [weak self] request in
+                    self?.onCodeToolDetail?(request)
+                },
+                onThinkingDetail: { [weak self] request in
+                    self?.onCodeThinkingDetail?(request)
+                }))
         case .notice(let id):
             guard let notice = tailNoticesByID[id] else { return AnyView(EmptyView()) }
             // The same row margins as a Code message row: these rows report 0
@@ -1435,8 +1387,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 onRetry: { [weak self] in
                     guard let self else { return }
                     Task { await self.model.retryPendingMessage(pending) }
-                },
-                bubbleStyle: .code)
+                })
                 .padding(.vertical, CodePageTheme.rowMarginTop))
         case .tail:
             return AnyView(TimelineCollectionTailRow(model: model,
@@ -1489,9 +1440,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func updateCodeStreaming(groups: [ChatTimelineGroup]) {
         let now = CACurrentMediaTime()
         var rowsByID: [String: ChatTimelineRowModel] = [:]
-        // Only message groups render through `CodeMessageRowView`; an
-        // interaction-target row keeps the Chat renderer (and its reveal), so
-        // it must not be switched to renderer-owned reveal.
+        // Only explicit-key groups own the paced reveal; a standalone group is
+        // drawn by `CodeStandaloneRowView` (its own pacing), so it must not be
+        // switched to renderer-owned reveal.
         for group in groups where group.explicitID != nil {
             // Reasoning is drawn as the turn's single working row, not as
             // body text; feeding it through the publisher used to reconfigure
@@ -1790,6 +1741,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let notices = model.session.notices.notices
         let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
         let interactionTargets = Set(notices.filter(\.isVisible).compactMap(\.timelineTargetID))
+        // A session-blocking card is drawn in the composer dock, so its row
+        // does not need a transcript row of its own: it merges into the
+        // running step group like any other step (pp 2026-11-16). Only a
+        // non-blocking (inline) card still needs the standalone anchor row.
+        let standaloneTargets = Set(notices.filter {
+            $0.isVisible && !$0.blocks(model.session.id)
+        }.compactMap(\.timelineTargetID))
         // W7: the timeline is the Code page. One planner unit = one group: a
         // message row keeps its declared id (`nativeMessageId ?? itemId`), and
         // a cross-message tool run keeps the first tool's `tool_use` id, so a
@@ -1805,7 +1763,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// summary must never carry the mark.
         var chatLastUserOrder = Int.min
         var chatLiveTurnHasSteps = false
-        if renderMode == .chat {
+        if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
             // never merges across messages the way the Code planner does.
@@ -1820,6 +1778,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 items: timelineRows,
                 profile: profile,
                 interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets,
                 cwd: model.session.metadata?.cwd)
             TimelineDiagnostics.validateUnits(
                 sessionID: model.session.id,
@@ -1865,7 +1824,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             chatUnits = []
             codeGroups = TimelineGrouping.codeGroups(model.timeline.rows,
                                                      profile: profile,
-                                                     interactionTargets: interactionTargets)
+                                                     interactionTargets: interactionTargets,
+                                                     standaloneTargets: standaloneTargets)
             for group in codeGroups {
                 guard let explicitID = group.explicitID else { continue }
                 let rows = CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
@@ -1885,7 +1845,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // queue empties the working row takes the bubble's place in the same
         // apply, so the swap stays height-neutral.
         let hasWorkingStatus = model.sendingPlaceholder != nil
-            && !(renderMode == .chat && (chatLiveTurnHasSteps
+            && !(renderMode == .steps && (chatLiveTurnHasSteps
                 || !model.session.sendQueue.items.isEmpty))
         // The official mark's pose follows the live turn's last event
         // (`SessionDisplay.liveTurnMark`). Keep the last pose while the row
@@ -1908,7 +1868,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // (CANONICAL/20-working-mark.md §6), then leaves on its own refresh.
         if hasWorkingStatus {
             cancelWorkingStatusExit()
-        } else if renderMode == .chat {
+        } else if renderMode == .steps {
             // The chat profile moves the one mark onto the step group's row in
             // the same update; keeping the old row mounted for its 0.4 s exit
             // would draw two marks at once.
@@ -1940,10 +1900,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         lastHasWorkingStatus = hasWorkingStatus
         let showsWorkingStatus = hasWorkingStatus
-            || (renderMode != .chat && workingStatusIsExiting)
+            || (renderMode != .steps && workingStatusIsExiting)
         var groups: [ChatTimelineGroup] = []
         var stepGroupsByID: [String: TimelineStepGroup] = [:]
-        if renderMode == .chat {
+        if renderMode == .steps {
             var rowsByID: [String: ChatTimelineRowModel] = [:]
             for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
@@ -2012,7 +1972,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     build.messageRows = rowsBuilt
                 case let .standalone(rowID):
                     guard let row = rowsByID[rowID] else { builds.append(build); continue }
-                    let group = ChatTimelineGroup(kind: .single, rows: [row])
+                    // Keyless on purpose: the standalone renderer carries the
+                    // interaction cards, turn footer and interrupted notice.
+                    //
+                    // An interaction anchor is self-margined: its card docks
+                    // directly below, so the list's legacy 20 pt gap would read
+                    // as a blank band under the anchor row. The Code profile's
+                    // `codeGroups` already marks it; this chat-profile build
+                    // used to drop the flag, which is why the question card
+                    // still sat 20 pt low on b1270 (pp 2026-11-16).
+                    let group = ChatTimelineGroup(
+                        kind: .single, rows: [row],
+                        isInteractionAnchor: interactionTargets.contains(rowID))
                     groups.append(group)
                     build.group = group
                 }
@@ -2226,7 +2197,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
             isCompacting: liveTurnIsCompacting())
-        let turnActions = TimelineTurnActions.build(
+        var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
             // a turn that ended without a captured transition must not keep
@@ -2242,11 +2213,34 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // presentation until its echo row publishes is not a new turn.
             hasPendingUserMessage: !model.session.hasNewerItems
                 && submittingPendingID != nil && !submittingPendingHasEcho,
+            // A turn that no user bubble opened — a compaction command turn,
+            // a scheduled reader turn, the wake-up a completed background task
+            // sends — has only its declared turn id as a boundary. Without it
+            // the previous turn's footer slides onto the new turn's reply
+            // (pp 2026-11-16 10:05:54: host msg_577ba3bc → msg_1e1de664 with
+            // the footer count unchanged). A user-opened turn keeps the
+            // bubble-only split so a queued-send turn-id flap cannot commit a
+            // footer mid-turn.
+            allowsTurnIdBoundary: !turnFooterGate.isAnchoredToUserBubble,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
             footerHostEligible: { stepGroupsByID[$0.id] == nil })
+        // A userless episode must not take the finished turn's footer away:
+        // the build suppresses the latest bucket, but the bucket on screen is
+        // already finished, so the closed state's footers stay. Browsing an
+        // older page keeps its own rule (`hasNewerItems` suppresses the
+        // latest bucket by design).
+        if latestTurnOpen {
+            if turnFooterGate.isUserlessEpisode, !model.session.hasNewerItems {
+                turnActions = TimelineTurnActions.restoringFinishedFooters(
+                    turnActions, from: closedTurnActions,
+                    groupIDs: Set(groupsByID.keys))
+            }
+        } else {
+            closedTurnActions = turnActions
+        }
 
         self.groupsByID = groupsByID
         self.codeProfile = profile
@@ -2268,13 +2262,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         self.inlineNoticesByRow = inlineNoticesByRow
         self.turnActions = turnActions
         noteCompactRowState()
+        noteTurnFooterState(groups: groups)
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
         updateCodeStreaming(groups: groups)
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
-        footerReviews = footerReviews.filter { turnActions[$0.key] != nil }
         let streamingNow = ProcessInfo.processInfo.systemUptime
         let presentRowIDs = Set(model.timeline.rows.map(\.id))
         rendererRevealOwnership.prune(keeping: presentRowIDs)
@@ -2599,10 +2593,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The standalone compaction divider group: one marker row, no explicit
     /// message key. It draws the divider and nothing turn-scoped.
     private func compactGroupRow(_ id: String) -> ChatTimelineRowModel? {
-        guard let group = groupsByID[id], group.explicitID == nil,
-              group.rows.count == 1, let row = group.rows.first,
-              TimelineEntryPresentation.isCompactItem(row.value) else { return nil }
-        return row
+        guard let group = groupsByID[id], group.isStandaloneCompactDivider else { return nil }
+        return group.rows[0]
     }
 
     private func groupSignature(_ group: ChatTimelineGroup) -> TimelineGroupContentSignature {
@@ -2622,7 +2614,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rows: [TimelineRowContentSignature(id: row.id,
                                                    revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq)],
-                disclosureExpanded: false,
                 inlineNotices: [],
                 attachments: [],
                 turnAction: nil,
@@ -2687,15 +2678,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // The interrupted notice is part of this row's drawn height; a
             // synthetic row makes the collection reconfigure when it appears
             // even though the wire rows did not change.
-            if renderMode == .chat,
+            if renderMode == .steps,
                chatInterruptedItemIDs.contains(TimelineListItem.group(group.id).itemID) {
                 signatureRows.append(TimelineRowContentSignature(
                     id: group.id + ":interrupted", revision: 1, updatedSeq: 0))
             }
             return TimelineGroupContentSignature(
                 rows: signatureRows,
-                disclosureExpanded: false,
-                expandedRowIDs: [],
                 revealingRowIDs: [],
                 inlineNotices: [],
                 attachments: codeAttachmentPreviews(group),
@@ -2708,15 +2697,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         var rows: [TimelineRowContentSignature] = []
         rows.reserveCapacity(group.rows.count)
-        let expanded = group.kind != .single && model.disclosures.isExpanded("group:\(group.id)")
-        var expandedRowIDs: [String] = []
         var revealingRowIDs: [String] = []
         var inlineNotices: [TimelineInlineNoticeSignature] = []
         var attachmentPreviews: [TimelineAttachmentPreviewSignature] = []
         for row in group.rows {
             rows.append(TimelineRowContentSignature(id: row.id, revision: row.value.revision,
                                                    updatedSeq: row.value.updatedSeq))
-            if model.disclosures.isExpanded(row.id) { expandedRowIDs.append(row.id) }
             if row.isRevealing || rendererRevealOwnership.isActive(row.id) {
                 revealingRowIDs.append(row.id)
             }
@@ -2738,8 +2724,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let action = turnActions[group.id]
         return TimelineGroupContentSignature(
             rows: rows,
-            disclosureExpanded: expanded,
-            expandedRowIDs: expandedRowIDs,
             revealingRowIDs: revealingRowIDs,
             inlineNotices: inlineNotices,
             attachments: attachmentPreviews,
@@ -2806,8 +2790,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                                 updatedSeq: 0))
         return TimelineGroupContentSignature(
             rows: rows,
-            disclosureExpanded: false,
-            expandedRowIDs: [],
             revealingRowIDs: [],
             inlineNotices: [],
             attachments: [],
@@ -2852,6 +2834,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var tail: [CodeWorkingMarkRow] = []
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // A sub-agent's running tools must not pose the main page's mark.
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             tail.append(CodeWorkingMarkRow(
                 role: item.role,
@@ -2942,6 +2926,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func liveThinkingItem() -> V2TimelineItem? {
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            // The sub-agent's own thinking must not surface as the main
+            // turn's closed 「思考了 n 秒」 label (pp 2026-11-16).
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if item.isReasoning { return item }
         }
@@ -2971,6 +2958,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func liveTurnIsCompacting() -> Bool {
         for row in model.timeline.rows.reversed() {
             let item = row.value
+            if SubAgentProgress.parentItemID(item) != nil { continue }
             if item.role == .user { break }
             if TimelineEntryPresentation.isCompactItem(item) {
                 return TimelineEntryPresentation.isActiveCompactItem(item)
@@ -3065,7 +3053,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private static var emptyGroupSignature: TimelineGroupContentSignature {
         TimelineGroupContentSignature(
-            rows: [], disclosureExpanded: false, revealingRowIDs: [],
+            rows: [], revealingRowIDs: [],
             inlineNotices: [], attachments: [],
             turnAction: nil,
             turnSuppression: TimelineTurnSuppression(isRunning: false, hasNewerItems: false,

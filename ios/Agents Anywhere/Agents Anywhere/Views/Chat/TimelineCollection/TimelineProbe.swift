@@ -815,8 +815,6 @@ final class TimelineProbeStore: NSObject, ObservableObject {
         switch (previous, current) {
         case (.group(let old), .group(let new)):
             if old.rows != new.rows { parts.append("rows") }
-            if old.disclosureExpanded != new.disclosureExpanded { parts.append("disclose") }
-            if old.expandedRowIDs != new.expandedRowIDs { parts.append("rowFold") }
             if old.revealingRowIDs != new.revealingRowIDs { parts.append("reveal") }
             if old.inlineNotices != new.inlineNotices { parts.append("notice") }
             if old.attachments != new.attachments { parts.append("attach") }

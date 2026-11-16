@@ -107,7 +107,6 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return .group(TimelineGroupContentSignature(
             rows: [TimelineRowContentSignature(id: entry.id, revision: entry.revision,
                                                updatedSeq: entry.revision)],
-            disclosureExpanded: entry.expanded,
             revealingRowIDs: [],
             inlineNotices: entry.kind == .notice
                 ? [TimelineInlineNoticeSignature(id: "notice-\(entry.id)",

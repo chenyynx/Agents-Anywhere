@@ -179,14 +179,45 @@ import Testing
 
     @Test func anApprovalPinsTheReadingAnchorAndItsRemovalReturns() {
         let presented = reduce(landed(.end), .interactionPresentedChanged(
-            presented: true, id: "u6", offsetIntoRow: 30))
+            presented: true, atEnd: false, id: "u6", offsetIntoRow: 30))
         #expect(presented.state.placement == .reading(id: "u6", offsetIntoRow: 30))
         #expect(presented.action == .halt)
 
         let dismissed = reduce(presented.state, .interactionPresentedChanged(
-            presented: false, id: nil, offsetIntoRow: 0))
+            presented: false, atEnd: false, id: nil, offsetIntoRow: 0))
         #expect(dismissed.state.placement == .end)
         #expect(dismissed.action == .move)
+    }
+
+    /// A card that arrives while the page rests on the bottom keeps following:
+    /// the dock card and its anchored row land in the same update, and
+    /// stopping there left the page a few points short of the bottom with the
+    /// return control showing (pp 2026-11-16).
+    @Test func anApprovalAtTheBottomKeepsFollowing() {
+        let presented = reduce(landed(.end, motion: .flying), .interactionPresentedChanged(
+            presented: true, atEnd: true, id: "q1", offsetIntoRow: 12))
+        #expect(presented.state.placement == .end)
+        #expect(presented.action == .move)
+    }
+
+    /// The live "at the end" verdict is not enough on its own: the card's
+    /// dock and its anchored row land in the same update, so the page is a
+    /// row short while the follow is still paying that debt. A `.end`
+    /// placement is already a bottomed page (any reader scroll flips it to
+    /// `.reading` first); judging it by live geometry halted the follow and
+    /// showed the return control under a question card — the b1266 log still
+    /// shows `start delta=64` with no `arrived` (pp 2026-11-16).
+    @Test func anInteractionCardKeepsFollowingWhileThePlacementIsEnd() {
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .end, liveAtEnd: false))
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .end, liveAtEnd: true))
+        // A reader placed in the history keeps the stop — even if a live
+        // sample happens to read "at the end" while the layout settles.
+        #expect(!TimelineInteractionFollow.keepsFollowing(
+            placement: .reading(id: "u4", offsetIntoRow: 8), liveAtEnd: false))
+        #expect(TimelineInteractionFollow.keepsFollowing(
+            placement: .reading(id: "u4", offsetIntoRow: 8), liveAtEnd: true))
     }
 
     @Test func navigationSuspensionStopsAndResumeRePlaces() {

@@ -26,7 +26,8 @@ struct CodeUserMessageRow: View {
                 CodeAttachmentRow(files: attachments,
                                   state: attachmentState,
                                   onAttachment: onAttachment,
-                                  loadThumbnail: loadThumbnail)
+                                  loadThumbnail: loadThumbnail,
+                                  leadingAccessory: pureAttachmentDelivery)
             }
             if hasText {
                 // The delivery state rides on the bubble itself (text is the
@@ -46,17 +47,19 @@ struct CodeUserMessageRow: View {
         .padding(.trailing,
                  attachments.contains { !$0.content.isImage }
                     ? CodePageTheme.userRowShadowInset : 0)
-        .overlay(alignment: .bottomLeading) {
-            // A pure-attachment row has no text bubble to anchor on; its
-            // indicator sits inside the row's own leading edge.
-            if !hasText, isPending || onDeliveryIssue != nil {
-                CodeDeliveryGutter(
-                    isPending: isPending,
-                    onDeliveryIssue: onDeliveryIssue,
-                    pendingOffset: 0,
-                    issueOffset: 0)
-            }
-        }
+    }
+
+    /// A pure-attachment row has no text bubble to anchor the send state on.
+    /// The attachment stack carries it in its leading gutter: the row spans the
+    /// page, so the row's own leading edge put the spinner at the screen's far
+    /// left while the card hugged the right (pp 2026-11-16).
+    private var pureAttachmentDelivery: AnyView? {
+        guard !hasText, isPending || onDeliveryIssue != nil else { return nil }
+        return AnyView(CodeDeliveryGutter(
+            isPending: isPending,
+            onDeliveryIssue: onDeliveryIssue,
+            pendingOffset: 0,
+            issueOffset: 0))
     }
 
     /// The settled row drops whitespace-only text before it builds blocks;

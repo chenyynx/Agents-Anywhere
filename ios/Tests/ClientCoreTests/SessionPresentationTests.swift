@@ -72,29 +72,6 @@ import Testing
         #expect(changes.changes[1].diff == "-old")
     }
 
-    @Test @MainActor func collapsingOneToolDoesNotInvalidateOtherMountedDetails() {
-        let disclosures = TimelineDisclosureState()
-        disclosures.toggle("first"); disclosures.toggle("second")
-        let changed = ObservationFlag()
-        withObservationTracking { _ = disclosures.isExpanded("second") } onChange: { changed.set() }
-        disclosures.toggle("first")
-        #expect(!disclosures.isExpanded("first") && disclosures.isExpanded("second"))
-        #expect(!changed.isSet)
-        disclosures.toggle("second")
-        #expect(changed.isSet && !disclosures.isExpanded("second"))
-    }
-
-    @Test @MainActor func disclosureRevisionTracksTogglesNotReads() {
-        let disclosures = TimelineDisclosureState()
-        let start = disclosures.revision
-        _ = disclosures.isExpanded("row")
-        #expect(disclosures.revision == start)
-        disclosures.toggle("row")
-        #expect(disclosures.revision == start + 1)
-        disclosures.toggle("row")
-        #expect(disclosures.revision == start + 2)
-    }
-
     @Test @MainActor func flushRevisionBumpsOnlyWhenAFlushPublishes() throws {
         let presentation = SessionTimelinePresentation()
         let value = try item("message", status: "done", content: ["text": "a"])

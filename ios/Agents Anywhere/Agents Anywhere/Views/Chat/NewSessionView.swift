@@ -21,6 +21,8 @@ struct NewSessionView: View, Equatable {
     /// Height of the welcome block, so the edit-state rise can be expressed as
     /// one offset instead of a second layout pass (pp 2026-11-13).
     @State private var welcomeHeight: CGFloat = 0
+    @State private var composerEditor = ComposerEditorController()
+    @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
 
@@ -90,6 +92,7 @@ struct NewSessionView: View, Equatable {
                         .padding(.bottom, 6)
                 ChatComposerDock(draft: model.draft, settings: model.settings,
                     maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
+                    editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                     canSend: model.canCreate, canAttach: model.canAttach && model.prepared != nil,
                     canSelectModel: model.prepared?.capabilities.allows("catalog.model") == true,
                     canSelectPermission: model.prepared?.capabilities.allows("catalog.permission") == true,

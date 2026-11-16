@@ -48,13 +48,6 @@ nonisolated struct TimelineTurnSuppression: Equatable {
 
 nonisolated struct TimelineGroupContentSignature: Equatable {
     let rows: [TimelineRowContentSignature]
-    /// The group-level fold's state (`TimelineFold(id: "group:<id>")`).
-    /// Expanding changes the group's height without changing its rows.
-    let disclosureExpanded: Bool
-    /// Row-level folds expanded inside this group. One Bool cannot represent
-    /// several independent folds: collapsing one while another stays open
-    /// would leave the signature equal and the group's height stale.
-    var expandedRowIDs: [String] = []
     /// Rows whose reveal clock is running. A reveal settling changes which
     /// engine may render the row (streaming tail vs. static TextKit) without
     /// changing the wire revision, so the signature must carry it.
@@ -80,8 +73,6 @@ nonisolated struct TimelineGroupContentSignature: Equatable {
             hasher.combine(row.revision)
             hasher.combine(row.updatedSeq)
         }
-        hasher.combine(disclosureExpanded)
-        for rowID in expandedRowIDs.sorted() { hasher.combine(rowID) }
         for rowID in revealingRowIDs.sorted() { hasher.combine(rowID) }
         for notice in inlineNotices {
             hasher.combine(notice.id)

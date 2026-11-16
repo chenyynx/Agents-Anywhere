@@ -59,19 +59,37 @@ extension SessionChatModel {
         }
         let fresh = session.runtime.isFresh
         let items = timeline.rows.map(\.value)
+        // Sub-agent child rows never drive the main turn's phase. Their
+        // running tools/thinking otherwise pin the page to `usingTool` /
+        // `thinking`, which hides the main agent's own tool cue and leaks the
+        // child's thinking into the working row (pp 2026-11-16). The capsule
+        // count still reads the full window: the cards are top-level rows.
+        let mainItems = items.filter { SubAgentProgress.parentItemID($0) == nil }
+        // A running Agent dispatch is a tool row whose status stays `running`
+        // for the whole subagent lifetime (connector `agent_calls.py`:
+        // task events keep the card "running" until a terminal frame). Counting
+        // it as the main turn's tool work pins `ChatTurnPhase` at `usingTool`
+        // for the entire run, so the main agent's own tool calls never change
+        // the phase and never play their cue (pp device, 2026-11-16, b1258).
+        // The orb's own table already prefers `parallelWork` while a card runs,
+        // so dropping the dispatch row leaves the orb unchanged.
+        let mainToolIsActive = mainItems.contains {
+            TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive
+                && !SubAgentProgress.isAgentCall($0)
+        }
         let value = OrbActivitySignals(
             status: fresh ? session.runtime.state?.status : nil,
             hasRespondableNotice: session.notices.visibleNotices.contains { $0.canRespond(fresh: fresh) },
             runningSubagentCount: SubAgentProgress.capsuleState(
                 inWindow: items, activeCards: session.activeAgentCards).runningCount,
-            hasActiveToolItem: items.contains { TimelineEntryPresentation.isToolKindItem($0) && $0.status.isActive },
-            hasActiveCompactItem: items.contains {
+            hasActiveToolItem: mainToolIsActive,
+            hasActiveCompactItem: mainItems.contains {
                 TimelineEntryPresentation.isCompactItem($0) && TimelineEntryPresentation.isActiveCompactItem($0)
             },
-            isStreamingAssistantText: items.contains {
+            isStreamingAssistantText: mainItems.contains {
                 ($0.status == .pending || $0.status == .running) && $0.type == .message && $0.role == .assistant
             },
-            hasActiveReasoningItem: items.contains { $0.isReasoning && $0.status.isActive })
+            hasActiveReasoningItem: mainItems.contains { $0.isReasoning && $0.status.isActive })
         orbSignalsCache = (key, value)
         return value
     }

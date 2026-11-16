@@ -454,9 +454,8 @@ private enum CodeFileReadTextMetrics {
 /// of R-T §3: `CodeBlockContent` inside the Input section carries no section
 /// title of its own).
 ///
-/// The rendered prefix is capped at 200 000 characters, the same guard
-/// `TimelineCodePanel` uses (`Views/Chat/SessionTimelineEventView.swift:327`);
-/// copying always takes the full string.
+/// The rendered prefix is capped at 200 000 characters (the guard the code
+/// card has always used); copying always takes the full string.
 struct CodeToolCodeCard: View {
     let title: String?
     let code: String
@@ -1187,8 +1186,7 @@ private struct CodeToolPrettifyButton: View {
 }
 
 /// The copy control shared by the code card, the diff header and the list
-/// section headers. Same 2-second confirmation `TimelineCodePanel` and
-/// `ChatMarkdownCodeBlock` use.
+/// section headers. Same 2-second confirmation `ChatMarkdownCodeBlock` uses.
 private struct CodeToolCopyButton: View {
     /// Built only on tap: a long diff's unified text must not be rebuilt on
     /// every body evaluation.
@@ -1313,9 +1311,8 @@ private enum CodeToolCardMetrics {
         max(0, codeLineHeight - CodePageTheme.markdownMonoFont.lineHeight)
     }
 
-    /// Existing `TimelineCodePanel` guard (rendered prefix capped at 200 000
-    /// characters; copy still takes the full value). Reused here so a huge
-    /// tool result cannot stall layout.
+    /// Rendered prefix capped at 200 000 characters; copy still takes the
+    /// full value. A huge tool result cannot stall layout.
     static let previewLimit = 200_000
 
     // MARK: Input field rows

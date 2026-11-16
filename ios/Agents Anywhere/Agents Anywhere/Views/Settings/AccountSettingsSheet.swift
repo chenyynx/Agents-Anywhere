@@ -9,11 +9,11 @@ struct AccountSettingsSheet: View {
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
     @AppStorage(TimelineRenderModeSwitch.key)
-    private var renderModeRaw = TimelineRenderMode.chat.rawValue
+    private var renderModeRaw = TimelineRenderMode.steps.rawValue
     @AppStorage(LocalCachePolicy.key)
     private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
     private var renderMode: TimelineRenderMode {
-        TimelineRenderMode(rawValue: renderModeRaw) ?? .chat
+        TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
     @State private var confirmsSignOut = false
     @State private var signOutError: String?

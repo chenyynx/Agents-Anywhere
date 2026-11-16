@@ -742,16 +742,18 @@ struct CodeMessagePlannerTests {
     }
 
     @Test func aToolRowWithoutAGroupingKeyEndsTheRun() throws {
-        // No `nativeMessageId` and no `itemId`: the row cannot join a span and
-        // keeps its own item.
+        // No `nativeMessageId` and no `itemId`: the row ends the run and keeps
+        // its own Code row. Its own id is the span's address now that the Code
+        // renderer owns it (the retired Chat row used to draw it standalone).
         let first = try makeToolItem(id: "t1", order: 1, message: "msg-1", blockIndex: 0)
         let orphan = try makeItem(id: "o1", order: 2, type: "tool", role: "tool",
                                   content: ["kind": "tool", "toolName": "Read"], source: [:])
         let second = try makeToolItem(id: "t2", order: 3, message: "msg-2", blockIndex: 0)
         let rows = CodeMessageBuilder.rows(for: [first, orphan, second], profile: .claudeCode)
         #expect(rows.count == 3)
-        #expect(rows.map(\.id) == ["t1", "item:o1", "t2"])
+        #expect(rows.map(\.id) == ["t1", "o1", "t2"])
         #expect(spanIDs(in: rows[0].blocks) == [["t1"]])
+        #expect(spanIDs(in: rows[1].blocks) == [["o1"]])
         #expect(spanIDs(in: rows[2].blocks) == [["t2"]])
     }
 

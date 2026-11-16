@@ -38,6 +38,41 @@ import Testing
         #expect(TimelineHeightEstimate.officialMinimum == 44)
     }
 
+    @Test func codeFirstFrameEstimateChargesLeadingOnlyBetweenLines() {
+        // The Code page's measured layout gives the first line the body
+        // font's natural line box (Anthropic Sans 17 pt: 21.25) and adds the
+        // 5.95 pt leading *between* lines; the row plan owns the gap between
+        // blocks. The historical arithmetic billed a full `body + lineSpacing`
+        // line plus a 0.6 × paragraph gap, so a one-line message seeded 34 pt
+        // against a 21–22 pt line. The follower sprang forward on that seed
+        // and the cell's report pulled it back: `timeline.mover` start 44 →
+        // arrived 15 pt under target on every new assistant message
+        // (pp 2026-11-16, b1262/b1266 logs).
+        let historical = TimelineHeightEstimate.height(
+            rows: [.init(text: "看完了")], width: 361,
+            bodySize: 17, lineSpacing: 5.95, paragraphSpacing: 17,
+            minimum: 0, cushion: 1)
+        #expect(historical == 34)
+
+        let code = TimelineHeightEstimate.height(
+            rows: [.init(text: "看完了")], width: 361,
+            bodySize: 17, lineSpacing: 5.95, paragraphSpacing: 17,
+            minimum: 0, cushion: 1,
+            firstLineHeight: 21.25, countsParagraphSpacing: false)
+        #expect(code == 22)
+
+        // Wrapped lines add the full pitch, not just the body size: the
+        // leading sits between lines.
+        let wrappedText = TimelineHeightEstimate.height(
+            rows: [.init(text: String(repeating: "字", count: 60))], width: 240,
+            bodySize: 17, lineSpacing: 5.95, paragraphSpacing: 17,
+            minimum: 0, cushion: 1,
+            firstLineHeight: 21.25, countsParagraphSpacing: false)
+        // 240 / (17 × 0.55) = 25 CJK units per line → 60 wide scalars = 120
+        // units → 5 lines → 21.25 + 4 × 22.95 = 113.05 → 114.
+        #expect(wrappedText == 114)
+    }
+
     @Test func heightChangeAffectsVisibleRows() {
         // Intersecting the viewport: the row itself is visible.
         #expect(TimelinePreferredAttributesDecision.heightChangeAffectsVisibleRows(

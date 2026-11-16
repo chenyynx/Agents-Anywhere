@@ -6,10 +6,10 @@ import UIKit
 /// pending/queue/approval events, navigation suspension) around the collection
 /// container.
 ///
-/// The old `ChatTimelineView` stays intact and selectable; this view is only
-/// built when `aa.timeline.collectionView` is on. I10–I13/I14/I15/I20 and the
-/// Markdown externalization stay in C5 — the history prompts render, but their
-/// load actions are inert until that wiring lands.
+/// The retired SwiftUI `ChatTimelineView` was deleted (2026-11-16), so this is
+/// the page's only timeline container. I10–I13/I14/I15/I20 and the Markdown
+/// externalization stay in C5 — the history prompts render, but their load
+/// actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
@@ -43,7 +43,7 @@ struct TimelineChatTimelineView: View {
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
@@ -81,6 +81,10 @@ struct TimelineChatTimelineView: View {
     /// fired within roughly 0.1 s; 150 ms collapses the `writing → idle → tool`
     /// handover into one cue and keeps the end-of-stream impact close enough
     /// to feel immediate.
+    ///
+    /// Left exactly as b1254 (pp 2026-11-16): the missing tool cue during a
+    /// sub-agent run was the child-row leak in `orbActivitySignals`, not this
+    /// window, so the cadence stays the release the reader already knows.
     private static let phaseSettleWindow: Duration = .milliseconds(150)
 
     /// Feeds one live phase into the settle: the first observation seeds the
@@ -130,7 +134,6 @@ struct TimelineChatTimelineView: View {
         // trailing accessory, which changes wrapping and the tail's height.
         let _ = model.session.sendQueue.items.map(\.state)
         let _ = model.session.isSendQueuePaused
-        let _ = model.disclosures.revision
         let _ = model.responseRevision
         let _ = model.timeline.windowRevision
         // State fields the signatures read but no row flush necessarily
@@ -415,7 +418,7 @@ final class TimelineChatBridge: ObservableObject {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         renderMode: TimelineRenderMode = .code) {
+         renderMode: TimelineRenderMode = .merged) {
         self.model = model
         let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
                                                  onFile: onFile, onSubAgent: onSubAgent,

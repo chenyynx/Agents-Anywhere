@@ -55,7 +55,7 @@ struct ChatPageToolbar: ViewModifier {
                     // width even when there is space between the buttons.
                     ToolbarItem(placement: .principal) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(.headline).lineLimit(1)
+                            ChatToolbarTitle(title: title)
                                 .modifier(StatusShimmer(active: status?.isGlow == true))
                                 .accessibilityAddTraits(.isHeader)
                             if subtitle != nil || status != nil {
@@ -80,10 +80,34 @@ struct ChatPageToolbar: ViewModifier {
     }
 }
 
+/// The session title in the navigation bar, in the official app's own face.
+///
+/// Measured from the official screenshot (1179×2556 @3x, 2026-11-16): the
+/// Latin run "Light-gallery PWA" is 370 px of ink and its `L` stem is 5 px.
+/// The app's own Anthropic Sans at 45 px (15 pt @3x) renders the same run at
+/// 373 px of ink, with a 5 px stem at wght 550 and 4 px at wght 400 — so the
+/// header is the custom face at 15 pt / 550, not the system font.
+private struct ChatToolbarTitle: View {
+    let title: String
+    @ScaledMetric(relativeTo: .subheadline) private var size: CGFloat = 15
+
+    var body: some View {
+        Text(title)
+            .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                size: size,
+                                                weight: 550)))
+            .lineLimit(1)
+    }
+}
+
 private struct ChatToolbarSubtitle: View {
     let subtitle: String?
     let status: ChatHeaderStatus?
     @ScaledMetric(relativeTo: .caption) private var lineHeight: CGFloat = 16
+    /// Official subtitle face/size (measured 2026-11-16): "Remote control" is
+    /// 268 px of ink and a 4 px stem at 3x — Anthropic Sans at 39 px (13 pt)
+    /// renders 277 px and a 4 px stem at wght 400.
+    @ScaledMetric(relativeTo: .caption) private var subtitleSize: CGFloat = 13
 
     private var text: String {
         [subtitle, status?.title].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
@@ -101,7 +125,15 @@ private struct ChatToolbarSubtitle: View {
             Text(verbatim: text).lineLimit(1)
                 .modifier(StatusShimmer(active: status?.isGlow == true))
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                            size: subtitleSize,
+                                            weight: 400)))
+        // Landed between the two measured ends: `.secondary` composites to
+        // ~rgb(138) and the official screenshot's subtitle sits at ~rgb(66)
+        // (`text300`). On the device `text300` read too dark (pp 2026-11-16),
+        // so the header uses the midpoint — black at 55 % in light (~rgb(115)),
+        // white at 55 % in dark (~rgb(140), the `.secondary` weight).
+        .foregroundStyle(Color.primary.opacity(0.55))
         .frame(height: lineHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel([subtitle, status?.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))

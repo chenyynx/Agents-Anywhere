@@ -37,6 +37,9 @@ nonisolated struct CodeStreamingText: Equatable {
 struct CodeMessageRowView: View {
     let group: ChatTimelineGroup
     let profile: CodeRuntimeProfile
+    /// The SubAgent panel renders the child rows the main timeline hides;
+    /// every timeline caller keeps the default.
+    var includesSubAgentChildren: Bool = false
     /// The session's working directory, used to shorten paths in tool labels.
     var cwd: String?
     /// The paced streaming snapshot while this message's body is still growing.
@@ -62,6 +65,11 @@ struct CodeMessageRowView: View {
     /// Draw the official interrupted-response notice under this message. The
     /// chat profile anchors it to the stopped turn's last row (pp 2026-11-14).
     var showsInterruptedNotice: Bool = false
+    /// Whether the row adds the official 5 pt top/bottom row margins. The
+    /// adapter zeroes the list gap for these rows and lets the margin be the
+    /// whole inter-row gap; the standalone fallback sits in a group that
+    /// already carries the list spacing, so it opts out.
+    var addsRowMargins: Bool = true
     /// The session's configured agent name for the notice copy.
     var interruptedAgentName: String = "Claude"
     /// A collapsed tool row's tap. Navigation belongs to the page: a sheet
@@ -87,6 +95,7 @@ struct CodeMessageRowView: View {
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
+         includesSubAgentChildren: Bool = false,
          cwd: String? = nil,
          streaming: CodeStreamingText? = nil,
          preparedBlocks: [String: [MarkdownBlockSnapshot]]? = nil,
@@ -94,6 +103,7 @@ struct CodeMessageRowView: View {
          columnWidth: CGFloat? = nil,
          turnActionCopyText: String? = nil,
          showsInterruptedNotice: Bool = false,
+         addsRowMargins: Bool = true,
          interruptedAgentName: String = "Claude",
          onToolDetail: @escaping (CodeToolDetailRequest) -> Void = { _ in },
          onThinkingDetail: @escaping (CodeThinkingDetailRequest) -> Void = { _ in },
@@ -113,6 +123,7 @@ struct CodeMessageRowView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
         self.group = group
         self.profile = profile
+        self.includesSubAgentChildren = includesSubAgentChildren
         self.cwd = cwd
         self.streaming = streaming
         self.preparedBlocks = preparedBlocks
@@ -120,6 +131,7 @@ struct CodeMessageRowView: View {
         self.columnWidth = columnWidth
         self.turnActionCopyText = turnActionCopyText
         self.showsInterruptedNotice = showsInterruptedNotice
+        self.addsRowMargins = addsRowMargins
         self.interruptedAgentName = interruptedAgentName
         self.onToolDetail = onToolDetail
         self.onThinkingDetail = onThinkingDetail
@@ -148,7 +160,7 @@ struct CodeMessageRowView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, CodePageTheme.rowMarginTop)
+                    .padding(.vertical, addsRowMargins ? CodePageTheme.rowMarginTop : 0)
                 } else {
                     Color.clear.frame(height: 0)
                 }
@@ -181,7 +193,7 @@ struct CodeMessageRowView: View {
                 // phones. The list's own item gap is zeroed for these rows
                 // (adapter `itemSpacing(after:)`), so this margin is the whole
                 // inter-row gap.
-                .padding(.vertical, CodePageTheme.rowMarginTop)
+                .padding(.vertical, addsRowMargins ? CodePageTheme.rowMarginTop : 0)
             }
         }
     }
@@ -378,7 +390,8 @@ struct CodeMessageRowView: View {
     }
 
     private var renderRows: [RenderedRow] {
-        CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile)
+        CodeMessageBuilder.rows(for: group.rows.map(\.value), profile: profile,
+                                includeSubAgentChildren: includesSubAgentChildren)
             .compactMap { row in
                 let blocks = row.blocks.filter { block in
                     switch block {
@@ -465,11 +478,15 @@ struct CodeThinkingStatusLine: View {
                     CodeThinkingText.liveText(elapsed: date.timeIntervalSince(startedAt))
                 }
             case let .thoughtFor(seconds, endedAt, fallbackStartedAt):
-                // `思考了 X` is visible for 2 s after the block ends; past
-                // that the official selector returns nil and the working row
-                // falls back to the rotating verbs (`0x102a88f20-f50`).
+                // `思考了 X` is the Code (合并) profile's official closed
+                // label, visible for 2 s after the block ends; past that the
+                // selector returns nil and the row falls back to the rotating
+                // verbs (`0x102a88f20-f50`). The chat (分步) profile never
+                // shows it (pp 2026-11-16): it keeps the neutral processing
+                // label while the turn continues.
                 statusTimeline { date in
-                    if date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
+                    if !usesChatWorkingStyle,
+                       date < endedAt.addingTimeInterval(CodeThinkingText.closedWindow) {
                         return CodeThinkingText.closedText(seconds: seconds)
                     }
                     if usesChatWorkingStyle {

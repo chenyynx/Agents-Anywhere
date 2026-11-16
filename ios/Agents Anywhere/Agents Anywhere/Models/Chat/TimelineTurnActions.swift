@@ -63,6 +63,22 @@ nonisolated struct TurnFooterGate: Equatable {
 
     init() {}
 
+    /// A running turn that no user bubble opened: a compaction command turn,
+    /// or the scheduled turn a background-task notification wakes (the
+    /// connector logs both as `claude.scheduled.running`). The reply on
+    /// screen is a *finished* turn, so its footer must survive the episode —
+    /// the adapter keeps the closed state's footers for exactly this window
+    /// (pp 2026-11-16: copy/share vanished each time a background CI monitor
+    /// completed and woke the agent).
+    var isUserlessEpisode: Bool { isOpen && !openedByTurn }
+
+    /// Whether the current or last turn was anchored to a user bubble this
+    /// client saw. `false` also covers the closed state, where a declared
+    /// turn-id change is a history boundary: a scheduled turn in history
+    /// needs a footer of its own exactly like a live one, and no running user
+    /// turn exists whose mid-turn flap the boundary could disturb.
+    var isAnchoredToUserBubble: Bool { openedByTurn }
+
     /// Feeds one adapter refresh; returns whether the latest turn's footer
     /// must stay suppressed.
     ///
@@ -148,8 +164,16 @@ enum TimelineTurnActions {
     /// host it. Hosting it on a divider read as a 91 pt jump on device
     /// (2026-10-31 05:40: the compact boundary carried the review + copy
     /// footer, then lost it when the next step group arrived).
+    /// - Parameter allowsTurnIdBoundary: whether a declared turn-id change
+    ///   without a user bubble closes the open bucket. The adapter passes it
+    ///   while the footer gate's turn was **not** opened by a user bubble —
+    ///   the closed state, a compaction command turn, or the scheduled turn a
+    ///   background-task notification wakes. A user turn keeps the older
+    ///   bubble-only splitting: a queued-send turn-id flap must not commit a
+    ///   footer mid-turn (pp 2026-11-14).
     static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
                       hasPendingUserMessage: Bool = false,
+                      allowsTurnIdBoundary: Bool = false,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
         -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
@@ -159,6 +183,10 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+        /// The declared turn id of the open bucket (its first naming row).
+        /// The boundary is read from the wire's ids only when the caller
+        /// allows it; ordinary turns are still split by a user bubble.
+        var bucketTurnID: V2TurnID?
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -182,6 +210,7 @@ enum TimelineTurnActions {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
+            bucketTurnID = nil
         }
 
         for group in groups {
@@ -189,6 +218,21 @@ enum TimelineTurnActions {
                 commit()
                 turnOpen = true
                 startsMidTurn = false
+            }
+            let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
+            if allowsTurnIdBoundary, let declaredTurnID, let currentTurnID = bucketTurnID,
+               declaredTurnID != currentTurnID {
+                // A turn that begins with no user bubble — a compaction
+                // continuation, or the scheduled turn a background-task
+                // notification wakes — is otherwise re-absorbed into the
+                // previous bucket: the finished turn loses its footer and its
+                // reply text joins the next turn's copy. Compaction made the
+                // bar blink 30 pt in and out (pp 2026-11-16 09:29); a wake-up
+                // turn moved the footer from the previous reply to its own
+                // (same day 10:05:54: host msg_577ba3bc → msg_1e1de664, count
+                // unchanged at 76). The declared turn-id change is the
+                // boundary those turns have instead of a bubble.
+                commit()
             }
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
@@ -200,6 +244,7 @@ enum TimelineTurnActions {
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
+            if bucketTurnID == nil { bucketTurnID = declaredTurnID }
             if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
@@ -219,6 +264,34 @@ enum TimelineTurnActions {
             commit()
         }
         return actions
+    }
+
+    /// Keep the footers a finished turn already had while the footer gate
+    /// stood closed.
+    ///
+    /// A userless episode (see `TurnFooterGate.isUserlessEpisode`) reopens the
+    /// gate and makes `build` suppress its final commit. The bucket on screen
+    /// is the *finished* turn, so those suppressions take away a footer that
+    /// was already correct: pp saw copy/share blink out every time a
+    /// background task completed and the runtime received its wake-up message
+    /// (2026-11-16, session `sess_iHSpxWxWtZWkXQ`: connector
+    /// `claude.scheduled.running` 09:51:35 → idle 09:51:41).
+    ///
+    /// The closed state is the authoritative map of finished turns, so
+    /// restoring it cannot reveal the open turn's own footer — `build` still
+    /// withholds that until the turn ends. A group that left the window is
+    /// dropped rather than restored.
+    static func restoringFinishedFooters(
+        _ current: [String: TimelineTurnAction],
+        from closed: [String: TimelineTurnAction],
+        groupIDs: Set<String>
+    ) -> [String: TimelineTurnAction] {
+        guard !closed.isEmpty else { return current }
+        var merged = current
+        for (groupID, action) in closed where merged[groupID] == nil && groupIDs.contains(groupID) {
+            merged[groupID] = action
+        }
+        return merged
     }
 
     /// Whether a pending delivery still opens the new turn for the footer gate.

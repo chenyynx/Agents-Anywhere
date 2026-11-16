@@ -8,7 +8,6 @@ final class SessionChatModel {
     /// The same opening window `V2SessionCachePolicy` reads from disk.
     private static let openingWindow = V2SessionCachePolicy.defaultOpeningWindow
     let settings = ConversationSettings()
-    let disclosures = TimelineDisclosureState()
     /// On-demand reads of deferred summary rows. The repository owns the
     /// projection change; this store owns only the per-row phase the UI
     /// renders (idle / loading / failed / offline) and its in-flight dedupe.
@@ -265,10 +264,14 @@ final class SessionChatModel {
         return commands.exact(intent)
     }
 
-    /// Autocomplete insert: write `/name` back into the composer and keep
-    /// focus. The caller owns the text selection (the official card selects
-    /// the inserted command so typing replaces it). Sending is a normal
-    /// prompt, so the runtime dispatches the skill itself.
+    /// The composer changed from its own native editor (capsule token
+    /// insertion). Persist the draft like any other editor edit.
+    func noteComposerChanged() {
+        repository.draftDidChange(sessionID: session.id)
+    }
+
+    /// Autocomplete insert fallback when the native editor is not mounted:
+    /// write `/name` back as plain text and keep focus.
     @discardableResult
     func complete(_ command: V2RuntimeCommand) -> String {
         let draft = session.composer

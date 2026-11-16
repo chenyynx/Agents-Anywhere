@@ -40,6 +40,10 @@ struct CommandSuggestionPanel: View {
     @Binding var forced: Bool
     let controls: ChatControlMetrics
     let editor: ComposerEditorController
+    /// Space between the top safe area (nav bar) and the composer bar; the
+    /// card shrinks to this when the keyboard + an expanded composer leave
+    /// less room than the five-row budget.
+    let availableHeight: CGFloat
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -51,7 +55,6 @@ struct CommandSuggestionPanel: View {
     private let cornerRadius: CGFloat = 16
     private let contentInset: CGFloat = 8
     private let rowInset: CGFloat = 20
-    private let maxVisibleRows = 5
 
     private var slashQuery: String? {
         guard let intent = SlashIntent(draft.text), intent.isCommandLike, intent.suffix.isEmpty, !intent.multiline else { return nil }
@@ -72,11 +75,18 @@ struct CommandSuggestionPanel: View {
         return true
     }
 
-    /// Official cap: five `rowMinHeight`s plus the 8 pt insets on both ends.
-    /// Rows can be taller than `rowMinHeight` (two-line descriptions), so the
-    /// fifth row is intentionally clipped in the screenshot as well.
+    /// Every matching row participates in the intrinsic height. The card is
+    /// capped by the space measured between the navigation bar and the
+    /// composer, not by a fixed row count: the official five-row cap left
+    /// ~130 pt of empty page above the card and gave the keyboard-down state
+    /// the same number of rows as the keyboard-up one (pp 2026-11-15:
+    /// 「键盘收起来 可见行肯定要比键盘弹起来的面板可见行要更多」).
+    private var desiredHeight: CGFloat {
+        rowMinHeight * CGFloat(suggestions.count) + contentInset * 2
+    }
+
     private var maximumHeight: CGFloat {
-        rowMinHeight * CGFloat(min(suggestions.count, maxVisibleRows)) + contentInset * 2
+        max(0, min(desiredHeight, availableHeight))
     }
 
     var body: some View {
@@ -99,7 +109,9 @@ struct CommandSuggestionPanel: View {
             .clipShape(panelShape)
             .overlay(panelShape.strokeBorder(panelBorder, lineWidth: 0.5))
             .shadow(color: shadowColor, radius: 10, x: 0, y: 3)
-            .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
+            // Fixed to the keyboard-up (expanded) inset: the card must not
+            // shrink just because the composer is collapsed.
+            .padding(.horizontal, controls.horizontalInset(expanded: true))
             // The composer adds 8 pt of its own top margin; together they make
             // the 16 pt gap measured between the card and the composer.
             .padding(.bottom, 8)
@@ -160,19 +172,28 @@ struct CommandSuggestionPanel: View {
         }
     }
 
-    /// Official list: a plain (non-lazy) VStack of buttons inside a scroll view
-    /// that only bounces when the content overflows, capped at five rows.
-    private var list: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 0) {
-                ForEach(suggestions) { command in row(command) }
+    /// Official list: a plain (non-lazy) VStack of buttons. Content taller
+    /// than the measured space becomes a fixed-height ScrollView; `fixedSize`
+    /// around a ScrollView made its content its own height, so the list was
+    /// clipped and could not scroll (only the first four rows were reachable).
+    @ViewBuilder private var list: some View {
+        if desiredHeight > availableHeight + 0.5 {
+            ScrollView(.vertical) {
+                rows
             }
-            .padding(.vertical, contentInset)
+            .scrollIndicators(.visible)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: maximumHeight)
+        } else {
+            rows
         }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: maximumHeight)
-        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var rows: some View {
+        VStack(spacing: 0) {
+            ForEach(suggestions) { command in row(command) }
+        }
+        .padding(.vertical, contentInset)
     }
 
     private func message(_ text: String, symbol: String) -> some View {
@@ -199,13 +220,17 @@ struct CommandSuggestionPanel: View {
         return Button {
             forced = false
             if command.isInsertCommand {
-                // Official card: the skill goes back into the composer and
-                // the whole command is selected, so typing replaces it and
-                // sending dispatches it as a normal prompt. Dismiss the card
-                // for this exact text; typing a new prefix reopens it.
-                let text = chat.complete(command)
-                dismissedFor = text
-                editor.selectAllAfterSync(text)
+                // Official card: the skill goes back into the composer as one
+                // capsule token (typing appends arguments, backspace removes
+                // the whole command). Dismiss the card for this exact text;
+                // typing a new prefix reopens it.
+                if let text = editor.insertCommandToken(command.id) {
+                    chat.noteComposerChanged()
+                    dismissedFor = text
+                } else {
+                    // No mounted native view (headless/preview): plain text.
+                    dismissedFor = chat.complete(command)
+                }
             } else {
                 Task { await chat.choose(command) }
             }

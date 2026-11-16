@@ -17,8 +17,15 @@ struct ChatTimelineGroup: Identifiable, Equatable {
     /// Groups built by `groups(_:interactionTargets:)` keep nil and stay keyed
     /// on their first row exactly as before.
     var explicitID: String?
+    /// The row an interaction card (approval / question) is anchored to. A
+    /// standalone anchor row draws the Code page's 5 pt row margins and pays
+    /// no list gap, so a docked card sits at the same distance as a step-group
+    /// anchor. Paying the list's legacy 20 pt gap while drawing no margins put
+    /// the question card ~20 pt lower than the approval card (pp 2026-11-16).
+    var isInteractionAnchor: Bool = false
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.explicitID == rhs.explicitID
+            && lhs.isInteractionAnchor == rhs.isInteractionAnchor
             && lhs.rows.elementsEqual(rhs.rows, by: ===)
     }
     // The first row owns the group, even as the second tool arrives. A group
@@ -50,9 +57,32 @@ struct ChatTimelineGroup: Identifiable, Equatable {
     }
 }
 
+extension ChatTimelineGroup {
+    /// The standalone compaction divider: one marker row with no declared
+    /// message key. It draws its own 16 pt vertical padding.
+    var isStandaloneCompactDivider: Bool {
+        explicitID == nil && rows.count == 1
+            && TimelineEntryPresentation.isCompactItem(rows[0].value)
+    }
+
+    /// Whether the row supplies its own vertical breathing room. Code/chat
+    /// message and step rows carry 5 pt row margins; the compaction divider
+    /// carries 16 pt padding. The list must not add its 20 pt gap after
+    /// these — paying it on the divider's trailing side alone left 20 pt
+    /// more space below the divider than above it (device 2026-11-15).
+    var isSelfMargined: Bool {
+        explicitID != nil || isStandaloneCompactDivider || isInteractionAnchor
+    }
+
+    /// The vertical gap the collection list adds after this group.
+    var listSpacing: CGFloat { isSelfMargined ? 0 : TimelineListMetrics.itemSpacing }
+}
+
 enum TimelineGrouping {
-    static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: false)
+    static func groups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>,
+                       standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets, includeAgentRows: false)
     }
 
     /// C0 fallback (2026-10-23): the whole window can be rows the connector
@@ -62,8 +92,10 @@ enum TimelineGrouping {
     /// window exactly as the card's own fold does (consecutive rows of one
     /// parent merge); the panel still reads `chat.timeline.rows`, so nothing is
     /// hidden from it.
-    static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>) -> [ChatTimelineGroup] {
-        grouped(rows, interactionTargets: interactionTargets, includeAgentRows: true)
+    static func fallbackGroups(_ rows: [ChatTimelineRowModel], interactionTargets: Set<String>,
+                               standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        grouped(rows, interactionTargets: interactionTargets,
+                standaloneTargets: standaloneTargets, includeAgentRows: true)
     }
 
     /// The fallback applies only when the window holds no main-agent row: the
@@ -86,8 +118,13 @@ enum TimelineGrouping {
     private static func grouped(
         _ rows: [ChatTimelineRowModel],
         interactionTargets: Set<String>,
+        standaloneTargets: Set<String>?,
         includeAgentRows: Bool
     ) -> [ChatTimelineGroup] {
+        // Session-blocking cards are docked above the composer; their rows can
+        // merge into a step group. Only the inline (non-blocking) anchors need
+        // a standalone row (pp 2026-11-16).
+        let standalone = standaloneTargets ?? interactionTargets
         var groups: [ChatTimelineGroup] = []
         var pending: [ChatTimelineRowModel] = []
         var pendingKind = ChatTimelineGroup.Kind.single
@@ -111,8 +148,14 @@ enum TimelineGrouping {
             // parentItemId, but reading the value would let a streaming token or
             // tool-output refresh invalidate the list and regroup history.
             if case .agents = row.structure.groupKind, !interactionTargets.contains(row.id), !includeAgentRows { continue }
-            let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
-            if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
+            let isInteractionAnchor = standalone.contains(row.id)
+            let kind: ChatTimelineGroup.Kind = isInteractionAnchor ? .single : row.structure.groupKind
+            if kind == .single {
+                flush()
+                groups.append(ChatTimelineGroup(kind: .single, rows: [row],
+                                                isInteractionAnchor: isInteractionAnchor))
+                continue
+            }
             if pendingKind != kind { flush() }
             pendingKind = kind; pending.append(row)
         }
@@ -131,7 +174,10 @@ enum TimelineGrouping {
     /// - `.message` keeps its declared key as `explicitID`,
     /// - `.span` takes the planner's stable span id (the first tool's
     ///   `source.itemId`), so a new serial call grows the same top-level item,
-    /// - `.standalone` keeps the Chat renderer and its first-row identity.
+    /// - `.standalone` draws through `CodeStandaloneRowView` and stays keyless
+    ///   on purpose: that renderer owns the inline interaction cards, the turn
+    ///   footer and the interrupted notice, which the explicit-key branch does
+    ///   not draw.
     ///
     /// Rows are filtered before planning exactly as the old grouping filtered
     /// them: `isVisibleInChat` (hidden rows, turn markers, signature-only
@@ -145,7 +191,9 @@ enum TimelineGrouping {
     /// blocks twice.
     static func codeGroups(_ rows: [ChatTimelineRowModel],
                            profile: CodeRuntimeProfile,
-                           interactionTargets: Set<String>) -> [ChatTimelineGroup] {
+                           interactionTargets: Set<String>,
+                           standaloneTargets: Set<String>? = nil) -> [ChatTimelineGroup] {
+        let standalone = standaloneTargets ?? interactionTargets
         // The projection hands over one version per item id; the first
         // occurrence wins, the same rule the planner applies. Keeping the row
         // model alongside its item lets the unit list map back without a
@@ -176,7 +224,20 @@ enum TimelineGrouping {
             case let .span(id, _):
                 groups.append(ChatTimelineGroup(kind: .single, rows: unitRows, explicitID: id))
             case .standalone:
-                groups.append(ChatTimelineGroup(kind: .single, rows: unitRows))
+                // Deliberately keyless even when the row is a message: the
+                // standalone renderer carries the interaction cards, the turn
+                // footer and the interrupted notice, which the explicit-key
+                // branch does not draw. The first-frame estimate uses the Chat
+                // typography for these (rare) rows; hosting measurement
+                // settles the real height.
+                //
+                // An interaction target is self-margined like a message row:
+                // its card docks directly below, so the list's 20 pt gap
+                // would read as a blank band under the card's anchor row
+                // (pp 2026-11-16).
+                let isInteractionAnchor = unitRows.contains { standalone.contains($0.id) }
+                groups.append(ChatTimelineGroup(kind: .single, rows: unitRows,
+                                               isInteractionAnchor: isInteractionAnchor))
             }
         }
         return groups
@@ -212,26 +273,5 @@ enum TimelineGrouping {
         let raw = item.raw["content"]
         let message = TimelineText.first(raw?["details"]?["error"]?["message"], raw?["details"]?["message"], raw?["message"], raw?["text"])
         return message?.hasPrefix("Reconnecting...") == true ? message : nil
-    }
-}
-
-@MainActor @Observable final class TimelineDisclosureState {
-    @Observable fileprivate final class Entry { var expanded = false }
-    @ObservationIgnored private var entries: [String: Entry] = [:]
-    /// Bumped on every toggle. Fold state changes a group's height without
-    /// changing its rows, so the collection adapter needs one observable
-    /// signal to recompute signatures; reading every entry would couple the
-    /// wrapper to ids it does not know yet.
-    private(set) var revision = 0
-    private func entry(_ id: String) -> Entry {
-        if let existing = entries[id] { return existing }
-        let value = Entry(); entries[id] = value; return value
-    }
-    // Each fold observes its own bit. Toggling one tool must not reconstruct
-    // every other expanded tool's diff and output subtree.
-    func isExpanded(_ id: String) -> Bool { entry(id).expanded }
-    func toggle(_ id: String) {
-        entry(id).expanded.toggle()
-        revision &+= 1
     }
 }

@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
@@ -501,6 +502,7 @@ def _raw_frame_dump_path() -> str | None:
 def _dump_raw_frame(path: str, message: Any) -> None:
     try:
         record = {
+            "ts": time.time(),
             "cls": type(message).__name__,
             "parent_tool_use_id": getattr(message, "parent_tool_use_id", None),
             "session_id": getattr(message, "session_id", None),

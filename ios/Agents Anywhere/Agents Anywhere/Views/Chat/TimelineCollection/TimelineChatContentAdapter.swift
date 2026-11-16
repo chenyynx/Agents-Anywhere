@@ -2343,6 +2343,36 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         TimelineProbeStore.shared.noteStage(
             "adapter.signature", seconds: CACurrentMediaTime() - probeSignatureStart)
 #endif
+        // Send-frame probe (pp 2026-11-16): the standalone working row and the
+        // pending bubble come from two sources — `session.pendingMessages`
+        // (synchronous) and the presentation's `pendingMessages` (published on
+        // its own tick). Whichever lands in a later apply grows the content
+        // inside the running follow, so it never gets its own entrance: one
+        // send reads "bubble lands, working row follows", the next reads
+        // "working row already there". One line per item-set change names the
+        // order and the two sources; read it beside `timeline.mover`.
+        let previousItemIDs = Set(itemsValue.map(\.itemID))
+        let nextItemIDs = Set(identity.items.map(\.itemID))
+        if previousItemIDs != nextItemIDs {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.rows.frame",
+                sessionID: model.session.id,
+                detail: [
+                    "added": identity.items.map(\.itemID)
+                        .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
+                    "removed": itemsValue.map(\.itemID)
+                        .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
+                    "items": String(identity.items.count),
+                    "working": model.sendingPlaceholder != nil ? "1" : "0",
+                    "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
+                    "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
+                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                    "queue": String(model.session.sendQueue.items.count),
+                    "running": model.isRunning ? "1" : "0",
+                    "status": String(describing: model.session.runtime.state?.status),
+                ],
+                dedupe: false)
+        }
         itemsValue = identity.items
         signaturesByItem = signatures
         if estimateCache.count > 256 { estimateCache.removeAll(keepingCapacity: true) }

@@ -18,12 +18,14 @@ from agent_server.core.events import (
     capability_event_semantic_fingerprint,
     event_cursor,
     events_from_invalidation,
+    order_bucket_events,
     parse_event_cursor,
     protocol_event,
     revisions_are_complete,
     timeline_events_from_items,
 )
 from agent_server.core.models import SessionView, TimelineItemIn
+from agent_server.core.protocol import ProtocolEventEnvelope
 from agent_server.infra.connector_rpc import ConnectorRpcManager
 from agent_server.infra.repositories.facade import Store
 from agent_server.services import event_recovery
@@ -113,6 +115,87 @@ def test_capability_event_fingerprint_ignores_set_revision_and_record_order() ->
         )
         is None
     )
+
+
+def test_a_bucket_orders_the_runtime_state_before_the_session_meta() -> None:
+    """Same-sequence frames must not take their order from hashed event ids.
+
+    The state and meta frames of one bucket share the session sequence. The
+    old (sequence, eventId) sort put the meta first whenever its hash sorted
+    lower; the client reads the meta's global sequence as a ~4k timeline gap
+    and synchronously recovers, so the idle state behind it waited out the
+    round — the copy/share footer stayed ~1 s late (device 2026-11-17).
+    """
+
+    meta = ProtocolEventEnvelope(
+        eventId="evt_7_000000000000",
+        sequence=7,
+        cursor="seq:7",
+        type="session.meta.updated",
+        sessionId="session-1",
+        emittedAt="2026-11-17T02:56:12Z",
+        payload={"session": {"id": "session-1"}},
+    )
+    state = ProtocolEventEnvelope(
+        eventId="evt_7_ffffffffffff",
+        sequence=7,
+        cursor="seq:7",
+        type="runtime.state.updated",
+        sessionId="session-1",
+        emittedAt="2026-11-17T02:56:12Z",
+        payload={"state": {"status": "idle"}},
+    )
+
+    ordered = order_bucket_events([meta, state])
+
+    assert [event.type for event in ordered] == [
+        "runtime.state.updated",
+        "session.meta.updated",
+    ]
+
+
+def test_a_state_invalidation_orders_state_before_meta(monkeypatch) -> None:
+    # Pin the generated ids so the meta frame would win the old
+    # (sequence, eventId) tie-break — the ordering failure seen on ~half the
+    # real turn-end buckets.
+    real_protocol_event = protocol_event
+
+    def sort_hostile_event(session_id, *, sequence, event_type, payload):
+        event = real_protocol_event(
+            session_id,
+            sequence=sequence,
+            event_type=event_type,
+            payload=payload,
+        )
+        suffix = "0" * 12 if event_type == "session.meta.updated" else "f" * 12
+        return event.model_copy(update={"eventId": f"evt_{sequence}_{suffix}"})
+
+    monkeypatch.setattr(
+        "agent_server.core.events.protocol_event", sort_hostile_event
+    )
+
+    events = events_from_invalidation(
+        {
+            "sessionId": "session-1",
+            "nextSeq": 7,
+            "runtimeState": {
+                "sessionId": "session-1",
+                "runtime": "claude",
+                "status": "idle",
+                "updatedSeq": 7,
+            },
+            "session": {
+                "id": "session-1",
+                "status": "idle",
+                "updatedSeq": 7,
+            },
+        }
+    )
+
+    assert [event.type for event in events] == [
+        "runtime.state.updated",
+        "session.meta.updated",
+    ]
 
 
 def test_timeline_reset_invalidation_becomes_one_snapshot_event() -> None:

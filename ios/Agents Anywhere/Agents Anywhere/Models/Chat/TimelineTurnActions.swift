@@ -72,6 +72,13 @@ nonisolated struct TurnFooterGate: Equatable {
     /// completed and woke the agent).
     var isUserlessEpisode: Bool { isOpen && !openedByTurn }
 
+    /// Whether the current or last turn was anchored to a user bubble this
+    /// client saw. `false` also covers the closed state, where a declared
+    /// turn-id change is a history boundary: a scheduled turn in history
+    /// needs a footer of its own exactly like a live one, and no running user
+    /// turn exists whose mid-turn flap the boundary could disturb.
+    var isAnchoredToUserBubble: Bool { openedByTurn }
+
     /// Feeds one adapter refresh; returns whether the latest turn's footer
     /// must stay suppressed.
     ///
@@ -157,8 +164,16 @@ enum TimelineTurnActions {
     /// host it. Hosting it on a divider read as a 91 pt jump on device
     /// (2026-10-31 05:40: the compact boundary carried the review + copy
     /// footer, then lost it when the next step group arrived).
+    /// - Parameter allowsTurnIdBoundary: whether a declared turn-id change
+    ///   without a user bubble closes the open bucket. The adapter passes it
+    ///   while the footer gate's turn was **not** opened by a user bubble —
+    ///   the closed state, a compaction command turn, or the scheduled turn a
+    ///   background-task notification wakes. A user turn keeps the older
+    ///   bubble-only splitting: a queued-send turn-id flap must not commit a
+    ///   footer mid-turn (pp 2026-11-14).
     static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
                       hasPendingUserMessage: Bool = false,
+                      allowsTurnIdBoundary: Bool = false,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
         -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
@@ -169,13 +184,9 @@ enum TimelineTurnActions {
         var turnOpen = false
         var hasActiveItems = false
         /// The declared turn id of the open bucket (its first naming row).
-        /// Used only around a compaction separator; ordinary turns are still
-        /// split by a user bubble, not by whichever id the wire stamps.
+        /// The boundary is read from the wire's ids only when the caller
+        /// allows it; ordinary turns are still split by a user bubble.
         var bucketTurnID: V2TurnID?
-        /// A compact marker closed the open bucket's turn. The rows after it
-        /// belong to a turn no user bubble opened, so the first declared
-        /// turn-id change is the footer's commit boundary (pp 2026-11-16).
-        var compactBoundaryPending = false
 
         func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
             guard footerHostEligible(group) else { return false }
@@ -200,7 +211,6 @@ enum TimelineTurnActions {
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
             bucketTurnID = nil
-            compactBoundaryPending = false
         }
 
         for group in groups {
@@ -210,21 +220,20 @@ enum TimelineTurnActions {
                 startsMidTurn = false
             }
             let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
-            if compactBoundaryPending, let declaredTurnID, let bucketTurnID,
-               declaredTurnID != bucketTurnID {
-                // A turn that begins after a compaction has no user bubble:
-                // the CLI resumes with a scheduled reader turn. Keeping the
-                // finished turn's replies in the same bucket made its footer
-                // depend on the new turn's rows, so every active step withdrew
-                // it and every idle gap put it back — the copy/share bar
-                // blinked 30 pt in and out (pp 2026-11-16: 「已压缩对话」 then
-                // immediately 任务中). A declared turn-id change after the
-                // separator closes the finished turn on its own last reply.
-                // An automatic compaction inside one turn keeps the same id
-                // on both sides, so this cannot reveal a footer mid-turn.
+            if allowsTurnIdBoundary, let declaredTurnID, let currentTurnID = bucketTurnID,
+               declaredTurnID != currentTurnID {
+                // A turn that begins with no user bubble — a compaction
+                // continuation, or the scheduled turn a background-task
+                // notification wakes — is otherwise re-absorbed into the
+                // previous bucket: the finished turn loses its footer and its
+                // reply text joins the next turn's copy. Compaction made the
+                // bar blink 30 pt in and out (pp 2026-11-16 09:29); a wake-up
+                // turn moved the footer from the previous reply to its own
+                // (same day 10:05:54: host msg_577ba3bc → msg_1e1de664, count
+                // unchanged at 76). The declared turn-id change is the
+                // boundary those turns have instead of a bubble.
                 commit()
             }
-            if compactBoundaryPending, declaredTurnID != nil { compactBoundaryPending = false }
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
             // conversation (they can still place the footer via the group).
@@ -243,9 +252,6 @@ enum TimelineTurnActions {
             // while it runs, the finished turn keeps its footer and the 30 pt
             // action bar with it (pp 2026-11-15: copy/share vanished for the
             // whole compaction and the page jumped twice).
-            if group.rows.contains(where: { TimelineEntryPresentation.isCompactItem($0.value) }) {
-                compactBoundaryPending = true
-            }
             let active = group.rows.contains {
                 $0.structure.status.isActive
                     && !TimelineEntryPresentation.isCompactItem($0.value)

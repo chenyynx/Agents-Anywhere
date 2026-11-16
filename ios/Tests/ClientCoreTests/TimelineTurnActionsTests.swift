@@ -167,7 +167,7 @@ import Testing
                         row("resumed", text: "Working again", status: "running", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true)
+            suppressLatest: true, allowsTurnIdBoundary: true)
         #expect(actions["reply"]?.copyText == "Answer")
         #expect(actions["resumed"] == nil)
     }
@@ -182,9 +182,29 @@ import Testing
                         row("resumed", text: "Working again", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false)
+            suppressLatest: false, allowsTurnIdBoundary: true)
         #expect(actions["reply"]?.copyText == "Answer")
         #expect(actions["resumed"]?.copyText == "Working again")
+    }
+
+    /// A wake-up turn that ends must not take the previous turn's footer with
+    /// it. pp 2026-11-16 10:05:54 (b1278): the wake-up turn's own reply
+    /// replaced the previous reply as the footer host, copy text included.
+    @Test func aWakeUpTurnsReplyKeepsThePreviousTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("previous", text: "Previous answer", turnId: "turn-1"),
+                        row("woken", text: "Woken answer", turnId: "turn-2")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false, allowsTurnIdBoundary: true)
+        #expect(actions["previous"]?.copyText == "Previous answer")
+        #expect(actions["woken"]?.copyText == "Woken answer")
+        // A user-opened turn does not split on the wire's ids (see below).
+        let merged = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(merged["previous"] == nil)
+        #expect(merged["woken"]?.copyText == "Previous answer\n\nWoken answer")
     }
 
     /// An automatic compaction inside the user's own running turn is not a
@@ -196,9 +216,26 @@ import Testing
                         row("reply", text: "First part", turnId: "turn-1"),
                         compactRow("compact", state: "completed", status: "done", turnId: "turn-1"),
                         row("more", text: "Second part", status: "running", turnId: "turn-1")]
+        for allowsBoundary in [true, false] {
+            let actions = TimelineTurnActions.build(
+                groups: TimelineGrouping.groups(rows, interactionTargets: []),
+                suppressLatest: true, allowsTurnIdBoundary: allowsBoundary)
+            #expect(actions.isEmpty)
+        }
+    }
+
+    /// A mid-turn turn-id flap (queued sends re-key rows between two ids)
+    /// must not commit a footer while the user's turn still runs: the adapter
+    /// only allows the wire boundary when no user bubble opened the turn.
+    @Test func aMidTurnIdFlapDoesNotCommitAFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("reply", text: "First part", turnId: "turn-1"),
+                        row("tool", type: "tool", text: "", status: "done", turnId: "turn-1"),
+                        row("more", text: "Second part", status: "running", turnId: "turn-2")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true)
+            suppressLatest: true, allowsTurnIdBoundary: false,
+            footerHostEligible: { $0.id != "tool" })
         #expect(actions.isEmpty)
     }
 
@@ -435,13 +472,17 @@ struct TurnFooterGateTests {
         var gate = TurnFooterGate()
         _ = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
         #expect(!gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
         _ = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 0)
         #expect(!gate.isUserlessEpisode)
+        #expect(gate.isAnchoredToUserBubble)
         _ = gate.update(userKey: "u2", runtimeIsRunning: false, authoritativeTurnEnds: 1)
         #expect(!gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
         let wakeup = gate.update(userKey: "u2", runtimeIsRunning: true, authoritativeTurnEnds: 1)
         #expect(wakeup)
         #expect(gate.isUserlessEpisode)
+        #expect(!gate.isAnchoredToUserBubble)
     }
 
     @Test func aNilUserKeyDoesNotStrandAFinishedTurn() {

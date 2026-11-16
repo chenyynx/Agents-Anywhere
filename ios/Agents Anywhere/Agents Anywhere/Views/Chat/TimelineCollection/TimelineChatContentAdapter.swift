@@ -2213,6 +2213,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // presentation until its echo row publishes is not a new turn.
             hasPendingUserMessage: !model.session.hasNewerItems
                 && submittingPendingID != nil && !submittingPendingHasEcho,
+            // A turn that no user bubble opened — a compaction command turn,
+            // a scheduled reader turn, the wake-up a completed background task
+            // sends — has only its declared turn id as a boundary. Without it
+            // the previous turn's footer slides onto the new turn's reply
+            // (pp 2026-11-16 10:05:54: host msg_577ba3bc → msg_1e1de664 with
+            // the footer count unchanged). A user-opened turn keeps the
+            // bubble-only split so a queued-send turn-id flap cannot commit a
+            // footer mid-turn.
+            allowsTurnIdBoundary: !turnFooterGate.isAnchoredToUserBubble,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact

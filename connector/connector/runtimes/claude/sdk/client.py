@@ -96,9 +96,16 @@ def build_sdk_options(
     title_control: Any | None = None,
 ) -> Any:
     values = dict(config_values)
+    extra_args: dict[str, str | None] = {"replay-user-messages": None}
+    if os.environ.get("AA_CLAUDE_DEBUG"):
+        # Diagnostic switch (default OFF): let the CLI write its own debug log
+        # to ~/.claude/debug/<session>.txt. The turn-tail probe cannot tell
+        # whether the ResultMessage was produced late by the CLI or consumed
+        # late by the connector; the CLI log carries its own timeline.
+        extra_args["debug"] = None
     kwargs: dict[str, Any] = {
         "include_partial_messages": True,
-        "extra_args": {"replay-user-messages": None},
+        "extra_args": extra_args,
         "max_buffer_size": CLAUDE_SDK_MAX_BUFFER_SIZE,
     }
     if session.cwd:

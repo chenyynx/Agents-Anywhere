@@ -21,13 +21,13 @@ import Testing
         ]
     }
 
-    private func catalogs(_ models: [[String: Any]]) throws -> V2SessionCatalogs {
+    private func catalogs(_ models: [[String: Any]]) throws -> ChatSettingsCatalog {
         let model: V2ModelCatalogResponse = try decode([
             "catalog": ["runtime": "claude", "revision": 1, "models": models],
             "serverTime": "2026-09-05T12:00:00Z",
         ])
         let permission: V2PermissionCatalogResponse = try fixture("permissionCatalog")
-        return V2SessionCatalogs(model: model.catalog, permission: permission.catalog)
+        return ChatSettingsCatalog(V2SessionCatalogs(model: model.catalog, permission: permission.catalog))
     }
 
     @Test func switchingModelsKeepsTheChosenEffortLevel() throws {

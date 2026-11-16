@@ -386,6 +386,69 @@ async def test_ingest_bucket_envelope_slims_an_image_without_a_write_buffer(
 
 
 @pytest.mark.anyio
+async def test_a_status_bucket_publishes_the_session_revision_once(tmp_path) -> None:
+    """The status revision must ride the envelope that carries ``runtimeState``.
+
+    ``set_session_status`` used to publish a session-only envelope immediately.
+    It went out ~60 ms ahead of the state frame carrying the global session
+    sequence, ~4k past the timeline cursor; the client read a gap and ran a
+    synchronous recovery before the idle frame behind it could land — the
+    copy/share footer appeared ~1 s after the turn (device 2026-11-17).
+    """
+
+    class Presence:
+        async def is_online(self, _connector_id: str) -> bool:
+            return True
+
+    store, broker, buffer, connector, session = await create_buffer(
+        tmp_path,
+        presence=Presence(),
+    )
+
+    class NoopRealtime:
+        async def apply(self, **_values) -> bool:
+            return False
+
+    notifications = ConnectorNotificationService(
+        store,
+        NoopRealtime(),  # type: ignore[arg-type]
+        None,
+    )
+    ingest = ConnectorIngestService(
+        store,
+        notifications,
+        broker,
+        cast(Any, None),
+        Presence(),  # type: ignore[arg-type]
+        SessionRuntimeStateCache(),
+    )
+    queue = await broker.register(session.id)
+    try:
+        await ingest.handle_notification_message(
+            connector_id=connector.id,
+            method="session.state.updated",
+            params={
+                "sessionId": session.id,
+                "runtime": "codex",
+                "status": "running",
+                "metadata": {"source": "claude.turn.completed"},
+            },
+        )
+
+        envelope = json.loads(await asyncio.wait_for(queue.get(), timeout=1))
+        assert "runtimeState" in envelope
+        assert envelope["runtimeState"]["status"] == "running"
+        assert "session" in envelope
+        assert envelope["session"]["status"] == "running"
+        with pytest.raises(asyncio.QueueEmpty):
+            queue.get_nowait()
+    finally:
+        await broker.unregister(session.id, queue)
+        await buffer.close()
+        await store.close()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("batch", [False, True])
 async def test_revision_result_envelope_slims_an_image_item(
     tmp_path,

@@ -360,6 +360,7 @@ class ConnectorIngestService:
             elif bucket["items"]:
                 envelope["items"] = egress_items()
             runtime_state: SessionRuntimeState | None = None
+            persisted_session = None
             if bucket["runtime_state"]:
                 bound_session = await self._store.get_session(session_id)
                 runtime_state = runtime_state_from_ingest_effect(
@@ -398,10 +399,17 @@ class ConnectorIngestService:
                             else None,
                             next_seq,
                         )
+                    # Publish the session revision only with the envelope below,
+                    # which carries the runtime state too. The store's usual
+                    # immediate session-only publish would race ahead of the
+                    # state frame: its global session sequence reads as a ~4k
+                    # timeline gap on the client, whose synchronous recovery
+                    # then delays the idle state (turn-end footer, 2026-11-17).
                     persisted_session = await self._store.set_session_status(
                         session_id,
                         runtime_state.status,
                         mark_read_on_change=True,
+                        publish_revision=False,
                     )
                     status_changed = persisted_session.status != bound_session.status
                     next_seq = max(
@@ -467,6 +475,16 @@ class ConnectorIngestService:
             ):
                 return status_changed
             await self._timeline_broker.publish(session_id, envelope)
+            if persisted_session is not None:
+                # The envelope just published carries both the runtime state
+                # and the session revision; mark that revision published
+                # without a second, session-only frame (see above).
+                await self._store.publish_session_revision_result(
+                    session_id,
+                    operation="set_session_status",
+                    result=persisted_session,
+                    publish=False,
+                )
             return status_changed
 
         for session_id, bucket in by_session.items():

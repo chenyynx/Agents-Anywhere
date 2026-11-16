@@ -1742,6 +1742,7 @@ class SessionRepositoryMixin:
         *,
         expected_status: str | None = None,
         mark_read_on_change: bool = False,
+        publish_revision: bool = True,
     ) -> SessionView:
         async with self.session_revision_fence(session_id):
             changed = False
@@ -1779,6 +1780,7 @@ class SessionRepositoryMixin:
                     session_id,
                     operation="set_session_status",
                     result=session,
+                    publish=publish_revision,
                 )
             return session
 

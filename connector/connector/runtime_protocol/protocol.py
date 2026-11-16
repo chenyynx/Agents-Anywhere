@@ -263,7 +263,6 @@ class AgentRuntime(ABC):
         external_session_id: str | None = None,
         query: str | None = None,
         limit: int = 50,
-        *,
         include_skills: bool = False,
     ) -> tuple[RuntimeCommand, ...]:
         return ()

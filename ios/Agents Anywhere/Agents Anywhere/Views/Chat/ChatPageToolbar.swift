@@ -108,7 +108,6 @@ private struct ChatToolbarSubtitle: View {
     /// 268 px of ink and a 4 px stem at 3x — Anthropic Sans at 39 px (13 pt)
     /// renders 277 px and a 4 px stem at wght 400.
     @ScaledMetric(relativeTo: .caption) private var subtitleSize: CGFloat = 13
-    @Environment(\.colorScheme) private var colorScheme
 
     private var text: String {
         [subtitle, status?.title].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
@@ -129,12 +128,12 @@ private struct ChatToolbarSubtitle: View {
         .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
                                             size: subtitleSize,
                                             weight: 400)))
-        // Measured from the official screenshot (2026-11-16): the subtitle's
-        // stroke core is rgb(66,66,66) on a (250,250,248) bar, while our
-        // `.secondary` composites to ~rgb(138,138,142). The closest official
-        // token is `text300` (light 0.22 → rgb(56,56,53); antialiasing lifts
-        // the darkest pixel to ~66), so the header uses it instead.
-        .foregroundStyle(CodePageTheme.text300Color.resolved(for: colorScheme))
+        // Landed between the two measured ends: `.secondary` composites to
+        // ~rgb(138) and the official screenshot's subtitle sits at ~rgb(66)
+        // (`text300`). On the device `text300` read too dark (pp 2026-11-16),
+        // so the header uses the midpoint — black at 55 % in light (~rgb(115)),
+        // white at 55 % in dark (~rgb(140), the `.secondary` weight).
+        .foregroundStyle(Color.primary.opacity(0.55))
         .frame(height: lineHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel([subtitle, status?.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))

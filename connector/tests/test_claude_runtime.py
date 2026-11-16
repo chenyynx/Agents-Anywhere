@@ -1245,6 +1245,49 @@ async def _test_claude_runtime_projects_result_only_reply() -> None:
     assert host.session_state_updates[-1]["status"] == "idle"
 
 
+def test_a_failed_idle_state_send_still_records_the_turn_ledger() -> None:
+    asyncio.run(_test_a_failed_idle_state_send_still_records_the_turn_ledger())
+
+
+async def _test_a_failed_idle_state_send_still_records_the_turn_ledger() -> None:
+    """The state now goes first; its failure must not swallow the ledger."""
+
+    class _IdleFailingHost(_RecordingHost):
+        async def session_state_update(self, session_id, runtime, status=None, **kwargs):
+            if status == "idle":
+                raise RuntimeError("notification lane down")
+            await super().session_state_update(
+                session_id, runtime, status=status, **kwargs
+            )
+
+    host = _IdleFailingHost()
+    client = _FakeClaudeClient(
+        messages=[
+            SimpleNamespace(
+                type="assistant",
+                uuid="assistant_ledger",
+                session_id="claude_ledger",
+                message={
+                    "id": "msg_ledger",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            ),
+            SimpleNamespace(type="result", session_id="claude_ledger"),
+        ]
+    )
+    runtime = _runtime(host=host, client=client)
+    result = await runtime.start_turn("sess_ledger", "claude_ledger", "hello")
+    task = runtime._sessions["sess_ledger"].active_task
+    assert result.ok is True
+    assert task is not None
+    try:
+        await task
+    except Exception:  # noqa: BLE001 - the state error may propagate
+        pass
+    assert host.session_turn_ends[-1]["outcome"] == "completed"
+
+
 def test_claude_runtime_projects_live_system_messages() -> None:
     asyncio.run(_test_claude_runtime_projects_live_system_messages())
 
@@ -4205,7 +4248,7 @@ async def _test_claude_runtime_normalizes_interrupted_result_message() -> None:
         "source": "claude.turn.interrupted",
         "terminalReason": "aborted_streaming",
     }
-    assert host.lifecycle_events[-2:] == ["turn_end", "state:idle"]
+    assert host.lifecycle_events[-2:] == ["state:idle", "turn_end"]
 
 
 def test_claude_runtime_result_error_blocks_session_state() -> None:
@@ -4245,7 +4288,7 @@ async def _test_claude_runtime_result_error_blocks_session_state() -> None:
     assert host.session_state_updates[-1]["status"] == "error"
     assert host.session_state_updates[-1]["error"] == state.error
     assert host.session_turn_ends[-1]["outcome"] == "failed"
-    assert host.lifecycle_events[-2:] == ["turn_end", "state:error"]
+    assert host.lifecycle_events[-2:] == ["state:error", "turn_end"]
     assert "blocked" not in [update["status"] for update in host.session_state_updates]
 
 

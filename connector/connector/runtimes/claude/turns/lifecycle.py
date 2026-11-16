@@ -4507,12 +4507,42 @@ class ClaudeTurnRunner:
         update_state: bool = True,
         publish: bool = True,
     ) -> None:
+        # The runtime state is the turn-end signal every client paints from
+        # (iOS: the copy/share footer and its completion cue). The ledger
+        # write below waits on this session's timeline write fence — the
+        # server logged 646 ms inside `session.turnEnded` at one turn settle
+        # (2026-11-16) while the fence drained buffered timeline writes.
+        # Sending the ledger first serialized that wait ahead of the state, so
+        # every client learned "the turn ended" ~1 s late (pp 2026-11-17:
+        # 「复制按钮和分享按钮出现时机有延迟」; device footer at 23:01:56.5
+        # for a turn the connector ended at 23:01:55.36). The state is already
+        # true when this runs — the terminal frame has been processed — and
+        # the ledger is bookkeeping no client reads before painting the turn
+        # end, so the state goes first and the ledger rides behind it.
         reason = terminal.reason or execution.interrupt_reason
         if terminal.status == "failed":
             metadata = {
                 "source": "claude.turn.failed",
                 **({"terminalReason": reason} if reason else {}),
             }
+            # A failing state send must not cost the ledger row (unread,
+            # usage, latestTurnEndSeq). The old order — ledger first — had
+            # that property, so the error rides past the ledger and is
+            # re-raised afterwards.
+            state_error: Exception | None = None
+            if update_state:
+                try:
+                    await self.notifications.session_state.session_state_update(
+                        session,
+                        "error",
+                        error={
+                            "code": terminal.error_code or "claude_turn_failed",
+                            "message": terminal.error_message or "Claude turn failed",
+                        },
+                        metadata=metadata,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    state_error = exc
             if publish:
                 await self.host.session_turn_ended(
                     session_id=session.session_id,
@@ -4529,17 +4559,8 @@ class ClaudeTurnRunner:
                     session.session_id,
                     execution.turn_id,
                 )
-            if not update_state:
-                return
-            await self.notifications.session_state.session_state_update(
-                session,
-                "error",
-                error={
-                    "code": terminal.error_code or "claude_turn_failed",
-                    "message": terminal.error_message or "Claude turn failed",
-                },
-                metadata=metadata,
-            )
+            if state_error is not None:
+                raise state_error
             return
         source = "claude.turn.completed"
         if terminal.status == "interrupted":
@@ -4548,6 +4569,16 @@ class ClaudeTurnRunner:
             "source": source,
             **({"terminalReason": reason} if reason else {}),
         }
+        state_error: Exception | None = None
+        if update_state:
+            try:
+                await self.notifications.session_state.session_state_update(
+                    session,
+                    "idle",
+                    metadata=metadata,
+                )
+            except Exception as exc:  # noqa: BLE001
+                state_error = exc
         await self.host.session_turn_ended(
             session_id=session.session_id,
             runtime="claude",
@@ -4556,13 +4587,8 @@ class ClaudeTurnRunner:
             outcome=terminal.status,
             metadata=metadata,
         )
-        if not update_state:
-            return
-        await self.notifications.session_state.session_state_update(
-            session,
-            "idle",
-            metadata=metadata,
-        )
+        if state_error is not None:
+            raise state_error
 
     async def _update_external_session_id(
         self,

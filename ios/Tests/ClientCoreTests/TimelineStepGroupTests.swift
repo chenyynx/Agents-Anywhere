@@ -254,6 +254,17 @@ struct TimelineStepGroupSummaryTests {
         .tool(call: CodeToolCall(item: try toolItem(id, order: 1, name: name, input: input)))
     }
 
+    /// A subagent dispatch row the way the runtimes project it: an
+    /// `agent_call` tool row with a dispatch action.
+    private func agentStep(_ id: String, status: String,
+                           action: String = "invoke") throws -> TimelineStep {
+        var value = try itemObject(id: id, text: "")
+        value["type"] = "tool"; value["role"] = "assistant"; value["status"] = status
+        value["content"] = ["kind": "agent_call", "action": action,
+                            "description": "Third 2-minute timing test"]
+        return .tool(call: CodeToolCall(item: try decode(value)))
+    }
+
     @Test func countsDedupeTargetsPerCategory() throws {
         let steps: [TimelineStep] = [
             .thinking(id: "r1", text: "think", status: .done),
@@ -307,6 +318,58 @@ struct TimelineStepGroupSummaryTests {
         let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
         #expect(line.contains("思考 1 次"))
         #expect(line.contains("运行了 1 个智能体"))
+    }
+
+    /// A dispatched subagent that is still running reads present-tense: the
+    /// row must not say 「运行了」 while the agent works in the background
+    /// (pp 2026-11-18, 文案改进行时). The live dots stay on the working row;
+    /// this row keeps its icon.
+    @Test func aRunningSubagentUsesThePresentTensePhrase() throws {
+        let steps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            try agentStep("a1", status: "running"),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.agentCount == 1)
+        #expect(summary.activeAgentCount == 1)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("正在运行 1 个智能体"))
+        #expect(!line.contains("运行了"))
+    }
+
+    @Test func aSettledSubagentKeepsThePastTensePhrase() throws {
+        let steps: [TimelineStep] = [try agentStep("a1", status: "done")]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.activeAgentCount == 0)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("运行了 1 个智能体"))
+    }
+
+    @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {
+        let steps: [TimelineStep] = [
+            try agentStep("a1", status: "done"),
+            try agentStep("a2", status: "running"),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.agentCount == 2)
+        #expect(summary.activeAgentCount == 1)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("正在运行 1 个智能体"))
+    }
+
+    /// A control call is not a dispatch: even while it runs it must not turn
+    /// the phrase present-tense for an agent that is not working. The wire's
+    /// real action words for these are `send_input` / `wait` / `close`, plus
+    /// `unknown` (DSH's `list_agents` degrades to it).
+    @Test func aRunningControlCallIsNotCountedAsRunning() throws {
+        for action in ["send_input", "wait", "close", "unknown"] {
+            let summary = TimelineStepSummarizer.summary(
+                steps: [try agentStep("a1", status: "running", action: action)], cwd: nil)
+            #expect(summary.agentCount == 1)
+            #expect(summary.activeAgentCount == 0)
+            let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+            #expect(line.contains("运行了 1 个智能体"))
+        }
     }
 
     @Test func severalSubagentCallsCountOnceEach() throws {

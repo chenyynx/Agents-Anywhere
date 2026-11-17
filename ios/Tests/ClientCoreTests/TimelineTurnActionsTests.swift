@@ -472,7 +472,8 @@ import Testing
                         row("second", text: "Second answer", turnId: "t1")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false)
+            suppressLatest: false,
+            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
         #expect(actions["first"]?.copyText == "First answer")
         #expect(actions["second"]?.copyText == "Second answer")
     }
@@ -493,7 +494,8 @@ import Testing
                         row("second", text: "Second answer", turnId: "t1")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false)
+            suppressLatest: false,
+            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
         #expect(actions["first"]?.copyText == "First answer")
         #expect(actions["second"] == nil)
     }

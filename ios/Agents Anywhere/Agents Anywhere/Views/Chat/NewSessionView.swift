@@ -17,6 +17,10 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
+    /// How much of the page the keyboard covers. Only feeds the optical-centre
+    /// bias below — never an animation, so it cannot reintroduce the swing
+    /// (pp 2026-11-17).
+    @State private var keyboardCoverage: CGFloat = 0
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -47,8 +51,12 @@ struct NewSessionView: View, Equatable {
                 // what made the page swing while the keyboard moved
                 // (pp 2026-11-17).
                 let restingHeight = max(0, viewport.size.height - 48)
+                // Official vs ours: +10 pt with the keyboard down, +37 with it
+                // up (block centre 445.2/300.5 vs 435.5/263.5). The bias grows
+                // with the coverage, linearly over a standard keyboard.
+                let centerOffset = 10 + min(360, max(0, keyboardCoverage)) / 340 * 27
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: restingHeight) {
+                    NewSessionContentLayout(viewportHeight: restingHeight, centerOffset: centerOffset) {
                         NewSessionWelcomeView(displayName: appState.me?.displayName,
                                               runtime: model.runtime,
                                               workspaceName: workspaceName,
@@ -111,6 +119,16 @@ struct NewSessionView: View, Equatable {
         .confirmationDialog(String(localized: "创建结果仍未确认，再次创建可能产生重复会话。"), isPresented: $confirmsRetry, titleVisibility: .visible) {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
+        }
+        // Coverage only shifts the optical centre; the page itself still
+        // follows the keyboard through the safe area, so this must stay
+        // un-animated.
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            keyboardCoverage = max(0, UIScreen.main.bounds.height - frame.minY)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardCoverage = 0
         }
     }
 
@@ -210,6 +228,11 @@ struct NewSessionView: View, Equatable {
 /// extend the scrollable page when needed, rather than recentering the welcome.
 private struct NewSessionContentLayout: Layout {
     let viewportHeight: CGFloat
+    /// Optical centre, not geometric. Official vs ours: 445.2 vs 435.5 pt with
+    /// the keyboard down, 300.5 vs 263.5 with it up — so the bias grows with
+    /// the keyboard (10 pt → 37 pt), which is what the caller interpolates
+    /// (pp 2026-11-17).
+    let centerOffset: CGFloat
     private let spacing: CGFloat = 28
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -217,7 +240,7 @@ private struct NewSessionContentLayout: Layout {
         let childProposal = ProposedViewSize(width: width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
         let status = subviews[1].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = max(0, (viewportHeight - welcome.height) / 2 + centerOffset)
         let statusHeight = status.height > 0 ? spacing + status.height : 0
         return CGSize(width: width, height: max(viewportHeight, top + welcome.height + statusHeight))
     }
@@ -225,7 +248,7 @@ private struct NewSessionContentLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let childProposal = ProposedViewSize(width: bounds.width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = max(0, (viewportHeight - welcome.height) / 2 + centerOffset)
         subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top), anchor: .topLeading, proposal: childProposal)
         subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top + welcome.height + spacing),
             anchor: .topLeading, proposal: childProposal)

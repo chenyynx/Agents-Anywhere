@@ -542,11 +542,13 @@ struct SessionChatView: View, Equatable {
     /// ring/folder morph pushed the enclosing builder closure past it in CI.
     @ToolbarContentBuilder
     private var trailingToolbar: some ToolbarContent {
-        // The SubAgent entry is its own `ToolbarItem` on purpose: iOS 26 gives
-        // a standalone bar item its own glass circle (the sidebar button's
-        // treatment on the leading side), while anything inside the
-        // `ToolbarItemGroup` below shares one glass pill with the ring and the
-        // overflow menu. Visibility reads the projection's active-card
+        // The SubAgent entry sits in the bar's trailing cluster but must read
+        // as its own circle, like the sidebar button on the leading side.
+        // iOS 26 merges every trailing item — separate `ToolbarItem`s and
+        // groups alike — into one shared glass background (b1321 on device,
+        // pp 2026-11-18), so this item opts out of that background and draws
+        // its own system-glass circle; the ring and overflow menu keep the
+        // shared pill they had. Visibility reads the projection's active-card
         // sidecar only — the one signal that changes when a card is
         // dispatched or settles — so a streamed token never rebuilds the
         // page's toolbar; the button's own leaf still reads the window for
@@ -557,6 +559,7 @@ struct SessionChatView: View, Equatable {
                     sheet = .subagents(id, fromCapsule: true)
                 }
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             // The folder is the placeholder occupant of the ring's slot:

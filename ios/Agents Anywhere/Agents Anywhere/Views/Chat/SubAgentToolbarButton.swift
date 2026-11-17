@@ -2,9 +2,11 @@ import SwiftUI
 
 /// The SubAgent entry, docked in the session page's navigation bar as its own
 /// circular toolbar item (pp 2026-11-18, from the official app's top-bar
-/// reference): a standalone `ToolbarItem` gets the same system Liquid Glass
-/// circle as the sidebar button on the leading side — no custom glass, so it
-/// cannot double up with the bar's shared background. The old composer-dock
+/// reference). iOS 26 gives every trailing item one shared glass background,
+/// so the host hides that background for this item
+/// (`.sharedBackgroundVisibility(.hidden)`) and the button draws its own
+/// system-glass circle — the same material the sidebar button gets on the
+/// leading side, at the bar's own 44 pt content height. The old composer-dock
 /// capsule (`SubAgentCapsule`, removed the same day) carried a label; a
 /// circle carries only the mark, so the count and phase stay in the
 /// accessibility value instead of the visible chrome.
@@ -18,10 +20,14 @@ struct SubAgentToolbarButton: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// The mark springs in on the item's first appearance. The glass circle
-    /// itself belongs to the system bar and cannot be animated from here;
-    /// only the ink inside it enters — which is what the eye sees anyway.
+    /// The whole circle — glass included, since this button owns it — springs
+    /// in on the item's first appearance. The item's removal is the bar's,
+    /// so the exit still follows the system.
     @State private var hasEntered = false
+
+    /// The bar's standard content height; the leading button's own glass
+    /// circle is the same size.
+    private let diameter: CGFloat = 44
 
     private var tint: Color {
         state.hasFailure
@@ -32,6 +38,8 @@ struct SubAgentToolbarButton: View {
     var body: some View {
         Button(action: onOpen) {
             SubAgentMark(size: 22, tint: tint)
+                .frame(width: diameter, height: diameter)
+                .glassEffect(.regular.interactive(), in: Circle())
                 .opacity(hasEntered ? 1 : 0)
                 .scaleEffect(hasEntered ? 1 : 0.72)
         }

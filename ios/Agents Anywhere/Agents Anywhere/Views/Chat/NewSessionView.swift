@@ -51,7 +51,8 @@ struct NewSessionView: View, Equatable {
                 let restingHeight = max(0, viewport.size.height - 48)
                 ScrollView {
                     NewSessionContentLayout(viewportHeight: restingHeight) {
-                        NewSessionWelcomeView(displayName: appState.me?.displayName)
+                        NewSessionWelcomeView(displayName: appState.me?.displayName,
+                                              runtime: model.runtime)
                         statusContent
                     }
                         .padding(24)

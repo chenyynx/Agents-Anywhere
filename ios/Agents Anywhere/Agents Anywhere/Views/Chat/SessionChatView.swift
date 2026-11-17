@@ -228,9 +228,9 @@ struct SessionChatView: View, Equatable {
                 onSend: { await model.send($0) }, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                 onApplySettings: model.applySettings, applyError: { model.settingsError },
                 onDraftChange: { model.repository.draftDidChange(sessionID: model.session.id) },
-                canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
+                canQueueSend: model.canQueueSend, canSteerSend: model.canSteerSend,
+                queueEnqueueTick: model.queueEnqueueTick,
                 onQueueSend: { await model.enqueueComposer() },
-                canSteerSend: model.canSteerSend,
                 onSteerSend: { await model.steerComposer() })
                 .traceChatLayout("composer-dock")
         }

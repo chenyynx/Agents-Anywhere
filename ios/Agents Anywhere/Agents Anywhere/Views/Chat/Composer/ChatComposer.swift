@@ -183,7 +183,12 @@ struct ChatComposer: View {
             // is no per-send temporary override.
             Picker(String(localized: "后续消息处理方式"), selection: $deliveryRaw) {
                 ForEach(ComposerDelivery.allCases) { option in
-                    Text(option.title).tag(option.rawValue)
+                    Label {
+                        Text(option.title)
+                    } icon: {
+                        Image(systemName: option.menuSymbol)
+                    }
+                    .tag(option.rawValue)
                 }
             }
         } label: {
@@ -191,6 +196,10 @@ struct ChatComposer: View {
                 .frame(width: sendSlotFrame.width, height: sendSlotFrame.height)
                 .contentShape(Circle())
         } primaryAction: {
+            // A gray key still opens this menu on a long press — the delivery
+            // choice is a persisted setting, not an action — but it sends
+            // nothing (pp 2026-11-18).
+            guard !isBusy, sendEnabled else { return }
             // [E] The official send key is an `AnimatingHapticButton` fired
             // with `.selection` (EVIDENCE/round19/motion.md §P2-10). Only the
             // send/queue shapes are documented; the stop shape stays silent.
@@ -198,7 +207,11 @@ struct ChatComposer: View {
             accentAction()
         }
         .menuIndicator(.hidden)
-        .disabled(isBusy || !sendEnabled)
+        // The menu opens upward from the bar; the system's default
+        // `priority` order puts the FIRST item closest to the key, which
+        // rendered the list bottom-up (device 00:10: 排队 above 引导). Fixed
+        // order keeps the declared top-to-bottom order (pp 2026-11-18).
+        .menuOrder(.fixed)
         .sensoryFeedback(.selection, trigger: sendFeedback)
         .accessibilityLabel(accentLabel)
         .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")

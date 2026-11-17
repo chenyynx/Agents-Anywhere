@@ -19,6 +19,16 @@ enum ComposerDelivery: String, CaseIterable, Identifiable {
         case .queue: String(localized: "排队")
         }
     }
+
+    /// The glyph the composer's long-press menu shows in front of each
+    /// option: an arrow merging into the running work (steer), a clock for
+    /// "after this turn" (queue).
+    var menuSymbol: String {
+        switch self {
+        case .steer: "arrow.turn.down.right"
+        case .queue: "clock"
+        }
+    }
 }
 
 enum ComposerDeliverySetting {

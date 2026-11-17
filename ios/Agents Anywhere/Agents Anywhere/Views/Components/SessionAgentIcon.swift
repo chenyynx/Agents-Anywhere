@@ -30,10 +30,14 @@ enum SessionAgentMark {
     /// The mark's brand colour, where the brand has one that reads on both
     /// schemes. `nil` means "use the label colour" — Codex and the bot stay
     /// monochrome, which is the right reading for both.
+    ///
+    /// Claude's value is the capture's, converted from its Display P3 profile
+    /// to sRGB: the raw screenshot pixels read (204, 124, 94), which is
+    /// (217, 119, 87) — `#D97757` — once the profile is applied.
     static func tint(runtime: String, runtimeType: String?) -> Color? {
         switch normalized(runtime: runtime, runtimeType: runtimeType) {
         case "claude", "claudecode":
-            return Color(red: 204 / 255, green: 120 / 255, blue: 92 / 255)
+            return Color(red: 217 / 255, green: 119 / 255, blue: 87 / 255)
         case "dsh", "deepseek", "deepseekharness":
             return Color(red: 77 / 255, green: 107 / 255, blue: 254 / 255)
         default:

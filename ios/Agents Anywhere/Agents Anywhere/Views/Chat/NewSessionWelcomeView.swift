@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The new-session empty state, matched to the official Claude chat page
 /// (pp 2026-11-17): the runtime's mark, a time-of-day greeting carrying the
-/// account's display name, and the plan pill underneath.
+/// account's display name, and a pill carrying the working directory.
 ///
 /// The mark follows the runtime (pp 2026-11-17) — same mapping as the sidebar,
 /// with Claude in its clay and DeepSeek in its blue; Codex and the bot mark
@@ -14,6 +14,8 @@ import SwiftUI
 struct NewSessionWelcomeView: View {
     let displayName: String?
     let runtime: V2DeviceRuntime?
+    let workspaceName: String
+    let onChooseWorkspace: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -60,17 +62,21 @@ struct NewSessionWelcomeView: View {
                 .padding(.top, 20)
                 .accessibilityAddTraits(.isHeader)
 
-            planPill
-                .padding(.top, 40)
+            Button(action: onChooseWorkspace) {
+                workspacePill
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 40)
         }
         .frame(maxWidth: .infinity)
     }
 
-    /// The official plan chip. Copy is the capture's; the app has no billing of
-    /// its own, so this is presentation only.
-    private var planPill: some View {
+    /// The official pill, carrying what the official one would not: the working
+    /// directory this session will start in — and the way to change it. Two
+    /// weights like the capture: a secondary label and the name in ink.
+    private var workspacePill: some View {
         HStack(spacing: 4) {
-            Text(String(localized: "Free plan"))
+            Text(String(localized: "工作目录"))
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
                                                     size: 11, weight: 400)))
                 .foregroundStyle(pillSecondary)
@@ -78,14 +84,18 @@ struct NewSessionWelcomeView: View {
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
                                                     size: 11, weight: 400)))
                 .foregroundStyle(pillSecondary)
-            Text(String(localized: "Upgrade"))
+            Text(workspaceName)
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
                                                     size: 11, weight: 600)))
                 .foregroundStyle(pillPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .padding(.horizontal, 17)
         .frame(height: 36)
         .background(Capsule().fill(pillFill))
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Colours

@@ -50,7 +50,9 @@ struct NewSessionView: View, Equatable {
                 ScrollView {
                     NewSessionContentLayout(viewportHeight: restingHeight) {
                         NewSessionWelcomeView(displayName: appState.me?.displayName,
-                                              runtime: model.runtime)
+                                              runtime: model.runtime,
+                                              workspaceName: workspaceName,
+                                              onChooseWorkspace: { showsWorkspace = true })
                         statusContent
                     }
                         .padding(24)

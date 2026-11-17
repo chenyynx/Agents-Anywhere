@@ -64,9 +64,10 @@ struct SubAgentStopControl: View {
 
 /// The SubAgent concept colors, single point: running is blue, the semantic
 /// colors (green done / red failure) carry over from the rest of the app.
-/// Visible failure ink for the toolbar mark is `CodePageTheme.failureGlyphFailedColor`
-/// (pp 2026-11-18: the tool row's own red), so this palette stays the concept
-/// vocabulary the panel and previews use.
+/// The toolbar mark does not use `running` — it wears the navigation bar's
+/// own `text300` ink, swapping in the tool row's red
+/// (`CodePageTheme.failureGlyphFailedColor`) while a failure shows — so this
+/// palette stays the vocabulary the panel and previews use.
 enum SubAgentPalette {
     static let running = Color.blue
     static let failure = Color.red

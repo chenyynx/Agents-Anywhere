@@ -141,7 +141,18 @@ private struct ChatToolbarSubtitle: View {
 }
 
 struct SidebarMenuIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        AppSymbol("sidebar.left", size: 22).accessibilityHidden(true)
+        // The official drawer mark (pp 2026-11-18: 用 Claude 官方左上角图标):
+        // two long lines over a short one, `anthropicon.menu` from the app's
+        // own ClaudeIcons bundle — not the Lucide-style `aa-TextAlignStart`
+        // it replaces. `.large` is the nav-bar preset; the artwork's own
+        // extent comes from `AnthropiconAssets`. The ink is the official
+        // `text300` (#383835 / #C3C2B7), which is what the official device
+        // screenshot measures — the bar's default primary would be black.
+        AnthropiconView(name: "anthropicon.menu", size: .large)
+            .foregroundStyle(AppTheme.text300(colorScheme))
+            .accessibilityHidden(true)
     }
 }

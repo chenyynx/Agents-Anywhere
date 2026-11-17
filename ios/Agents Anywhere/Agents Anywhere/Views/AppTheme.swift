@@ -47,11 +47,19 @@ enum AppTheme {
             : Color(red: 82.0 / 255.0, green: 81.0 / 255.0, blue: 78.0 / 255.0)
     }
 
-    /// Official `text300`: light #383835, dark #C3C2B7.
-    static func composerSecondaryGlyph(_ scheme: ColorScheme) -> Color {
+    /// Official `text300`: light #383835, dark #C3C2B7. The navigation bar's
+    /// own marks wear it too — the official top-left menu icon measures
+    /// exactly (56, 56, 53) in the 1.261109 device screenshot (2026-11-18) —
+    /// so the composer's secondary glyphs expose it under a general name.
+    static func text300(_ scheme: ColorScheme) -> Color {
         scheme == .dark
             ? Color(red: 195.0 / 255.0, green: 194.0 / 255.0, blue: 183.0 / 255.0)
             : Color(red: 56.0 / 255.0, green: 56.0 / 255.0, blue: 53.0 / 255.0)
+    }
+
+    /// Official `text300` as the composer writes it.
+    static func composerSecondaryGlyph(_ scheme: ColorScheme) -> Color {
+        text300(scheme)
     }
 
     /// Official `bg000`, the composer attachment tile fill:

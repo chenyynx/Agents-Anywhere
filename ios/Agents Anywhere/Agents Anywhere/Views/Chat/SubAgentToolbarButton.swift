@@ -11,9 +11,11 @@ import SwiftUI
 /// circle carries only the mark, so the count and phase stay in the
 /// accessibility value instead of the visible chrome.
 ///
-/// The ink turns the tool-row failure red (`CodePageTheme.failureGlyphFailedColor`,
-/// pp's explicit choice) while the newest batch carries a failure, exactly
-/// like the capsule's repaint rule.
+/// The ink is the navigation bar's own `text300`, the same ink as the sidebar
+/// mark beside it (pp 2026-11-18: 子代理图标颜色也换成这颜色), and turns the
+/// tool-row failure red (`CodePageTheme.failureGlyphFailedColor`, pp's
+/// explicit choice) while the newest batch carries a failure, exactly like the
+/// capsule's repaint rule.
 struct SubAgentToolbarButton: View {
     let state: SubAgentCapsuleState
     let onOpen: () -> Void
@@ -32,12 +34,12 @@ struct SubAgentToolbarButton: View {
     private var tint: Color {
         state.hasFailure
             ? CodePageTheme.failureGlyphFailedColor.resolved(for: colorScheme)
-            : .primary
+            : AppTheme.text300(colorScheme)
     }
 
     var body: some View {
         Button(action: onOpen) {
-            SubAgentMark(size: 22, tint: tint)
+            SubAgentMark(size: 24, tint: tint)
                 .frame(width: diameter, height: diameter)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .opacity(hasEntered ? 1 : 0)
@@ -80,18 +82,27 @@ struct SubAgentToolbarSlot: View {
 }
 
 /// The mark: the badge circle and two eye strokes, traced 1:1 from the SVG pp
-/// sent (24-unit design space, 2 pt stroke, round caps/joins), with the eyes
-/// driven by `SubAgentMarkMotion`.
+/// sent (24-unit design space, round caps/joins), with the eyes driven by
+/// `SubAgentMarkMotion`.
 ///
 /// The outline never moves. Each eye glides with the saccade and closes
 /// vertically around its own midpoint (the same centre-scaling blobatar's
 /// idle used), so the blink collapses the stroke toward a short dash instead
 /// of shrinking it toward a corner.
 struct SubAgentMark: View {
-    /// The square the mark is drawn into, in points.
-    var size: CGFloat = 22
+    /// The square the mark is drawn into, in points. 24 pt is the SVG's own
+    /// design space at 1:1, which puts the badge's outer diameter at 21.44 pt
+    /// — the context ring's own 21.5 pt (pp 2026-11-18: 子代理图标大小跟圆环
+    /// 保持一致).
+    var size: CGFloat = 24
     /// The SVG's `currentColor`: one ink for the whole mark.
     var tint: Color = .primary
+
+    /// The stroke in design units. The source SVG draws at 2, but the toolbar
+    /// renders at the weight of the official navigation mark beside it (pp
+    /// 2026-11-18: 比这图标粗): `anthropicon.menu`'s bars are 0.9 units on an
+    /// 18×15 artwork → 1.44 pt. Shape stays the SVG's.
+    private let strokeWidth: CGFloat = 1.44
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let motion = SubAgentMarkMotion()
@@ -111,7 +122,7 @@ struct SubAgentMark: View {
     private func draw(context: inout GraphicsContext, size: CGSize, time: Double?) {
         let scale = min(size.width, size.height) / 24
         context.scaleBy(x: scale, y: scale)
-        let style = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+        let style = StrokeStyle(lineWidth: strokeWidth, lineCap: .round, lineJoin: .round)
         context.stroke(Self.outline, with: .color(tint), style: style)
 
         let frame = time.map { motion.frame(at: $0) } ?? .still

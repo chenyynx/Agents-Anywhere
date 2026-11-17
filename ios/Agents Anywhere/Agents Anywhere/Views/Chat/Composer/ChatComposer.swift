@@ -36,14 +36,6 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
     @State private var sendFeedback = 0
-    /// The long-press delivery menu. It is a popover, not `.contextMenu`: the
-    /// system menu anchored at the gesture point and did not follow the
-    /// composer when the keyboard dismissal moved it, so it floated mid-screen
-    /// (pp 2026-11-17). A popover tracks its source view.
-    @State private var showsDeliveryMenu = false
-    /// True once this touch's long press opened the menu; the same release
-    /// must not also send the draft.
-    @State private var longPressDidFire = false
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     /// The same value the settings row edits. Long-press here writes it, so
     /// the menu is a second entry point to the one setting, never a per-send
@@ -97,19 +89,23 @@ struct ChatComposer: View {
                             expandAnimation: expandAnimation, onLongPaste: onLongPaste)
                     }
 
-                    Button {
-                        // The release that opened the delivery menu must not
-                        // also send (pp 2026-11-17).
-                        if longPressDidFire {
-                            longPressDidFire = false
-                            return
+                    // A Menu, not a Button + `.contextMenu`: the context menu
+                    // anchored at the touch point and stayed there while the
+                    // keyboard dismissal moved the composer. A Menu anchors to
+                    // its label, and its picker options render inline with
+                    // check marks, so 引导/排队 share one leading edge
+                    // (pp 2026-11-17).
+                    Menu {
+                        // A second entry point to the ONE persisted setting
+                        // (the settings row is the first). Selecting here
+                        // writes the same value; there is no per-send
+                        // temporary override.
+                        Picker(String(localized: "后续消息处理方式"),
+                               selection: $deliveryRaw) {
+                            ForEach(ComposerDelivery.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
                         }
-                        // [E] The official send key is an `AnimatingHapticButton`
-                        // fired with `.selection` (EVIDENCE/round19/motion.md
-                        // §P2-10). Only the send/queue shapes are documented;
-                        // the stop shape stays silent.
-                        if affordance.shape != .stop { sendFeedback += 1 }
-                        accentAction()
                     } label: {
                         AppSymbol(accentSymbol, size: accentSymbolSize)
                             .contentTransition(.symbolEffect(.replace))
@@ -126,30 +122,16 @@ struct ChatComposer: View {
                                 .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
+                    } primaryAction: {
+                        // [E] The official send key is an `AnimatingHapticButton`
+                        // fired with `.selection` (EVIDENCE/round19/motion.md
+                        // §P2-10). Only the send/queue shapes are documented;
+                        // the stop shape stays silent.
+                        if affordance.shape != .stop { sendFeedback += 1 }
+                        accentAction()
                     }
-                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
                     .disabled(isBusy || !sendEnabled)
-                    // A second entry point to the ONE persisted setting (the
-                    // settings row is the first). Selecting here writes the
-                    // same value; there is no per-send temporary override.
-                    // The popover is anchored to this key, so it follows the
-                    // composer if the keyboard changes the layout; the old
-                    // `.contextMenu` stayed at the pre-dismissal point.
-                    .onLongPressGesture(minimumDuration: 0.45) {
-                        longPressDidFire = true
-                        showsDeliveryMenu = true
-                    }
-                    .popover(isPresented: $showsDeliveryMenu,
-                             attachmentAnchor: .rect(.bounds),
-                             arrowEdge: .bottom) {
-                        deliveryMenu
-                            .presentationCompactAdaptation(.popover)
-                    }
-                    .onChange(of: showsDeliveryMenu) { _, shown in
-                        // A release consumed by the menu does not reach the
-                        // button; clear the guard with the menu.
-                        if !shown { longPressDidFire = false }
-                    }
                     .sensoryFeedback(.selection, trigger: sendFeedback)
                     .accessibilityLabel(accentLabel)
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
@@ -253,42 +235,6 @@ struct ChatComposer: View {
         case .stop: return String(localized: "停止生成")
         case .send: return String(localized: "发送消息")
         }
-    }
-
-    /// The delivery options menu: the same persisted setting the settings row
-    /// edits, with the current value checked. Kept compact so the popover
-    /// reads like the old context menu.
-    private var deliveryMenu: some View {
-        VStack(spacing: 0) {
-            ForEach(ComposerDelivery.allCases) { option in
-                Button {
-                    deliveryRaw = option.rawValue
-                    showsDeliveryMenu = false
-                } label: {
-                    HStack(spacing: 10) {
-                        Text(option.title)
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        // Trailing checkmark, like the settings row: both
-                        // labels start at the same leading edge instead of
-                        // the selected row's text sitting one glyph right
-                        // (pp 2026-11-17).
-                        if option == delivery {
-                            AppSymbol("checkmark", size: 14)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if option != ComposerDelivery.allCases.last {
-                    Divider().padding(.leading, 16)
-                }
-            }
-        }
-        .frame(width: 170)
-        .padding(.vertical, 4)
     }
 
     private var attachmentTray: some View {

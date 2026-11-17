@@ -7,7 +7,7 @@ import SwiftUI
 /// The mark follows the runtime (pp 2026-11-17) — same mapping as the sidebar,
 /// with Claude in its clay and DeepSeek in its blue; Codex and the bot mark
 /// stay monochrome. Measurements are off the 3× capture: mark 30 pt, greeting
-/// 20 pt in Anthropic Serif (#383835), pill 36 pt tall on #F0EFEC with a 12 pt
+/// 19 pt in Anthropic Serif (#383835), pill 36 pt tall on #F0EFEC with an 11 pt
 /// label (regular #52514E, "Upgrade" semibold #0B0B0B). The Chinese resolves to
 /// the system fallback exactly as the reference does, so only the Latin runs
 /// wear the serif.
@@ -19,8 +19,8 @@ struct NewSessionWelcomeView: View {
 
     /// Measured 30.3 pt on the 3× capture.
     private let markDiameter: CGFloat = 30
-    /// Measured: 50 px CJK ink at 3×, 151.7 pt for the whole line.
-    private let greetingSize: CGFloat = 20
+    /// Official ink is 50 px at 3×; ours measured 52 px at 20 pt, so 19.
+    private let greetingSize: CGFloat = 19
 
     private var mark: (asset: String, label: String) {
         SessionAgentMark.resolve(runtime: runtime?.runtimeType ?? "",
@@ -72,15 +72,15 @@ struct NewSessionWelcomeView: View {
         HStack(spacing: 4) {
             Text(String(localized: "Free plan"))
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
-                                                    size: 12, weight: 400)))
+                                                    size: 11, weight: 400)))
                 .foregroundStyle(pillSecondary)
             Text(verbatim: "·")
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
-                                                    size: 12, weight: 400)))
+                                                    size: 11, weight: 400)))
                 .foregroundStyle(pillSecondary)
             Text(String(localized: "Upgrade"))
                 .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
-                                                    size: 12, weight: 600)))
+                                                    size: 11, weight: 600)))
                 .foregroundStyle(pillPrimary)
         }
         .padding(.horizontal, 17)

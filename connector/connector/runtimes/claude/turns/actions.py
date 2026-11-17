@@ -169,13 +169,15 @@ class ClaudeTurnActionHandler:
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
     ) -> RuntimeOperationResult:
-        """Deliver one message into the running turn (text only, v1).
+        """Deliver one message into the live turn (text only, v1).
 
-        No new execution and no new turn id: the running `drive_turn` owns the
-        response, and the SDK hands the message to Claude at the next tool
-        boundary inside that same turn. The user row is published here, under
-        the running turn, with the steer uuid as its native id so the echo can
-        confirm it; `drive_turn` never republishes it.
+        No new execution and no new turn id: the SDK hands the message to
+        Claude at the next model-request boundary inside the same turn. The
+        timeline row is NOT published here — it is published by `drive_turn`
+        when the runtime echoes the message back, under the turn that actually
+        read it. A message stopped before being read therefore leaves no row
+        behind, and a message the runtime delivers as the next turn lands in
+        that turn instead of the one it was submitted into.
         """
 
         if attachments:
@@ -203,35 +205,6 @@ class ClaudeTurnActionHandler:
                 message="Claude session has no active turn to steer",
             )
         steer_uuid = str(uuid4())
-        item = self.runner.timeline.message_item(
-            session=session,
-            turn_id=turn_id,
-            role="user",
-            text=content,
-            event="claude.turn.steer",
-            client_message_id=client_message_id,
-            native_item_id=steer_uuid,
-            native_item_type="steeringUserMessage",
-        )
-        try:
-            # Publish BEFORE the message leaves. If the row cannot be written,
-            # do not send: the sender's optimistic bubble would otherwise spin
-            # forever with no echo, while the model had already received it.
-            # `publish_items` (not a raw upsert): the counter is what stops a
-            # deferred scheduled turn from rebinding its turn id after this
-            # row existed — a rebind would split the steer from its reply.
-            await self.runner.publish_items(execution, (item,))
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Claude steer row publish failed session_id={} turn_id={}",
-                session_id,
-                turn_id,
-            )
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_steer_row_publish_failed",
-                message="Could not record the steering message; it was not sent",
-            )
         try:
             await client.steer(content, steer_uuid)
         except Exception:  # noqa: BLE001
@@ -245,7 +218,7 @@ class ClaudeTurnActionHandler:
                 code="claude_steer_failed",
                 message="Claude rejected the steering message",
             )
-        session.remember_steer(steer_uuid)
+        session.remember_steer(steer_uuid, content, client_message_id)
         return RuntimeOperationResult(
             ok=True,
             result={

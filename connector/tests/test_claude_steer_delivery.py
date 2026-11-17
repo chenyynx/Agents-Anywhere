@@ -42,7 +42,9 @@ class _SteerClaudeClient:
         self.first_query = asyncio.Event()
         self.tool_running = asyncio.Event()
         self.steer_received = asyncio.Event()
+        self.steer_echo_allowed = asyncio.Event()
         self.steer_uuid: str | None = None
+        self.steer_text: str | None = None
         self.prompt_uuid: str | None = None
         self.prompt_text: str | None = None
         self.echo_prompt = echo_prompt
@@ -66,6 +68,7 @@ class _SteerClaudeClient:
         self.priorities.append(priority)
         if priority == "next":
             self.steer_uuid = first.get("uuid")
+            self.steer_text = content
             self.steer_received.set()
         else:
             self.prompt_uuid = first.get("uuid")
@@ -96,9 +99,12 @@ class _SteerClaudeClient:
             # The turn is parked on a running tool: the window a steering
             # message is supposed to reach Claude in.
             await self.steer_received.wait()
+            # The test decides when the runtime "reads" the steer, so it can
+            # assert nothing was published before the echo.
+            await self.steer_echo_allowed.wait()
             # With `replay-user-messages` (AA's CLI args) the steer message
             # comes back with its own uuid, inside the same turn.
-            yield UserMessage(content=STEER, uuid=self.steer_uuid)
+            yield UserMessage(content=self.steer_text or STEER, uuid=self.steer_uuid)
             yield AssistantMessage(
                 uuid="assistant_steer",
                 session_id="claude_session_1",
@@ -147,10 +153,17 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert steered.ok is True
     assert steered.result["steered"] is True
     assert steered.result["turnId"] == started.result["turnId"]
-    # Publishing through `publish_items` counts the row: a deferred scheduled
-    # turn can no longer rebind its turn id after this. (Split regression.)
-    assert execution.published_items >= 1
+    # Nothing reached the transcript yet: the row is published only when the
+    # runtime echoes the message back (i.e. when it read it).
+    assert not [
+        item for item in host.timeline_item_upserts
+        if item.source.get("itemType") == "steeringUserMessage"
+    ]
+    assert session.pending_steers[client.steer_uuid] == (
+        STEER, "client_steer_1",
+    )
 
+    client.steer_echo_allowed.set()
     await asyncio.wait_for(task, 10)
 
     # The steer went out as `next`; the prompt went out as `later`.
@@ -174,7 +187,7 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
         for item in items
         if item.role == "assistant" and item.content.get("text") == "BANANA-42"
     ]
-    # One row only: the submit-time publish, not a second one on the echo.
+    # One row only: published on the echo, under the turn that read it.
     assert len(steer_rows) == 1
     assert len(prompt_rows) == 1
     assert reply_rows, "the steer reply must be published"
@@ -193,8 +206,49 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert host.session_turn_ends[0]["turn_id"] == turn_id
     assert host.session_state_updates[-1]["status"] == "idle"
     assert session.execution is None
-    # The same-turn echo consumed the late-echo registration.
-    assert session.recent_steer_ids == []
+    # The same-turn echo consumed the pending registration.
+    assert session.pending_steers == {}
+
+
+def test_claude_steer_stopped_before_echo_leaves_no_row() -> None:
+    asyncio.run(_test_claude_steer_stopped_before_echo_leaves_no_row())
+
+
+async def _test_claude_steer_stopped_before_echo_leaves_no_row() -> None:
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_stop", "claude_session_0", "hello",
+        client_message_id="client_msg_stop",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_stop"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    steered = await runtime.steer_turn(
+        "sess_stop", "claude_session_0", "never read",
+        client_message_id="client_steer_stop",
+    )
+    assert steered.ok is True
+    assert session.pending_steers
+
+    await runtime.interrupt_session("sess_stop", reason="manual")
+    try:
+        await asyncio.wait_for(task, 8)
+    except asyncio.CancelledError:
+        pass
+
+    # The stopped turn must not carry a steer row: the row only exists once
+    # the runtime echoes the message back.
+    assert not [
+        item for item in host.timeline_item_upserts
+        if item.source.get("itemType") == "steeringUserMessage"
+    ]
+    assert session.execution is None
 
 
 def test_claude_steer_without_active_turn_is_refused() -> None:
@@ -305,6 +359,7 @@ async def _test_claude_steer_is_refused_once_the_response_settled() -> None:
 
     # Let the scripted turn finish so the test leaves nothing running.
     client.steer_received.set()
+    client.steer_echo_allowed.set()
     await asyncio.wait_for(task, 10)
 
 
@@ -348,6 +403,7 @@ async def _test_claude_steer_echo_does_not_rebind_the_prompt_when_text_matches()
             client_message_id="client_same_steer",
         )
         assert steered.ok is True
+        client.steer_echo_allowed.set()
 
         await asyncio.wait_for(task, 10)
     finally:
@@ -379,11 +435,11 @@ class _FailSteerPublishHost(_RecordingHost):
         await super().timeline_item_upsert(item)
 
 
-def test_claude_steer_row_publish_failure_does_not_send() -> None:
-    asyncio.run(_test_claude_steer_row_publish_failure_does_not_send())
+def test_claude_steer_echo_publish_failure_keeps_the_turn_alive() -> None:
+    asyncio.run(_test_claude_steer_echo_publish_failure_keeps_the_turn_alive())
 
 
-async def _test_claude_steer_row_publish_failure_does_not_send() -> None:
+async def _test_claude_steer_echo_publish_failure_keeps_the_turn_alive() -> None:
     host = _FailSteerPublishHost()
     client = _SteerClaudeClient()
     runtime = _runtime(host=host, client=client)
@@ -398,33 +454,33 @@ async def _test_claude_steer_row_publish_failure_does_not_send() -> None:
     assert task is not None
     await asyncio.wait_for(client.tool_running.wait(), 5)
 
-    refused = await runtime.steer_turn(
-        "sess_publish_fail", "claude_session_0", "not recorded",
+    steered = await runtime.steer_turn(
+        "sess_publish_fail", "claude_session_0", "echoed but not recorded",
         client_message_id="client_steer_pf",
     )
-    assert refused.ok is False
-    assert refused.code == "claude_steer_row_publish_failed"
-    # The message must not reach Claude when its row could not be recorded.
-    assert client.queries == ["hello"]
+    assert steered.ok is True
+    client.steer_echo_allowed.set()
+
+    # The row write fails at echo time; the turn must still settle normally.
+    await asyncio.wait_for(task, 10)
+    assert len(host.session_turn_ends) == 1
+    assert host.session_turn_ends[0]["turn_id"] == started.result["turnId"]
     assert not [
         item for item in host.timeline_item_upserts
         if item.source.get("event") == "claude.turn.steer"
     ]
 
-    client.steer_received.set()
-    await asyncio.wait_for(task, 10)
 
-
-def test_recent_steer_ids_stay_bounded_and_are_consumed() -> None:
+def test_pending_steers_stay_bounded_and_are_consumed() -> None:
     from connector.runtimes.claude.domain.session import ClaudeSession
 
     session = ClaudeSession(session_id="sess_recent")
     for index in range(40):
-        session.remember_steer(f"steer_{index}")
-    assert len(session.recent_steer_ids) == 32
-    assert session.recent_steer_ids[-1] == "steer_39"
-    assert session.take_recent_steer("steer_39") is True
-    assert session.take_recent_steer("steer_missing") is False
+        session.remember_steer(f"steer_{index}", f"text_{index}", f"client_{index}")
+    assert len(session.pending_steers) == 32
+    assert list(session.pending_steers)[0] == "steer_8"
+    assert session.take_steer("steer_39") == ("text_39", "client_39")
+    assert session.take_steer("steer_missing") is None
 
 
 def test_claude_steer_rejects_attachments() -> None:
@@ -455,4 +511,5 @@ async def _test_claude_steer_rejects_attachments() -> None:
     assert refused.code == "claude_steer_attachments_unsupported"
 
     client.steer_received.set()
+    client.steer_echo_allowed.set()
     await asyncio.wait_for(task, 10)

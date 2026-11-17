@@ -63,6 +63,30 @@ import Testing
             stopRequested: false, predictedIdle: false, isValid: true))
     }
 
+    @Test func steerPendingStatusFollowsDeliveryAndTurnState() {
+        #expect(SteerPendingStatusResolver.resolve(
+            delivery: .sending, runtimeStatus: .running) == .sending)
+        for status in [
+            V2RuntimeStatus.running, .waiting, .waitingApproval, .pending,
+        ] {
+            #expect(SteerPendingStatusResolver.resolve(
+                delivery: .accepted, runtimeStatus: status) == .waiting)
+        }
+        for status in [
+            V2RuntimeStatus.idle, .error, .disconnected, .stopping, .blocked,
+        ] {
+            #expect(SteerPendingStatusResolver.resolve(
+                delivery: .accepted, runtimeStatus: status) == .notDelivered)
+        }
+        #expect(SteerPendingStatusResolver.resolve(
+            delivery: .accepted, runtimeStatus: nil) == .waiting)
+        let failure = V2ClientFailure(kind: .unavailable, message: "x")
+        #expect(SteerPendingStatusResolver.resolve(
+            delivery: .uncertain(failure), runtimeStatus: .running) == nil)
+        #expect(SteerPendingStatusResolver.resolve(
+            delivery: .rejected(failure), runtimeStatus: .running) == nil)
+    }
+
     @Test func optionsExposeTheSettingsCopy() {
         #expect(ComposerDelivery.allCases == [.steer, .queue])
         #expect(ComposerDelivery.steer.title == String(localized: "引导"))

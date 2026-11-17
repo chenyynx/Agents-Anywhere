@@ -18,20 +18,17 @@ struct PendingMessageRow: View {
     @State private var confirmsDismiss = false
 
     var body: some View {
-        CodeUserMessageRow(
-            text: pending.content,
-            attachments: chat.session.attachmentPreviews.resolve(
-                pending.attachments.map(\.content), clientID: pending.id),
-            // The working row is the send's progress signal (pp 2026-11-16):
-            // the bubble itself draws no spinner. A failed delivery still puts
-            // its retry affordance in the same gutter.
-            isPending: false,
-            onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
-            attachmentState: { content in
-                pending.codeAttachmentState(for: content)
-            },
-            onAttachment: onAttachment,
-            loadThumbnail: chat.thumbnail)
+        VStack(alignment: .trailing, spacing: 4) {
+            row
+            if let steerStatusText {
+                // Official queue copy (queued_message_status_*): the steer row
+                // is optimistic until the runtime echoes the message back.
+                Text(steerStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.composer.steerStatus")
+            }
+        }
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             if let onRetry, !chat.session.isLocalCreation {
                 Button(String(localized: "重新发送")) { onRetry() }
@@ -47,7 +44,42 @@ struct PendingMessageRow: View {
         }
     }
 
+    private var row: some View {
+        CodeUserMessageRow(
+            text: pending.content,
+            attachments: chat.session.attachmentPreviews.resolve(
+                pending.attachments.map(\.content), clientID: pending.id),
+            // The working row is the send's progress signal (pp 2026-11-16):
+            // the bubble itself draws no spinner. A failed delivery still puts
+            // its retry affordance in the same gutter.
+            isPending: false,
+            onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
+            attachmentState: { content in
+                pending.codeAttachmentState(for: content)
+            },
+            onAttachment: onAttachment,
+            loadThumbnail: chat.thumbnail)
+    }
+
+    private var steerStatus: SteerPendingStatus? {
+        guard pending.isSteer else { return nil }
+        return SteerPendingStatusResolver.resolve(
+            delivery: pending.delivery,
+            runtimeStatus: chat.session.runtime.state?.status)
+    }
+
+    private var steerStatusText: String? {
+        switch steerStatus {
+        case .sending: String(localized: "发送中")
+        case .waiting: String(localized: "正在等待 Claude")
+        case .notDelivered: String(localized: "未送达")
+        case nil: nil
+        }
+    }
+
     private var deliveryIssue: String? {
+        // The turn is over and no echo arrived: the steer never landed.
+        if steerStatus == .notDelivered { return String(localized: "未送达") }
         switch pending.delivery {
         case .uncertain: String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
         case let .rejected(error): error.message

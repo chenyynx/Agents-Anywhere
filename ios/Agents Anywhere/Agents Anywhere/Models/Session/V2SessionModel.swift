@@ -200,6 +200,11 @@ final class V2PendingMessage: Identifiable {
     let localAttachmentIDs: [String]
     private(set) var attachments: [ChatAttachment]
     private(set) var delivery: Delivery = .sending
+    /// A steering message: the row is still optimistic. Its real timeline row
+    /// is published by the connector only when the runtime reads it, so while
+    /// this record is alive the UI shows 「正在等待 Claude」 (or 未送达 once the
+    /// turn is over without an echo).
+    var isSteer = false
     var didRestoreDraft = false
     /// Unresolved records this bubble replaces: the draft was restored from
     /// them and the user sent again (possibly after editing). They leave the
@@ -822,6 +827,7 @@ final class V2SessionModel: Identifiable {
         }
         let pending = V2PendingMessage(id: UUID().uuidString, content: content, attachmentIDs: attachments,
                                       localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
+        pending.isSteer = delivery == .steer
         // Before `composer.clear()` below: the clear drops the provenance.
         pending.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)

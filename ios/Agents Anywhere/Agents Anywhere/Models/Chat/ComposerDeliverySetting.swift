@@ -66,6 +66,32 @@ enum MidTurnDeliveryAction: Equatable {
 /// (`waiting`) is still the same turn: the runtime holds the message until
 /// that step completes and the model reads it inside the turn. Statuses that
 /// close the turn window (pending/stopping/blocked/idle) do not steer.
+/// What a steering message's optimistic row should say while it waits.
+enum SteerPendingStatus: Equatable {
+    case sending
+    case waiting
+    case notDelivered
+}
+
+enum SteerPendingStatusResolver {
+    /// Official copy follows these states: 发送中 / 正在等待 Claude / 未送达.
+    /// `nil` means the record has its own failure UI (`uncertain`/`rejected`).
+    static func resolve(
+        delivery: V2PendingMessage.Delivery,
+        runtimeStatus: V2RuntimeStatus?
+    ) -> SteerPendingStatus? {
+        switch delivery {
+        case .sending:
+            return .sending
+        case .accepted, .confirmed:
+            guard let runtimeStatus else { return .waiting }
+            return runtimeStatus.isTurnInFlight ? .waiting : .notDelivered
+        case .uncertain, .rejected:
+            return nil
+        }
+    }
+}
+
 enum ComposerSteerGate {
     static let steerableStatuses: Set<V2RuntimeStatus> = [
         .running, .waiting, .waitingApproval,

@@ -171,12 +171,6 @@ class ClaudeResponse:
     # what follows counts. Human/pending turns never stamp it; they are not
     # armed and count every frame as before.
     cast_frame: Any = None
-    # Steering messages this response has sent but not yet seen echoed:
-    # steer uuid -> text. `drive_turn` consumes the entry when the SDK
-    # replays the user message, so a steer echo is never mistaken for the
-    # turn prompt's own replay (verified 2026-11-17: the SDK replays the
-    # steer with its own uuid, inside the same turn).
-    steer_messages: dict[str, str] = field(default_factory=dict)
 
     async def connect(self) -> None:
         await self.connection.connect()
@@ -217,7 +211,6 @@ class ClaudeResponse:
             raise RuntimeError("Claude response already settled")
 
         steer_uuid = steer_uuid or str(uuid4())
-        self.steer_messages[steer_uuid] = content
 
         async def prompt():
             yield {
@@ -228,13 +221,7 @@ class ClaudeResponse:
                 "priority": "next",
             }
 
-        try:
-            await self.connection.client.query(prompt())
-        except BaseException:
-            # Nothing reached the transport: do not leave a phantom echo
-            # registration behind.
-            self.steer_messages.pop(steer_uuid, None)
-            raise
+        await self.connection.client.query(prompt())
         return steer_uuid
 
     def decline_terminal(self) -> None:
@@ -411,10 +398,6 @@ class ClaudeResponse:
         if interrupted:
             while not self.messages.empty():
                 self.messages.get_nowait()
-        # A steer whose echo never arrived must not outlive its turn: the next
-        # response would otherwise inherit the uuid and could swallow a later
-        # frame as its own.
-        self.steer_messages.clear()
         self.discard = interrupted and not self.terminal_received
         self.released.set()
         self._settle_verdict(True)

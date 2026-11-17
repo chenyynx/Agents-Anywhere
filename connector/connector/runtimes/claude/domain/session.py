@@ -92,23 +92,26 @@ class ClaudeSession:
     # flag. The in-process set lets that sync stamp them anyway (the marker
     # covers every later process).
     interrupted_turn_ids: set[str] = field(default_factory=set)
-    #: Steer uuids this session sent that may still come back as a user echo
-    #: AFTER their turn released (an abnormal but possible ordering). Kept
-    #: bounded; `drive_turn` consumes an id when it recognises the echo so a
-    #: late frame cannot be mistaken for the next turn's prompt replay.
-    recent_steer_ids: list[str] = field(default_factory=list)
+    #: Steering messages sent into a live turn but not yet seen echoed back:
+    #: steer uuid -> (text, client_message_id). The timeline row is published
+    #: when the echo arrives, under the turn that actually read it — so a
+    #: message stopped before being read leaves no orphan row, and a message
+    #: delivered as the next turn lands in that turn. Bounded; insertion order
+    #: is preserved, which is also the order the runtime will read them.
+    pending_steers: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
-    def remember_steer(self, steer_id: str) -> None:
-        self.recent_steer_ids.append(steer_id)
-        if len(self.recent_steer_ids) > 32:
-            del self.recent_steer_ids[:-32]
+    def remember_steer(
+        self,
+        steer_id: str,
+        text: str,
+        client_message_id: str | None,
+    ) -> None:
+        self.pending_steers[steer_id] = (text, client_message_id)
+        while len(self.pending_steers) > 32:
+            self.pending_steers.pop(next(iter(self.pending_steers)))
 
-    def take_recent_steer(self, item_id: str) -> bool:
-        try:
-            self.recent_steer_ids.remove(item_id)
-        except ValueError:
-            return False
-        return True
+    def take_steer(self, item_id: str) -> tuple[str, str | None] | None:
+        return self.pending_steers.pop(item_id, None)
 
     @property
     def active_turn_id(self) -> str | None:

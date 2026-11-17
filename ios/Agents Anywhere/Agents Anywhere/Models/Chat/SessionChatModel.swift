@@ -653,8 +653,17 @@ final class SessionChatModel {
     /// decided steering is the chosen delivery; anything it cannot steer
     /// falls back to the queue instead of dropping the draft.
     func steerComposer() async {
-        guard canSteerSend else {
+        // Falling back must be visible when the queue cannot take it either:
+        // a silent return would swallow the tap.
+        func fallBackToQueue() async {
+            guard canQueueSend else {
+                refuse(String(localized: "当前无法发送消息，请稍后再试。"))
+                return
+            }
             await enqueueComposer()
+        }
+        guard canSteerSend else {
+            await fallBackToQueue()
             return
         }
         let text = session.composer.text
@@ -667,7 +676,7 @@ final class SessionChatModel {
             from: text,
             existingAttachmentCount: session.composer.attachments.count,
             canAttach: canAttach) != nil {
-            await enqueueComposer()
+            await fallBackToQueue()
             return
         }
         session.draft = text

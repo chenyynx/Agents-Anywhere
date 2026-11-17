@@ -33,7 +33,7 @@ STEER = "STEER: say BANANA-42"
 class _SteerClaudeClient:
     """Scripted SDK client: tool frame -> wait for steer -> steer reply."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, echo_prompt: bool = False) -> None:
         self.options = None
         self.connected = False
         self.disconnected = False
@@ -43,6 +43,9 @@ class _SteerClaudeClient:
         self.tool_running = asyncio.Event()
         self.steer_received = asyncio.Event()
         self.steer_uuid: str | None = None
+        self.prompt_uuid: str | None = None
+        self.prompt_text: str | None = None
+        self.echo_prompt = echo_prompt
 
     async def connect(self) -> None:
         self.connected = True
@@ -65,11 +68,17 @@ class _SteerClaudeClient:
             self.steer_uuid = first.get("uuid")
             self.steer_received.set()
         else:
+            self.prompt_uuid = first.get("uuid")
+            self.prompt_text = content
             self.first_query.set()
 
     def receive_response(self):
         async def frames():
             await self.first_query.wait()
+            if self.echo_prompt and self.prompt_uuid and self.prompt_text:
+                # AA runs the CLI with `replay-user-messages`; the prompt comes
+                # back before the tool frame.
+                yield UserMessage(content=self.prompt_text, uuid=self.prompt_uuid)
             yield AssistantMessage(
                 uuid="assistant_tool",
                 session_id="claude_session_1",
@@ -169,6 +178,9 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert len(steer_rows) == 1
     assert len(prompt_rows) == 1
     assert reply_rows, "the steer reply must be published"
+    # The row's native id is the uuid actually sent to the SDK: the echo only
+    # confirms when those two stay in lockstep.
+    assert steer_rows[0].source.get("itemId") == client.steer_uuid
     assert steer_rows[0].source.get("itemType") == "steeringUserMessage"
     assert steer_rows[0].source.get("clientMessageId") == "client_steer_1"
     # Everything the turn published shares the prompt turn id: no second turn.
@@ -286,6 +298,68 @@ async def _test_claude_steer_is_refused_once_the_response_settled() -> None:
     # Let the scripted turn finish so the test leaves nothing running.
     client.steer_received.set()
     await asyncio.wait_for(task, 10)
+
+
+def test_claude_steer_echo_does_not_rebind_the_prompt_when_text_matches() -> None:
+    asyncio.run(_test_claude_steer_echo_does_not_rebind_the_prompt_when_text_matches())
+
+
+async def _test_claude_steer_echo_does_not_rebind_the_prompt_when_text_matches() -> None:
+    """Same text as the prompt: the echo must still be consumed as a steer.
+
+    Without the uuid branch, the generic user-echo path mistakes the steer for
+    the prompt's own replay and warns / rebinds the prompt's client message.
+    """
+
+    from loguru import logger
+
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        host = _RecordingHost()
+        client = _SteerClaudeClient(echo_prompt=True)
+        runtime = _runtime(host=host, client=client)
+
+        started = await runtime.start_turn(
+            "sess_same_text",
+            "claude_session_0",
+            "hello",
+            client_message_id="client_same_prompt",
+        )
+        assert started.ok is True
+        session = runtime._sessions["sess_same_text"]
+        task = session.active_task
+        assert task is not None
+        await asyncio.wait_for(client.tool_running.wait(), 5)
+
+        # The steer carries exactly the prompt's text.
+        steered = await runtime.steer_turn(
+            "sess_same_text",
+            "claude_session_0",
+            "hello",
+            client_message_id="client_same_steer",
+        )
+        assert steered.ok is True
+
+        await asyncio.wait_for(task, 10)
+    finally:
+        logger.remove(sink)
+
+    rows = [item for item in host.timeline_item_upserts if item.role == "user"]
+    by_client = {
+        item.source.get("clientMessageId"): item for item in rows
+    }
+    assert set(by_client) == {"client_same_prompt", "client_same_steer"}
+    assert (
+        by_client["client_same_steer"].source.get("itemType")
+        == "steeringUserMessage"
+    )
+    assert all(item.turn_id == started.result["turnId"] for item in rows)
+    assert not [
+        warning
+        for warning in warnings
+        if "prompt uuid was not adopted" in warning
+    ]
 
 
 def test_claude_steer_rejects_attachments() -> None:

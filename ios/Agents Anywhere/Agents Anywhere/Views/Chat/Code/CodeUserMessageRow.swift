@@ -13,6 +13,9 @@ struct CodeUserMessageRow: View {
     /// The optimistic-send state; the bubble or the attachment row carries the
     /// indicator in the leading gutter.
     var isPending = false
+    /// A steer the runtime has not read yet: the bubble keeps the queue's
+    /// dashed waiting outline until its echo replaces this row.
+    var waitingOutline = false
     var onDeliveryIssue: (() -> Void)? = nil
     /// One attachment's display state. A settled message passes `.complete`;
     /// an optimistic send maps its uploaded/failed attachments here.
@@ -33,7 +36,7 @@ struct CodeUserMessageRow: View {
                 // The delivery state rides on the bubble itself (text is the
                 // last block), so it follows a short, right-aligned bubble and
                 // keeps the chat page's bubble-relative offsets.
-                CodeUserBubble(text: text) {
+                CodeUserBubble(text: text, waitingOutline: waitingOutline) {
                     CodeDeliveryGutter(
                         isPending: isPending,
                         onDeliveryIssue: onDeliveryIssue,

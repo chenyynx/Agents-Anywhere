@@ -207,6 +207,23 @@ import Testing
         #expect(model.pendingMessages.isEmpty && http.calls.isEmpty)
         restored.reset()
     }
+    @Test func restoredSteerPendingKeepsItsWaitingFace() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)
+        _ = try await first.load(sessionId: "session")
+        let pending = V2PendingMessage(id: "client", content: "steer", attachmentIDs: [])
+        pending.isSteer = true
+        first.session(id: "session").stage(pending)
+        await first.flushCache(); first.reset()
+
+        let restored = repo(TestHTTPTransport(), local: V2LocalStore(directory: url))
+        restored.updateConnectivity(.init(availability: .offline)); _ = try await restored.load(sessionId: "session")
+        // The dashed waiting face and the steer status copy both read this
+        // flag, so an interrupted steer must not come back as a plain send.
+        #expect(restored.session(id: "session").pendingMessages.first?.isSteer == true)
+        restored.reset()
+    }
+
     @Test func restoredQueueReArmsWhatWasWaitingAndDemotesWhatWasInFlight() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         let local = V2LocalStore(directory: url); let first = repo(TestHTTPTransport(), local: local)

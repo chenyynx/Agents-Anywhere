@@ -1124,6 +1124,9 @@ final class V2SessionModel: Identifiable {
         pendingMessages = archive.pending.map { value in
             let pending = V2PendingMessage(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
                 localAttachmentIDs: value.attachments.map(\.id), attachments: value.attachments)
+            // The dashed "waiting outside the transcript" face and the steer
+            // status copy both derive from this flag.
+            pending.isSteer = value.steer ?? false
             let failure = V2ClientFailure(kind: .unavailable, message: value.error ?? String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。"))
             pending.update(value.rejected ? .rejected(failure) : .uncertain(failure))
             pending.supersededPendingIDs = value.superseded ?? []

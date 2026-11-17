@@ -51,6 +51,11 @@ struct PendingMessageRow: View {
             // the bubble itself draws no spinner. A failed delivery still puts
             // its retry affordance in the same gutter.
             isPending: false,
+            // A steer stays outside the transcript until the runtime echoes
+            // it; the dashed outline is the same "waiting" language the
+            // send queue uses. The echo retires this row and its settled
+            // replacement is solid.
+            waitingOutline: pending.isSteer,
             onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
             attachmentState: { content in
                 pending.codeAttachmentState(for: content)

@@ -18,17 +18,15 @@ struct PendingMessageRow: View {
     @State private var confirmsDismiss = false
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 4) {
-            row
-            if let steerStatusText {
-                // Official queue copy (queued_message_status_*): the steer row
-                // is optimistic until the runtime echoes the message back.
-                Text(steerStatusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("chat.composer.steerStatus")
-            }
-        }
+        // The official queue row never prints a status word: the state is a
+        // visual affordance and the copy lives in accessibility (the strings
+        // with "Shows options…" are hints). A steer row follows the same rule.
+        row
+            .accessibilityValue(steerStatusText ?? "")
+            .accessibilityHint(
+                steerStatus == nil
+                    ? ""
+                    : String(localized: "显示此等待中消息的操作。"))
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             if let onRetry, !chat.session.isLocalCreation {
                 Button(String(localized: "重新发送")) { onRetry() }

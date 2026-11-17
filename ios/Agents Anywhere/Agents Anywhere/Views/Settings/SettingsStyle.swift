@@ -274,6 +274,87 @@ struct SettingsToggleRow: View {
     }
 }
 
+/// One option of a `SettingsMenuRow`: the stored raw value, its title, and
+/// the glyph shown in front of it in the menu.
+struct SettingsMenuOption: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+}
+
+/// A setting whose value is chosen in a native menu instead of a second-level
+/// page (pp 2026-11-18): the row shows the current value with the system's
+/// up/down chevron on its trailing edge, and tapping the row opens the system
+/// menu with the checkmark on the active option.
+struct SettingsMenuRow: View {
+    let icon: String
+    let title: String
+    var subtitle: String?
+    let value: String
+    let options: [SettingsMenuOption]
+    @Binding var selection: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(icon: String, title: String, subtitle: String? = nil, value: String,
+         options: [SettingsMenuOption], selection: Binding<String>) {
+        self.icon = icon
+        self.title = title
+        self.subtitle = subtitle
+        self.value = value
+        self.options = options
+        self._selection = selection
+    }
+
+    var body: some View {
+        Menu {
+            Picker(title, selection: $selection) {
+                ForEach(options) { option in
+                    Label {
+                        Text(option.title)
+                    } icon: {
+                        Image(systemName: option.symbol)
+                    }
+                    .tag(option.id)
+                }
+            }
+        } label: {
+            HStack(spacing: SettingsStyle.iconGap) {
+                AppSymbol(icon, size: 17)
+                    .frame(width: SettingsStyle.iconFrame)
+                    .foregroundStyle(SettingsStyle.icon(colorScheme))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(SettingsStyle.text(16))
+                        .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(SettingsStyle.text(15))
+                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    }
+                }
+                Spacer(minLength: 8)
+                Text(value)
+                    .font(SettingsStyle.text(16))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+            }
+            .padding(.horizontal, SettingsStyle.rowPadding)
+            .padding(.vertical, 12)
+            .frame(minHeight: SettingsStyle.rowMinHeight)
+            .contentShape(Rectangle())
+        }
+        // The system's default order is proximity-based and flips the list
+        // when the menu opens upward; a settings choice reads top-to-bottom.
+        .menuOrder(.fixed)
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+    }
+}
+
 /// An option row for pickers (appearance, accent, cache limits…): optional
 /// leading colour dot or icon, title + subtitle, checkmark when selected.
 struct SettingsSelectRow: View {

@@ -151,21 +151,31 @@ struct AccountSettingsSheet: View {
                                   title: String(localized: "Language"),
                                   value: SettingsLanguageView.currentLanguage,
                                   destination: SettingsLanguageView())
-            SettingsRowDivider()
-            SettingsNavigationRow(icon: "arrow.down.document",
-                                  title: String(localized: "Process display"),
-                                  subtitle: String(localized: "How thinking and tool calls are shown"),
-                                  value: renderMode.title,
-                                  destination: TimelineRenderModeSettingsView())
         }
     }
 
     private var composerSection: some View {
         SettingsSection(String(localized: "编写器")) {
-            SettingsNavigationRow(icon: "square.and.pencil",
-                                  title: String(localized: "后续消息处理方式"),
-                                  value: delivery.title,
-                                  destination: ComposerSettingsView())
+            // Both choices are short enough for the official inline menu row
+            // (value + up/down chevron), so neither opens a second-level page
+            // (pp 2026-11-18).
+            SettingsMenuRow(icon: "square.and.pencil",
+                            title: String(localized: "后续消息处理方式"),
+                            value: delivery.title,
+                            options: ComposerDelivery.allCases.map {
+                                SettingsMenuOption(id: $0.rawValue,
+                                                   title: $0.title, symbol: $0.menuSymbol)
+                            },
+                            selection: $deliveryRaw)
+            SettingsRowDivider()
+            SettingsMenuRow(icon: "arrow.down.document",
+                            title: String(localized: "工具渲染方式"),
+                            value: renderMode.title,
+                            options: TimelineRenderMode.allCases.map {
+                                SettingsMenuOption(id: $0.rawValue,
+                                                   title: $0.title, symbol: $0.menuSymbol)
+                            },
+                            selection: $renderModeRaw)
         }
     }
 

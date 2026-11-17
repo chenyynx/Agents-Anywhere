@@ -28,12 +28,12 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var detail: String {
+    /// The glyph the settings menu shows in front of each mode: one step per
+    /// row vs the merged groups.
+    var menuSymbol: String {
         switch self {
-        case .steps:
-            return String(localized: "思考和每次工具调用各占一条，执行中实时刷新，结束后收成一行摘要。")
-        case .merged:
-            return String(localized: "思考合并成一段「思考过程」；工具调用按类别归组、默认收起。")
+        case .steps: return "list.bullet"
+        case .merged: return "arrow.triangle.merge"
         }
     }
 }

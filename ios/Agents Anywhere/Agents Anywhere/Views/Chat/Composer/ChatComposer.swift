@@ -36,6 +36,12 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
     @State private var sendFeedback = 0
+    /// The visible send key's frame and the bar's frame, in global space.
+    /// The native `Menu` is drawn as an overlay OUTSIDE the glass bar and is
+    /// placed back onto the key from these two measurements (see
+    /// `sendKeyMenu`).
+    @State private var sendSlotFrame: CGRect = .zero
+    @State private var barFrame: CGRect = .zero
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
     /// The same value the settings row edits. Long-press here writes it, so
     /// the menu is a second entry point to the one setting, never a per-send
@@ -89,58 +95,19 @@ struct ChatComposer: View {
                             expandAnimation: expandAnimation, onLongPaste: onLongPaste)
                     }
 
-                    // A Menu, not a Button + `.contextMenu`: the context menu
-                    // anchored at the touch point and stayed there while the
-                    // keyboard dismissal moved the composer. A Menu anchors to
-                    // its label, and its picker options render inline with
-                    // check marks, so 引导/排队 share one leading edge
-                    // (pp 2026-11-17).
-                    Menu {
-                        // A second entry point to the ONE persisted setting
-                        // (the settings row is the first). Selecting here
-                        // writes the same value; there is no per-send
-                        // temporary override.
-                        Picker(String(localized: "后续消息处理方式"),
-                               selection: $deliveryRaw) {
-                            ForEach(ComposerDelivery.allCases) { option in
-                                Text(option.title).tag(option.rawValue)
-                            }
-                        }
-                    } label: {
-                        AppSymbol(accentSymbol, size: accentSymbolSize)
-                            .contentTransition(.symbolEffect(.replace))
-                            // Official stop key: neutral chrome (light #F0EFEC /
-                            // dark white 8%) with a black text100 square — only
-                            // the send key wears the accent fill.
-                            .foregroundStyle(isStopState
-                                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
-                                : AnyShapeStyle(sendGlyph))
-                            .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background((isStopState
-                                ? AppTheme.composerControlFill(colorScheme)
-                                : sendFill)
-                                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
-                            .frame(width: controls.touchTarget, height: controls.touchTarget)
-                            .contentShape(Circle())
-                    } primaryAction: {
-                        // [E] The official send key is an `AnimatingHapticButton`
-                        // fired with `.selection` (EVIDENCE/round19/motion.md
-                        // §P2-10). Only the send/queue shapes are documented;
-                        // the stop shape stays silent.
-                        if affordance.shape != .stop { sendFeedback += 1 }
-                        accentAction()
-                    }
-                    .menuIndicator(.hidden)
-                    .disabled(isBusy || !sendEnabled)
-                    .sensoryFeedback(.selection, trigger: sendFeedback)
-                    .accessibilityLabel(accentLabel)
-                    .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
-                    .accessibilityIdentifier(
-                        showsQueueSend
-                            ? (delivery == .steer
-                                ? "chat.composer.steerSend"
-                                : "chat.composer.queueSend")
-                            : "chat.composer.send")
+                    // The visible send key stays inside the bar; its native
+                    // Menu lives in the overlay OUTSIDE the glass (below).
+                    // A Menu nested in a `.glassEffect` view made the whole
+                    // composer — text field included — vanish while the menu
+                    // was open (pp 2026-11-18 00:10). The overlay Menu is the
+                    // key's only hit target now, so this visual never takes
+                    // touches.
+                    sendKey
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .onGeometryChange(for: CGRect.self) {
+                            $0.frame(in: .global)
+                        } action: { sendSlotFrame = $0 }
 
                     if showsCommands {
                         Button(action: onCommands) {
@@ -156,23 +123,18 @@ struct ChatComposer: View {
                     }
                 }
             }
-            // The glass is a background layer, not the bar's own modifier.
-            // A native `Menu` inside a `.glassEffect` view made the whole
-            // composer — text field included — vanish while the menu was
-            // open (pp 2026-11-18 00:10): the presentation snapshots the
-            // view containing the menu, and a glass-captured subtree does
-            // not survive that pass. With the glass behind the controls,
-            // the worst case is a flattened backdrop (SO 79719929), never a
-            // missing input bar.
-            .background {
-                Color.clear
-                    .glassEffect(.regular.interactive(), in: RoundedRectangle(
-                        cornerRadius: draft.isExpanded
-                            ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
-                        style: .continuous))
-                    .glassEffectID("composer", in: glass)
-            }
+            .glassEffect(.regular.interactive(), in: RoundedRectangle(
+                cornerRadius: draft.isExpanded
+                    ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
+                style: .continuous))
+            .glassEffectID("composer", in: glass)
         }
+        // The native send menu lives HERE, outside the bar's `.glassEffect`:
+        // presenting a Menu from inside the glass hid the whole composer
+        // (pp 2026-11-18 00:10). The bar is measured so the invisible menu
+        // label can sit exactly on the visible key.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { barFrame = $0 }
+        .overlay(alignment: .topLeading) { sendKeyMenu }
         .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
         .padding(.top, controls.topMargin)
         .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
@@ -182,6 +144,77 @@ struct ChatComposer: View {
         // the draft from the page root re-evaluated the whole conversation.
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
+    }
+
+    /// The send/queue/stop key the bar draws. Display only: the overlay
+    /// `sendKeyMenu` above it owns the tap and the long press.
+    private var sendKey: some View {
+        AppSymbol(accentSymbol, size: accentSymbolSize)
+            .contentTransition(.symbolEffect(.replace))
+            // Official stop key: neutral chrome (light #F0EFEC / dark white
+            // 8%) with a black text100 square — only the send key wears the
+            // accent fill.
+            .foregroundStyle(isStopState
+                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
+                : AnyShapeStyle(sendGlyph))
+            .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+            .background((isStopState
+                ? AppTheme.composerControlFill(colorScheme)
+                : sendFill)
+                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
+            .frame(width: controls.touchTarget, height: controls.touchTarget)
+            .contentShape(Circle())
+    }
+
+    /// The native menu the long press opens, anchored back onto the key.
+    ///
+    /// A Menu, not a Button + `.contextMenu`: the context menu anchored at the
+    /// touch point and stayed there while the keyboard dismissal moved the
+    /// composer. A Menu anchors to its label, and its inline picker keeps
+    /// 引导/排队 aligned with one leading edge (pp 2026-11-17). The label is
+    /// clear on purpose: the visible key is drawn inside the glass bar, while
+    /// this copy must stay OUTSIDE the glass subtree — presenting a Menu from
+    /// inside a `.glassEffect` view hid the whole composer (pp 2026-11-18
+    /// 00:10).
+    private var sendKeyMenu: some View {
+        Menu {
+            // A second entry point to the ONE persisted setting (the settings
+            // row is the first). Selecting here writes the same value; there
+            // is no per-send temporary override.
+            Picker(String(localized: "后续消息处理方式"), selection: $deliveryRaw) {
+                ForEach(ComposerDelivery.allCases) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+        } label: {
+            Color.clear
+                .frame(width: sendSlotFrame.width, height: sendSlotFrame.height)
+                .contentShape(Circle())
+        } primaryAction: {
+            // [E] The official send key is an `AnimatingHapticButton` fired
+            // with `.selection` (EVIDENCE/round19/motion.md §P2-10). Only the
+            // send/queue shapes are documented; the stop shape stays silent.
+            if affordance.shape != .stop { sendFeedback += 1 }
+            accentAction()
+        }
+        .menuIndicator(.hidden)
+        .disabled(isBusy || !sendEnabled)
+        .sensoryFeedback(.selection, trigger: sendFeedback)
+        .accessibilityLabel(accentLabel)
+        .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
+        .accessibilityIdentifier(
+            showsQueueSend
+                ? (delivery == .steer
+                    ? "chat.composer.steerSend"
+                    : "chat.composer.queueSend")
+                : "chat.composer.send")
+        .offset(x: sendSlotFrame.minX - barFrame.minX,
+                y: sendSlotFrame.minY - barFrame.minY)
+        // Before the first measurement there is no slot to sit on; keep the
+        // overlay out of hit testing instead of parking it in the bar's
+        // top-left corner.
+        .allowsHitTesting(!sendSlotFrame.isEmpty && !barFrame.isEmpty)
+        .opacity(sendSlotFrame.isEmpty || barFrame.isEmpty ? 0 : 1)
     }
 
     /// The queue form: the single accent key shows the arrow and enqueues.

@@ -17,14 +17,12 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
-    @State private var keyboardVisible = false
-    /// Height of the welcome block, so the edit-state rise can be expressed as
-    /// one offset instead of a second layout pass (pp 2026-11-13).
-    @State private var welcomeHeight: CGFloat = 0
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
+    /// The project picker's label: the session title's 15 pt (2026-11-17).
+    @ScaledMetric(relativeTo: .subheadline) private var workspaceLabelSize: CGFloat = 15
 
     /// The collection engine's composer keeps the official Code measurements
     /// in both rendering modes (pp 2026-10-29).
@@ -44,38 +42,22 @@ struct NewSessionView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             GeometryReader { viewport in
-                // The move is a transform of the whole block, not a change of
-                // its layout slot: re-placing the block ran a layout pass per
-                // frame and left the video behind the copy (pp 2026-11-13).
+                // Centred in whatever space the keyboard leaves: one layout pass
+                // per keyboard frame, with the copy and the avatar riding that
+                // same pass. The old transform-based rise retargeted on every
+                // frame — it read `rise` off the shrinking viewport — which is
+                // what made the page swing while the keyboard moved
+                // (pp 2026-11-17).
                 let restingHeight = max(0, viewport.size.height - 48)
-                // Before the block is measured the rise is unknown; that one
-                // pass keeps the old top-aligned slot, so arriving with the
-                // keyboard already up cannot misplace the block.
-                let measured = welcomeHeight > 0
-                let rise = max(0, (restingHeight - welcomeHeight) / 2)
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: isEditing && !measured ? 0 : restingHeight) {
+                    NewSessionContentLayout(viewportHeight: restingHeight) {
                         NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
                             onChooseTarget: chooseTarget)
-                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                                welcomeHeight = $0
-                            }
-                            // The globe is an AVPlayerLayer-backed leaf: left to
-                            // itself it resolves its frame on the next layout while
-                            // the Text leaves interpolate their own, so on the way
-                            // up the copy was drawn over the ball's old position
-                            // (pp 2026-11-13). The group makes the parent resolve
-                            // this block's geometry once and pass it down.
-                            .geometryGroup()
                         statusContent
                     }
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        // Transform only: no layout runs during the 0.25 s move,
-                        // so the video and the copy cannot drift apart.
-                        .offset(y: isEditing && measured ? -rise : 0)
-                        .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -89,7 +71,9 @@ struct NewSessionView: View, Equatable {
                     workspaceButton
                         .padding(.horizontal, controls.horizontalInset(expanded: model.draft.isExpanded))
                         .padding(.leading, 6)
-                        .padding(.bottom, 6)
+                        // 14 + the dock's 8 pt top margin ≈ the capture's 25 pt
+                        // between the picker's baseline and the composer edge.
+                        .padding(.bottom, 14)
                 ChatComposerDock(draft: model.draft, settings: model.settings,
                     maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                     editor: composerEditor, showsCommandMenu: $showsCommandMenu,
@@ -136,22 +120,7 @@ struct NewSessionView: View, Equatable {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
         }
-        // With the keyboard up the welcome is centered in a viewport that the
-        // composer inset shrinks; top-aligning it keeps the copy above the
-        // composer instead of behind it (pp 2026-11-13).
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
-        }
     }
-
-    /// Carrying the keyboard in from another page fires no willShow, so the
-    /// composer's own first-responder flag is the source of truth; the
-    /// notifications cover the case where focus was lost but the keyboard is
-    /// still up.
-    private var isEditing: Bool { model.draft.isFocused || keyboardVisible }
 
     private var statusContent: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -177,23 +146,43 @@ struct NewSessionView: View, Equatable {
 
     private var workspaceButton: some View {
         Button { showsWorkspace = true } label: {
-            HStack(spacing: 6) {
-                AppSymbol("folder", size: 14).foregroundStyle(.secondary)
-                Text(workspaceName).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                    .lineLimit(1).layoutPriority(1)
+            // Reference (2026-11-17, measured off the Code-page capture at 3×):
+            // icon ink starts 24 pt in, label ink at 58 pt; label #585858,
+            // glyphs #888, chevrons #C8C8C8, all at 15 pt. The label uses the
+            // session title's face (Anthropic Sans 15 / 550) so the picker
+            // matches the header above the transcript.
+            HStack(spacing: 12) {
+                AppSymbol("bubble.left.and.bubble.right", size: 17)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                Text(workspaceName)
+                    .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                        size: workspaceLabelSize,
+                                                        weight: 550)))
+                    .foregroundStyle(ChatPalette.text.color.opacity(0.7))
+                    .lineLimit(1)
+                    .layoutPriority(1)
                 if !model.workspace.isEmpty {
-                    Text(model.workspace).font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Text(model.workspace)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
                     ProgressView().controlSize(.mini)
-                } else { AppSymbol("chevron.down", size: 12).foregroundStyle(.secondary) }
+                } else {
+                    AppSymbol("chevron.up.chevron.down", size: 12)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.top, 8)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .disabled(model.connector == nil || model.isCreating)
+        .accessibilityLabel(String(localized: "选择项目"))
+        .accessibilityValue(model.workspace.isEmpty ? workspaceName : model.workspace)
     }
 
     private var deviceMenu: some View {

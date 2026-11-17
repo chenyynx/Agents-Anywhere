@@ -1,16 +1,17 @@
 import SwiftUI
 
-/// The new-session empty state: the Creed crystal globe with the official
-/// "build with {runtime}" copy underneath. Only the runtime name is a link —
-/// underlined, opening the device & agent picker; the rest of the copy is not
-/// tappable (pp 2026-11-13).
+/// The new-session empty state: a fresh blobatar with the official
+/// "build with {runtime}" copy underneath. Only the runtime name is a link,
+/// opening the device & agent picker; the rest of the copy is not tappable
+/// (pp 2026-11-13). The link carries no underline (pp 2026-11-17).
 struct NewSessionWelcomeView: View {
     let agentName: String?
     let onChooseTarget: () -> Void
     /// Fixed, not scaled on edit: the copy must fit above the workspace
-    /// button and keyboard even with the composer focused, and any size
-    /// transition let the video layer lag the copy (pp 2026-11-13).
+    /// button and keyboard even with the composer focused (pp 2026-11-13).
     private let globeDiameter: CGFloat = 150
+    /// A new creature every time the page is built; taps cycle expressions.
+    @State private var blobatarSeed = UUID().uuidString
 
     private var agent: String { agentName ?? String(localized: "Agent") }
     private var title: AttributedString {
@@ -25,7 +26,7 @@ struct NewSessionWelcomeView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            CrystalGlobeView(diameter: globeDiameter)
+            BlobatarView(seed: blobatarSeed, diameter: globeDiameter)
             VStack(spacing: 10) {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))
@@ -68,7 +69,6 @@ struct NewSessionWelcomeView: View {
         prefix.foregroundColor = base
         var nameText = AttributedString(name)
         nameText.foregroundColor = nameColor
-        nameText.underlineStyle = Text.LineStyle(pattern: .solid, color: nameColor)
         nameText.link = URL(string: "aa://choose-target")
         var suffix = AttributedString(String(text[range.upperBound...]))
         suffix.foregroundColor = base

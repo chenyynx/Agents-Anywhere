@@ -162,13 +162,6 @@ struct NewSessionView: View, Equatable {
                     .foregroundStyle(ChatPalette.text.color.opacity(0.7))
                     .lineLimit(1)
                     .layoutPriority(1)
-                if !model.workspace.isEmpty {
-                    Text(model.workspace)
-                        .font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
                 if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
                     ProgressView().controlSize(.mini)
                 } else {

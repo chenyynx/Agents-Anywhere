@@ -193,6 +193,37 @@ class ClaudeResponse:
             await self.connection.client.query(prompt())
         self.connection.queried.set()
 
+    async def steer(self, content: str, steer_uuid: str | None = None) -> str:
+        """Send one message into the turn this response is running.
+
+        `priority: "next"` is the SDK's steering knob: the CLI holds the
+        message until the running tool calls finish, then hands it to Claude
+        inside the SAME turn (verified on bundled CLI 2.1.319, 2026-11-17).
+        It must not touch `prompt_uuid`/`user_id` — those belong to the turn
+        prompt; the echo is recognised by its own uuid instead. The caller may
+        pre-assign that uuid so the user row can be published before the
+        message leaves.
+        """
+
+        if self.maintenance or self.discard or self.terminal_received:
+            raise RuntimeError("Claude response no longer accepts a message")
+        if self.released.is_set():
+            raise RuntimeError("Claude response already settled")
+
+        steer_uuid = steer_uuid or str(uuid4())
+
+        async def prompt():
+            yield {
+                "type": "user",
+                "uuid": steer_uuid,
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+                "priority": "next",
+            }
+
+        await self.connection.client.query(prompt())
+        return steer_uuid
+
     def decline_terminal(self) -> None:
         """Rule the terminal just read out of this turn, and keep reading.
 

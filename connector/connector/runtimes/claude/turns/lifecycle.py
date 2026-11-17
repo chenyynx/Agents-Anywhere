@@ -3320,6 +3320,48 @@ class ClaudeTurnRunner:
                     and native_message_id
                     and not suppressed_control
                 ):
+                    steer = session.take_steer(native_message_id)
+                    if steer is not None:
+                        # A steering message's timeline row is published HERE,
+                        # when the runtime echoes the message back — i.e. the
+                        # turn that actually read it. Nothing was published at
+                        # submit time, so a steer stopped before delivery
+                        # leaves no orphan row, and one delivered as the next
+                        # turn lands in that turn.
+                        steer_text, steer_client_id = steer
+                        item = self.timeline.message_item(
+                            session=session,
+                            turn_id=turn_id,
+                            role="user",
+                            text=steer_text,
+                            event="claude.turn.steer",
+                            client_message_id=steer_client_id,
+                            native_item_id=native_message_id,
+                            native_item_type="steeringUserMessage",
+                        )
+                        try:
+                            await self.publish_items(execution, (item,))
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "Claude steer row publish failed "
+                                "session_id={} turn_id={} steer_uuid={}",
+                                session.session_id,
+                                turn_id,
+                                native_message_id,
+                            )
+                        logger.info(
+                            "Claude steer echo published session_id={} "
+                            "turn_id={} steer_uuid={}",
+                            session.session_id,
+                            turn_id,
+                            native_message_id,
+                        )
+                        # The echo is the turn's own work too. Without this,
+                        # a turn whose only non-chrome frame is the steer echo
+                        # would be judged empty and settle as an unowned
+                        # "interrupted" after the 30 s grace window.
+                        turn_started = True
+                        continue
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:
                         if (

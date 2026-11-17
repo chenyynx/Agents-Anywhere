@@ -295,15 +295,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 
     private func noteCompactRowState() {
         // Same live-turn boundary as `liveTurnIsCompacting()`: the marker a
-        // turn can still change sits after the last user row, so the scan
-        // stops there instead of walking the whole window every refresh.
+        // turn can still change sits after the last row that STARTS a visible
+        // turn. A steering row is a user message but not a boundary, so the
+        // scan must not stop at one.
         var compact: V2TimelineItem?
         for row in model.timeline.rows.reversed() {
             let item = row.value
             // Sub-agent child rows belong to their own transcript; the main
             // page's live state never reads them (pp 2026-11-16).
             if SubAgentProgress.parentItemID(item) != nil { continue }
-            if item.role == .user { break }
+            if item.startsVisibleTurn { break }
             if TimelineEntryPresentation.isCompactItem(item) { compact = item; break }
         }
         guard let item = compact else {
@@ -1343,7 +1344,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         // The live detail follows the tail like the step sheet:
                         // the turn is running and this row belongs to it.
                         let lastUserOrder = chatModel.session.timeline.last {
-                            $0.value.role == .user
+                            $0.value.startsVisibleTurn
                         }?.value.orderSeq
                         if let lastUserOrder,
                            let row = chatModel.session.timeline.first(where: { $0.id == request.id }) {
@@ -1814,8 +1815,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             for row in model.timeline.rows where rowsByID[row.id] == nil {
                 rowsByID[row.id] = row
             }
-            for row in model.timeline.rows
-            where row.value.type == .message && row.value.role == .user {
+            for row in model.timeline.rows where row.value.startsVisibleTurn {
                 chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
             }
             let turnGroupIDs = TimelineRunningTurnStepGroups.ids(
@@ -2246,7 +2246,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             TimelineTurnActions.opensTurn($0.delivery)
         }?.id
         let latestUserRowID = model.timeline.rows.last(where: {
-            $0.value.type == .message && $0.value.role == .user
+            $0.value.startsVisibleTurn
         })?.id
         // A pending bubble whose echo row is already in the timeline is no
         // longer opening a new turn; it must not force the previous turn's
@@ -2943,9 +2943,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// now, so the Code tail must not draw a second indicator.
     private var tailStatusLineVisible: Bool { false }
 
-    /// The official live-turn pose. Only the tail after the last user message
-    /// can hold the running block, so the walk stops there instead of
-    /// scanning the whole transcript on every rebuild.
+    /// The official live-turn pose. Only the tail after the last visible-turn
+    /// start can hold the running block; a steering row sits inside the turn
+    /// and must not cut the walk, so the boundary is `startsVisibleTurn`.
     private func liveWorkingMarkBody() -> WorkingMarkBody {
         // An optimistic user message is newer than every presented row: the
         // official predicate would see it as the last message of the trailing
@@ -2957,7 +2957,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             let item = row.value
             // A sub-agent's running tools must not pose the main page's mark.
             if SubAgentProgress.parentItemID(item) != nil { continue }
-            if item.role == .user { break }
+            if item.startsVisibleTurn { break }
+            // A steering row is a user message INSIDE the live turn. The
+            // pose builder treats every user row as a boundary, so drop it
+            // here rather than let it cut the turn's tail.
+            if item.role == .user { continue }
             tail.append(CodeWorkingMarkRow(
                 role: item.role,
                 isReasoning: item.isReasoning,
@@ -3047,15 +3051,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     }
 
     /// The trailing reasoning row of the live turn, if any. The scan stops at
-    /// the last user message, the same live-turn boundary `liveWorkingMarkBody`
-    /// uses.
+    /// the last visible-turn start, the same live-turn boundary
+    /// `liveWorkingMarkBody` uses (a steering row is inside the turn).
     private func liveThinkingItem() -> V2TimelineItem? {
         for row in model.timeline.rows.reversed() {
             let item = row.value
             // The sub-agent's own thinking must not surface as the main
             // turn's closed 「思考了 n 秒」 label (pp 2026-11-16).
             if SubAgentProgress.parentItemID(item) != nil { continue }
-            if item.role == .user { break }
+            if item.startsVisibleTurn { break }
             if item.isReasoning { return item }
         }
         return nil
@@ -3085,7 +3089,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         for row in model.timeline.rows.reversed() {
             let item = row.value
             if SubAgentProgress.parentItemID(item) != nil { continue }
-            if item.role == .user { break }
+            if item.startsVisibleTurn { break }
             if TimelineEntryPresentation.isCompactItem(item) {
                 return TimelineEntryPresentation.isActiveCompactItem(item)
             }

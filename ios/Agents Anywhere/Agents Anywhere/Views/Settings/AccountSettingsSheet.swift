@@ -12,8 +12,13 @@ struct AccountSettingsSheet: View {
     private var renderModeRaw = TimelineRenderMode.steps.rawValue
     @AppStorage(LocalCachePolicy.key)
     private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
+    @AppStorage(ComposerDeliverySetting.storageKey)
+    private var deliveryRaw = ComposerDeliverySetting.defaultValue.rawValue
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
+    }
+    private var delivery: ComposerDelivery {
+        ComposerDeliverySetting.resolve(deliveryRaw)
     }
     @State private var confirmsSignOut = false
     @State private var signOutError: String?
@@ -34,6 +39,7 @@ struct AccountSettingsSheet: View {
                 }
                 connectionSection
                 displaySection
+                composerSection
                 sessionListSection
                 storageSection
                 supportSection
@@ -151,6 +157,15 @@ struct AccountSettingsSheet: View {
                                   subtitle: String(localized: "How thinking and tool calls are shown"),
                                   value: renderMode.title,
                                   destination: TimelineRenderModeSettingsView())
+        }
+    }
+
+    private var composerSection: some View {
+        SettingsSection(String(localized: "编写器")) {
+            SettingsNavigationRow(icon: "square.and.pencil",
+                                  title: String(localized: "后续消息处理方式"),
+                                  value: delivery.title,
+                                  destination: ComposerSettingsView())
         }
     }
 

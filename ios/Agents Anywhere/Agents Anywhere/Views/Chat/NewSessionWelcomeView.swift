@@ -1,77 +1,133 @@
 import SwiftUI
 
-/// The new-session empty state: the Creed crystal globe with the official
-/// "build with {runtime}" copy underneath. Only the runtime name is a link —
-/// underlined, opening the device & agent picker; the rest of the copy is not
-/// tappable (pp 2026-11-13).
+/// The new-session empty state, matched to the official Claude chat page
+/// (pp 2026-11-17): the runtime's mark, a time-of-day greeting carrying the
+/// account's display name, and a pill carrying the working directory.
+///
+/// The mark follows the runtime (pp 2026-11-17) — same mapping as the sidebar,
+/// with Claude in its clay and DeepSeek in its blue; Codex and the bot mark
+/// stay monochrome. Measurements are off the 3× capture: mark 30 pt, greeting
+/// 19 pt in Anthropic Serif (#383835), pill 36 pt tall on #F0EFEC with an 11 pt
+/// label (regular #52514E, "Upgrade" semibold #0B0B0B). The Chinese resolves to
+/// the system fallback exactly as the reference does, so only the Latin runs
+/// wear the serif.
 struct NewSessionWelcomeView: View {
-    let agentName: String?
-    let onChooseTarget: () -> Void
-    /// Fixed, not scaled on edit: the copy must fit above the workspace
-    /// button and keyboard even with the composer focused, and any size
-    /// transition let the video layer lag the copy (pp 2026-11-13).
-    private let globeDiameter: CGFloat = 150
+    let displayName: String?
+    let runtime: V2DeviceRuntime?
+    let workspaceName: String
+    let onChooseWorkspace: () -> Void
 
-    private var agent: String { agentName ?? String(localized: "Agent") }
-    private var title: AttributedString {
-        copy(String(localized: "使用 \(agent) 进行构建"),
-             base: .primary, name: agent, nameColor: .primary)
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Measured 30.3 pt on the 3× capture.
+    private let markDiameter: CGFloat = 30
+    /// Official ink is 50 px at 3×; ours measured 52 px at 20 pt, so 19.
+    private let greetingSize: CGFloat = 19
+
+    private var mark: (asset: String, label: String) {
+        SessionAgentMark.resolve(runtime: runtime?.runtimeType ?? "",
+                                 runtimeType: runtime?.runtimeType)
     }
-    private var detail: AttributedString {
-        let ink = ChatPalette.text.color.opacity(0.72)
-        return copy(String(localized: "\(agent) 直接在您的代码库中与您协作，帮助您添加功能、修复 bug 和解释代码。"),
-                    base: ink, name: agent, nameColor: ink)
+
+    private var markTint: Color {
+        SessionAgentMark.tint(runtime: runtime?.runtimeType ?? "",
+                              runtimeType: runtime?.runtimeType) ?? .primary
+    }
+
+    private var name: String {
+        displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private var greeting: String {
+        let part = Self.timeOfDayGreeting()
+        return name.isEmpty ? part : "\(part)，\(name)"
     }
 
     var body: some View {
-        VStack(spacing: 18) {
-            CrystalGlobeView(diameter: globeDiameter)
-            VStack(spacing: 10) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .multilineTextAlignment(.center)
-                    .accessibilityAddTraits(.isHeader)
-                Text(detail)
-                    .font(.system(size: 13))
-                    .lineSpacing(4)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 0) {
+            Image(mark.asset)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: markDiameter, height: markDiameter)
+                .foregroundStyle(markTint)
+                .accessibilityHidden(true)
+
+            Text(greeting)
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.serifFontName,
+                                                    size: greetingSize,
+                                                    weight: 400)))
+                .foregroundStyle(ink)
+                .multilineTextAlignment(.center)
+                .padding(.top, 20)
+                .accessibilityAddTraits(.isHeader)
+
+            Button(action: onChooseWorkspace) {
+                workspacePill
             }
-            // Official text column: about 291 pt of copy, so the body wraps
-            // after “添加” like the reference (pp 2026-11-13).
-            .frame(maxWidth: 300)
-            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
+            .padding(.top, 40)
         }
         .frame(maxWidth: .infinity)
-        .environment(\.openURL, OpenURLAction { url in
-            guard url.scheme == "aa", url.host == "choose-target" else {
-                return .systemAction
-            }
-            onChooseTarget()
-            return .handled
-        })
     }
 
-    /// The runtime name is the only underlined, tappable run. The localized
-    /// sentence decides where the name sits, so word order stays correct in
-    /// every language.
-    private func copy(_ text: String,
-                      base: Color,
-                      name: String,
-                      nameColor: Color) -> AttributedString {
-        guard let range = text.range(of: name) else {
-            var whole = AttributedString(text)
-            whole.foregroundColor = base
-            return whole
+    /// The official pill, carrying what the official one would not: the working
+    /// directory this session will start in — and the way to change it. Two
+    /// weights like the capture: a secondary label and the name in ink.
+    private var workspacePill: some View {
+        HStack(spacing: 4) {
+            Text(String(localized: "工作目录"))
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                    size: 11, weight: 400)))
+                .foregroundStyle(pillSecondary)
+            Text(verbatim: "·")
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                    size: 11, weight: 400)))
+                .foregroundStyle(pillSecondary)
+            Text(workspaceName)
+                .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                    size: 11, weight: 600)))
+                .foregroundStyle(pillPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
-        var prefix = AttributedString(String(text[..<range.lowerBound]))
-        prefix.foregroundColor = base
-        var nameText = AttributedString(name)
-        nameText.foregroundColor = nameColor
-        nameText.underlineStyle = Text.LineStyle(pattern: .solid, color: nameColor)
-        nameText.link = URL(string: "aa://choose-target")
-        var suffix = AttributedString(String(text[range.upperBound...]))
-        suffix.foregroundColor = base
-        return prefix + nameText + suffix
+        .padding(.horizontal, 17)
+        .frame(height: 36)
+        .background(Capsule().fill(pillFill))
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Colours
+
+    private var ink: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.88)
+            : Color(red: 56 / 255, green: 56 / 255, blue: 53 / 255)
+    }
+
+    private var pillFill: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.08)
+            : Color(red: 240 / 255, green: 239 / 255, blue: 236 / 255)
+    }
+
+    private var pillSecondary: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.62)
+            : Color(red: 82 / 255, green: 81 / 255, blue: 78 / 255)
+    }
+
+    private var pillPrimary: Color {
+        colorScheme == .dark ? Color.white : Color(red: 11 / 255, green: 11 / 255, blue: 11 / 255)
+    }
+
+    private static func timeOfDayGreeting() -> String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12: return String(localized: "早上好")
+        case 12..<18: return String(localized: "下午好")
+        default: return String(localized: "晚上好")
+        }
     }
 }

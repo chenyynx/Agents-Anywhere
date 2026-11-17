@@ -343,6 +343,7 @@ class ClaudeRuntime(AgentRuntime):
                     state,
                 ),
                 has_active_turn=claude_state_has_active_execution(state),
+                status=state.status if state is not None else None,
                 **self._subagent_control_context(session_id),
                 **self._context_usage_context(),
             )
@@ -366,6 +367,7 @@ class ClaudeRuntime(AgentRuntime):
                         state,
                     ),
                     has_active_turn=claude_state_has_active_execution(state),
+                    status=state.status,
                     **self._subagent_control_context(state.session_id),
                     **self._context_usage_context(),
                 )
@@ -505,6 +507,24 @@ class ClaudeRuntime(AgentRuntime):
             attachments=attachments,
             client_message_id=client_message_id,
             cwd=cwd,
+        )
+
+    async def steer_turn(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        content: str,
+        attachments: tuple[RuntimeAttachment, ...] = (),
+        client_message_id: str | None = None,
+    ) -> RuntimeOperationResult:
+        """Deliver a message into the session's running turn."""
+
+        return await self._turns.steer_turn(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            content=content,
+            attachments=attachments,
+            client_message_id=client_message_id,
         )
 
     async def _ensure_first_history_sync(

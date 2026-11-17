@@ -37,7 +37,13 @@ struct ChatComposer: View {
     @Namespace private var glass
     @State private var sendFeedback = 0
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
+    /// The same value the settings row edits. Long-press here writes it, so
+    /// the menu is a second entry point to the one setting, never a per-send
+    /// temporary override.
+    @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
+        ComposerDeliverySetting.defaultValue.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
+    private var delivery: ComposerDelivery { ComposerDeliverySetting.resolve(deliveryRaw) }
 
     var body: some View {
         // [E] R19 chrome-composer.md §1 — the official composer is
@@ -109,10 +115,32 @@ struct ChatComposer: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isBusy || !sendEnabled)
+                    .contextMenu {
+                        // A second entry point to the ONE persisted setting
+                        // (the settings row is the first). Selecting here
+                        // writes the same value; there is no per-send
+                        // temporary override.
+                        ForEach(ComposerDelivery.allCases) { option in
+                            Button {
+                                deliveryRaw = option.rawValue
+                            } label: {
+                                if option == delivery {
+                                    Label(option.title, appSymbol: "checkmark")
+                                } else {
+                                    Text(option.title)
+                                }
+                            }
+                        }
+                    }
                     .sensoryFeedback(.selection, trigger: sendFeedback)
                     .accessibilityLabel(accentLabel)
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
-                    .accessibilityIdentifier(showsQueueSend ? "chat.composer.queueSend" : "chat.composer.send")
+                    .accessibilityIdentifier(
+                        showsQueueSend
+                            ? (delivery == .steer
+                                ? "chat.composer.steerSend"
+                                : "chat.composer.queueSend")
+                            : "chat.composer.send")
 
                     if showsCommands {
                         Button(action: onCommands) {
@@ -199,7 +227,11 @@ struct ChatComposer: View {
 
     private var accentLabel: String {
         switch affordance.shape {
-        case .queueSend: return String(localized: "加入发送队列")
+        case .queueSend:
+            // VoiceOver must hear what this tap will actually do.
+            return delivery == .steer
+                ? String(localized: "引导当前任务")
+                : String(localized: "加入发送队列")
         case .stop: return String(localized: "停止生成")
         case .send: return String(localized: "发送消息")
         }

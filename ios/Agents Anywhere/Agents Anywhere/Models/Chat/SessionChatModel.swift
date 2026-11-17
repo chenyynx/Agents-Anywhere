@@ -641,6 +641,48 @@ final class SessionChatModel {
     /// the session to still permit a send (freshness + capability) so the
     /// message can actually be drained when its turn comes.
     var canQueueSend: Bool { session.permitsQueuedSend && session.isValid }
+
+    /// Whether the running turn can take this draft as a steering message.
+    /// Text only for v1; a draft with attachments keeps the queue path.
+    var canSteerSend: Bool {
+        isComposerStreaming && session.canSteerMessage
+            && session.composer.attachments.isEmpty
+    }
+
+    /// Commit the editor's draft as a steering message. The send key already
+    /// decided steering is the chosen delivery; anything it cannot steer
+    /// falls back to the queue instead of dropping the draft.
+    func steerComposer() async {
+        // Falling back must be visible when the queue cannot take it either:
+        // a silent return would swallow the tap.
+        func fallBackToQueue() async {
+            guard canQueueSend else {
+                refuse(String(localized: "当前无法发送消息，请稍后再试。"))
+                return
+            }
+            await enqueueComposer()
+        }
+        guard canSteerSend else {
+            await fallBackToQueue()
+            return
+        }
+        let text = session.composer.text
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Steering is text-only. A long typed message that the normal paths
+        // would turn into an attachment must not ride the turn as one giant
+        // bubble (the 2026-10-31 height incident); fall back to the queue,
+        // which performs the conversion.
+        if LongMessageAttachmentPolicy.makeAttachment(
+            from: text,
+            existingAttachmentCount: session.composer.attachments.count,
+            canAttach: canAttach) != nil {
+            await fallBackToQueue()
+            return
+        }
+        session.draft = text
+        _ = await session.sendDraft(delivery: .steer)
+        surfaceBlockedSendIfNeeded()
+    }
     /// Increments once per successful enqueue. The View observes it as the
     /// trigger for the light-impact haptic (`.sensoryFeedback`), so the message
     /// that arrives at the editor is the same one the queue accepted.

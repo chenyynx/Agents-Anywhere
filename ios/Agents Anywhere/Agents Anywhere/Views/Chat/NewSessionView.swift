@@ -17,10 +17,9 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
-    @State private var keyboardVisible = false
-    /// Height of the welcome block, so the edit-state rise can be expressed as
-    /// one offset instead of a second layout pass (pp 2026-11-13).
-    @State private var welcomeHeight: CGFloat = 0
+    /// Largest viewport seen — the keyboard-closed height. Only the *shrink*
+    /// from it is used, so no absolute metric has to be known.
+    @State private var closedViewportHeight: CGFloat = 0
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -44,52 +43,50 @@ struct NewSessionView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             GeometryReader { viewport in
-                // The move is a transform of the whole block, not a change of
-                // its layout slot: re-placing the block ran a layout pass per
-                // frame and left the video behind the copy (pp 2026-11-13).
+                // Position is a pure function of the viewport the safe area
+                // leaves. The official app has no keyboard listeners either —
+                // the height arrives through `GeometryProxy.safeAreaInsets`
+                // (CANONICAL/05-layout-scroll.md §5) — so nothing here is
+                // animated by hand and the motion is exactly the system's
+                // keyboard animation. Any notification-driven offset is what
+                // made the last two attempts jump (pp 2026-11-17).
+                // The `-48` is the basis the 9.7 pt optical correction was
+                // measured against; dropping it moves the block down by half
+                // of 48 (b1303 was 24.0 pt low — pp 2026-11-17).
                 let restingHeight = max(0, viewport.size.height - 48)
-                // Before the block is measured the rise is unknown; that one
-                // pass keeps the old top-aligned slot, so arriving with the
-                // keyboard already up cannot misplace the block.
-                let measured = welcomeHeight > 0
-                let rise = max(0, (restingHeight - welcomeHeight) / 2)
+                // Official block centre: 445.2 pt closed, 300.5 pt with a 344 pt
+                // keyboard. Against our own centring that is +9.7 pt, growing
+                // by another 27.3 pt over the keyboard — expressed as a
+                // function of how much this viewport has shrunk, so the
+                // keyboard animates it frame by frame (pp 2026-11-17).
+                let shrink = min(344, max(0, closedViewportHeight - viewport.size.height))
+                let topAdjustment = 9.7 + shrink / 344 * 27.3
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: isEditing && !measured ? 0 : restingHeight) {
-                        NewSessionWelcomeView(agentName: model.runtime?.sessionDisplayName,
-                            onChooseTarget: chooseTarget)
-                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                                welcomeHeight = $0
-                            }
-                            // The globe is an AVPlayerLayer-backed leaf: left to
-                            // itself it resolves its frame on the next layout while
-                            // the Text leaves interpolate their own, so on the way
-                            // up the copy was drawn over the ball's old position
-                            // (pp 2026-11-13). The group makes the parent resolve
-                            // this block's geometry once and pass it down.
-                            .geometryGroup()
+                    NewSessionContentLayout(viewportHeight: restingHeight, topAdjustment: topAdjustment) {
+                        NewSessionWelcomeView(displayName: appState.me?.displayName,
+                                              runtime: model.runtime,
+                                              workspaceName: workspaceName,
+                                              onChooseWorkspace: { showsWorkspace = true })
                         statusContent
                     }
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        // Transform only: no layout runs during the 0.25 s move,
-                        // so the video and the copy cannot drift apart.
-                        .offset(y: isEditing && measured ? -rise : 0)
-                        .animation(.easeInOut(duration: 0.25), value: isEditing)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .refreshable { await refresh() }
+                // Seed on first layout — `onChange` never reports the initial
+                // value, and without a closed height every shrink would read
+                // as zero on the first keyboard.
+                .onAppear { closedViewportHeight = max(closedViewportHeight, viewport.size.height) }
+                .onChange(of: viewport.size.height) { _, height in
+                    closedViewportHeight = max(closedViewportHeight, height)
+                }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Follows the composer's glass edge in both states, a few
-                    // points inside it and slightly apart, to sit balanced.
-                    workspaceButton
-                        .padding(.horizontal, controls.horizontalInset(expanded: model.draft.isExpanded))
-                        .padding(.leading, 6)
-                        .padding(.bottom, 6)
                 ChatComposerDock(draft: model.draft, settings: model.settings,
                     maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                     editor: composerEditor, showsCommandMenu: $showsCommandMenu,
@@ -136,22 +133,7 @@ struct NewSessionView: View, Equatable {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
         }
-        // With the keyboard up the welcome is centered in a viewport that the
-        // composer inset shrinks; top-aligning it keeps the copy above the
-        // composer instead of behind it (pp 2026-11-13).
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
-        }
     }
-
-    /// Carrying the keyboard in from another page fires no willShow, so the
-    /// composer's own first-responder flag is the source of truth; the
-    /// notifications cover the case where focus was lost but the keyboard is
-    /// still up.
-    private var isEditing: Bool { model.draft.isFocused || keyboardVisible }
 
     private var statusContent: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -175,31 +157,10 @@ struct NewSessionView: View, Equatable {
         .multilineTextAlignment(.leading)
     }
 
-    private var workspaceButton: some View {
-        Button { showsWorkspace = true } label: {
-            HStack(spacing: 6) {
-                AppSymbol("folder", size: 14).foregroundStyle(.secondary)
-                Text(workspaceName).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                    .lineLimit(1).layoutPriority(1)
-                if !model.workspace.isEmpty {
-                    Text(model.workspace).font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
-                if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
-                    ProgressView().controlSize(.mini)
-                } else { AppSymbol("chevron.down", size: 12).foregroundStyle(.secondary) }
-            }
-            .padding(.top, 8)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .disabled(model.connector == nil || model.isCreating)
-    }
-
     private var deviceMenu: some View {
         // Menu rows use SF Symbols like the rest of the system menu.
         Menu {
-            Button(String(localized: "选择设备和 Agent"), systemImage: "sparkles") { chooseTarget() }
+            Button(String(localized: "选择设备和 Agent"), systemImage: "cpu") { chooseTarget() }
             Button(String(localized: "选择工作目录"), systemImage: "folder") { showsWorkspace = true }
                 .disabled(model.connector == nil)
             if let device = model.connector {
@@ -270,14 +231,22 @@ struct NewSessionView: View, Equatable {
 /// extend the scrollable page when needed, rather than recentering the welcome.
 private struct NewSessionContentLayout: Layout {
     let viewportHeight: CGFloat
+    /// Optical-centre correction from the caller. It is a pure function of the
+    /// live viewport height, so the keyboard moves it frame by frame through
+    /// the same safe-area pass — nothing here is animated by hand.
+    var topAdjustment: CGFloat = 0
     private let spacing: CGFloat = 28
+
+    private func centredTop(welcomeHeight: CGFloat) -> CGFloat {
+        max(0, (viewportHeight - welcomeHeight) / 2 + topAdjustment)
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.replacingUnspecifiedDimensions().width
         let childProposal = ProposedViewSize(width: width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
         let status = subviews[1].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = centredTop(welcomeHeight: welcome.height)
         let statusHeight = status.height > 0 ? spacing + status.height : 0
         return CGSize(width: width, height: max(viewportHeight, top + welcome.height + statusHeight))
     }
@@ -285,7 +254,7 @@ private struct NewSessionContentLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let childProposal = ProposedViewSize(width: bounds.width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = centredTop(welcomeHeight: welcome.height)
         subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top), anchor: .topLeading, proposal: childProposal)
         subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top + welcome.height + spacing),
             anchor: .topLeading, proposal: childProposal)

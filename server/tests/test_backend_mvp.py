@@ -1575,6 +1575,11 @@ class FakeLocalRpc:
             if runtime_state is not None:
                 runtime_status = runtime_state.get("status") or "idle"
             session_is_running = runtime_status == "running"
+            # A permission prompt or a question is still a live turn: the
+            # connector advertises `session.steer` in these states too.
+            session_is_steerable = runtime_status in {
+                "running", "waiting", "waiting_approval",
+            }
             return {
                 "capabilitySet": {
                     "revision": 11,
@@ -1632,11 +1637,11 @@ class FakeLocalRpc:
                             "runtime": params["runtime"],
                             "sessionId": session_id,
                             "supported": True,
-                            "available": session_is_running,
+                            "available": session_is_steerable,
                             "allowed": True,
                             "unavailableReason": (
                                 None
-                                if session_is_running
+                                if session_is_steerable
                                 else "session_not_running"
                             ),
                             "parameters": {},
@@ -6235,6 +6240,40 @@ def test_steer_routes_running_codex_session_without_turn_id(tmp_path):
     assert asyncio.run(client.app.state.store.get_active_run(session_id)) is None
 
 
+def test_steer_routes_waiting_approval_session(tmp_path):
+    """A permission prompt is still the same turn; steering is accepted."""
+
+    client = make_client(tmp_path)
+    connector_id, _, session_id, headers = create_connector_and_session(client)
+    fake_rpc = FakeLocalRpc()
+    client.app.state.rpc = fake_rpc
+    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
+    seed_runtime_capabilities(client.app, connector_id, "codex", "session.steer")
+    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
+    fake_rpc.runtime_states[session_id] = {
+        "sessionId": session_id,
+        "runtime": "codex",
+        "externalSessionId": "thread-demo",
+        "status": "waiting_approval",
+        "selections": {},
+        "metadata": {},
+    }
+
+    response = client.post(
+        f"/sessions/{session_id}/runtime/steer",
+        headers=headers,
+        json={
+            "content": "after approving, focus on IPC",
+            "clientMessageId": "msg_steer_waiting_approval",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    params = wait_for_rpc_method(fake_rpc, "session.steer")[2]
+    assert params["content"] == "after approving, focus on IPC"
+    assert params["clientMessageId"] == "msg_steer_waiting_approval"
+
+
 def test_running_dsh_steer_is_routed_by_capability(tmp_path):
     client = make_client(tmp_path)
     connector_id, _, session_id, headers = create_connector_and_session(
@@ -6323,6 +6362,63 @@ def test_steer_rejects_idle_session_and_turn_overrides(tmp_path):
     assert idle_response.json()["detail"] == "session is not running"
     assert override_response.status_code == 422
     assert not any(method == "session.steer" for _, method, _, _ in fake_rpc.requests)
+
+
+def test_steer_surfaces_claude_runtime_refusal_as_conflict(tmp_path):
+    """A Connector-level `ok:false` must reach the client as 409.
+
+    The RPC envelope is transport-level ok; the runtime's own outcome rides in
+    `result`. Without the translation the sender marks the steer accepted, the
+    optimistic bubble spins forever, and no row ever arrives.
+    """
+
+    client = make_client(tmp_path)
+    connector_id, _, _, headers = create_connector_and_session(client)
+
+    class RefusingSteerRpc(FakeLocalRpc):
+        async def request(
+            self,
+            connector_id: str,
+            method: str,
+            params: dict[str, Any],
+            *,
+            timeout: float = 30,
+        ) -> Any:
+            if method != "session.steer":
+                return await super().request(
+                    connector_id,
+                    method,
+                    params,
+                    timeout=timeout,
+                )
+            self.requests.append((connector_id, method, params, timeout))
+            return {
+                "ok": False,
+                "code": "claude_no_active_turn",
+                "message": "Claude session has no active turn to steer",
+            }
+
+    fake_rpc = RefusingSteerRpc()
+    client.app.state.rpc = fake_rpc
+    session_id = _create_claude_session(client, connector_id, headers, fake_rpc)
+    fake_rpc.runtime_states[session_id] = {
+        "sessionId": session_id,
+        "runtime": "claude",
+        "externalSessionId": "uuid-claude-demo",
+        "status": "running",
+        "selections": {},
+        "metadata": {},
+    }
+
+    response = client.post(
+        f"/sessions/{session_id}/runtime/steer",
+        headers=headers,
+        json={"content": "steer me", "clientMessageId": "msg_steer_refused"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "claude_no_active_turn"
+    assert any(method == "session.steer" for _, method, _, _ in fake_rpc.requests)
 
 
 def test_interrupt_not_found_result_clears_stale_active_run(tmp_path):

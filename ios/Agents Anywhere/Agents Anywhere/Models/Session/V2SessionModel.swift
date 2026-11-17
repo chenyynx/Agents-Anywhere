@@ -200,6 +200,11 @@ final class V2PendingMessage: Identifiable {
     let localAttachmentIDs: [String]
     private(set) var attachments: [ChatAttachment]
     private(set) var delivery: Delivery = .sending
+    /// A steering message: the row is still optimistic. Its real timeline row
+    /// is published by the connector only when the runtime reads it, so while
+    /// this record is alive the UI shows 「正在等待 Claude」 (or 未送达 once the
+    /// turn is over without an echo).
+    var isSteer = false
     var didRestoreDraft = false
     /// Unresolved records this bubble replaces: the draft was restored from
     /// them and the user sent again (possibly after editing). They leave the
@@ -764,13 +769,50 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
+    /// Whether a live turn can take a steering message.
+    ///
+    /// Running, a pending permission prompt and a pending question are all
+    /// the same turn; the runtime holds the message until that step completes
+    /// and the model reads it inside the turn. Stopping / pending / optimistic
+    /// idle fall back to the queue. Attachments are refused for v1.
+    var canSteerMessage: Bool {
+        ComposerSteerGate.allows(
+            status: runtime.state?.status,
+            capabilityAllowed: runtime.allows("session.steer"),
+            stopRequested: runtime.stopRequested,
+            predictedIdle: runtime.predictedIdle,
+            isValid: isValid)
+    }
+
+    /// How a draft leaves the composer while a turn runs.
+    enum DraftDelivery {
+        case send
+        case steer
+    }
+
     /// Explicit user action only. No outbox replay: clientMessageId correlates an echo
     /// but is not a promise of backend idempotency.
-    @discardableResult func sendDraft(upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
+    @discardableResult func sendDraft(delivery: DraftDelivery = .send,
+                                      upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
         blockedSendPendingID = nil
-        guard let repository, canSend else {
+        guard let repository else {
             failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
             return nil
+        }
+        switch delivery {
+        case .send:
+            guard canSend else {
+                failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
+                return nil
+            }
+        case .steer:
+            // A running turn takes text only; the queue remains the path for
+            // attachments, and an Agent without `session.steer` falls back to
+            // the queue at the view layer.
+            guard canSteerMessage, composer.attachments.isEmpty else {
+                failure = V2ClientFailure(kind: .unavailable, message: String(localized: "当前 Agent 无法引导正在运行的任务。"))
+                return nil
+            }
         }
         let content = draft
         let attachments = draftAttachmentIDs
@@ -785,6 +827,7 @@ final class V2SessionModel: Identifiable {
         }
         let pending = V2PendingMessage(id: UUID().uuidString, content: content, attachmentIDs: attachments,
                                       localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
+        pending.isSteer = delivery == .steer
         // Before `composer.clear()` below: the clear drops the provenance.
         pending.supersededPendingIDs = takeSupersededPendingIDs()
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
@@ -803,7 +846,12 @@ final class V2SessionModel: Identifiable {
             await repository.flushCache(sessionID: id)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             didSubmit = true
-            _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            switch delivery {
+            case .send:
+                _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            case .steer:
+                _ = try await repository.steer(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            }
             guard isValid else { return pending }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)

@@ -161,6 +161,96 @@ class ClaudeTurnActionHandler:
             },
         )
 
+    async def steer_turn(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        content: str,
+        attachments: tuple[RuntimeAttachment, ...] = (),
+        client_message_id: str | None = None,
+    ) -> RuntimeOperationResult:
+        """Deliver one message into the live turn (text only, v1).
+
+        No new execution and no new turn id: the SDK hands the message to
+        Claude at the next model-request boundary inside the same turn. The
+        timeline row is NOT published here — it is published by `drive_turn`
+        when the runtime echoes the message back, under the turn that actually
+        read it. A message stopped before being read therefore leaves no row
+        behind, and a message the runtime delivers as the next turn lands in
+        that turn instead of the one it was submitted into.
+        """
+
+        if attachments:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_attachments_unsupported",
+                message="Claude steering does not accept attachments",
+            )
+        session = self.session_store.get(session_id)
+        if session is None:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_no_active_turn",
+                message="Claude session has no active turn to steer",
+            )
+        async with session.execution_lock:
+            execution = session.execution
+            client = execution.client if execution is not None else None
+            turn_id = execution.turn_id if execution is not None else None
+            accepts = self._client_accepts_steer(client)
+        if execution is None or client is None or turn_id is None or not accepts:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_no_active_turn",
+                message="Claude session has no active turn to steer",
+            )
+        steer_uuid = str(uuid4())
+        try:
+            await client.steer(content, steer_uuid)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude steer failed session_id={} turn_id={}",
+                session_id,
+                turn_id,
+            )
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_failed",
+                message="Claude rejected the steering message",
+            )
+        session.remember_steer(steer_uuid, content, client_message_id)
+        return RuntimeOperationResult(
+            ok=True,
+            result={
+                "steered": True,
+                "turnId": turn_id,
+                "steerUuid": steer_uuid,
+                "externalSessionId": session.external_session_id,
+            },
+        )
+
+    @staticmethod
+    def _client_accepts_steer(client: Any) -> bool:
+        """Whether this response still has a turn that can take a message.
+
+        A response that already settled (or one the reconciler owns) would
+        write the message into the CLI while the row is attributed to a turn
+        nobody is reading any more. The checks mirror `ClaudeResponse.steer`'s
+        own guard; this one turns the case into a clean refusal instead of an
+        exception.
+        """
+
+        if client is None:
+            return False
+        if getattr(client, "maintenance", False):
+            return False
+        if getattr(client, "terminal_received", False) or getattr(
+            client, "discard", False
+        ):
+            return False
+        released = getattr(client, "released", None)
+        return not (released is not None and released.is_set())
+
     async def interrupt_session(
         self,
         session_id: str,

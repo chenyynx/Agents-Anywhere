@@ -33,9 +33,23 @@ struct ChatComposerDock: View {
     var onDraftChange: () -> Void = {}
     /// Whether a running turn's send key may enqueue (queue capability).
     var canQueueSend = true
+    /// Whether the running turn can take a steering message (text only).
+    var canSteerSend = false
     /// Increments once per successful enqueue; drives the light-impact haptic.
     var queueEnqueueTick = 0
     var onQueueSend: () async -> Void = {}
+    var onSteerSend: () async -> Void = {}
+    /// One persisted choice, shared with the settings row and the send key's
+    /// long-press menu.
+    @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
+        ComposerDeliverySetting.defaultValue.rawValue
+    private var delivery: ComposerDelivery {
+        ComposerDeliverySetting.resolve(deliveryRaw)
+    }
+    private var midTurnAction: MidTurnDeliveryAction {
+        ComposerDeliverySetting.midTurnAction(
+            delivery, canSteer: canSteerSend, canQueue: canQueueSend)
+    }
 
     @State private var showsOptions = false
     @State private var pendingPicker: AttachmentPicker?
@@ -60,7 +74,8 @@ struct ChatComposerDock: View {
         ComposerQueueAffordance.resolve(
             isStreaming: isStreaming,
             hasText: !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            canQueue: canQueueSend,
+            // Enabled exactly when the tap has an action (see `midTurnAction`).
+            canQueue: midTurnAction != .unavailable,
             canStop: canStop,
             canSend: canSend && draft.canAttemptSend)
     }
@@ -165,7 +180,16 @@ struct ChatComposerDock: View {
         Task { @MainActor in
             defer { isSending = false }
             guard let text = await editor.committedTextForSend(dismissKeyboard: dismissKeyboard) else { return }
-            if isStreaming { await onQueueSend() } else { await onSend(text) }
+            if isStreaming {
+                switch ComposerDeliverySetting.midTurnAction(
+                    delivery, canSteer: canSteerSend, canQueue: canQueueSend) {
+                case .steer: await onSteerSend()
+                case .queue: await onQueueSend()
+                case .unavailable: break
+                }
+            } else {
+                await onSend(text)
+            }
         }
     }
 

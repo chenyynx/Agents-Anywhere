@@ -54,6 +54,19 @@ Session-scoped capability is RuntimeLive. It can change while a turn is running,
 while a command is executing, while the runtime is compacting context, or after
 the runtime notices that an active turn no longer exists.
 
+### `session.steer`
+
+`session.steer` is available while the turn window can still take a message:
+`running`, `waiting` (a question is pending) and `waiting_approval` (a
+permission prompt is pending). A steer sent during a wait is held by the
+runtime and read by the model once the pending step completes, inside the same
+turn — it does not start a new turn.
+
+The user row is recorded only when the runtime echoes the message back, under
+the turn that actually read it. A steer stopped before delivery therefore
+leaves no row in the stopped turn; if the runtime delivers it as the next
+turn, its row appears in that turn.
+
 ### `session.commands`
 
 `session.commands` answers one question: does the session have a loaded runtime

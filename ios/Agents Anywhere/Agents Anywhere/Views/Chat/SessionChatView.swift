@@ -228,8 +228,10 @@ struct SessionChatView: View, Equatable {
                 onSend: { await model.send($0) }, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                 onApplySettings: model.applySettings, applyError: { model.settingsError },
                 onDraftChange: { model.repository.draftDidChange(sessionID: model.session.id) },
-                canQueueSend: model.canQueueSend, queueEnqueueTick: model.queueEnqueueTick,
-                onQueueSend: { await model.enqueueComposer() })
+                canQueueSend: model.canQueueSend, canSteerSend: model.canSteerSend,
+                queueEnqueueTick: model.queueEnqueueTick,
+                onQueueSend: { await model.enqueueComposer() },
+                onSteerSend: { await model.steerComposer() })
                 .traceChatLayout("composer-dock")
         }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
@@ -271,8 +273,13 @@ struct SessionChatView: View, Equatable {
     /// differs.
     @AppStorage(TimelineRenderModeSwitch.key)
     private var renderModeRaw = TimelineRenderMode.steps.rawValue
+    @AppStorage(ComposerDeliverySetting.storageKey)
+    private var deliveryRaw = ComposerDeliverySetting.defaultValue.rawValue
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
+    }
+    private var delivery: ComposerDelivery {
+        ComposerDeliverySetting.resolve(deliveryRaw)
     }
     /// The notification-type notices this page should surface as toasts: open
     /// notifications whose identity the user has not already acknowledged. The
@@ -330,7 +337,12 @@ struct SessionChatView: View, Equatable {
         if requiresTakeover { return String(localized: "请先接管") }
         if model.isComposerStreaming,
            session.composer.isFocused, !session.composer.hasContent {
-            return String(localized: "排队至本轮结束后")
+            // The hint must match what this tap will actually do: steering
+            // needs the running status, and anything else falls back to the
+            // queue.
+            return delivery == .steer && model.canSteerSend
+                ? String(localized: "发送将引导当前任务")
+                : String(localized: "排队至本轮结束后")
         }
         // Official wording: a fresh session invites typing, a session with
         // history replies to the agent by name.

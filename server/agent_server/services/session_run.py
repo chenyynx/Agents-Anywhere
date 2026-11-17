@@ -42,14 +42,6 @@ from agent_server.infra.connector_rpc import (
 )
 from agent_server.infra.repositories.projects import _clean_workspace_path
 from agent_server.services.attachments import valid_dimension
-
-#: Runtime statuses in which a steer may be accepted. `running` is the plain
-#: case; `waiting` / `waiting_approval` mean the turn is parked on a question
-#: or a permission prompt — still the same turn, so a steer is held and read
-#: once that step completes.
-STEERABLE_RUNTIME_STATUSES: frozenset[str] = frozenset(
-    {"running", "waiting", "waiting_approval"}
-)
 from agent_server.services.device_runtimes import (
     DeviceRuntimeError,
     DeviceRuntimeService,
@@ -64,6 +56,14 @@ from agent_server.services.usage_events import (
     UsageRecorder,
     message_sent_event,
     session_created_event,
+)
+
+#: Runtime statuses in which a steer may be accepted. `running` is the plain
+#: case; `waiting` / `waiting_approval` mean the turn is parked on a question
+#: or a permission prompt — still the same turn, so a steer is held and read
+#: once that step completes.
+STEERABLE_RUNTIME_STATUSES: frozenset[str] = frozenset(
+    {"running", "waiting", "waiting_approval"}
 )
 
 

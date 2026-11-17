@@ -641,6 +641,28 @@ final class SessionChatModel {
     /// the session to still permit a send (freshness + capability) so the
     /// message can actually be drained when its turn comes.
     var canQueueSend: Bool { session.permitsQueuedSend && session.isValid }
+
+    /// Whether the running turn can take this draft as a steering message.
+    /// Text only for v1; a draft with attachments keeps the queue path.
+    var canSteerSend: Bool {
+        isComposerStreaming && session.canSteerMessage
+            && session.composer.attachments.isEmpty
+    }
+
+    /// Commit the editor's draft as a steering message. The send key already
+    /// decided steering is the chosen delivery; anything it cannot steer
+    /// falls back to the queue instead of dropping the draft.
+    func steerComposer() async {
+        guard canSteerSend else {
+            await enqueueComposer()
+            return
+        }
+        let text = session.composer.text
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        session.draft = text
+        _ = await session.sendDraft(delivery: .steer)
+        surfaceBlockedSendIfNeeded()
+    }
     /// Increments once per successful enqueue. The View observes it as the
     /// trigger for the light-impact haptic (`.sensoryFeedback`), so the message
     /// that arrives at the editor is the same one the queue accepted.

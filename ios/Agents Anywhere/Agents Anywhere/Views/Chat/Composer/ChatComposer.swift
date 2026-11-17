@@ -37,7 +37,13 @@ struct ChatComposer: View {
     @Namespace private var glass
     @State private var sendFeedback = 0
     @AppStorage(AppAccent.storageKey) private var accentValue = AppAccent.storageDefault.rawValue
+    /// The same value the settings row edits. Long-press here writes it, so
+    /// the menu is a second entry point to the one setting, never a per-send
+    /// temporary override.
+    @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
+        ComposerDeliverySetting.defaultValue.rawValue
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
+    private var delivery: ComposerDelivery { ComposerDeliverySetting.resolve(deliveryRaw) }
 
     var body: some View {
         // [E] R19 chrome-composer.md §1 — the official composer is
@@ -109,6 +115,23 @@ struct ChatComposer: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isBusy || !sendEnabled)
+                    .contextMenu {
+                        // Only meaningful while a turn runs with text to send:
+                        // that is the send the setting governs.
+                        if showsQueueSend {
+                            ForEach(ComposerDelivery.allCases) { option in
+                                Button {
+                                    deliveryRaw = option.rawValue
+                                } label: {
+                                    if option == delivery {
+                                        Label(option.title, appSymbol: "checkmark")
+                                    } else {
+                                        Text(option.title)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     .sensoryFeedback(.selection, trigger: sendFeedback)
                     .accessibilityLabel(accentLabel)
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")

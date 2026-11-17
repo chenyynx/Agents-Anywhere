@@ -764,13 +764,42 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
+    /// Whether a running turn can take a steering message. Availability comes
+    /// from the runtime (`session.steer` is only available while a turn runs);
+    /// attachments are refused for v1.
+    var canSteerMessage: Bool {
+        isValid && runtime.allows("session.steer")
+    }
+
+    /// How a draft leaves the composer while a turn runs.
+    enum DraftDelivery {
+        case send
+        case steer
+    }
+
     /// Explicit user action only. No outbox replay: clientMessageId correlates an echo
     /// but is not a promise of backend idempotency.
-    @discardableResult func sendDraft(upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
+    @discardableResult func sendDraft(delivery: DraftDelivery = .send,
+                                      upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
         blockedSendPendingID = nil
-        guard let repository, canSend else {
+        guard let repository else {
             failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
             return nil
+        }
+        switch delivery {
+        case .send:
+            guard canSend else {
+                failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
+                return nil
+            }
+        case .steer:
+            // A running turn takes text only; the queue remains the path for
+            // attachments, and an Agent without `session.steer` falls back to
+            // the queue at the view layer.
+            guard runtime.allows("session.steer"), composer.attachments.isEmpty else {
+                failure = V2ClientFailure(kind: .unavailable, message: String(localized: "当前 Agent 无法引导正在运行的任务。"))
+                return nil
+            }
         }
         let content = draft
         let attachments = draftAttachmentIDs
@@ -803,7 +832,12 @@ final class V2SessionModel: Identifiable {
             await repository.flushCache(sessionID: id)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             didSubmit = true
-            _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            switch delivery {
+            case .send:
+                _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            case .steer:
+                _ = try await repository.steer(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
+            }
             guard isValid else { return pending }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)

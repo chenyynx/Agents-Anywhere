@@ -42,6 +42,14 @@ from agent_server.infra.connector_rpc import (
 )
 from agent_server.infra.repositories.projects import _clean_workspace_path
 from agent_server.services.attachments import valid_dimension
+
+#: Runtime statuses in which a steer may be accepted. `running` is the plain
+#: case; `waiting` / `waiting_approval` mean the turn is parked on a question
+#: or a permission prompt — still the same turn, so a steer is held and read
+#: once that step completes.
+STEERABLE_RUNTIME_STATUSES: frozenset[str] = frozenset(
+    {"running", "waiting", "waiting_approval"}
+)
 from agent_server.services.device_runtimes import (
     DeviceRuntimeError,
     DeviceRuntimeService,
@@ -717,7 +725,10 @@ class SessionRunService:
             raise SessionRunConflictError("connector is offline")
         await self._ensure_runtime_running_before_write(session, user_id=user_id)
         runtime_status = await self._read_runtime_status(session)
-        if runtime_status != "running":
+        # A permission prompt or a question is still a live turn: the runtime
+        # holds the message until that step completes and reads it in the
+        # same turn. Only a closed turn window is refused.
+        if runtime_status not in STEERABLE_RUNTIME_STATUSES:
             raise SessionRunConflictError("session is not running")
         await self._require_capability_before_write(
             session,

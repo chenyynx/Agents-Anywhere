@@ -27,6 +27,42 @@ import Testing
         #expect(ComposerDeliverySetting.midTurnAction(.queue, canSteer: false, canQueue: false) == .unavailable)
     }
 
+    @Test func steerGateAcceptsLiveTurnsIncludingAwaits() {
+        // A permission prompt / question is the same turn, not a closed one.
+        for status in [V2RuntimeStatus.running, .waiting, .waitingApproval] {
+            #expect(ComposerSteerGate.allows(
+                status: status, capabilityAllowed: true,
+                stopRequested: false, predictedIdle: false, isValid: true))
+        }
+        // Closed or closing windows must fall back to the queue.
+        for status in [
+            V2RuntimeStatus.pending, .stopping, .blocked, .idle, .error,
+            .disconnected, .unknown,
+        ] {
+            #expect(!ComposerSteerGate.allows(
+                status: status, capabilityAllowed: true,
+                stopRequested: false, predictedIdle: false, isValid: true))
+        }
+    }
+
+    @Test func steerGateHonoursItsGuards() {
+        #expect(!ComposerSteerGate.allows(
+            status: .running, capabilityAllowed: false,
+            stopRequested: false, predictedIdle: false, isValid: true))
+        #expect(!ComposerSteerGate.allows(
+            status: .running, capabilityAllowed: true,
+            stopRequested: true, predictedIdle: false, isValid: true))
+        #expect(!ComposerSteerGate.allows(
+            status: .running, capabilityAllowed: true,
+            stopRequested: false, predictedIdle: true, isValid: true))
+        #expect(!ComposerSteerGate.allows(
+            status: .running, capabilityAllowed: true,
+            stopRequested: false, predictedIdle: false, isValid: false))
+        #expect(!ComposerSteerGate.allows(
+            status: nil, capabilityAllowed: true,
+            stopRequested: false, predictedIdle: false, isValid: true))
+    }
+
     @Test func optionsExposeTheSettingsCopy() {
         #expect(ComposerDelivery.allCases == [.steer, .queue])
         #expect(ComposerDelivery.steer.title == String(localized: "引导"))

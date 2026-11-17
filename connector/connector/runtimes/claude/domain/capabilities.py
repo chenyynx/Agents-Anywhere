@@ -21,6 +21,14 @@ from connector.runtime_protocol import (
 )
 from connector.runtimes.claude import provider_config
 
+#: Statuses in which a live turn can still take a steering message. A message
+#: sent while a permission prompt (waiting_approval) or a question (waiting)
+#: is pending is held by the CLI and read by the model once that step
+#: completes, inside the same turn — not queued for a new turn.
+STEERABLE_STATUSES: frozenset[str] = frozenset(
+    {"running", "waiting", "waiting_approval"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ClaudeCapabilityContext:
@@ -152,24 +160,25 @@ def claude_session_capabilities(
                 session_id=session_id,
                 connector_id=context.connector_id,
                 supported=capabilities.get("steerTurn") is True,
-                # The Server's steer write gate only accepts a runtime status
-                # of exactly "running"; advertising it during approval waits
-                # would just produce 409s.
+                # A pending permission prompt or question is still a live
+                # turn: the CLI holds the message until that step completes
+                # and the model reads it in the same turn. Only statuses that
+                # close the turn window are excluded.
                 available=(
                     capabilities.get("steerTurn") is True
                     and active
-                    and context.status == "running"
+                    and context.status in STEERABLE_STATUSES
                 ),
                 unavailable_reason=(
                     None
                     if capabilities.get("steerTurn") is True
                     and active
-                    and context.status == "running"
+                    and context.status in STEERABLE_STATUSES
                     else (
                         "not_implemented"
                         if capabilities.get("steerTurn") is not True
                         else (
-                            "no_active_turn" if not active else "turn_not_running"
+                            "no_active_turn" if not active else "turn_not_steerable"
                         )
                     )
                 ),

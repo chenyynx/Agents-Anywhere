@@ -764,16 +764,19 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
-    /// Whether a running turn can take a steering message.
+    /// Whether a live turn can take a steering message.
     ///
-    /// The Server's steer gate accepts exactly `status == "running"`, so the
-    /// client must not offer steering during approval waits, stopping or an
-    /// optimistic idle — those fall back to the queue. Attachments are
-    /// refused for v1.
+    /// Running, a pending permission prompt and a pending question are all
+    /// the same turn; the runtime holds the message until that step completes
+    /// and the model reads it inside the turn. Stopping / pending / optimistic
+    /// idle fall back to the queue. Attachments are refused for v1.
     var canSteerMessage: Bool {
-        guard isValid, runtime.allows("session.steer") else { return false }
-        guard !runtime.stopRequested, !runtime.predictedIdle else { return false }
-        return runtime.state?.status == .running
+        ComposerSteerGate.allows(
+            status: runtime.state?.status,
+            capabilityAllowed: runtime.allows("session.steer"),
+            stopRequested: runtime.stopRequested,
+            predictedIdle: runtime.predictedIdle,
+            isValid: isValid)
     }
 
     /// How a draft leaves the composer while a turn runs.

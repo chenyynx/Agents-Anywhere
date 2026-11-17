@@ -59,3 +59,29 @@ enum MidTurnDeliveryAction: Equatable {
     case queue
     case unavailable
 }
+
+/// Whether a live turn may take a steering message.
+///
+/// A turn parked on a permission prompt (`waitingApproval`) or a question
+/// (`waiting`) is still the same turn: the runtime holds the message until
+/// that step completes and the model reads it inside the turn. Statuses that
+/// close the turn window (pending/stopping/blocked/idle) do not steer.
+enum ComposerSteerGate {
+    static let steerableStatuses: Set<V2RuntimeStatus> = [
+        .running, .waiting, .waitingApproval,
+    ]
+
+    static func allows(
+        status: V2RuntimeStatus?,
+        capabilityAllowed: Bool,
+        stopRequested: Bool,
+        predictedIdle: Bool,
+        isValid: Bool
+    ) -> Bool {
+        guard isValid, capabilityAllowed, !stopRequested, !predictedIdle else {
+            return false
+        }
+        guard let status else { return false }
+        return steerableStatuses.contains(status)
+    }
+}

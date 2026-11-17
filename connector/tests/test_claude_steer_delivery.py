@@ -237,10 +237,16 @@ def test_claude_session_capabilities_gate_steer_on_running() -> None:
     assert running.available is True
     assert running.unavailable_reason is None
 
-    waiting = steer("waiting_approval", True)
-    assert waiting.supported is True
-    assert waiting.available is False
-    assert waiting.unavailable_reason == "turn_not_running"
+    # A pending permission prompt or question is still the same turn.
+    for status in ("waiting", "waiting_approval"):
+        pending = steer(status, True)
+        assert pending.supported is True
+        assert pending.available is True
+        assert pending.unavailable_reason is None
+
+    stopping = steer("stopping", True)
+    assert stopping.available is False
+    assert stopping.unavailable_reason == "turn_not_steerable"
 
     idle = steer("idle", False)
     assert idle.available is False

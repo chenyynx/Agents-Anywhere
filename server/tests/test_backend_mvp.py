@@ -6235,6 +6235,40 @@ def test_steer_routes_running_codex_session_without_turn_id(tmp_path):
     assert asyncio.run(client.app.state.store.get_active_run(session_id)) is None
 
 
+def test_steer_routes_waiting_approval_session(tmp_path):
+    """A permission prompt is still the same turn; steering is accepted."""
+
+    client = make_client(tmp_path)
+    connector_id, _, session_id, headers = create_connector_and_session(client)
+    fake_rpc = FakeLocalRpc()
+    client.app.state.rpc = fake_rpc
+    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
+    seed_runtime_capabilities(client.app, connector_id, "codex", "session.steer")
+    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
+    fake_rpc.runtime_states[session_id] = {
+        "sessionId": session_id,
+        "runtime": "codex",
+        "externalSessionId": "thread-demo",
+        "status": "waiting_approval",
+        "selections": {},
+        "metadata": {},
+    }
+
+    response = client.post(
+        f"/sessions/{session_id}/runtime/steer",
+        headers=headers,
+        json={
+            "content": "after approving, focus on IPC",
+            "clientMessageId": "msg_steer_waiting_approval",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    params = wait_for_rpc_method(fake_rpc, "session.steer")[2]
+    assert params["content"] == "after approving, focus on IPC"
+    assert params["clientMessageId"] == "msg_steer_waiting_approval"
+
+
 def test_running_dsh_steer_is_routed_by_capability(tmp_path):
     client = make_client(tmp_path)
     connector_id, _, session_id, headers = create_connector_and_session(

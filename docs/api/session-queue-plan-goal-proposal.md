@@ -110,10 +110,12 @@ Codex 桌面 / IDE 有自己的 queued follow-ups（IPC 里的 `thread-queued-fo
 
 > **2026-11-17 更新（Claude）**：Claude Code 的 Agent SDK 支持
 > `SDKUserMessage.priority = "next"`——消息在运行回合的下一个工具边界被
-> 读到，同回合、单 result（bundled CLI 2.1.319 实测）。AA 已在 Claude
-> runtime 启用 `session.steer`，iOS 运行中默认「引导」。因此下面“不使用
-> 原生 steer”的结论**仅对本文的 Server 队列方案成立**；Codex 的 steer 保持
-> 原样，本文关于删除 steer 接口的清理计划作废。
+> 读到，同回合、单 result（bundled CLI 2.1.319 实测）。审批挂起
+> （`waiting_approval`）或提问挂起（`waiting`）也属于同一个回合：消息由
+> runtime 暂存，待该步骤完成后在本回合内被读到；`session.steer` 在这三个
+> 状态下可用。AA 已在 Claude runtime 启用 `session.steer`，iOS 运行中默认
+> 「引导」。因此下面“不使用原生 steer”的结论**仅对本文的 Server 队列方案
+> 成立**；Codex 的 steer 保持原样，本文关于删除 steer 接口的清理计划作废。
 
 **决定：不使用 Runtime 原生的 steer。** 原生 steer 只有 Codex 支持（Claude、DSH 都没有），行为是把消息注入正在进行的回合，各 Runtime 语义不一、难以统一呈现。改为用已有的两个原语组合：**打断（`session.interrupt`）+ 排队发送**。这是队列功能的一部分，不是独立功能。
 

@@ -66,14 +66,17 @@ import Testing
     @Test func steerPendingStatusFollowsDeliveryAndTurnState() {
         #expect(SteerPendingStatusResolver.resolve(
             delivery: .sending, runtimeStatus: .running) == .sending)
+        // Anything still inside the turn window is "waiting", including the
+        // closing states: a stop may still end with the runtime reading it.
         for status in [
             V2RuntimeStatus.running, .waiting, .waitingApproval, .pending,
+            .stopping, .blocked,
         ] {
             #expect(SteerPendingStatusResolver.resolve(
                 delivery: .accepted, runtimeStatus: status) == .waiting)
         }
         for status in [
-            V2RuntimeStatus.idle, .error, .disconnected, .stopping, .blocked,
+            V2RuntimeStatus.idle, .error, .disconnected, .unknown,
         ] {
             #expect(SteerPendingStatusResolver.resolve(
                 delivery: .accepted, runtimeStatus: status) == .notDelivered)

@@ -156,11 +156,22 @@ struct ChatComposer: View {
                     }
                 }
             }
-            .glassEffect(.regular.interactive(), in: RoundedRectangle(
-                cornerRadius: draft.isExpanded
-                    ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
-                style: .continuous))
-            .glassEffectID("composer", in: glass)
+            // The glass is a background layer, not the bar's own modifier.
+            // A native `Menu` inside a `.glassEffect` view made the whole
+            // composer — text field included — vanish while the menu was
+            // open (pp 2026-11-18 00:10): the presentation snapshots the
+            // view containing the menu, and a glass-captured subtree does
+            // not survive that pass. With the glass behind the controls,
+            // the worst case is a flattened backdrop (SO 79719929), never a
+            // missing input bar.
+            .background {
+                Color.clear
+                    .glassEffect(.regular.interactive(), in: RoundedRectangle(
+                        cornerRadius: draft.isExpanded
+                            ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
+                        style: .continuous))
+                    .glassEffectID("composer", in: glass)
+            }
         }
         .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
         .padding(.top, controls.topMargin)

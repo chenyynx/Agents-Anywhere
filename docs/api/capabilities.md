@@ -62,6 +62,11 @@ permission prompt is pending). A steer sent during a wait is held by the
 runtime and read by the model once the pending step completes, inside the same
 turn — it does not start a new turn.
 
+The user row is recorded only when the runtime echoes the message back, under
+the turn that actually read it. A steer stopped before delivery therefore
+leaves no row in the stopped turn; if the runtime delivers it as the next
+turn, its row appears in that turn.
+
 ### `session.commands`
 
 `session.commands` answers one question: does the session have a loaded runtime

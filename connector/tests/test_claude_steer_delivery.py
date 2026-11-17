@@ -25,6 +25,9 @@ from connector.runtimes.claude.domain.capabilities import (
     ClaudeCapabilityContext,
     claude_session_capabilities,
 )
+from connector.runtimes.claude.domain.pending_messages import (
+    ClaudeHistoryUserMessage,
+)
 from test_claude_runtime import _RecordingHost, _runtime
 
 STEER = "STEER: say BANANA-42"
@@ -208,6 +211,52 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert session.execution is None
     # The same-turn echo consumed the pending registration.
     assert session.pending_steers == {}
+
+
+def test_claude_steer_registers_for_history_reconciliation() -> None:
+    asyncio.run(_test_claude_steer_registers_for_history_reconciliation())
+
+
+async def _test_claude_steer_registers_for_history_reconciliation() -> None:
+    """A steer read as the NEXT turn must still carry its client id.
+
+    The transcript sync publishes that turn's user row itself; without a
+    registered binding it has no clientMessageId, the sender's waiting bubble
+    never retires, and the message reads as two bubbles (pp 2026-11-17).
+    """
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+    started = await runtime.start_turn(
+        "sess_hist", "claude_session_0", "hello",
+        client_message_id="client_msg_hist",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_hist"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    steered = await runtime.steer_turn(
+        "sess_hist", "claude_session_0", STEER,
+        client_message_id="client_steer_hist",
+    )
+    assert steered.ok is True
+    steer_uuid = client.steer_uuid
+    assert steer_uuid is not None
+
+    external_session_id = session.external_session_id
+    assert external_session_id is not None
+    bindings = runtime._pending_messages.match_history_messages(
+        session_id="sess_hist",
+        external_session_id=external_session_id,
+        messages=(ClaudeHistoryUserMessage(native_message_id=steer_uuid, text=STEER),),
+    )
+    assert bindings[steer_uuid].client_message_id == "client_steer_hist"
+
+    client.steer_echo_allowed.set()
+    await asyncio.wait_for(task, 10)
 
 
 def test_claude_steer_stopped_before_echo_leaves_no_row() -> None:

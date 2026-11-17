@@ -68,10 +68,10 @@ struct PendingMessageRow: View {
 
     private var steerStatusText: String? {
         switch steerStatus {
-        case .sending: String(localized: "发送中")
-        case .waiting: String(localized: "正在等待 Claude")
-        case .notDelivered: String(localized: "未送达")
-        case nil: nil
+        case .sending: return String(localized: "发送中")
+        case .waiting: return String(localized: "正在等待 Claude")
+        case .notDelivered: return String(localized: "未送达")
+        case nil: return nil
         }
     }
 

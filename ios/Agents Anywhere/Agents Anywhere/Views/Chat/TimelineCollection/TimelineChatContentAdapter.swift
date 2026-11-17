@@ -303,10 +303,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// exported log carried none of them. Only a change is written, so a
     /// normal session adds a handful of lines.
     private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
-                                       pendingHasEcho: Bool, liveTurnGroupID: String?) {
-        let status = model.session.runtime.state?.status?.rawValue ?? "nil"
+                                       pendingHasEcho: Bool, liveTurnGroupID: String?,
+                                       gateLiveUserTurn: Bool) {
+        let status = model.session.runtime.state?.status.rawValue ?? "nil"
         let probe = [
             "suppress=\(suppressLatest ? 1 : 0)",
+            "gate=\(gateLiveUserTurn ? 1 : 0)",
             "pending=\(pendingID == nil ? 0 : 1)",
             "echo=\(pendingHasEcho ? 1 : 0)",
             "running=\(model.isRunning ? 1 : 0)",
@@ -2345,27 +2347,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
         let suppressLatest = (latestTurnOpen && model.isRunning)
             || model.session.hasNewerItems
-        let liveTurnGroupID: String? = {
-            guard turnFooterGate.isLiveUserTurn else { return nil }
-            // An outgoing bubble without an echo row has no group yet. Parking
-            // the live id on an older bubble turns turn-id splitting off for
-            // every following turn, merges them into one bucket and drops the
-            // earlier footers until the echo lands (pp 2026-11-18: 2.6 s,
-            // hosts 30 → 29 → 30). `waiting` is the new turn's first breath —
-            // the previous turn is history — while `running` still means a
-            // queued send riding the previous turn (see the helper).
-            guard TimelineTurnActions.liveTurnGroupAvailable(
-                hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
-                runtimeStatus: model.session.runtime.state?.status) else { return nil }
-            guard let latestUserRowID else { return nil }
-            return groups.last { group in
-                group.rows.contains { $0.id == latestUserRowID }
-            }?.id
-        }()
+        let liveTurnGroupID = TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: turnFooterGate.isLiveUserTurn,
+            hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
+            latestUserRowID: latestUserRowID,
+            groups: groups)
         recordFooterGateProbe(suppressLatest: suppressLatest,
                               pendingID: submittingPendingID,
                               pendingHasEcho: submittingPendingHasEcho,
-                              liveTurnGroupID: liveTurnGroupID)
+                              liveTurnGroupID: liveTurnGroupID,
+                              gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2394,7 +2385,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
-            footerHostEligible: { stepGroupsByID[$0.id] == nil })
+            footerHostEligible: { stepGroupsByID[$0.id] == nil },
+            // A reply followed by background work (subagent / background
+            // command) keeps its own footer immediately, instead of waiting
+            // for the whole turn (pp 2026-11-18).
+            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is
         // already finished, so the closed state's footers stay. Browsing an
@@ -2985,6 +2980,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         settled.combine(summary.ranCommands)
         settled.combine(summary.editedFiles)
         settled.combine(summary.toolCount)
+        // The agent phrase flips present tense while a dispatch runs and back
+        // when it settles; without the counts the row never reconfigures and
+        // stays on 「正在运行」 after the subagent returns (pp 2026-11-18).
+        settled.combine(summary.agentCount)
+        settled.combine(summary.activeAgentCount)
         rows.append(TimelineRowContentSignature(id: group.id + ":settled",
                                                 revision: settled.revision,
                                                 updatedSeq: 0))

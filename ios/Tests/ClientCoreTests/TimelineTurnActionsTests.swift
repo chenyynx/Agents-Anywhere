@@ -310,24 +310,39 @@ import Testing
     }
 
     /// pp 2026-11-18: a just-sent bubble has no row until its echo arrives,
-    /// so the trailing bucket is still history. `waiting` is the new turn's
-    /// first breath and the live id must resolve to nothing; parking it on
-    /// the previous bubble is what merged the following turns and dropped
-    /// their footers for 2.6 s (`timeline.turn.footer` hosts 30 → 29 → 30).
-    @Test func theLiveGroupIsUnavailableUntilTheNewTurnHasItsOwnRows() {
-        #expect(TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: false, runtimeStatus: .idle))
-        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: true, runtimeStatus: .waiting))
-        // A queued send riding the previous turn keeps that turn's group.
-        #expect(TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: true, runtimeStatus: .running))
-        #expect(TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: true, runtimeStatus: .pending))
-        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: true, runtimeStatus: .idle))
-        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
-            hasUnEchoedPending: true, runtimeStatus: nil))
+    /// so the live id must resolve to nothing — parking it on the previous
+    /// bubble merged the following turns and dropped their footers for 2.6 s
+    /// (`timeline.turn.footer` hosts 30 → 29 → 30). No runtime status is
+    /// consulted: `waiting` is also reported while a turn waits for an answer.
+    @Test func theLiveGroupResolvesOnlyWhileItsOwnTurnIsTheLiveOne() throws {
+        let settled = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 row("reply", text: "Answer")],
+            interactionTargets: [])
+        let live = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 row("reply", text: "Streaming", status: "running")],
+            interactionTargets: [])
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: false,
+            latestUserRowID: "user", groups: settled) == "user")
+        // A settled turn owns no live group: the running status belongs to the
+        // un-echoed new turn, which has no rows yet — protecting the old bubble
+        // merged every turn after it (pp 2026-11-18: hosts 30 → 29 → 30).
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: settled) == nil)
+        // A queued send riding a still-running turn keeps that turn's group
+        // (pp 2026-11-14: the turn-id flap must not split it mid-turn).
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: live) == "user")
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: false, hasUnEchoedPending: false,
+            latestUserRowID: "user", groups: settled) == nil)
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: false,
+            latestUserRowID: nil, groups: settled) == nil)
     }
 
     /// The shape behind the 2026-11-18 flicker: the user's bubble, then two
@@ -351,6 +366,234 @@ import Testing
         #expect(fixed["first"] != nil)
         #expect(fixed["second"] != nil)
     }
+
+    /// A tool row with arbitrary content, for the background-step predicate.
+    private func toolRow(_ id: String, content: [String: Any],
+                         status: String = "running", turnId: String? = nil) throws -> ChatTimelineRowModel {
+        var value = try itemObject(id: id, text: "")
+        value["type"] = "tool"; value["role"] = "assistant"; value["status"] = status
+        value["content"] = content
+        if let turnId {
+            var source = value["source"] as? [String: Any] ?? [:]
+            source["turnId"] = turnId
+            value["source"] = source
+        }
+        return ChatTimelineRowModel(try decode(value))
+    }
+
+    private func group(_ rows: [ChatTimelineRowModel]) -> ChatTimelineGroup {
+        ChatTimelineGroup(kind: .single, rows: rows)
+    }
+
+    /// pp 2026-11-18: a **background** hand-off — a subagent dispatched with
+    /// `runInBackground`, or a `runInBackground` command — makes the reply
+    /// before it final for the reader. A foreground Agent call stays an
+    /// ordinary tool step (a normal turn keeps its one footer), and control
+    /// calls are never hand-offs. The flag is capability-driven: a runtime
+    /// that does not report it degrades to the turn-end footer.
+    @Test func backgroundStepsAreBackgroundDispatchesAndBackgroundCommands() throws {
+        for action in ["invoke", "spawn", "resume"] {
+            let dispatch = try toolRow("agent-\(action)",
+                                       content: ["kind": "agent_call", "action": action,
+                                                 "runInBackground": true])
+            #expect(TimelineTurnActions.isBackgroundStep(group([dispatch])))
+        }
+        // A foreground Agent call is the same card without the flag: the turn
+        // continues after it, so it must not seal (red-team M2: sealing every
+        // dispatch gave a normal turn two footers).
+        let foregroundDispatch = try toolRow(
+            "agent-foreground", content: ["kind": "agent_call", "action": "invoke"])
+        #expect(!TimelineTurnActions.isBackgroundStep(group([foregroundDispatch])))
+        // Claude's task events report the same fact on the agents entry.
+        let eventFlagged = try toolRow(
+            "agent-event",
+            content: ["kind": "agent_call", "action": "invoke",
+                      "agents": ["agent-1": ["status": "running", "isBackgrounded": true]]])
+        #expect(TimelineTurnActions.isBackgroundStep(group([eventFlagged])))
+        // Control calls on agents that already exist (the wire's real action
+        // words; DSH's `list_agents` degrades to `unknown`) never hand off,
+        // even if a runtime ever put the flag on them.
+        for action in ["send_input", "wait", "close", "unknown"] {
+            let control = try toolRow("ctl-\(action)",
+                                      content: ["kind": "agent_call", "action": action,
+                                                "runInBackground": true])
+            #expect(!TimelineTurnActions.isBackgroundStep(group([control])))
+        }
+        let background = try toolRow("bash", content: ["kind": "command", "runInBackground": true])
+        #expect(TimelineTurnActions.isBackgroundStep(group([background])))
+        let foreground = try toolRow("fg", content: ["kind": "command", "command": "ls"])
+        #expect(!TimelineTurnActions.isBackgroundStep(group([foreground])))
+        let message = try row("msg", text: "Answer")
+        #expect(!TimelineTurnActions.isBackgroundStep(group([message])))
+    }
+
+    /// The reply finished before a background step keeps its footer while the
+    /// turn is still running: a sealed segment is not suppressed by the
+    /// send/turn gate.
+    @Test func aReplyBeforeBackgroundWorkKeepsItsFooterWhileTheTurnRuns() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task", content: ["kind": "agent_call"], turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// After the background step the next finished reply gets its own footer;
+    /// the sealed one stays put — never moves, never disappears.
+    @Test func aReplyAfterBackgroundWorkGetsItsOwnFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1"),
+                        row("second", text: "Second answer", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions["second"]?.copyText == "Second answer")
+        #expect(actions.count == 2)
+    }
+
+    /// pp 2026-11-18, 需求 2: 不等子代理. While the background card is still
+    /// running, the reply after it is final for the reader and gets its own
+    /// footer at turn end — the hand-off must not leave the background's
+    /// activity suppressing it (red-team M1). Uses the real predicate.
+    @Test func aReplyAfterBackgroundWorkDoesNotWaitForTheBackground() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running", turnId: "t1"),
+                        row("second", text: "Second answer", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions["second"]?.copyText == "Second answer")
+    }
+
+    /// A hand-off excludes only *its own row* from the activity tally, never
+    /// the whole group: a foreground tool grouped with it (consecutive tool
+    /// rows share a step group) still keeps the residual segment's footer
+    /// closed, exactly like `aRunningToolKeepsTheFooterClosed` (red-team L2).
+    @Test func aRunningToolAfterTheHandoffKeepsTheResidualSegmentClosed() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "done", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "running", turnId: "t1"),
+                        row("second", text: "Second answer", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions["second"] == nil)
+    }
+
+    /// A sealed footer survives every later rebuild: later segments append
+    /// their own actions, the earlier host keeps its own.
+    @Test func aSealedFooterSurvivesLaterSegments() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1")]
+        let sealed = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(sealed["first"]?.copyText == "First answer")
+        let laterRows = rows + [try row("second", text: "Second answer", turnId: "t1")]
+        let later = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(laterRows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(later["first"]?.copyText == "First answer")
+        #expect(later["second"] == nil)
+    }
+
+    /// A reply still streaming is never sealed: the reader cannot copy half a
+    /// sentence.
+    @Test func aStreamingReplyIsNeverSealed() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1"),
+                        row("second", text: "Still writing", status: "running", turnId: "t1"),
+                        toolRow("task2", content: ["kind": "agent_call"], turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id.hasPrefix("task") })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions["second"] == nil)
+    }
+
+    /// A foreground tool keeps the turn's single-footer rule: the reply is not
+    /// sealed and nothing commits until the turn ends.
+    @Test func aForegroundToolDoesNotSealTheReply() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "done", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true)
+        #expect(actions.isEmpty)
+    }
+
+    /// A reply still streaming when the background row lands must not seal:
+    /// the connector publishes a tool row before its final message row, so
+    /// sealing there would copy half a sentence into an earlier host and move
+    /// the footer once the text completes (pp 2026-11-18 red-team). The seal
+    /// waits for the text; the background row stays either way.
+    @Test func aStreamingReplyBlocksTheSealUntilItCompletes() throws {
+        let streamingRows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                                 row("first", text: "First answer", turnId: "t1"),
+                                 row("second", text: "Now launching", status: "running", turnId: "t1"),
+                                 toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
+                                         turnId: "t1")]
+        let streaming = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(streamingRows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(streaming.isEmpty)
+
+        let settledRows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                               row("first", text: "First answer", turnId: "t1"),
+                               row("second", text: "Now launching", turnId: "t1"),
+                               toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
+                                       turnId: "t1")]
+        let settled = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(settledRows, interactionTargets: []),
+            suppressLatest: true,
+            isBackgroundStep: { $0.id == "task" })
+        #expect(settled["second"]?.copyText == "First answer\n\nNow launching")
+        #expect(settled["first"] == nil)
+    }
+
+    /// The background step usually renders as a step group, which never hosts
+    /// a footer. Excluding it from hosting must not stop the seal on the reply
+    /// before it.
+    @Test func aBackgroundStepInsideAnIneligibleHostStillSealsTheReply() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
+                                turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            footerHostEligible: { $0.id != "task" },
+            isBackgroundStep: { $0.id == "task" })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.

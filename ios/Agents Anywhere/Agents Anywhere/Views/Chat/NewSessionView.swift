@@ -50,7 +50,10 @@ struct NewSessionView: View, Equatable {
                 // animated by hand and the motion is exactly the system's
                 // keyboard animation. Any notification-driven offset is what
                 // made the last two attempts jump (pp 2026-11-17).
-                let restingHeight = max(0, viewport.size.height)
+                // The `-48` is the basis the 9.7 pt optical correction was
+                // measured against; dropping it moves the block down by half
+                // of 48 (b1303 was 24.0 pt low — pp 2026-11-17).
+                let restingHeight = max(0, viewport.size.height - 48)
                 // Official block centre: 445.2 pt closed, 300.5 pt with a 344 pt
                 // keyboard. Against our own centring that is +9.7 pt, growing
                 // by another 27.3 pt over the keyboard — expressed as a

@@ -78,6 +78,7 @@ nonisolated enum CodePageTheme {
     /// The official fonts, bundled from the official IPA's
     /// `ClaudeFonts_ClaudeFonts.bundle` (registered by `AppFontRegistry`).
     static let sansFontName = "AnthropicSansMobileVariable-TextRegular"
+    static let serifFontName = "AnthropicSerifMobileVariable-TextRegular"
     static let monoFontName = "JetBrainsMono-Regular"
 
     /// [E] R28 §1.2 — `CollapsedStepsRow` outer padding is

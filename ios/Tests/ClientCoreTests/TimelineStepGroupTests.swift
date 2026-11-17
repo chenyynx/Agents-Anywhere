@@ -292,6 +292,35 @@ struct TimelineStepGroupSummaryTests {
         #expect(line.contains("询问 1 次"))
     }
 
+    @Test func aSubagentCallIsItsOwnCountedCategory() throws {
+        // pp 2026-11-18: one thinking step plus one subagent run used to read
+        // 「思考 1 次」 with no mention of the agent — the label plan folds a
+        // task into `.ranAgent`, which the summarizer's verb switch never saw.
+        let steps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            try tool("a1", name: "Task", input: ["description": "Third 2-minute timing test"]),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.thinkingCount == 1)
+        #expect(summary.agentCount == 1)
+        #expect(summary.toolCount == 1)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("思考 1 次"))
+        #expect(line.contains("运行了 1 个智能体"))
+    }
+
+    @Test func severalSubagentCallsCountOnceEach() throws {
+        let steps: [TimelineStep] = [
+            try tool("a1", name: "Task", input: ["description": "first"]),
+            try tool("a2", name: "Task", input: ["description": "second"]),
+        ]
+        let summary = TimelineStepSummarizer.summary(steps: steps, cwd: nil)
+        #expect(summary.agentCount == 2)
+        #expect(summary.toolCount == 2)
+        let line = TimelineStepSummaryText.line(summary, locale: Locale(identifier: "zh_CN"))
+        #expect(line.contains("运行了 2 个智能体"))
+    }
+
     @Test func liveThinkingLineIsTheLastNonEmptyLine() {
         let step = TimelineStep.thinking(id: "r", text: "\nfirst line\n\n  second line  \n",
                                          status: .running)

@@ -17,12 +17,8 @@ struct NewSessionView: View, Equatable {
     @State private var showsFiles = false
     @Environment(AppState.self) private var appState
     @State private var confirmsRetry = false
-    /// How much of the page the keyboard covers. Animated on the keyboard's own
-    /// clock — a single fixed target per event, never retargeted, so it cannot
-    /// reintroduce the swing (pp 2026-11-17).
-    @State private var keyboardCoverage: CGFloat = 0
-    /// Largest viewport seen, i.e. the keyboard-closed height. The layout
-    /// centres against this constant so the keyboard moves exactly one thing.
+    /// Largest viewport seen — the keyboard-closed height. Only the *shrink*
+    /// from it is used, so no absolute metric has to be known.
     @State private var closedViewportHeight: CGFloat = 0
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
@@ -47,20 +43,23 @@ struct NewSessionView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             GeometryReader { viewport in
-                // The layout height is frozen at the keyboard-closed value, so
-                // the page has exactly one moving part: the optical offset
-                // below, animated on the keyboard's own clock. Letting the
-                // height follow the keyboard *and* animating an offset is what
-                // swung in the first fix.
-                let closedHeight = max(closedViewportHeight, viewport.size.height)
-                let restingHeight = max(0, closedHeight - 48)
-                // Official vs ours: +10 pt with the keyboard down, 300.3 at
-                // full coverage (block centre 445.2/300.5 vs 435.5/263.5).
-                // 145.2 pt of travel over a 344 pt keyboard.
-                let coverage = min(344, max(0, keyboardCoverage))
-                let centerOffset = 10 - 0.422 * coverage
+                // Position is a pure function of the viewport the safe area
+                // leaves. The official app has no keyboard listeners either —
+                // the height arrives through `GeometryProxy.safeAreaInsets`
+                // (CANONICAL/05-layout-scroll.md §5) — so nothing here is
+                // animated by hand and the motion is exactly the system's
+                // keyboard animation. Any notification-driven offset is what
+                // made the last two attempts jump (pp 2026-11-17).
+                let restingHeight = max(0, viewport.size.height)
+                // Official block centre: 445.2 pt closed, 300.5 pt with a 344 pt
+                // keyboard. Against our own centring that is +9.7 pt, growing
+                // by another 27.3 pt over the keyboard — expressed as a
+                // function of how much this viewport has shrunk, so the
+                // keyboard animates it frame by frame (pp 2026-11-17).
+                let shrink = min(344, max(0, closedViewportHeight - viewport.size.height))
+                let topAdjustment = 9.7 + shrink / 344 * 27.3
                 ScrollView {
-                    NewSessionContentLayout(viewportHeight: restingHeight) {
+                    NewSessionContentLayout(viewportHeight: restingHeight, topAdjustment: topAdjustment) {
                         NewSessionWelcomeView(displayName: appState.me?.displayName,
                                               runtime: model.runtime,
                                               workspaceName: workspaceName,
@@ -70,18 +69,15 @@ struct NewSessionView: View, Equatable {
                         .padding(24)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
-                        // The only animated value on the page, and its target
-                        // is fixed per keyboard event — `.offset` is a real
-                        // animatable modifier, unlike a custom Layout's frame.
-                        .offset(y: centerOffset)
                         .background { ChatPageScrollEdge() }
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .refreshable { await refresh() }
-                // The closed height is the maximum: the keyboard only ever
-                // shrinks this viewport, so a new maximum means it is gone (or
-                // the device rotated).
+                // Seed on first layout — `onChange` never reports the initial
+                // value, and without a closed height every shrink would read
+                // as zero on the first keyboard.
+                .onAppear { closedViewportHeight = max(closedViewportHeight, viewport.size.height) }
                 .onChange(of: viewport.size.height) { _, height in
                     closedViewportHeight = max(closedViewportHeight, height)
                 }
@@ -133,33 +129,6 @@ struct NewSessionView: View, Equatable {
         .confirmationDialog(String(localized: "创建结果仍未确认，再次创建可能产生重复会话。"), isPresented: $confirmsRetry, titleVisibility: .visible) {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
-        }
-        // One fixed target per keyboard event, animated on the keyboard's own
-        // duration and curve: the only moving value on the page, so it cannot
-        // retarget mid-flight the way the old `rise` did.
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-            let target = max(0, UIScreen.main.bounds.height - frame.minY)
-            withAnimation(Self.keyboardAnimation(from: note)) { keyboardCoverage = target }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
-            withAnimation(Self.keyboardAnimation(from: note)) { keyboardCoverage = 0 }
-        }
-    }
-
-    /// The keyboard's own animation, so the offset and the composer move on the
-    /// same clock. `nil` (no animation) when UIKit is tracking a drag, which
-    /// arrives as a zero duration.
-    private static func keyboardAnimation(from note: Notification) -> Animation? {
-        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-        guard duration > 0 else { return nil }
-        let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
-        switch curve {
-        case 0: return .timingCurve(0.42, 0, 0.58, 1, duration: duration)
-        case 1: return .timingCurve(0.42, 0, 1, 1, duration: duration)
-        case 2: return .timingCurve(0, 0, 0.58, 1, duration: duration)
-        case 3: return .linear(duration: duration)
-        default: return .timingCurve(0.25, 0.1, 0.25, 1, duration: duration)
         }
     }
 
@@ -259,14 +228,22 @@ struct NewSessionView: View, Equatable {
 /// extend the scrollable page when needed, rather than recentering the welcome.
 private struct NewSessionContentLayout: Layout {
     let viewportHeight: CGFloat
+    /// Optical-centre correction from the caller. It is a pure function of the
+    /// live viewport height, so the keyboard moves it frame by frame through
+    /// the same safe-area pass — nothing here is animated by hand.
+    var topAdjustment: CGFloat = 0
     private let spacing: CGFloat = 28
+
+    private func centredTop(welcomeHeight: CGFloat) -> CGFloat {
+        max(0, (viewportHeight - welcomeHeight) / 2 + topAdjustment)
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.replacingUnspecifiedDimensions().width
         let childProposal = ProposedViewSize(width: width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
         let status = subviews[1].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = centredTop(welcomeHeight: welcome.height)
         let statusHeight = status.height > 0 ? spacing + status.height : 0
         return CGSize(width: width, height: max(viewportHeight, top + welcome.height + statusHeight))
     }
@@ -274,7 +251,7 @@ private struct NewSessionContentLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let childProposal = ProposedViewSize(width: bounds.width, height: nil)
         let welcome = subviews[0].sizeThatFits(childProposal)
-        let top = max(0, (viewportHeight - welcome.height) / 2)
+        let top = centredTop(welcomeHeight: welcome.height)
         subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top), anchor: .topLeading, proposal: childProposal)
         subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + top + welcome.height + spacing),
             anchor: .topLeading, proposal: childProposal)

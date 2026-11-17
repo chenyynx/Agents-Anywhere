@@ -79,9 +79,12 @@ struct PendingMessageRow: View {
         // The turn is over and no echo arrived: the steer never landed.
         if steerStatus == .notDelivered { return String(localized: "未送达") }
         switch pending.delivery {
-        case .uncertain: String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
-        case let .rejected(error): error.message
-        default: nil
+        case .uncertain:
+            return String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
+        case let .rejected(error):
+            return error.message
+        default:
+            return nil
         }
     }
 }

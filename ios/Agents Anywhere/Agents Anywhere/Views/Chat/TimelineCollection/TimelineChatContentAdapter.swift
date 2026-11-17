@@ -112,7 +112,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // hashes only the handful of markers, not the whole timeline. Keep the
         // exact b1166 fingerprint semantics: no rebuild can be missed.
         hasher.combine(model.interruptedTurns.map(\.anchorItemID).joined(separator: ","))
-        hasher.combine(model.sendingPlaceholder)
+        hasher.combine(model.isAwaitingReply)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
         hasher.combine(model.session.hasNewerItems)
@@ -1773,6 +1773,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// summary must never carry the mark.
         var chatLastUserOrder = Int.min
         var chatLiveTurnHasSteps = false
+        /// The strict last unit is a steering user message. The live step
+        /// group above it keeps its running pose, but the turn's working mark
+        /// belongs at the tail, below the steer bubble (pp 2026-11-17).
+        var lastUnitIsSteeringRow = false
         if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
@@ -1823,6 +1827,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 orderSeq: { rowsByID[$0]?.value.orderSeq },
                 lastUserOrder: chatLastUserOrder)
             chatLiveTurnHasSteps = !turnGroupIDs.isEmpty
+            lastUnitIsSteeringRow = {
+                guard let last = chatUnits.last else { return false }
+                if case let .message(_, rowIDs) = last {
+                    let rows = rowIDs.compactMap { rowsByID[$0] }
+                    return !rows.isEmpty && rows.allSatisfy {
+                        $0.value.role == .user && !$0.value.startsVisibleTurn
+                    }
+                }
+                return false
+            }()
             // Only while the runtime reports the turn running. The optimistic
             // send window still has the previous turn's rows after the last
             // prompt; admitting it would open settled groups at the bottom
@@ -1861,8 +1875,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // one +91 follow — the page scrolls once and the tool row is already
         // in place. The bubble's old spinner is gone, so this row is the
         // send's only progress signal.
+        // A steer is not a send frame: while it waits (dashed bubble) the turn
+        // is still working on its own step group, and the reader wants no
+        // 「正在处理中」 row until the message is actually read. After the echo
+        // the strict-last-unit rule below puts the row under the settled
+        // bubble (pp 2026-11-17: the row used to be absent, then the tail went
+        // blank for 1–2 s after the dash turned solid).
         let openPending = model.session.pendingMessages.filter {
-            $0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed
+            !$0.isSteer
+                && ($0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed)
         }
         let publishedPendingIDs = Set(model.timeline.pendingMessages.map(\.id))
         // The session clears its record when the echo confirms; the
@@ -1874,7 +1895,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // the send frame anchored across the gap.
         let anchorPendingIDs = SendFramePresentation.anchorPendingIDs(
             sessionIDs: openPending.map(\.id),
-            presentedIDs: model.timeline.pendingMessages.map(\.id))
+            // A steering message never anchors the working row: it belongs to
+            // the running turn and only counts once it has been read.
+            presentedIDs: model.timeline.pendingMessages
+                .filter { !$0.isSteer }.map(\.id))
         var echoedPendingIDs: Set<String> = []
         if let latest = openPending.last,
            latest.delivery != .sending, !publishedPendingIDs.contains(latest.id) {
@@ -1887,7 +1911,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         let runtimeIsInFlight = model.session.runtime.state?.status.isTurnInFlight == true
         let hasWorkingStatus = SendFramePresentation.showsWorkingRow(
-            placeholderVisible: model.sendingPlaceholder != nil,
+            placeholderVisible: model.isAwaitingReply,
             pendingIDs: anchorPendingIDs,
             publishedPendingIDs: publishedPendingIDs,
             echoedPendingIDs: echoedPendingIDs,
@@ -1899,7 +1923,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // b1284 log: bubble +53 at 22:22:11.170, row +38.3 at 12.327).
             // The anchor spans the pending→echo gap as well, or the row drops
             // for one refresh and returns with the echo.
-            hasLiveSteps: chatLiveTurnHasSteps && anchorPendingIDs.isEmpty,
+            hasLiveSteps: chatLiveTurnHasSteps && anchorPendingIDs.isEmpty
+                && !lastUnitIsSteeringRow,
             queueCount: model.session.sendQueue.items.count)
         let workingStatusShowsText = SendFramePresentation.showsWorkingRowText(
             latestDelivery: openPending.last?.delivery,
@@ -2068,10 +2093,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // The dots stay on the trailing group for the whole live turn
             // (pp's device observation) — but only while that group is the
             // turn's last unit: once body text or anything else follows it,
-            // the dots leave and the row settles into its summary.
+            // the dots leave and the row settles into its summary. Steering
+            // rows are user messages INSIDE the turn: they do not mean the
+            // model moved on, so they must not settle the group while the
+            // next step is still coming (pp 2026-11-17: the working mark
+            // dropped for a beat after the steer echo).
             let lastUnitIsStepGroup: Bool = {
-                guard let last = chatUnits.last else { return false }
-                if case .stepGroup = last { return true }
+                for unit in chatUnits.reversed() {
+                    switch unit {
+                    case .stepGroup:
+                        return true
+                    case let .message(_, rowIDs):
+                        let rows = rowIDs.compactMap { rowsByID[$0] }
+                        let isSteering = !rows.isEmpty && rows.allSatisfy {
+                            $0.value.role == .user && !$0.value.startsVisibleTurn
+                        }
+                        if isSteering { continue }
+                        return false
+                    case .standalone:
+                        return false
+                    }
+                }
                 return false
             }()
             // The live tail exists only while the turn really streams. The
@@ -2087,8 +2129,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // runtime already reports running — that is the send-time flash
             // (pp 2026-11-14). The new turn's own rows animate from their own
             // running steps.
-            let hasPendingSend = !model.session.pendingMessages.isEmpty
-                || !model.timeline.pendingMessages.isEmpty
+            // A steer rides the turn already running; treating it as the next
+            // turn's pending send settled the live step group into its
+            // summary the moment it was sent (pp 2026-11-17).
+            let hasPendingSend = model.session.pendingMessages.contains { !$0.isSteer }
+                || model.timeline.pendingMessages.contains { !$0.isSteer }
             let turnActive = turnStreaming && !hasPendingSend
             // A fresh idle — or the accepted stop's optimistic idle — proves
             // every still-`running` step snapshot is stale. Only the group of
@@ -2174,7 +2219,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let timelineRowIDs = Set(model.timeline.rows.map(\.id))
         let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
                                                           timelineRowIDs: timelineRowIDs)
-        let pending = model.timeline.pendingMessages
+        // The presentation retires a pending row one refresh after its echo
+        // row publishes; hiding it as soon as the echo row is on screen keeps
+        // one message from drawing as two bubbles (dashed + settled) for a
+        // frame (pp 2026-11-17). The queue row already uses the same rule.
+        let echoedClientIDs = Set(model.timeline.rows.compactMap { row -> String? in
+            guard row.value.role == .user else { return nil }
+            return row.value.source["clientMessageId"]?.stringValue
+        })
+        let pending = model.timeline.pendingMessages.filter {
+            !echoedClientIDs.contains($0.id)
+        }
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.canLoadOlder || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
@@ -2243,7 +2298,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // previous footer for one refresh, and start the send's bottom follow
         // 30 pt low (pp 2026-11-15).
         let submittingPendingID = model.timeline.pendingMessages.last {
-            TimelineTurnActions.opensTurn($0.delivery)
+            !$0.isSteer && TimelineTurnActions.opensTurn($0.delivery)
         }?.id
         let latestUserRowID = model.timeline.rows.last(where: {
             $0.value.startsVisibleTurn
@@ -2433,7 +2488,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     "removed": itemsValue.map(\.itemID)
                         .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
                     "items": String(identity.items.count),
-                    "working": model.sendingPlaceholder != nil ? "1" : "0",
+                    "working": model.isAwaitingReply ? "1" : "0",
                     "workingText": workingStatusShowsText ? "1" : "0",
                     "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
                     "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
@@ -2561,7 +2616,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }(),
                 "running": model.isRunning ? "1" : "0",
                 "streaming": model.isTranscriptStreaming ? "1" : "0",
-                "placeholder": model.sendingPlaceholder != nil ? "1" : "0",
+                "placeholder": model.isAwaitingReply ? "1" : "0",
                 "statusLine": tailStatusLineVisible ? "1" : "0",
                 "fresh": model.session.runtime.isFresh ? "1" : "0",
                 "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
@@ -2860,7 +2915,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isRunning: model.isRunning,
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
-                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
+                    && (model.timeline.pendingMessages.contains { !$0.isSteer }
+                        || model.session.pendingMessages.contains { !$0.isSteer })))
     }
 
     /// The chat profile's step-group signature: the drawn live line while it
@@ -2933,7 +2989,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             queue: model.session.sendQueue.items.map {
                 TimelineQueueEntrySignature(id: $0.id, state: String(describing: $0.state))
             },
-            sendingPlaceholder: model.sendingPlaceholder,
+            isAwaitingReply: model.isAwaitingReply,
             orbActivity: String(describing: model.orbActivity),
             hasNewerItems: model.session.hasNewerItems,
             statusLineVisible: tailStatusLineVisible)
@@ -2951,7 +3007,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // official predicate would see it as the last message of the trailing
         // assistant run and find no tool call. Without this the mark would
         // keep the previous turn's pose while the new turn is still waiting.
-        guard model.timeline.pendingMessages.isEmpty else { return .think }
+        // A steer does not open a new turn: it must keep the running tool's
+        // pose instead of forcing the neutral think mark (pp 2026-11-17).
+        guard !model.timeline.pendingMessages.contains(where: { !$0.isSteer })
+        else { return .think }
         var tail: [CodeWorkingMarkRow] = []
         for row in model.timeline.rows.reversed() {
             let item = row.value
@@ -3008,8 +3067,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // An optimistic user message is newer than every presented row: the
         // scan would otherwise read the previous turn's trailing reasoning as
         // the live block and show its closed label at the new turn's start.
-        // Same guard as `liveWorkingMarkBody`.
-        guard model.timeline.pendingMessages.isEmpty else { return nil }
+        // Same guard as `liveWorkingMarkBody`; a steer keeps the running
+        // turn's thinking block (pp 2026-11-17).
+        guard !model.timeline.pendingMessages.contains(where: { !$0.isSteer })
+        else { return nil }
         guard let item = liveThinkingItem() else {
             liveThinkingRowID = nil
             liveThinkingObservedStart = nil
@@ -3175,7 +3236,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 ids.insert(TimelineListItem.group(group.id).itemID)
             }
         }
-        if model.sendingPlaceholder != nil || !model.session.sendQueue.items.isEmpty {
+        if model.isAwaitingReply || !model.session.sendQueue.items.isEmpty {
             ids.insert(TimelineListItem.tail.itemID)
         }
         return ids
@@ -3341,7 +3402,6 @@ private struct TimelineCollectionTailRow: View {
     /// line: one turn gets one mark, never two (device report 2026-10-23).
     let showsStatusLine: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
 
     /// A queued message whose echo row is already on screen is the same
     /// message twice: the tail bubble plus the timeline row. Hiding the
@@ -3402,17 +3462,6 @@ private struct TimelineCollectionTailRow: View {
                     // the flipbook mark plus the rotating `.connecting` verb
                     // (CANONICAL/20-working-mark.md §1–§4).
                     CodeThinkingStatusLine()
-                } else if showsStatusLine, let text = model.sendingPlaceholder {
-                    HStack(spacing: CodePageTheme.toolRowSpacing) {
-                        WorkingMarkView(body: .think, isRunning: true)
-                        Text(verbatim: text)
-                            .font(.system(size: CodePageTheme.runningStatusFontSize))
-                            .foregroundStyle(CodePageTheme.runningStatusColor
-                                .resolved(for: colorScheme))
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
                 } else { Color.clear }
             }
             .frame(height: showsStatusLine ? 32 : Self.idleHeight)

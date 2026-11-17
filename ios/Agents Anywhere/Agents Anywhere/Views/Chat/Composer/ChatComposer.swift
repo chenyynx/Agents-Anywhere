@@ -89,13 +89,23 @@ struct ChatComposer: View {
                             expandAnimation: expandAnimation, onLongPaste: onLongPaste)
                     }
 
-                    Button {
-                        // [E] The official send key is an `AnimatingHapticButton`
-                        // fired with `.selection` (EVIDENCE/round19/motion.md
-                        // §P2-10). Only the send/queue shapes are documented;
-                        // the stop shape stays silent.
-                        if affordance.shape != .stop { sendFeedback += 1 }
-                        accentAction()
+                    // A Menu, not a Button + `.contextMenu`: the context menu
+                    // anchored at the touch point and stayed there while the
+                    // keyboard dismissal moved the composer. A Menu anchors to
+                    // its label, and its picker options render inline with
+                    // check marks, so 引导/排队 share one leading edge
+                    // (pp 2026-11-17).
+                    Menu {
+                        // A second entry point to the ONE persisted setting
+                        // (the settings row is the first). Selecting here
+                        // writes the same value; there is no per-send
+                        // temporary override.
+                        Picker(String(localized: "后续消息处理方式"),
+                               selection: $deliveryRaw) {
+                            ForEach(ComposerDelivery.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
+                        }
                     } label: {
                         AppSymbol(accentSymbol, size: accentSymbolSize)
                             .contentTransition(.symbolEffect(.replace))
@@ -112,26 +122,16 @@ struct ChatComposer: View {
                                 .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
+                    } primaryAction: {
+                        // [E] The official send key is an `AnimatingHapticButton`
+                        // fired with `.selection` (EVIDENCE/round19/motion.md
+                        // §P2-10). Only the send/queue shapes are documented;
+                        // the stop shape stays silent.
+                        if affordance.shape != .stop { sendFeedback += 1 }
+                        accentAction()
                     }
-                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
                     .disabled(isBusy || !sendEnabled)
-                    .contextMenu {
-                        // A second entry point to the ONE persisted setting
-                        // (the settings row is the first). Selecting here
-                        // writes the same value; there is no per-send
-                        // temporary override.
-                        ForEach(ComposerDelivery.allCases) { option in
-                            Button {
-                                deliveryRaw = option.rawValue
-                            } label: {
-                                if option == delivery {
-                                    Label(option.title, appSymbol: "checkmark")
-                                } else {
-                                    Text(option.title)
-                                }
-                            }
-                        }
-                    }
                     .sensoryFeedback(.selection, trigger: sendFeedback)
                     .accessibilityLabel(accentLabel)
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")

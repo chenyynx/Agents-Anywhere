@@ -34,6 +34,11 @@ nonisolated struct V2SessionArchive: Codable {
         /// does not strand the tail bubble after an edited retry. Optional:
         /// archives written before this field existed decode without it.
         var superseded: [String]? = nil
+        /// A steer waiting outside the transcript draws the queue's dashed
+        /// outline and carries the steer status copy; both have to survive a
+        /// relaunch. Optional: archives written before this field existed
+        /// decode without it.
+        var steer: Bool? = nil
     }
     /// A queued message that was never put on the wire. Only never-sent items
     /// are stored as `queued`: an item mid-send (`sending`/`awaitingEcho`) may
@@ -110,7 +115,8 @@ nonisolated struct V2SessionArchive: Codable {
             }
             return Pending(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
                 attachments: value.attachments.map { $0.archived() }, error: error, rejected: rejected,
-                superseded: value.supersededPendingIDs.isEmpty ? nil : value.supersededPendingIDs)
+                superseded: value.supersededPendingIDs.isEmpty ? nil : value.supersededPendingIDs,
+                steer: value.isSteer ? true : nil)
         }
         // Split the queue by certainty. A waiting, fully-uploaded message never
         // left the client, so it is safe to re-arm on restore. Anything already

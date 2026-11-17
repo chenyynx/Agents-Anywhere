@@ -27,6 +27,7 @@ from connector.runtimes.claude.sdk.events import (
 from connector.runtimes.claude.sdk.stop_affordance import stop_background_tasks
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import _history_turn_id
+from connector.runtimes.claude.timeline.messages import stable_message_item_id
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
 from connector.runtimes.claude.turns.selections import ClaudeSelectionController
@@ -219,6 +220,34 @@ class ClaudeTurnActionHandler:
                 message="Claude rejected the steering message",
             )
         session.remember_steer(steer_uuid, content, client_message_id)
+        # Register the steer for history reconciliation as well: a steer can
+        # be read as the NEXT turn instead of a same-turn echo, and then the
+        # transcript sync publishes its user row without a clientMessageId —
+        # the sender's waiting bubble never retires and the message shows as
+        # two bubbles (pp 2026-11-17). The pre-assigned uuid is the native id
+        # the SDK replays, so binding it now lets history attach the client id.
+        try:
+            self.runner.pending_messages.register_live_message(
+                session_id=session.session_id,
+                external_session_id=session.external_session_id,
+                client_message_id=client_message_id,
+                platform_item_id=stable_message_item_id(session, steer_uuid),
+                text=content,
+                attachments=(),
+            )
+            if session.external_session_id is not None:
+                self.runner.pending_messages.bind_live_native_message(
+                    session_id=session.session_id,
+                    external_session_id=session.external_session_id,
+                    client_message_id=client_message_id,
+                    native_message_id=steer_uuid,
+                    text=content,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude steer identity persistence failed session_id={}",
+                session.session_id,
+            )
         return RuntimeOperationResult(
             ok=True,
             result={

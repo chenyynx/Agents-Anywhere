@@ -173,14 +173,19 @@ final class SessionChatModel {
         guard let meta = session.metadata else { return false }
         return (meta.runtimeType ?? meta.runtime) == "dsh"
     }
-    var sendingPlaceholder: String? {
-        let submitting = session.pendingMessages.contains { $0.delivery == .sending || $0.delivery == .accepted }
-        if submitting || session.awaitingReplyID != nil { return session.isLocalCreation ? String(localized: "正在创建会话…") : String(localized: "等待 \(agentName) 回应…") }
-        guard session.runtime.isFresh, let status = session.runtime.state?.status else { return nil }
+    /// A send is staged/submitted or the runtime is between turns, so the
+    /// transcript's own working row owns this gap. The sentence that used to
+    /// explain it ("等待 X 回应…") belonged to the retired Chat page; the Code
+    /// page draws `CodeWorkingStatusRow` instead (pp 2026-11-17).
+    var isAwaitingReply: Bool {
+        let submitting = session.pendingMessages.contains {
+            $0.delivery == .sending || $0.delivery == .accepted
+        }
+        if submitting || session.awaitingReplyID != nil { return true }
+        guard session.runtime.isFresh, let status = session.runtime.state?.status else { return false }
         switch status {
-        case .waiting, .pending: return String(localized: "等待 \(agentName) 回应…")
-        case .running: return String(localized: "\(agentName) 正在处理任务…")
-        default: return nil
+        case .waiting, .pending, .running: return true
+        default: return false
         }
     }
     var responseUnavailableReason: String? {

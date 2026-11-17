@@ -21,8 +21,6 @@ struct NewSessionView: View, Equatable {
     @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
-    /// The project picker's label: the session title's 15 pt (2026-11-17).
-    @ScaledMetric(relativeTo: .subheadline) private var workspaceLabelSize: CGFloat = 15
 
     /// The collection engine's composer keeps the official Code measurements
     /// in both rendering modes (pp 2026-10-29).
@@ -66,14 +64,6 @@ struct NewSessionView: View, Equatable {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Follows the composer's glass edge in both states, a few
-                    // points inside it and slightly apart, to sit balanced.
-                    workspaceButton
-                        .padding(.horizontal, controls.horizontalInset(expanded: model.draft.isExpanded))
-                        .padding(.leading, 6)
-                        // 14 + the dock's 8 pt top margin ≈ the capture's 25 pt
-                        // between the picker's baseline and the composer edge.
-                        .padding(.bottom, 14)
                 ChatComposerDock(draft: model.draft, settings: model.settings,
                     maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                     editor: composerEditor, showsCommandMenu: $showsCommandMenu,
@@ -142,40 +132,6 @@ struct NewSessionView: View, Equatable {
             }
         }
         .multilineTextAlignment(.leading)
-    }
-
-    private var workspaceButton: some View {
-        Button { showsWorkspace = true } label: {
-            // Reference (2026-11-17, measured off the Code-page capture at 3×):
-            // icon ink starts 24 pt in, label ink at 58 pt; label #585858,
-            // glyphs #888, chevrons #C8C8C8, all at 15 pt. The label uses the
-            // session title's face (Anthropic Sans 15 / 550) so the picker
-            // matches the header above the transcript.
-            HStack(spacing: 12) {
-                AppSymbol("bubble.left.and.bubble.right", size: 17)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22)
-                Text(workspaceName)
-                    .font(Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
-                                                        size: workspaceLabelSize,
-                                                        weight: 550)))
-                    .foregroundStyle(ChatPalette.text.color.opacity(0.7))
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                if model.loadingHomes.contains(model.connectorID), model.workspace.isEmpty {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    AppSymbol("chevron.up.chevron.down", size: 12)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.top, 8)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .disabled(model.connector == nil || model.isCreating)
-        .accessibilityLabel(String(localized: "选择项目"))
-        .accessibilityValue(model.workspace.isEmpty ? workspaceName : model.workspace)
     }
 
     private var deviceMenu: some View {

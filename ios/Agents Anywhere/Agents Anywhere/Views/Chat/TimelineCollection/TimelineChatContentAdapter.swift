@@ -112,7 +112,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // hashes only the handful of markers, not the whole timeline. Keep the
         // exact b1166 fingerprint semantics: no rebuild can be missed.
         hasher.combine(model.interruptedTurns.map(\.anchorItemID).joined(separator: ","))
-        hasher.combine(model.sendingPlaceholder)
+        hasher.combine(model.isAwaitingReply)
         hasher.combine(String(describing: model.orbActivity))
         hasher.combine(model.session.canLoadOlder)
         hasher.combine(model.session.hasNewerItems)
@@ -1861,8 +1861,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // one +91 follow — the page scrolls once and the tool row is already
         // in place. The bubble's old spinner is gone, so this row is the
         // send's only progress signal.
+        // A steer is inside the running turn, not a send frame: it must not
+        // anchor a standalone working row (the live step group owns the
+        // mark), nor count as the new turn's opener (pp 2026-11-17).
         let openPending = model.session.pendingMessages.filter {
-            $0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed
+            !$0.isSteer
+                && ($0.delivery == .sending || $0.delivery == .accepted || $0.delivery == .confirmed)
         }
         let publishedPendingIDs = Set(model.timeline.pendingMessages.map(\.id))
         // The session clears its record when the echo confirms; the
@@ -1874,7 +1878,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // the send frame anchored across the gap.
         let anchorPendingIDs = SendFramePresentation.anchorPendingIDs(
             sessionIDs: openPending.map(\.id),
-            presentedIDs: model.timeline.pendingMessages.map(\.id))
+            // A steer never anchors a send frame: it belongs to the turn
+            // already on screen (pp 2026-11-17).
+            presentedIDs: model.timeline.pendingMessages
+                .filter { !$0.isSteer }.map(\.id))
         var echoedPendingIDs: Set<String> = []
         if let latest = openPending.last,
            latest.delivery != .sending, !publishedPendingIDs.contains(latest.id) {
@@ -1887,7 +1894,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }
         let runtimeIsInFlight = model.session.runtime.state?.status.isTurnInFlight == true
         let hasWorkingStatus = SendFramePresentation.showsWorkingRow(
-            placeholderVisible: model.sendingPlaceholder != nil,
+            placeholderVisible: model.isAwaitingReply,
             pendingIDs: anchorPendingIDs,
             publishedPendingIDs: publishedPendingIDs,
             echoedPendingIDs: echoedPendingIDs,
@@ -2087,8 +2094,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // runtime already reports running — that is the send-time flash
             // (pp 2026-11-14). The new turn's own rows animate from their own
             // running steps.
-            let hasPendingSend = !model.session.pendingMessages.isEmpty
-                || !model.timeline.pendingMessages.isEmpty
+            // A steer rides the turn already running; treating it as the next
+            // turn's pending send settled the live step group into its
+            // summary the moment it was sent (pp 2026-11-17).
+            let hasPendingSend = model.session.pendingMessages.contains { !$0.isSteer }
+                || model.timeline.pendingMessages.contains { !$0.isSteer }
             let turnActive = turnStreaming && !hasPendingSend
             // A fresh idle — or the accepted stop's optimistic idle — proves
             // every still-`running` step snapshot is stale. Only the group of
@@ -2243,7 +2253,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // previous footer for one refresh, and start the send's bottom follow
         // 30 pt low (pp 2026-11-15).
         let submittingPendingID = model.timeline.pendingMessages.last {
-            TimelineTurnActions.opensTurn($0.delivery)
+            !$0.isSteer && TimelineTurnActions.opensTurn($0.delivery)
         }?.id
         let latestUserRowID = model.timeline.rows.last(where: {
             $0.value.startsVisibleTurn
@@ -2433,7 +2443,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     "removed": itemsValue.map(\.itemID)
                         .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
                     "items": String(identity.items.count),
-                    "working": model.sendingPlaceholder != nil ? "1" : "0",
+                    "working": model.isAwaitingReply ? "1" : "0",
                     "workingText": workingStatusShowsText ? "1" : "0",
                     "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
                     "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
@@ -2561,7 +2571,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 }(),
                 "running": model.isRunning ? "1" : "0",
                 "streaming": model.isTranscriptStreaming ? "1" : "0",
-                "placeholder": model.sendingPlaceholder != nil ? "1" : "0",
+                "placeholder": model.isAwaitingReply ? "1" : "0",
                 "statusLine": tailStatusLineVisible ? "1" : "0",
                 "fresh": model.session.runtime.isFresh ? "1" : "0",
                 "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
@@ -2860,7 +2870,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 isRunning: model.isRunning,
                 hasNewerItems: model.session.hasNewerItems,
                 hasPendingUserMessage: !model.session.hasNewerItems
-                    && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty)))
+                    && (model.timeline.pendingMessages.contains { !$0.isSteer }
+                        || model.session.pendingMessages.contains { !$0.isSteer })))
     }
 
     /// The chat profile's step-group signature: the drawn live line while it
@@ -2933,7 +2944,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             queue: model.session.sendQueue.items.map {
                 TimelineQueueEntrySignature(id: $0.id, state: String(describing: $0.state))
             },
-            sendingPlaceholder: model.sendingPlaceholder,
+            isAwaitingReply: model.isAwaitingReply,
             orbActivity: String(describing: model.orbActivity),
             hasNewerItems: model.session.hasNewerItems,
             statusLineVisible: tailStatusLineVisible)
@@ -2951,7 +2962,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // official predicate would see it as the last message of the trailing
         // assistant run and find no tool call. Without this the mark would
         // keep the previous turn's pose while the new turn is still waiting.
-        guard model.timeline.pendingMessages.isEmpty else { return .think }
+        // A steer does not open a new turn: it must keep the running tool's
+        // pose instead of forcing the neutral think mark (pp 2026-11-17).
+        guard !model.timeline.pendingMessages.contains(where: { !$0.isSteer })
+        else { return .think }
         var tail: [CodeWorkingMarkRow] = []
         for row in model.timeline.rows.reversed() {
             let item = row.value
@@ -3008,8 +3022,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // An optimistic user message is newer than every presented row: the
         // scan would otherwise read the previous turn's trailing reasoning as
         // the live block and show its closed label at the new turn's start.
-        // Same guard as `liveWorkingMarkBody`.
-        guard model.timeline.pendingMessages.isEmpty else { return nil }
+        // Same guard as `liveWorkingMarkBody`; a steer keeps the running
+        // turn's thinking block (pp 2026-11-17).
+        guard !model.timeline.pendingMessages.contains(where: { !$0.isSteer })
+        else { return nil }
         guard let item = liveThinkingItem() else {
             liveThinkingRowID = nil
             liveThinkingObservedStart = nil
@@ -3175,7 +3191,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 ids.insert(TimelineListItem.group(group.id).itemID)
             }
         }
-        if model.sendingPlaceholder != nil || !model.session.sendQueue.items.isEmpty {
+        if model.isAwaitingReply || !model.session.sendQueue.items.isEmpty {
             ids.insert(TimelineListItem.tail.itemID)
         }
         return ids
@@ -3341,7 +3357,6 @@ private struct TimelineCollectionTailRow: View {
     /// line: one turn gets one mark, never two (device report 2026-10-23).
     let showsStatusLine: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
 
     /// A queued message whose echo row is already on screen is the same
     /// message twice: the tail bubble plus the timeline row. Hiding the
@@ -3402,17 +3417,6 @@ private struct TimelineCollectionTailRow: View {
                     // the flipbook mark plus the rotating `.connecting` verb
                     // (CANONICAL/20-working-mark.md §1–§4).
                     CodeThinkingStatusLine()
-                } else if showsStatusLine, let text = model.sendingPlaceholder {
-                    HStack(spacing: CodePageTheme.toolRowSpacing) {
-                        WorkingMarkView(body: .think, isRunning: true)
-                        Text(verbatim: text)
-                            .font(.system(size: CodePageTheme.runningStatusFontSize))
-                            .foregroundStyle(CodePageTheme.runningStatusColor
-                                .resolved(for: colorScheme))
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minHeight: CodePageTheme.workingMarkSize, alignment: .leading)
                 } else { Color.clear }
             }
             .frame(height: showsStatusLine ? 32 : Self.idleHeight)

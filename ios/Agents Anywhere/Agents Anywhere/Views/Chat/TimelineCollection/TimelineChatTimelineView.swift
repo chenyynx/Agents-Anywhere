@@ -141,7 +141,7 @@ struct TimelineChatTimelineView: View {
         // the tail's status line, and the history prompts depend on the
         // session's page flags.
         let _ = model.isRunning
-        let _ = model.sendingPlaceholder
+        let _ = model.isAwaitingReply
         let _ = model.orbActivity
         let phase = self.turnPhase
         let _ = model.session.hasNewerItems

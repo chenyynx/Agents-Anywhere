@@ -99,7 +99,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         if item == .tail {
             return .tail(TimelineTailContentSignature(
                 queue: [],
-                sendingPlaceholder: entry.statusLine ? "Thinking" : nil,
+                isAwaitingReply: entry.statusLine,
                 orbActivity: entry.statusLine ? "thinking" : "idle",
                 hasNewerItems: false,
                 statusLineVisible: entry.statusLine))

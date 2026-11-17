@@ -327,29 +327,35 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
 
         let tail = TimelineContentSignature.tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            isAwaitingReply: true, orbActivity: "thinking", hasNewerItems: false,
             statusLineVisible: true))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "sending")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            isAwaitingReply: true, orbActivity: "thinking", hasNewerItems: false,
+            statusLineVisible: true)))
+        // The awaiting flag and the suppressed status line are separate
+        // reasons to re-key the tail; neither may hide behind the other.
+        #expect(tail != .tail(TimelineTailContentSignature(
+            queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
+            isAwaitingReply: false, orbActivity: "thinking", hasNewerItems: false,
             statusLineVisible: true)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: nil, orbActivity: "thinking", hasNewerItems: false,
+            isAwaitingReply: false, orbActivity: "thinking", hasNewerItems: false,
             statusLineVisible: false)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "idle", hasNewerItems: false,
+            isAwaitingReply: true, orbActivity: "idle", hasNewerItems: false,
             statusLineVisible: true)))
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: true,
+            isAwaitingReply: true, orbActivity: "thinking", hasNewerItems: true,
             statusLineVisible: true)))
         // The tail's own status line is suppressed while an in-message
         // working status is visible; the two heights must not share a key.
         #expect(tail != .tail(TimelineTailContentSignature(
             queue: [TimelineQueueEntrySignature(id: "q", state: "queued")],
-            sendingPlaceholder: "Thinking", orbActivity: "thinking", hasNewerItems: false,
+            isAwaitingReply: true, orbActivity: "thinking", hasNewerItems: false,
             statusLineVisible: false)))
     }
 
@@ -358,7 +364,7 @@ private func layout(first: String = "old", anchor: String = "old", y: CGFloat = 
         store.update([
             TimelineContentEntry(item: .group("g"), signature: .group(groupSignature())),
             TimelineContentEntry(item: .tail, signature: .tail(TimelineTailContentSignature(
-                queue: [], sendingPlaceholder: nil, orbActivity: "idle", hasNewerItems: false,
+                queue: [], isAwaitingReply: false, orbActivity: "idle", hasNewerItems: false,
                 statusLineVisible: false))),
         ])
         let change = store.update([

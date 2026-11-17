@@ -112,7 +112,9 @@ nonisolated struct TimelineQueueEntrySignature: Equatable {
 
 nonisolated struct TimelineTailContentSignature: Equatable {
     let queue: [TimelineQueueEntrySignature]
-    let sendingPlaceholder: String?
+    /// A send is staged/submitted or the runtime is between turns; the
+    /// transcript's working row is the surface that shows it.
+    let isAwaitingReply: Bool
     let orbActivity: String
     let hasNewerItems: Bool
     /// The Code page's working status lives inside the last message while a
@@ -126,7 +128,7 @@ nonisolated struct TimelineTailContentSignature: Equatable {
             hasher.combine(entry.id)
             hasher.combine(entry.state)
         }
-        hasher.combine(optional: sendingPlaceholder)
+        hasher.combine(isAwaitingReply)
         hasher.combine(orbActivity)
         hasher.combine(hasNewerItems)
         hasher.combine(statusLineVisible)

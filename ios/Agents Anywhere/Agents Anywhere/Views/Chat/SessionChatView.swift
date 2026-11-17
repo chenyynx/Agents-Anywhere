@@ -205,11 +205,10 @@ struct SessionChatView: View, Equatable {
     /// (the chain has timed it out more than once).
     private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
-            // B (pp 2026-10-06): the SubAgent capsule is the dock's
-            // first row — it takes its own space above the composer
-            // instead of floating over the timeline's last row.
-            SubAgentCapsuleSlot(model: model, onOpen: { sheet = .subagents($0, fromCapsule: true) })
-                .traceChatLayout("subagent-capsule")
+            // The SubAgent entry is no longer a dock row: it moved to the
+            // navigation bar as its own circular item (pp 2026-11-18,
+            // `SubAgentToolbarButton`), so the composer keeps every point of
+            // vertical space the dock used to give the capsule.
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")
@@ -543,6 +542,22 @@ struct SessionChatView: View, Equatable {
     /// ring/folder morph pushed the enclosing builder closure past it in CI.
     @ToolbarContentBuilder
     private var trailingToolbar: some ToolbarContent {
+        // The SubAgent entry is its own `ToolbarItem` on purpose: iOS 26 gives
+        // a standalone bar item its own glass circle (the sidebar button's
+        // treatment on the leading side), while anything inside the
+        // `ToolbarItemGroup` below shares one glass pill with the ring and the
+        // overflow menu. Visibility reads the projection's active-card
+        // sidecar only — the one signal that changes when a card is
+        // dispatched or settles — so a streamed token never rebuilds the
+        // page's toolbar; the button's own leaf still reads the window for
+        // its failure tint.
+        if !model.session.activeAgentCards.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                SubAgentToolbarSlot(model: model) { id in
+                    sheet = .subagents(id, fromCapsule: true)
+                }
+            }
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             // The folder is the placeholder occupant of the ring's slot:
             // before any context reading exists it opens the file manager;

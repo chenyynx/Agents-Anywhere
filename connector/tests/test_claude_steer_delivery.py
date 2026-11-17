@@ -193,6 +193,8 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert host.session_turn_ends[0]["turn_id"] == turn_id
     assert host.session_state_updates[-1]["status"] == "idle"
     assert session.execution is None
+    # The same-turn echo consumed the late-echo registration.
+    assert session.recent_steer_ids == []
 
 
 def test_claude_steer_without_active_turn_is_refused() -> None:
@@ -366,6 +368,63 @@ async def _test_claude_steer_echo_does_not_rebind_the_prompt_when_text_matches()
         for warning in warnings
         if "prompt uuid was not adopted" in warning
     ]
+
+
+class _FailSteerPublishHost(_RecordingHost):
+    """Refuses the steer row's upsert (server/DB unavailable at that moment)."""
+
+    async def timeline_item_upsert(self, item) -> None:
+        if item.source.get("event") == "claude.turn.steer":
+            raise RuntimeError("publish failed")
+        await super().timeline_item_upsert(item)
+
+
+def test_claude_steer_row_publish_failure_does_not_send() -> None:
+    asyncio.run(_test_claude_steer_row_publish_failure_does_not_send())
+
+
+async def _test_claude_steer_row_publish_failure_does_not_send() -> None:
+    host = _FailSteerPublishHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_publish_fail", "claude_session_0", "hello",
+        client_message_id="client_msg_pf",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_publish_fail"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    refused = await runtime.steer_turn(
+        "sess_publish_fail", "claude_session_0", "not recorded",
+        client_message_id="client_steer_pf",
+    )
+    assert refused.ok is False
+    assert refused.code == "claude_steer_row_publish_failed"
+    # The message must not reach Claude when its row could not be recorded.
+    assert client.queries == ["hello"]
+    assert not [
+        item for item in host.timeline_item_upserts
+        if item.source.get("event") == "claude.turn.steer"
+    ]
+
+    client.steer_received.set()
+    await asyncio.wait_for(task, 10)
+
+
+def test_recent_steer_ids_stay_bounded_and_are_consumed() -> None:
+    from connector.runtimes.claude.domain.session import ClaudeSession
+
+    session = ClaudeSession(session_id="sess_recent")
+    for index in range(40):
+        session.remember_steer(f"steer_{index}")
+    assert len(session.recent_steer_ids) == 32
+    assert session.recent_steer_ids[-1] == "steer_39"
+    assert session.take_recent_steer("steer_39") is True
+    assert session.take_recent_steer("steer_missing") is False
 
 
 def test_claude_steer_rejects_attachments() -> None:

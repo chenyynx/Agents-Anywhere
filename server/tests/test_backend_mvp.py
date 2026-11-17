@@ -1575,6 +1575,11 @@ class FakeLocalRpc:
             if runtime_state is not None:
                 runtime_status = runtime_state.get("status") or "idle"
             session_is_running = runtime_status == "running"
+            # A permission prompt or a question is still a live turn: the
+            # connector advertises `session.steer` in these states too.
+            session_is_steerable = runtime_status in {
+                "running", "waiting", "waiting_approval",
+            }
             return {
                 "capabilitySet": {
                     "revision": 11,
@@ -1632,11 +1637,11 @@ class FakeLocalRpc:
                             "runtime": params["runtime"],
                             "sessionId": session_id,
                             "supported": True,
-                            "available": session_is_running,
+                            "available": session_is_steerable,
                             "allowed": True,
                             "unavailableReason": (
                                 None
-                                if session_is_running
+                                if session_is_steerable
                                 else "session_not_running"
                             ),
                             "parameters": {},

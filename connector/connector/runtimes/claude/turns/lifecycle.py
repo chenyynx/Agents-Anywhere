@@ -3329,6 +3329,7 @@ class ClaudeTurnRunner:
                         # was submitted. Confirm it here and keep it out of
                         # the prompt-echo bookkeeping below, which would
                         # mistake it for a replay of the turn prompt.
+                        session.take_recent_steer(native_message_id)
                         logger.info(
                             "Claude steer echo confirmed session_id={} "
                             "turn_id={} steer_uuid={}",
@@ -3341,6 +3342,18 @@ class ClaudeTurnRunner:
                         # would be judged empty and settle as an unowned
                         # "interrupted" after the 30 s grace window.
                         turn_started = True
+                        continue
+                    if session.take_recent_steer(native_message_id):
+                        # A steer echo that arrived after its turn released.
+                        # It must not be mistaken for this turn's prompt
+                        # replay (the uuid belongs to the previous turn).
+                        logger.info(
+                            "Claude late steer echo ignored session_id={} "
+                            "turn_id={} steer_uuid={}",
+                            session.session_id,
+                            turn_id,
+                            native_message_id,
+                        )
                         continue
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:

@@ -92,6 +92,23 @@ class ClaudeSession:
     # flag. The in-process set lets that sync stamp them anyway (the marker
     # covers every later process).
     interrupted_turn_ids: set[str] = field(default_factory=set)
+    #: Steer uuids this session sent that may still come back as a user echo
+    #: AFTER their turn released (an abnormal but possible ordering). Kept
+    #: bounded; `drive_turn` consumes an id when it recognises the echo so a
+    #: late frame cannot be mistaken for the next turn's prompt replay.
+    recent_steer_ids: list[str] = field(default_factory=list)
+
+    def remember_steer(self, steer_id: str) -> None:
+        self.recent_steer_ids.append(steer_id)
+        if len(self.recent_steer_ids) > 32:
+            del self.recent_steer_ids[:-32]
+
+    def take_recent_steer(self, item_id: str) -> bool:
+        try:
+            self.recent_steer_ids.remove(item_id)
+        except ValueError:
+            return False
+        return True
 
     @property
     def active_turn_id(self) -> str | None:

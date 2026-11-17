@@ -181,7 +181,7 @@ struct NewSessionView: View, Equatable {
     private var deviceMenu: some View {
         // Menu rows use SF Symbols like the rest of the system menu.
         Menu {
-            Button(String(localized: "选择设备和 Agent"), systemImage: "sparkles") { chooseTarget() }
+            Button(String(localized: "选择设备和 Agent"), systemImage: "cpu") { chooseTarget() }
             Button(String(localized: "选择工作目录"), systemImage: "folder") { showsWorkspace = true }
                 .disabled(model.connector == nil)
             if let device = model.connector {

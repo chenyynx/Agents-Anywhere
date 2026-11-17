@@ -1773,9 +1773,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// summary must never carry the mark.
         var chatLastUserOrder = Int.min
         var chatLiveTurnHasSteps = false
-        /// The strict last unit is a steering user message. The live step
-        /// group above it keeps its running pose, but the turn's working mark
-        /// belongs at the tail, below the steer bubble (pp 2026-11-17).
+        /// The strict last unit is a steering user message. The turn's working
+        /// mark belongs at the tail, below the solid steer bubble: the group
+        /// above it settles (`TimelineChatLiveTail`), and this flag suppresses
+        /// the "a live turn with steps already has its mark" gate so the
+        /// standalone `正在处理中` row takes the mark (pp 2026-11-17).
         var lastUnitIsSteeringRow = false
         if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
@@ -2092,30 +2094,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #endif
             // The dots stay on the trailing group for the whole live turn
             // (pp's device observation) — but only while that group is the
-            // turn's last unit: once body text or anything else follows it,
-            // the dots leave and the row settles into its summary. Steering
-            // rows are user messages INSIDE the turn: they do not mean the
-            // model moved on, so they must not settle the group while the
-            // next step is still coming (pp 2026-11-17: the working mark
-            // dropped for a beat after the steer echo).
-            let lastUnitIsStepGroup: Bool = {
-                for unit in chatUnits.reversed() {
-                    switch unit {
-                    case .stepGroup:
-                        return true
-                    case let .message(_, rowIDs):
-                        let rows = rowIDs.compactMap { rowsByID[$0] }
-                        let isSteering = !rows.isEmpty && rows.allSatisfy {
-                            $0.value.role == .user && !$0.value.startsVisibleTurn
-                        }
-                        if isSteering { continue }
-                        return false
-                    case .standalone:
-                        return false
-                    }
-                }
-                return false
-            }()
+            // turn's strict last unit. A steering row takes the mark away:
+            // the SDK reads a steer at a tool boundary, so the group above it
+            // is done, and the standalone 「正在处理中」 row draws the mark
+            // under the solid steer bubble instead (pp 2026-11-17: keeping
+            // the group live across the steer row drew two working rows,
+            // device 23:50:39).
+            let lastUnitIsStepGroup = TimelineChatLiveTail.stepGroupOwnsMark(chatUnits)
             // The live tail exists only while the turn really streams. The
             // optimistic send window is deliberately excluded: it used to
             // keep the dots on the previous turn's group, which is what made

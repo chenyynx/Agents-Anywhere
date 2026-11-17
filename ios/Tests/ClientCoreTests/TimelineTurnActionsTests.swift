@@ -308,6 +308,49 @@ import Testing
         let after = TimelineTurnActions.build(groups: echoed, suppressLatest: true)
         #expect(after["reply"]?.copyText == pending["reply"]?.copyText)
     }
+
+    /// pp 2026-11-18: a just-sent bubble has no row until its echo arrives,
+    /// so the trailing bucket is still history. `waiting` is the new turn's
+    /// first breath and the live id must resolve to nothing; parking it on
+    /// the previous bubble is what merged the following turns and dropped
+    /// their footers for 2.6 s (`timeline.turn.footer` hosts 30 → 29 → 30).
+    @Test func theLiveGroupIsUnavailableUntilTheNewTurnHasItsOwnRows() {
+        #expect(TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: false, runtimeStatus: .idle))
+        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: true, runtimeStatus: .waiting))
+        // A queued send riding the previous turn keeps that turn's group.
+        #expect(TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: true, runtimeStatus: .running))
+        #expect(TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: true, runtimeStatus: .pending))
+        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: true, runtimeStatus: .idle))
+        #expect(!TimelineTurnActions.liveTurnGroupAvailable(
+            hasUnEchoedPending: true, runtimeStatus: nil))
+    }
+
+    /// The shape behind the 2026-11-18 flicker: the user's bubble, then two
+    /// bubble-less turns (background-task wake-ups). With the live id parked
+    /// on the old bubble, turn-id splitting is off and the earlier turn's
+    /// footer disappears; the fixed wiring passes no live id while the send
+    /// awaits its echo, and both footers survive.
+    @Test func aStaleLiveGroupMergesTheFollowingTurnsAndDropsTheirFooters() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("first", text: "First answer", turnId: "turn-2"),
+                        row("second", text: "Second answer", turnId: "turn-3")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let stale = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            liveTurnGroupID: "user")
+        #expect(stale["second"] != nil)
+        #expect(stale["first"] == nil)
+        let fixed = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            liveTurnGroupID: nil)
+        #expect(fixed["first"] != nil)
+        #expect(fixed["second"] != nil)
+    }
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.

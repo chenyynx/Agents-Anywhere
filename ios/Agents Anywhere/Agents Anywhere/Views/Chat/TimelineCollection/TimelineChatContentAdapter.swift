@@ -279,6 +279,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// groups that carry copy/share, so a report like pp's 2026-11-16 「压缩
     /// 之后复制/分享出现又消失」 is read directly instead of reconstructed.
     private var lastTurnFooterProbe: String?
+    /// Last gate snapshot written by `recordFooterGateProbe`; the probe only
+    /// logs a change.
+    private var lastFooterGateProbe: String?
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -290,6 +293,32 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             kind: "timeline.turn.footer",
             sessionID: model.session.id,
             detail: ["hosts": probe, "count": String(hosts.count)],
+            dedupe: false)
+    }
+
+    /// Low-frequency footer-gate snapshot (pp 2026-11-18).
+    ///
+    /// A footer can leave the map while its rows stay put — the 2026-11-18
+    /// send-window drop was decided entirely by the gate's inputs, and the
+    /// exported log carried none of them. Only a change is written, so a
+    /// normal session adds a handful of lines.
+    private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
+                                       pendingHasEcho: Bool, liveTurnGroupID: String?) {
+        let status = model.session.runtime.state?.status?.rawValue ?? "nil"
+        let probe = [
+            "suppress=\(suppressLatest ? 1 : 0)",
+            "pending=\(pendingID == nil ? 0 : 1)",
+            "echo=\(pendingHasEcho ? 1 : 0)",
+            "running=\(model.isRunning ? 1 : 0)",
+            "status=\(status)",
+            "liveGroup=\(liveTurnGroupID == nil ? "nil" : "set")",
+        ].joined(separator: " ")
+        guard probe != lastFooterGateProbe else { return }
+        lastFooterGateProbe = probe
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.footer.gate",
+            sessionID: model.session.id,
+            detail: ["state": probe],
             dedupe: false)
     }
 
@@ -2314,19 +2343,29 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // whole build re-merged each finished turn with the scheduled turn
         // that followed it, so every send and every turn end toggled six
         // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
+        let suppressLatest = (latestTurnOpen && model.isRunning)
+            || model.session.hasNewerItems
         let liveTurnGroupID: String? = {
             guard turnFooterGate.isLiveUserTurn else { return nil }
-            // An outgoing bubble without an echo row has no group yet; the
-            // trailing bucket is the previous turn, live only while the
-            // runtime still runs it. Once it ended, the window is history.
-            if submittingPendingID != nil, !submittingPendingHasEcho, !model.isRunning {
-                return nil
-            }
+            // An outgoing bubble without an echo row has no group yet. Parking
+            // the live id on an older bubble turns turn-id splitting off for
+            // every following turn, merges them into one bucket and drops the
+            // earlier footers until the echo lands (pp 2026-11-18: 2.6 s,
+            // hosts 30 → 29 → 30). `waiting` is the new turn's first breath —
+            // the previous turn is history — while `running` still means a
+            // queued send riding the previous turn (see the helper).
+            guard TimelineTurnActions.liveTurnGroupAvailable(
+                hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
+                runtimeStatus: model.session.runtime.state?.status) else { return nil }
             guard let latestUserRowID else { return nil }
             return groups.last { group in
                 group.rows.contains { $0.id == latestUserRowID }
             }?.id
         }()
+        recordFooterGateProbe(suppressLatest: suppressLatest,
+                              pendingID: submittingPendingID,
+                              pendingHasEcho: submittingPendingHasEcho,
+                              liveTurnGroupID: liveTurnGroupID)
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2336,8 +2375,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // reader sent the following message). A confirmed idle overrides
             // the open gate; a running tool step still suppresses, so the
             // footer cannot hop between reply segments.
-            suppressLatest: (latestTurnOpen && model.isRunning)
-                || model.session.hasNewerItems,
+            suppressLatest: suppressLatest,
             // Only an outgoing bubble that has not been echoed starts a new
             // turn for the previous footer. A confirmed record held by the
             // presentation until its echo row publishes is not a new turn.

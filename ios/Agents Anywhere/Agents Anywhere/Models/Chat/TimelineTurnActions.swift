@@ -277,6 +277,32 @@ enum TimelineTurnActions {
         return actions
     }
 
+    /// Whether the live user turn already owns a group in the timeline.
+    ///
+    /// `liveTurnGroupID` keeps the live turn's bucket from splitting on the
+    /// wire's turn ids mid-turn. A just-sent bubble has no row until its echo
+    /// arrives, so parking that id on an older user bubble turns turn-id
+    /// splitting off for every turn after it: they merge into one bucket and
+    /// the earlier ones lose their footers until the echo lands (pp
+    /// 2026-11-18: the previous copy/share bar vanished for 2.6 s between the
+    /// send and the new turn's first row; `timeline.turn.footer` hosts
+    /// 30 → 29 → 30, the missing host two positions before the last).
+    ///
+    /// - `.waiting` is the new turn's first breath — the previous turn has
+    ///   ended, so no live group exists yet.
+    /// - While the runtime is still `running` the previous turn, a queued
+    ///   send keeps that turn live and its group is the one to protect
+    ///   (pp 2026-11-14: a turn-id flap must not split it mid-turn).
+    static func liveTurnGroupAvailable(hasUnEchoedPending: Bool,
+                                       runtimeStatus: V2RuntimeStatus?) -> Bool {
+        guard hasUnEchoedPending else { return true }
+        guard let runtimeStatus else { return false }
+        switch runtimeStatus {
+        case .pending, .running: return true
+        default: return false
+        }
+    }
+
     /// Keep the footers a finished turn already had while the footer gate
     /// stood closed.
     ///

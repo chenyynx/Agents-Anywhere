@@ -3320,6 +3320,23 @@ class ClaudeTurnRunner:
                     and native_message_id
                     and not suppressed_control
                 ):
+                    steer_text = (
+                        getattr(client, "steer_messages", None) or {}
+                    ).pop(native_message_id, None)
+                    if steer_text is not None:
+                        # A steering message's echo belongs to THIS turn and
+                        # its user row was already published when the message
+                        # was submitted. Confirm it here and keep it out of
+                        # the prompt-echo bookkeeping below, which would
+                        # mistake it for a replay of the turn prompt.
+                        logger.info(
+                            "Claude steer echo confirmed session_id={} "
+                            "turn_id={} steer_uuid={}",
+                            session.session_id,
+                            turn_id,
+                            native_message_id,
+                        )
+                        continue
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:
                         if (

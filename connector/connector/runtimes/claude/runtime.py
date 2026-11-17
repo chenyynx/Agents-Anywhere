@@ -507,6 +507,24 @@ class ClaudeRuntime(AgentRuntime):
             cwd=cwd,
         )
 
+    async def steer_turn(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        content: str,
+        attachments: tuple[RuntimeAttachment, ...] = (),
+        client_message_id: str | None = None,
+    ) -> RuntimeOperationResult:
+        """Spike path: deliver a message into the session's running turn."""
+
+        return await self._turns.steer_turn(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            content=content,
+            attachments=attachments,
+            client_message_id=client_message_id,
+        )
+
     async def _ensure_first_history_sync(
         self,
         session_id: str,

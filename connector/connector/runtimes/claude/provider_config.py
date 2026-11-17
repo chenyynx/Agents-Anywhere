@@ -91,7 +91,11 @@ def claude_capabilities() -> dict[str, bool]:
         "sessionNotices": True,
         "createAndStartSession": True,
         "startTurn": True,
-        "steerTurn": False,
+        # Claude Code's SDK delivers `priority: "next"` messages inside the
+        # running turn (verified on the bundled CLI 2.1.319, 2026-11-17), so
+        # a running session can accept steering. Clients fall back to the
+        # queue when this capability is absent.
+        "steerTurn": True,
         "interruptTurn": True,
         "commands": True,
         "interactions": True,

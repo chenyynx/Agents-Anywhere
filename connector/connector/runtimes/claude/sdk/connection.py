@@ -171,6 +171,11 @@ class ClaudeResponse:
     # what follows counts. Human/pending turns never stamp it; they are not
     # armed and count every frame as before.
     cast_frame: Any = None
+    # Steering messages this response has sent but not yet seen echoed:
+    # steer uuid -> text. `drive_turn` consumes the entry when the SDK
+    # replays the user message, so a steer echo is never mistaken for the
+    # turn prompt's own replay (spike 2026-11-17).
+    steer_messages: dict[str, str] = field(default_factory=dict)
 
     async def connect(self) -> None:
         await self.connection.connect()
@@ -192,6 +197,33 @@ class ClaudeResponse:
 
             await self.connection.client.query(prompt())
         self.connection.queried.set()
+
+    async def steer(self, content: str, steer_uuid: str | None = None) -> str:
+        """Send one message into the turn this response is running.
+
+        `priority: "next"` is the SDK's steering knob: the CLI holds the
+        message until the running tool calls finish, then hands it to Claude
+        inside the SAME turn (verified on bundled CLI 2.1.319, 2026-11-17).
+        It must not touch `prompt_uuid`/`user_id` — those belong to the turn
+        prompt; the echo is recognised by its own uuid instead. The caller may
+        pre-assign that uuid so the user row can be published before the
+        message leaves.
+        """
+
+        steer_uuid = steer_uuid or str(uuid4())
+        self.steer_messages[steer_uuid] = content
+
+        async def prompt():
+            yield {
+                "type": "user",
+                "uuid": steer_uuid,
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+                "priority": "next",
+            }
+
+        await self.connection.client.query(prompt())
+        return steer_uuid
 
     def decline_terminal(self) -> None:
         """Rule the terminal just read out of this turn, and keep reading.
@@ -367,6 +399,10 @@ class ClaudeResponse:
         if interrupted:
             while not self.messages.empty():
                 self.messages.get_nowait()
+        # A steer whose echo never arrived must not outlive its turn: the next
+        # response would otherwise inherit the uuid and could swallow a later
+        # frame as its own.
+        self.steer_messages.clear()
         self.discard = interrupted and not self.terminal_received
         self.released.set()
         self._settle_verdict(True)

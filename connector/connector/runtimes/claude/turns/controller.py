@@ -158,6 +158,22 @@ class ClaudeTurnController:
             cwd=cwd,
         )
 
+    async def steer_turn(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        content: str,
+        attachments: tuple[RuntimeAttachment, ...] = (),
+        client_message_id: str | None = None,
+    ) -> RuntimeOperationResult:
+        return await self.actions.steer_turn(
+            session_id=session_id,
+            external_session_id=external_session_id,
+            content=content,
+            attachments=attachments,
+            client_message_id=client_message_id,
+        )
+
     async def interrupt_session(
         self,
         session_id: str,

@@ -161,6 +161,92 @@ class ClaudeTurnActionHandler:
             },
         )
 
+    async def steer_turn(
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        content: str,
+        attachments: tuple[RuntimeAttachment, ...] = (),
+        client_message_id: str | None = None,
+    ) -> RuntimeOperationResult:
+        """Deliver one message into the running turn (text only, v1).
+
+        No new execution and no new turn id: the running `drive_turn` owns the
+        response, and the SDK hands the message to Claude at the next tool
+        boundary inside that same turn. The user row is published here, under
+        the running turn, with the steer uuid as its native id so the echo can
+        confirm it; `drive_turn` never republishes it.
+        """
+
+        if attachments:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_attachments_unsupported",
+                message="Claude steering does not accept attachments",
+            )
+        session = self.session_store.get(session_id)
+        if session is None:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_no_active_turn",
+                message="Claude session has no active turn to steer",
+            )
+        async with session.execution_lock:
+            execution = session.execution
+            client = execution.client if execution is not None else None
+            turn_id = execution.turn_id if execution is not None else None
+        if execution is None or client is None or turn_id is None:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_no_active_turn",
+                message="Claude session has no active turn to steer",
+            )
+        steer_uuid = str(uuid4())
+        try:
+            await client.steer(content, steer_uuid)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude steer failed session_id={} turn_id={}",
+                session_id,
+                turn_id,
+            )
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_failed",
+                message="Claude rejected the steering message",
+            )
+        item = self.runner.timeline.message_item(
+            session=session,
+            turn_id=turn_id,
+            role="user",
+            text=content,
+            event="claude.turn.steer",
+            client_message_id=client_message_id,
+            native_item_id=steer_uuid,
+            native_item_type="steeringUserMessage",
+        )
+        try:
+            await self.runner.notifications.timeline_activity.timeline_item_upsert(
+                item
+            )
+        except Exception:  # noqa: BLE001
+            # The message is already with Claude; the row is the only loss.
+            # Keep the turn alive and let the echo confirm silently.
+            logger.exception(
+                "Claude steer row publish failed session_id={} turn_id={}",
+                session_id,
+                turn_id,
+            )
+        return RuntimeOperationResult(
+            ok=True,
+            result={
+                "steered": True,
+                "turnId": turn_id,
+                "steerUuid": steer_uuid,
+                "externalSessionId": session.external_session_id,
+            },
+        )
+
     async def interrupt_session(
         self,
         session_id: str,

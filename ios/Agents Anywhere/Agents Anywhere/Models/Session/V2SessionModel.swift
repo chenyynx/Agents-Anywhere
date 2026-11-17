@@ -764,11 +764,16 @@ final class V2SessionModel: Identifiable {
         catch { if isValid { failure = V2ClientFailure(error) } }
     }
 
-    /// Whether a running turn can take a steering message. Availability comes
-    /// from the runtime (`session.steer` is only available while a turn runs);
-    /// attachments are refused for v1.
+    /// Whether a running turn can take a steering message.
+    ///
+    /// The Server's steer gate accepts exactly `status == "running"`, so the
+    /// client must not offer steering during approval waits, stopping or an
+    /// optimistic idle — those fall back to the queue. Attachments are
+    /// refused for v1.
     var canSteerMessage: Bool {
-        isValid && runtime.allows("session.steer")
+        guard isValid, runtime.allows("session.steer") else { return false }
+        guard !runtime.stopRequested, !runtime.predictedIdle else { return false }
+        return runtime.state?.status == .running
     }
 
     /// How a draft leaves the composer while a turn runs.
@@ -796,7 +801,7 @@ final class V2SessionModel: Identifiable {
             // A running turn takes text only; the queue remains the path for
             // attachments, and an Agent without `session.steer` falls back to
             // the queue at the view layer.
-            guard runtime.allows("session.steer"), composer.attachments.isEmpty else {
+            guard canSteerMessage, composer.attachments.isEmpty else {
                 failure = V2ClientFailure(kind: .unavailable, message: String(localized: "当前 Agent 无法引导正在运行的任务。"))
                 return nil
             }

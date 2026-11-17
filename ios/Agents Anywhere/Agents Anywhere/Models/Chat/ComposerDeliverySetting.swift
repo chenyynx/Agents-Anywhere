@@ -32,4 +32,30 @@ enum ComposerDeliverySetting {
     static func resolve(_ raw: String) -> ComposerDelivery {
         ComposerDelivery(rawValue: raw) ?? defaultValue
     }
+
+    /// The mid-turn action one tap on the send key performs.
+    ///
+    /// One pure answer for both the send key's enablement and its action, so
+    /// "the key is tappable" and "the key does something" cannot disagree:
+    /// - `steer` uses the running turn when it can, otherwise the queue;
+    /// - `queue` never steers, and is unavailable when the queue is.
+    static func midTurnAction(
+        _ setting: ComposerDelivery,
+        canSteer: Bool,
+        canQueue: Bool
+    ) -> MidTurnDeliveryAction {
+        switch setting {
+        case .steer:
+            if canSteer { return .steer }
+            return canQueue ? .queue : .unavailable
+        case .queue:
+            return canQueue ? .queue : .unavailable
+        }
+    }
+}
+
+enum MidTurnDeliveryAction: Equatable {
+    case steer
+    case queue
+    case unavailable
 }

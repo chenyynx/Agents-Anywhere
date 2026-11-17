@@ -43,6 +43,13 @@ struct ChatComposerDock: View {
     /// long-press menu.
     @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
         ComposerDeliverySetting.defaultValue.rawValue
+    private var delivery: ComposerDelivery {
+        ComposerDeliverySetting.resolve(deliveryRaw)
+    }
+    private var midTurnAction: MidTurnDeliveryAction {
+        ComposerDeliverySetting.midTurnAction(
+            delivery, canSteer: canSteerSend, canQueue: canQueueSend)
+    }
 
     @State private var showsOptions = false
     @State private var pendingPicker: AttachmentPicker?
@@ -67,9 +74,8 @@ struct ChatComposerDock: View {
         ComposerQueueAffordance.resolve(
             isStreaming: isStreaming,
             hasText: !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            // Mid-turn delivery is usable when either delivery path is open:
-            // steering the running turn, or committing to the queue.
-            canQueue: canQueueSend || canSteerSend,
+            // Enabled exactly when the tap has an action (see `midTurnAction`).
+            canQueue: midTurnAction != .unavailable,
             canStop: canStop,
             canSend: canSend && draft.canAttemptSend)
     }
@@ -175,10 +181,11 @@ struct ChatComposerDock: View {
             defer { isSending = false }
             guard let text = await editor.committedTextForSend(dismissKeyboard: dismissKeyboard) else { return }
             if isStreaming {
-                if ComposerDeliverySetting.resolve(deliveryRaw) == .steer, canSteerSend {
-                    await onSteerSend()
-                } else {
-                    await onQueueSend()
+                switch ComposerDeliverySetting.midTurnAction(
+                    delivery, canSteer: canSteerSend, canQueue: canQueueSend) {
+                case .steer: await onSteerSend()
+                case .queue: await onQueueSend()
+                case .unavailable: break
                 }
             } else {
                 await onSend(text)

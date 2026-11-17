@@ -659,6 +659,17 @@ final class SessionChatModel {
         }
         let text = session.composer.text
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Steering is text-only. A long typed message that the normal paths
+        // would turn into an attachment must not ride the turn as one giant
+        // bubble (the 2026-10-31 height incident); fall back to the queue,
+        // which performs the conversion.
+        if LongMessageAttachmentPolicy.makeAttachment(
+            from: text,
+            existingAttachmentCount: session.composer.attachments.count,
+            canAttach: canAttach) != nil {
+            await enqueueComposer()
+            return
+        }
         session.draft = text
         _ = await session.sendDraft(delivery: .steer)
         surfaceBlockedSendIfNeeded()

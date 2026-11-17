@@ -21,6 +21,10 @@ from types import SimpleNamespace
 
 from claude_agent_sdk import AssistantMessage, UserMessage
 
+from connector.runtimes.claude.domain.capabilities import (
+    ClaudeCapabilityContext,
+    claude_session_capabilities,
+)
 from test_claude_runtime import _RecordingHost, _runtime
 
 STEER = "STEER: say BANANA-42"
@@ -122,6 +126,8 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert task is not None
 
     await asyncio.wait_for(client.tool_running.wait(), 5)
+    execution = session.execution
+    assert execution is not None
 
     steered = await runtime.steer_turn(
         "sess_steer",
@@ -132,6 +138,9 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert steered.ok is True
     assert steered.result["steered"] is True
     assert steered.result["turnId"] == started.result["turnId"]
+    # Publishing through `publish_items` counts the row: a deferred scheduled
+    # turn can no longer rebind its turn id after this. (Split regression.)
+    assert execution.published_items >= 1
 
     await asyncio.wait_for(task, 10)
 
@@ -192,3 +201,119 @@ async def _test_claude_steer_without_active_turn_is_refused() -> None:
     assert result.ok is False
     assert result.code == "claude_no_active_turn"
     assert client.queries == []
+
+
+def test_claude_session_capabilities_gate_steer_on_running() -> None:
+    def steer(status: str, active: bool):
+        caps = claude_session_capabilities(
+            ClaudeCapabilityContext(
+                connector_id="conn_test",
+                revision=1,
+                session_id="sess_caps",
+                has_active_turn=active,
+                status=status,
+            )
+        )
+        return next(
+            item
+            for item in caps.capabilities
+            if item.capability_id == "session.steer"
+        )
+
+    running = steer("running", True)
+    assert running.supported is True
+    assert running.available is True
+    assert running.unavailable_reason is None
+
+    waiting = steer("waiting_approval", True)
+    assert waiting.supported is True
+    assert waiting.available is False
+    assert waiting.unavailable_reason == "turn_not_running"
+
+    idle = steer("idle", False)
+    assert idle.available is False
+    assert idle.unavailable_reason == "no_active_turn"
+
+
+def test_claude_steer_is_refused_once_the_response_settled() -> None:
+    asyncio.run(_test_claude_steer_is_refused_once_the_response_settled())
+
+
+async def _test_claude_steer_is_refused_once_the_response_settled() -> None:
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_settled", "claude_session_0", "hello",
+        client_message_id="client_msg_settled",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_settled"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    response = session.execution.client
+    # 1. A reconciler-owned response must not take a user message.
+    response.maintenance = True
+    refused = await runtime.steer_turn(
+        "sess_settled", "claude_session_0", "late steer",
+        client_message_id="client_steer_maint",
+    )
+    assert refused.ok is False
+    assert refused.code == "claude_no_active_turn"
+    response.maintenance = False
+
+    # 2. A response that already released its turn must refuse too. Checked on
+    # the pure guard so the scripted turn is not disturbed.
+    from connector.runtimes.claude.turns.actions import ClaudeTurnActionHandler
+
+    released = asyncio.Event()
+    released.set()
+    assert ClaudeTurnActionHandler._client_accepts_steer(
+        SimpleNamespace(released=released)
+    ) is False
+    assert ClaudeTurnActionHandler._client_accepts_steer(
+        SimpleNamespace(
+            released=asyncio.Event(),
+            maintenance=False,
+            terminal_received=False,
+            discard=False,
+        )
+    ) is True
+
+    # Let the scripted turn finish so the test leaves nothing running.
+    client.steer_received.set()
+    await asyncio.wait_for(task, 10)
+
+
+def test_claude_steer_rejects_attachments() -> None:
+    asyncio.run(_test_claude_steer_rejects_attachments())
+
+
+async def _test_claude_steer_rejects_attachments() -> None:
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_attachments", "claude_session_0", "hello",
+        client_message_id="client_msg_att",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_attachments"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    refused = await runtime.steer_turn(
+        "sess_attachments", "claude_session_0", "with a file",
+        attachments=(object(),),  # type: ignore[arg-type]
+        client_message_id="client_steer_att",
+    )
+    assert refused.ok is False
+    assert refused.code == "claude_steer_attachments_unsupported"
+
+    client.steer_received.set()
+    await asyncio.wait_for(task, 10)

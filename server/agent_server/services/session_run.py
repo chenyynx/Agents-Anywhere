@@ -765,6 +765,28 @@ class SessionRunService:
             raise SessionRunConflictError(str(exc)) from exc
         except ConnectorRpcError as exc:
             raise SessionRunUpstreamError(exc.message or exc.code) from exc
+        # The Connector's RPC envelope is transport-level ok; the runtime's
+        # own outcome rides inside `result`. Surfacing it here keeps a
+        # declined steer (turn ended, runtime refused) from looking like a
+        # successful send to every client.
+        if isinstance(result, dict) and result.get("ok") is False:
+            await self._persist_operation_source_state(session, result)
+            code = result.get("code")
+            message = result.get("message")
+            raise SessionRunConflictError(
+                {
+                    "code": (
+                        code
+                        if isinstance(code, str)
+                        else "runtime_operation_failed"
+                    ),
+                    "message": (
+                        message
+                        if isinstance(message, str)
+                        else "runtime operation failed"
+                    ),
+                }
+            )
         await self._usage.record(
             message_sent_event(
                 session,

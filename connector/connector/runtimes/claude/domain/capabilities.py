@@ -16,6 +16,7 @@ from connector.runtime_protocol import (
     CAPABILITY_SESSION_SUBAGENT_CONTROL,
     RuntimeCapability,
     RuntimeCapabilitySet,
+    RuntimeStatus,
     SessionState,
 )
 from connector.runtimes.claude import provider_config
@@ -28,6 +29,10 @@ class ClaudeCapabilityContext:
     session_id: str | None = None
     external_session_id: str | None = None
     has_active_turn: bool = False
+    #: The runtime state's status. Steering is only accepted while the turn is
+    #: actually running (the Server's steer gate requires exactly "running"),
+    #: so availability is keyed on this rather than on "has an execution".
+    status: RuntimeStatus | None = None
     #: The SDK this connector loaded offers ``stop_task`` (the per-task stop
     #: control). False on an SDK without the method.
     subagent_control_supported: bool = False
@@ -138,6 +143,36 @@ def claude_session_capabilities(
                 supported=True,
                 available=not active,
                 unavailable_reason="turn_active" if active else None,
+                metadata={"source": "claude.runtime"},
+            ),
+            RuntimeCapability(
+                capability_id=CAPABILITY_SESSION_STEER,
+                scope="session",
+                runtime="claude",
+                session_id=session_id,
+                connector_id=context.connector_id,
+                supported=capabilities.get("steerTurn") is True,
+                # The Server's steer write gate only accepts a runtime status
+                # of exactly "running"; advertising it during approval waits
+                # would just produce 409s.
+                available=(
+                    capabilities.get("steerTurn") is True
+                    and active
+                    and context.status == "running"
+                ),
+                unavailable_reason=(
+                    None
+                    if capabilities.get("steerTurn") is True
+                    and active
+                    and context.status == "running"
+                    else (
+                        "not_implemented"
+                        if capabilities.get("steerTurn") is not True
+                        else (
+                            "no_active_turn" if not active else "turn_not_running"
+                        )
+                    )
+                ),
                 metadata={"source": "claude.runtime"},
             ),
             RuntimeCapability(

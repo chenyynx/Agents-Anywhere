@@ -343,6 +343,7 @@ class ClaudeRuntime(AgentRuntime):
                     state,
                 ),
                 has_active_turn=claude_state_has_active_execution(state),
+                status=state.status if state is not None else None,
                 **self._subagent_control_context(session_id),
                 **self._context_usage_context(),
             )
@@ -366,6 +367,7 @@ class ClaudeRuntime(AgentRuntime):
                         state,
                     ),
                     has_active_turn=claude_state_has_active_execution(state),
+                    status=state.status,
                     **self._subagent_control_context(state.session_id),
                     **self._context_usage_context(),
                 )
@@ -515,7 +517,7 @@ class ClaudeRuntime(AgentRuntime):
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
     ) -> RuntimeOperationResult:
-        """Spike path: deliver a message into the session's running turn."""
+        """Deliver a message into the session's running turn."""
 
         return await self._turns.steer_turn(
             session_id=session_id,

@@ -195,7 +195,8 @@ class ClaudeTurnActionHandler:
             execution = session.execution
             client = execution.client if execution is not None else None
             turn_id = execution.turn_id if execution is not None else None
-        if execution is None or client is None or turn_id is None:
+            accepts = self._client_accepts_steer(client)
+        if execution is None or client is None or turn_id is None or not accepts:
             return RuntimeOperationResult(
                 ok=False,
                 code="claude_no_active_turn",
@@ -226,9 +227,10 @@ class ClaudeTurnActionHandler:
             native_item_type="steeringUserMessage",
         )
         try:
-            await self.runner.notifications.timeline_activity.timeline_item_upsert(
-                item
-            )
+            # `publish_items` (not a raw upsert): the counter is what stops a
+            # deferred scheduled turn from rebinding its turn id after this
+            # row existed — a rebind would split the steer from its reply.
+            await self.runner.publish_items(execution, (item,))
         except Exception:  # noqa: BLE001
             # The message is already with Claude; the row is the only loss.
             # Keep the turn alive and let the echo confirm silently.
@@ -246,6 +248,28 @@ class ClaudeTurnActionHandler:
                 "externalSessionId": session.external_session_id,
             },
         )
+
+    @staticmethod
+    def _client_accepts_steer(client: Any) -> bool:
+        """Whether this response still has a turn that can take a message.
+
+        A response that already settled (or one the reconciler owns) would
+        write the message into the CLI while the row is attributed to a turn
+        nobody is reading any more. The checks mirror `ClaudeResponse.steer`'s
+        own guard; this one turns the case into a clean refusal instead of an
+        exception.
+        """
+
+        if client is None:
+            return False
+        if getattr(client, "maintenance", False):
+            return False
+        if getattr(client, "terminal_received", False) or getattr(
+            client, "discard", False
+        ):
+            return False
+        released = getattr(client, "released", None)
+        return not (released is not None and released.is_set())
 
     async def interrupt_session(
         self,

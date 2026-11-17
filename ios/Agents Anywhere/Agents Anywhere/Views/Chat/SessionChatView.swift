@@ -337,7 +337,10 @@ struct SessionChatView: View, Equatable {
         if requiresTakeover { return String(localized: "请先接管") }
         if model.isComposerStreaming,
            session.composer.isFocused, !session.composer.hasContent {
-            return delivery == .steer
+            // The hint must match what this tap will actually do: steering
+            // needs the running status, and anything else falls back to the
+            // queue.
+            return delivery == .steer && model.canSteerSend
                 ? String(localized: "发送将引导当前任务")
                 : String(localized: "排队至本轮结束后")
         }

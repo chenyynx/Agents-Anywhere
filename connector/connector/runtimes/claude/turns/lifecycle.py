@@ -3336,6 +3336,11 @@ class ClaudeTurnRunner:
                             turn_id,
                             native_message_id,
                         )
+                        # The echo is the turn's own work too. Without this,
+                        # a turn whose only non-chrome frame is the steer echo
+                        # would be judged empty and settle as an unowned
+                        # "interrupted" after the 30 s grace window.
+                        turn_started = True
                         continue
                     replayed_user_message = (native_message_id, text)
                     if user_message_published:

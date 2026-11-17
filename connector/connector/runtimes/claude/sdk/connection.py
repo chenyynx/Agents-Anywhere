@@ -174,7 +174,8 @@ class ClaudeResponse:
     # Steering messages this response has sent but not yet seen echoed:
     # steer uuid -> text. `drive_turn` consumes the entry when the SDK
     # replays the user message, so a steer echo is never mistaken for the
-    # turn prompt's own replay (spike 2026-11-17).
+    # turn prompt's own replay (verified 2026-11-17: the SDK replays the
+    # steer with its own uuid, inside the same turn).
     steer_messages: dict[str, str] = field(default_factory=dict)
 
     async def connect(self) -> None:
@@ -210,6 +211,11 @@ class ClaudeResponse:
         message leaves.
         """
 
+        if self.maintenance or self.discard or self.terminal_received:
+            raise RuntimeError("Claude response no longer accepts a message")
+        if self.released.is_set():
+            raise RuntimeError("Claude response already settled")
+
         steer_uuid = steer_uuid or str(uuid4())
         self.steer_messages[steer_uuid] = content
 
@@ -222,7 +228,13 @@ class ClaudeResponse:
                 "priority": "next",
             }
 
-        await self.connection.client.query(prompt())
+        try:
+            await self.connection.client.query(prompt())
+        except BaseException:
+            # Nothing reached the transport: do not leave a phantom echo
+            # registration behind.
+            self.steer_messages.pop(steer_uuid, None)
+            raise
         return steer_uuid
 
     def decline_terminal(self) -> None:

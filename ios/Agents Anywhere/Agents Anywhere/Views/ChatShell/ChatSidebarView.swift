@@ -226,10 +226,11 @@ struct ChatSidebarHeaderView: View {
                     .scaledToFit()
                     .frame(width: 19, height: 19)
                     .foregroundStyle(AppTheme.text300(colorScheme))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.large)
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
             .accessibilityLabel(Text(String(localized: "搜索")))
         }
         .padding(.horizontal, 16)
@@ -613,9 +614,11 @@ private struct ChatSidebarBottomControls: View {
                 isShowingSettings = true
             } label: {
                 ChatSidebarAvatar(account: account)
+                    .frame(width: 49, height: 49)
+                    .contentShape(Circle())
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
             .accessibilityLabel(String(localized: "Account"))
 
             Spacer(minLength: 12)
@@ -659,14 +662,14 @@ private struct ChatSidebarAvatar: View {
             Text(verbatim: initials)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
-                .frame(width: 41, height: 41)
+                .frame(width: 49, height: 49)
                 .clipShape(Circle())
                 .accessibilityLabel(Text(account.displayName))
         } else {
             AccountAvatarView(
                 displayName: account.displayName,
                 source: account.avatarSource,
-                size: 41
+                size: 49
             )
         }
     }

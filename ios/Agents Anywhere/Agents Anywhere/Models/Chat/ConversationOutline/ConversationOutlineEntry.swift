@@ -34,6 +34,12 @@ nonisolated struct ConversationOutlineEntry: Identifiable, Equatable {
 /// top-level user/assistant message rows enter the outline: subagent rows are
 /// excluded, and tool / reasoning / system / compact rows never appear.
 nonisolated enum ConversationOutlineEntryBuilder {
+    private struct Group {
+        var turnID: String?
+        var role: V2MessageRole
+        var items: [V2TimelineItem]
+    }
+
     static func entries(from items: [V2TimelineItem]) -> [ConversationOutlineEntry] {
         let ordered = items
             .filter(isMainConversationMessage)
@@ -41,11 +47,6 @@ nonisolated enum ConversationOutlineEntryBuilder {
                 lhs.orderSeq == rhs.orderSeq ? lhs.id < rhs.id : lhs.orderSeq < rhs.orderSeq
             }
 
-        struct Group {
-            var turnID: String?
-            var role: V2MessageRole
-            var items: [V2TimelineItem]
-        }
         var groups: [Group] = []
         for item in ordered {
             var merged = false
@@ -81,14 +82,14 @@ nonisolated enum ConversationOutlineEntryBuilder {
                 isActive: item.status.isActive
             )
         }
-        let joined = parts.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
+        let joined = parts.map { $0.text }.filter { !$0.isEmpty }.joined(separator: "\n")
         return ConversationOutlineEntry(
             id: first.id,
             sender: group.role,
             text: joined,
             parts: parts,
-            isArriving: parts.contains(where: \.isActive),
-            sentAt: parts.compactMap(\.createdAt).first,
+            isArriving: parts.contains { $0.isActive },
+            sentAt: parts.compactMap { $0.createdAt }.first,
             attachmentCount: group.items.reduce(0) { $0 + attachmentCount(of: $1) }
         )
     }

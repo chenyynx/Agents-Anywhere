@@ -18,7 +18,7 @@ struct ConversationOutlineRow: View {
     @ScaledMetric(relativeTo: .body) private var titleSize: CGFloat = 15
     @ScaledMetric(relativeTo: .body) private var detailSize: CGFloat = 13
     @ScaledMetric(relativeTo: .body) private var initialsSize: CGFloat = 13
-    @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 14
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
     @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3

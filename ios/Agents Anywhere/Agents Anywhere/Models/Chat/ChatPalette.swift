@@ -64,7 +64,10 @@ nonisolated enum ChatPalette {
     static let outlineDivider = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarFill = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarInitials = Token(light: 0x131313, dark: 0xF5F5F3)
-    static let outlineClaudeAvatar = Token(light: 0xB96647, dark: 0xB96647)
+    /// The official avatar's fill, converted from the capture's Display P3
+    /// profile to sRGB (`198, 96, 62`); `#B96647` was the raw P3 reading and
+    /// rendered visibly darker.
+    static let outlineClaudeAvatar = Token(light: 0xC6603E, dark: 0xC6603E)
     static let outlineSearchField = Token(light: 0xF6F6F5, dark: 0x2C2C2E)
 
     // MARK: Code card (moonveil's `SelectableMarkdownTheme`)

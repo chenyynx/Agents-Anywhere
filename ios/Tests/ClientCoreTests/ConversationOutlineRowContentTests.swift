@@ -38,7 +38,7 @@ struct ConversationOutlineRowContentTests {
             id: id,
             sender: sender,
             text: text,
-            parts: [.init(id: id + "-part", text: text, createdAt: sentAt, isActive: isArriving)],
+            parts: [ConversationOutlineEntry.Part(id: id + "-part", text: text, createdAt: sentAt, isActive: isArriving)],
             isArriving: isArriving,
             sentAt: sentAt,
             attachmentCount: attachmentCount

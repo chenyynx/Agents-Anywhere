@@ -76,6 +76,6 @@ struct ConversationOutlineSearchTests {
     func emptyQuery() {
         let rows = [entry(id: "e1", text: "one"), entry(id: "e2", text: "two")]
         #expect(ConversationOutlineSearch.filter(rows, query: "   ").isEmpty)
-        #expect(ConversationOutlineSearch.filter(rows, query: "one").map(\.entryID) == ["e1"])
+        #expect(ConversationOutlineSearch.filter(rows, query: "one").map { $0.entryID } == ["e1"])
     }
 }

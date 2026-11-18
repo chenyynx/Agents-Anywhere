@@ -39,7 +39,7 @@ struct ConversationOutlineEntryTests {
         let items = [
             try message(id: "m3", role: "assistant", text: "B", orderSeq: 3),
             try message(id: "m1", role: "user", text: "hello", orderSeq: 1),
-            try message(id: "m4", role: "user", turn: "t2", text: "next", orderSeq: 4),
+            try message(id: "m4", turn: "t2", role: "user", text: "next", orderSeq: 4),
             try message(id: "m2", role: "assistant", text: "A", orderSeq: 2),
         ]
         let entries = ConversationOutlineEntryBuilder.entries(from: items)
@@ -48,7 +48,7 @@ struct ConversationOutlineEntryTests {
         #expect(entries[0].text == "hello")
         #expect(entries[1].sender == .assistant)
         #expect(entries[1].text == "A\nB")
-        #expect(entries[1].parts.map(\.id) == ["m2", "m3"])
+        #expect(entries[1].parts.map { $0.id } == ["m2", "m3"])
         #expect(entries[1].id == "m2")
         #expect(entries[2].text == "next")
     }
@@ -60,7 +60,7 @@ struct ConversationOutlineEntryTests {
             try message(id: "m2", turn: "t2", text: "two", orderSeq: 2),
         ]
         let entries = ConversationOutlineEntryBuilder.entries(from: items)
-        #expect(entries.map(\.id) == ["m1", "m2"])
+        #expect(entries.map { $0.id } == ["m1", "m2"])
     }
 
     @Test("messages without a turn id never merge")
@@ -85,7 +85,7 @@ struct ConversationOutlineEntryTests {
         ]))
         let items = [try message(id: "m1", text: "main", orderSeq: 1), subagent, tool]
         let entries = ConversationOutlineEntryBuilder.entries(from: items)
-        #expect(entries.map(\.id) == ["m1"])
+        #expect(entries.map { $0.id } == ["m1"])
     }
 
     @Test("attachments are counted across the merged parts")
@@ -117,6 +117,6 @@ struct ConversationOutlineEntryTests {
             try message(id: "b", turn: "t2", text: "second", orderSeq: 2),
             try message(id: "a", turn: "t1", text: "first", orderSeq: 2),
         ]
-        #expect(ConversationOutlineEntryBuilder.entries(from: items).map(\.id) == ["a", "b"])
+        #expect(ConversationOutlineEntryBuilder.entries(from: items).map { $0.id } == ["a", "b"])
     }
 }

@@ -367,7 +367,7 @@ import Testing
         #expect(fixed["second"] != nil)
     }
 
-    /// A tool row with arbitrary content, for the background-step predicate.
+    /// A tool row with arbitrary content, for the background hand-off rows.
     private func toolRow(_ id: String, content: [String: Any],
                          status: String = "running", turnId: String? = nil) throws -> ChatTimelineRowModel {
         var value = try itemObject(id: id, text: "")
@@ -381,90 +381,16 @@ import Testing
         return ChatTimelineRowModel(try decode(value))
     }
 
-    private func group(_ rows: [ChatTimelineRowModel]) -> ChatTimelineGroup {
-        ChatTimelineGroup(kind: .single, rows: rows)
-    }
-
-    /// pp 2026-11-18: a **background** hand-off — a subagent dispatched with
-    /// `runInBackground`, or a `runInBackground` command — makes the reply
-    /// before it final for the reader. A foreground Agent call stays an
-    /// ordinary tool step (a normal turn keeps its one footer), and control
-    /// calls are never hand-offs. The flag is capability-driven: a runtime
-    /// that does not report it degrades to the turn-end footer.
-    @Test func backgroundStepsAreBackgroundDispatchesAndBackgroundCommands() throws {
-        for action in ["invoke", "spawn", "resume"] {
-            let dispatch = try toolRow("agent-\(action)",
-                                       content: ["kind": "agent_call", "action": action,
-                                                 "runInBackground": true])
-            #expect(TimelineTurnActions.isBackgroundStep(group([dispatch])))
-        }
-        // A foreground Agent call is the same card without the flag: the turn
-        // continues after it, so it must not seal (red-team M2: sealing every
-        // dispatch gave a normal turn two footers).
-        let foregroundDispatch = try toolRow(
-            "agent-foreground", content: ["kind": "agent_call", "action": "invoke"])
-        #expect(!TimelineTurnActions.isBackgroundStep(group([foregroundDispatch])))
-        // Claude's task events report the same fact on the agents entry.
-        let eventFlagged = try toolRow(
-            "agent-event",
-            content: ["kind": "agent_call", "action": "invoke",
-                      "agents": ["agent-1": ["status": "running", "isBackgrounded": true]]])
-        #expect(TimelineTurnActions.isBackgroundStep(group([eventFlagged])))
-        // Control calls on agents that already exist (the wire's real action
-        // words; DSH's `list_agents` degrades to `unknown`) never hand off,
-        // even if a runtime ever put the flag on them.
-        for action in ["send_input", "wait", "close", "unknown"] {
-            let control = try toolRow("ctl-\(action)",
-                                      content: ["kind": "agent_call", "action": action,
-                                                "runInBackground": true])
-            #expect(!TimelineTurnActions.isBackgroundStep(group([control])))
-        }
-        let background = try toolRow("bash", content: ["kind": "command", "runInBackground": true])
-        #expect(TimelineTurnActions.isBackgroundStep(group([background])))
-        let foreground = try toolRow("fg", content: ["kind": "command", "command": "ls"])
-        #expect(!TimelineTurnActions.isBackgroundStep(group([foreground])))
-        let message = try row("msg", text: "Answer")
-        #expect(!TimelineTurnActions.isBackgroundStep(group([message])))
-    }
-
-    /// The reply finished before a background step keeps its footer while the
-    /// turn is still running: a sealed segment is not suppressed by the
-    /// send/turn gate.
-    @Test func aReplyBeforeBackgroundWorkKeepsItsFooterWhileTheTurnRuns() throws {
+    /// pp 2026-11-18（真机确认后收窄）：后台派发**不拆回合**。一段引导正文 →
+    /// 前台工具 → 后台子代理派发 → 回合的最后一条正文，仍然只是同一个回合：
+    /// 页脚只出现在回合末的最后一条正文上，引导语不带。
+    /// 真机 transcript：M1 正文 → Bash → Edit → Agent(bg) → M5 正文 → 用户
+    /// 下一条消息（回合在 M5 后结束）。
+    @Test func aBackgroundDispatchDoesNotSplitTheTurn() throws {
         let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
                         row("first", text: "First answer", turnId: "t1"),
-                        toolRow("task", content: ["kind": "agent_call"], turnId: "t1")]
-        let actions = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(actions["first"]?.copyText == "First answer")
-        #expect(actions.count == 1)
-    }
-
-    /// After the background step the next finished reply gets its own footer;
-    /// the sealed one stays put — never moves, never disappears.
-    @Test func aReplyAfterBackgroundWorkGetsItsOwnFooter() throws {
-        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                        row("first", text: "First answer", turnId: "t1"),
-                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1"),
-                        row("second", text: "Second answer", turnId: "t1")]
-        let actions = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(actions["first"]?.copyText == "First answer")
-        #expect(actions["second"]?.copyText == "Second answer")
-        #expect(actions.count == 2)
-    }
-
-    /// pp 2026-11-18, 需求 2: 不等子代理. While the background card is still
-    /// running, the reply after it is final for the reader and gets its own
-    /// footer at turn end — the hand-off must not leave the background's
-    /// activity suppressing it (red-team M1). Uses the real predicate.
-    @Test func aReplyAfterBackgroundWorkDoesNotWaitForTheBackground() throws {
-        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "done", turnId: "t1"),
                         toolRow("task",
                                 content: ["kind": "agent_call", "action": "invoke",
                                           "runInBackground": true],
@@ -472,17 +398,74 @@ import Testing
                         row("second", text: "Second answer", turnId: "t1")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false,
-            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
-        #expect(actions["first"]?.copyText == "First answer")
-        #expect(actions["second"]?.copyText == "Second answer")
+            suppressLatest: false)
+        #expect(actions["first"] == nil)
+        #expect(actions["second"]?.copyText == "First answer\n\nSecond answer")
+        #expect(actions.count == 1)
     }
 
-    /// A hand-off excludes only *its own row* from the activity tally, never
-    /// the whole group: a foreground tool grouped with it (consecutive tool
-    /// rows share a step group) still keeps the residual segment's footer
-    /// closed, exactly like `aRunningToolKeepsTheFooterClosed` (red-team L2).
-    @Test func aRunningToolAfterTheHandoffKeepsTheResidualSegmentClosed() throws {
+    /// 原问题（不等子代理）：回合结束时后台卡仍在 running，不能挡住这个
+    /// 回合的页脚——后台派发行不计入活跃。
+    @Test func aRunningBackgroundCardDoesNotSuppressTheTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// Claude 的任务事件把同一事实写在 `agents[*].isBackgrounded` 上：这种
+    /// 线缆形状同样让后台卡不挡页脚。
+    @Test func anEventFlaggedBackgroundAgentDoesNotSuppress() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "agents": ["agent-1": ["status": "running",
+                                                                 "isBackgrounded": true]]],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// 后台命令（runInBackground，比如监控）与后台子代理同等对待。
+    @Test func aRunningBackgroundCommandDoesNotSuppressTheTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("monitor", content: ["kind": "command", "runInBackground": true],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// 只有后台派发行豁免；同组的前台工具（连续工具行会合成一个步骤组）
+    /// 仍在运行 → 回合页脚保持关闭，与 `aRunningToolKeepsTheFooterClosed`
+    /// 一致。
+    @Test func aRunningForegroundToolStillSuppressesNextToABackgroundCard() throws {
         let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
                         row("first", text: "First answer", turnId: "t1"),
                         toolRow("task",
@@ -494,51 +477,43 @@ import Testing
                         row("second", text: "Second answer", turnId: "t1")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: false,
-            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
-        #expect(actions["first"]?.copyText == "First answer")
+            suppressLatest: false)
         #expect(actions["second"] == nil)
     }
 
-    /// A sealed footer survives every later rebuild: later segments append
-    /// their own actions, the earlier host keeps its own.
-    @Test func aSealedFooterSurvivesLaterSegments() throws {
+    /// 前台 Agent 调用（没有后台标志）就是普通工具步骤：运行中照常抑制回合
+    /// 页脚，不按运行时写死判断。
+    @Test func aRunningForegroundAgentSuppressesLikeAnyTool() throws {
         let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
                         row("first", text: "First answer", turnId: "t1"),
-                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1")]
-        let sealed = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(sealed["first"]?.copyText == "First answer")
-        let laterRows = rows + [try row("second", text: "Second answer", turnId: "t1")]
-        let later = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(laterRows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(later["first"]?.copyText == "First answer")
-        #expect(later["second"] == nil)
-    }
-
-    /// A reply still streaming is never sealed: the reader cannot copy half a
-    /// sentence.
-    @Test func aStreamingReplyIsNeverSealed() throws {
-        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                        row("first", text: "First answer", turnId: "t1"),
-                        toolRow("task", content: ["kind": "agent_call"], status: "done", turnId: "t1"),
-                        row("second", text: "Still writing", status: "running", turnId: "t1"),
-                        toolRow("task2", content: ["kind": "agent_call"], turnId: "t1")]
+                        toolRow("agent", content: ["kind": "agent_call", "action": "invoke"],
+                                status: "running", turnId: "t1")]
         let actions = TimelineTurnActions.build(
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id.hasPrefix("task") })
-        #expect(actions["first"]?.copyText == "First answer")
-        #expect(actions["second"] == nil)
+            suppressLatest: false)
+        #expect(actions.isEmpty)
     }
 
-    /// A foreground tool keeps the turn's single-footer rule: the reply is not
-    /// sealed and nothing commits until the turn ends.
-    @Test func aForegroundToolDoesNotSealTheReply() throws {
+    /// 控制调用（send_input / wait / close / unknown）即使带着 runInBackground
+    /// 也不是后台接走：它们只是对已有子代理的管理调用，永远按普通工具计活跃。
+    @Test func aRunningControlCallCountsAsActivity() throws {
+        for action in ["send_input", "wait", "close", "unknown"] {
+            let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                            row("first", text: "First answer", turnId: "t1"),
+                            toolRow("ctl-\(action)",
+                                    content: ["kind": "agent_call", "action": action,
+                                              "runInBackground": true],
+                                    status: "running", turnId: "t1")]
+            let actions = TimelineTurnActions.build(
+                groups: TimelineGrouping.groups(rows, interactionTargets: []),
+                suppressLatest: false)
+            #expect(actions.isEmpty)
+        }
+    }
+
+    /// A foreground tool keeps the turn's single-footer rule: nothing commits
+    /// while the turn is still open.
+    @Test func aForegroundToolKeepsTheTurnOpen() throws {
         let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
                         row("first", text: "First answer", turnId: "t1"),
                         toolRow("bash", content: ["kind": "command", "command": "ls"],
@@ -547,53 +522,6 @@ import Testing
             groups: TimelineGrouping.groups(rows, interactionTargets: []),
             suppressLatest: true)
         #expect(actions.isEmpty)
-    }
-
-    /// A reply still streaming when the background row lands must not seal:
-    /// the connector publishes a tool row before its final message row, so
-    /// sealing there would copy half a sentence into an earlier host and move
-    /// the footer once the text completes (pp 2026-11-18 red-team). The seal
-    /// waits for the text; the background row stays either way.
-    @Test func aStreamingReplyBlocksTheSealUntilItCompletes() throws {
-        let streamingRows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                                 row("first", text: "First answer", turnId: "t1"),
-                                 row("second", text: "Now launching", status: "running", turnId: "t1"),
-                                 toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
-                                         turnId: "t1")]
-        let streaming = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(streamingRows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(streaming.isEmpty)
-
-        let settledRows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                               row("first", text: "First answer", turnId: "t1"),
-                               row("second", text: "Now launching", turnId: "t1"),
-                               toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
-                                       turnId: "t1")]
-        let settled = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(settledRows, interactionTargets: []),
-            suppressLatest: true,
-            isBackgroundStep: { $0.id == "task" })
-        #expect(settled["second"]?.copyText == "First answer\n\nNow launching")
-        #expect(settled["first"] == nil)
-    }
-
-    /// The background step usually renders as a step group, which never hosts
-    /// a footer. Excluding it from hosting must not stop the seal on the reply
-    /// before it.
-    @Test func aBackgroundStepInsideAnIneligibleHostStillSealsTheReply() throws {
-        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
-                        row("first", text: "First answer", turnId: "t1"),
-                        toolRow("task", content: ["kind": "agent_call", "action": "invoke"],
-                                turnId: "t1")]
-        let actions = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true,
-            footerHostEligible: { $0.id != "task" },
-            isBackgroundStep: { $0.id == "task" })
-        #expect(actions["first"]?.copyText == "First answer")
-        #expect(actions.count == 1)
     }
 
 }

@@ -2385,11 +2385,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
-            footerHostEligible: { stepGroupsByID[$0.id] == nil },
-            // A reply followed by background work (subagent / background
-            // command) keeps its own footer immediately, instead of waiting
-            // for the whole turn (pp 2026-11-18).
-            isBackgroundStep: TimelineTurnActions.isBackgroundStep)
+            footerHostEligible: { stepGroupsByID[$0.id] == nil })
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is
         // already finished, so the closed state's footers stay. Browsing an

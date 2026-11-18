@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ChatSidebarProjects: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     @Bindable var repository: V2DashboardRepository
     @Binding var showsSessionList: Bool
     let selectedSessionID: String?
@@ -33,9 +35,11 @@ struct ChatSidebarProjects: View {
         // Pinning moves a row between sections before the request clears busy;
         // cached row content must receive that final state change explicitly.
         let busyProjects = busy
-        LazyVStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 2) {
             if projects.contains(where: \.pinned) {
-                Text(String(localized: "置顶项目")).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Text(String(localized: "置顶项目"))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 6)
                 projectList(projects.filter(\.pinned), busyProjects: busyProjects)
             }
@@ -45,8 +49,10 @@ struct ChatSidebarProjects: View {
                         Text(String(localized: "项目"))
                         AppSymbol("chevron.right", size: 12)
                             .rotationEffect(.degrees(repository.sidebarPreferences.projectsExpanded ? 90 : 0))
-                    }.font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        .frame(minHeight: 44).contentShape(.rect)
+                    }
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                    .frame(minHeight: 44).contentShape(.rect)
                 }.buttonStyle(.plain)
                 Spacer()
                 ChatSidebarListMenu(showsSessionList: $showsSessionList, onShowArchives: onShowArchives) {
@@ -54,9 +60,18 @@ struct ChatSidebarProjects: View {
                         ForEach(V2DeviceSessionFilter.allCases) { Text($0.title).tag($0) }
                     }
                 }
-                Button(String(localized: "创建项目"), appSymbol: "plus") { createsProject = true }
-                    .modifier(ChatSidebarIconControlStyle())
-                    .disabled(!repository.canWrite)
+                Button { createsProject = true } label: {
+                    Image("aa-IconAdd")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(!repository.canWrite)
+                .accessibilityLabel(Text(String(localized: "创建项目")))
             }.padding(.horizontal, 10).padding(.top, 16)
             if repository.sidebarPreferences.projectsExpanded {
                 projectList(projects.filter { !$0.pinned }, busyProjects: busyProjects)
@@ -67,7 +82,9 @@ struct ChatSidebarProjects: View {
                 }
             }
             if !unassigned.isEmpty {
-                Text(String(localized: "未分组会话")).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Text(String(localized: "未分组会话"))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     .padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 6)
                 sessionRows(unassigned, inset: false)
             }
@@ -108,24 +125,38 @@ struct ChatSidebarProjects: View {
     }
 
     private func projectRow(_ project: V2Project, isBusy: Bool) -> some View {
+        // Same row template as the chat list: 20pt icon at x=27, 15pt title,
+        // 48pt row; the trailing action stays a chrome-less 20pt glyph.
         HStack(spacing: 0) {
             Button { toggleProject(project.id) } label: {
-                HStack(spacing: 8) {
-                    AppSymbol(expanded.contains(project.id) ? "folder.fill" : "folder", size: 18)
-                    Text(project.name).font(.body).lineLimit(1)
+                HStack(spacing: 14) {
+                    Image(expanded.contains(project.id) ? "aa-IconFolderOpen" : "aa-IconFolder")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                    Text(project.name)
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                        .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if isBusy { ProgressView().controlSize(.mini) }
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(.rect)
+                .padding(.leading, 11)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(.rect)
             }
             .accessibilityHint(expanded.contains(project.id) ? String(localized: "收起项目") : String(localized: "展开项目"))
             Button { onNewSession(project.id) } label: {
-                AppSymbol("square.and.pencil", size: 18).frame(width: 44, height: 44).contentShape(.rect)
+                Image("aa-IconAdd")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                    .frame(width: 44, height: 44).contentShape(.rect)
             }
             .accessibilityLabel(Text(String(localized: "在 \(project.name) 中新建会话")))
         }
-        .foregroundStyle(.primary)
-        .padding(.leading, 10).buttonStyle(.plain)
+        .buttonStyle(.plain)
         .contentShape(.rect)
         .contextMenu { projectMenu(project, isBusy: isBusy) }
     }

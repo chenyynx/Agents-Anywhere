@@ -32,9 +32,11 @@ struct ChatSidebarView: View {
     /// Flat list only: one line per session, without the project · device line.
     @AppStorage(ProjectSidebarPreferences.compactSessionListKey) private var compactSessionList = false
 
-    /// Official sidebar content inset: 12pt (screenshot: selection block
-    /// starts 12pt from the sidebar edge).
-    private static let contentInset: CGFloat = 12
+    /// Official sidebar content inset: 16pt (1.261109 screenshots: the
+    /// selection block spans 16..304pt inside a 320pt drawer).
+    private static let contentInset: CGFloat = 16
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ScrollView {
@@ -86,12 +88,14 @@ struct ChatSidebarView: View {
                 if let repository {
                     if showsSessionList {
                         HStack {
-                            Text("Recent").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                            Text("Recent")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                             Spacer()
                             ChatSidebarListMenu(showsSessionList: $showsSessionList,
                                 onShowArchives: { showsArchives = true }) {}
                         }
-                        .padding(.horizontal, 10).padding(.top, 16)
+                        .padding(.horizontal, 10).padding(.top, 20).padding(.bottom, 6)
                         ChatSidebarSessionSection(
                             title: nil,
                             sessions: recentSessions,
@@ -164,6 +168,8 @@ struct ChatSidebarView: View {
 }
 
 struct ChatSidebarListMenu<Filters: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     @Binding var showsSessionList: Bool
     let onShowArchives: () -> Void
     @ViewBuilder var filters: () -> Filters
@@ -178,7 +184,11 @@ struct ChatSidebarListMenu<Filters: View>: View {
             Divider()
             Button(String(localized: "归档会话"), systemImage: "archivebox", action: onShowArchives)
         } label: {
-            Label(String(localized: "列表选项"), appSymbol: "ellipsis")
+            Image("aa-IconMore")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+                .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
@@ -200,15 +210,36 @@ struct ChatSidebarIconControlStyle: ViewModifier {
 }
 
 struct ChatSidebarHeaderView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        AAWordmark(fontSize: 24)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 20)
-            .containerCornerOffset(.horizontal, sizeToFit: true)
+        HStack(spacing: 12) {
+            AAWordmark(fontSize: 24)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+
+            // Official sidebar search entry: 44pt system-glass circle, 19pt
+            // magnifier. Placeholder action until the search screen lands.
+            Button {
+            } label: {
+                Image("aa-IconSearch")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 19, height: 19)
+                    .foregroundStyle(AppTheme.text300(colorScheme))
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .accessibilityLabel(Text(String(localized: "搜索")))
+        }
+        .padding(.horizontal, 16)
+        .containerCornerOffset(.horizontal, sizeToFit: true)
     }
 }
 
 private struct ChatSidebarDeviceSection: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let devices: [ChatSidebarDevice]
     let selectedDeviceId: V2ConnectorID?
     let isLoading: Bool
@@ -217,7 +248,7 @@ private struct ChatSidebarDeviceSection: View {
     let onPair: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             header
 
             if isLoading {
@@ -242,19 +273,21 @@ private struct ChatSidebarDeviceSection: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text(String(localized: "Devices"))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             if !isLoading && !devices.isEmpty {
+                // Header actions stay chrome-less (official section headers
+                // never wear a filled round button); 44pt stays as the tap
+                // target while the glyph itself is 20pt.
                 Button(action: onPair) {
-                    // SF Symbols has the two-device glyph; the app's own
-                    // icon set does not ship one, so this single action uses
-                    // the system symbol.
-                    Image(systemName: "laptopcomputer.and.iphone")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 36)
+                    Image("aa-IconAdd")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                        .frame(width: 44, height: 44)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
@@ -262,28 +295,29 @@ private struct ChatSidebarDeviceSection: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 14)
+        .padding(.top, 20)
         .padding(.bottom, 0)
     }
 
     private var pairRow: some View {
         Button(action: onPair) {
-            HStack(spacing: 12) {
-                Image(systemName: "laptopcomputer.and.iphone")
-                    .font(.system(size: 16, weight: .regular))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(String(localized: "Pair device")).font(.body.weight(.medium))
-                    Text(String(localized: "Connect the desktop app or CLI"))
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+            HStack(spacing: 14) {
+                Image("aa-IconAdd")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                Text(String(localized: "Pair device"))
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.8))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             }
-            .padding(.horizontal, 10)
-            .frame(minHeight: 56)
+            .padding(.leading, 11)
+            .padding(.trailing, 12)
+            .frame(minHeight: 48)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -331,12 +365,14 @@ private struct ChatSidebarSessionSection: View {
 }
 
 private struct ChatSidebarSectionLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let title: LocalizedStringResource
 
     var body: some View {
         Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             .padding(.horizontal, 10)
             .padding(.top, 20)
             .padding(.bottom, 6)
@@ -353,24 +389,32 @@ private struct ChatSidebarDeviceRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(device.presence == .online ? .green : .secondary.opacity(0.45))
-                    .frame(width: 7, height: 7)
+            // Same row template as the chat list: 20pt leading icon at x=27,
+            // 15pt title at x=61, 48pt row, inset selection block.
+            HStack(spacing: 14) {
+                Image("aa-IconComputer")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                    .opacity(device.presence == .offline ? 0.45 : 1)
 
                 Text(device.name)
-                    // Brand mono (official JetBrains Mono) instead of the
-                    // system SF Mono; the device name reads as a host name.
-                    // 15pt = the original SF-mono subheadline size (pp).
-                    .font(.custom("JetBrainsMono-Regular", size: 15,
-                                  relativeTo: .subheadline))
-                    .foregroundStyle(device.presence == .offline ? .secondary : .primary)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                    .opacity(device.presence == .offline ? 0.55 : 1)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 42)
-            .background(isSelected ? AppTheme.sidebarSelectionFill(colorScheme) : .clear, in: RoundedRectangle(cornerRadius: 9))
+            .padding(.leading, 11)
+            .padding(.trailing, 12)
+            .frame(minHeight: 48)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(AppTheme.sidebarRowSelectionFill(colorScheme))
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -400,9 +444,8 @@ struct ChatSidebarSessionRow: View {
     let onArchive: () -> Void
     let onCopyId: () -> Void
 
-    /// Corner radius of the selection block, estimated from the reference
-    /// screenshot（按参考图估值，真机可微调）.
-    private static let selectionCornerRadius: CGFloat = 14
+    /// Corner radius of the selection block (1.261109 screenshots: 15pt).
+    private static let selectionCornerRadius: CGFloat = 15
 
     @State private var isRenaming = false
     @State private var titleDraft = ""
@@ -410,12 +453,18 @@ struct ChatSidebarSessionRow: View {
     var body: some View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 16) {
-                    SessionAgentIcon(runtime: session.runtime, runtimeType: session.runtimeType)
+                HStack(spacing: 14) {
+                    // Official sidebar rows wear the 20pt chat bubble; the
+                    // agent identity stays in the accessibility label.
+                    Image("aa-IconChat")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
                         .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
+                        .accessibilityLabel(Text(SessionAgentMark.resolve(runtime: session.runtime, runtimeType: session.runtimeType).label))
                     Text(session.title ?? String(localized: "Untitled session"))
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     ChatSidebarSessionIndicator(indicator: session.presentation.indicator)
                 }
@@ -425,7 +474,7 @@ struct ChatSidebarSessionRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // Nested rows shift by at most half of the project's folder icon.
-            .padding(.leading, inset ? 24 : 15)
+            .padding(.leading, inset ? 24 : 11)
             .padding(.trailing, 12)
             .padding(.vertical, context == nil ? 0 : 8)
             // Official session row: 48pt tall, 50pt pitch with the 2pt stack
@@ -545,6 +594,8 @@ private struct ChatSidebarEmptyRow: View {
 }
 
 private struct ChatSidebarBottomControls: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let appState: AppState
     let account: ChatSidebarAccount
     let onNewSession: () -> Void
@@ -554,7 +605,9 @@ private struct ChatSidebarBottomControls: View {
     var body: some View {
         // Official placement: avatar leading, New Chat trailing. Both keep
         // their original materials (glass avatar, liquid-glass button); only
-        // the sides are swapped.
+        // the sides are swapped. The capsule tint carries the official
+        // black-on-light / white-on-dark values — the glass surface itself
+        // stays system-drawn so no double round chrome appears.
         HStack(spacing: 12) {
             Button {
                 isShowingSettings = true
@@ -567,13 +620,24 @@ private struct ChatSidebarBottomControls: View {
 
             Spacer(minLength: 12)
 
-            AppGlassButton(
-                String(localized: "New session"),
-                systemImage: "square.and.pencil",
-                style: .prominent,
-                maxWidth: nil,
-                action: onNewSession
-            )
+            Button(action: onNewSession) {
+                HStack(spacing: 12) {
+                    Image("aa-IconAdd")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 13, height: 13)
+                    Text(String(localized: "New session"))
+                        .font(.system(size: 15, weight: .regular))
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 48)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            .tint(AppTheme.sidebarProminentFill(colorScheme))
+            .foregroundStyle(AppTheme.sidebarProminentLabel(colorScheme))
+            .accessibilityLabel(String(localized: "New session"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $isShowingSettings) {
@@ -583,13 +647,35 @@ private struct ChatSidebarBottomControls: View {
 }
 
 private struct ChatSidebarAvatar: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let account: ChatSidebarAccount
 
     var body: some View {
-        AccountAvatarView(
-            displayName: account.displayName,
-            source: account.avatarSource,
-            size: 38
-        )
+        if account.avatarSource == nil {
+            // No photo: the official sidebar keeps the glass circle and puts
+            // plain initials inside it (no second filled disc, or the glass
+            // button would read as a double circle).
+            Text(verbatim: initials)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                .frame(width: 49, height: 49)
+                .clipShape(Circle())
+                .accessibilityLabel(Text(account.displayName))
+        } else {
+            AccountAvatarView(
+                displayName: account.displayName,
+                source: account.avatarSource,
+                size: 49
+            )
+        }
+    }
+
+    /// First letters of the first two words, e.g. "Jin Bung" -> "JB".
+    private var initials: String {
+        let words = account.displayName.split(whereSeparator: { $0.isWhitespace })
+        let letters = words.prefix(2).compactMap { $0.first }
+        if letters.isEmpty { return "?" }
+        return String(letters).uppercased()
     }
 }

@@ -142,4 +142,27 @@ enum AppTheme {
             ? Color(red: 195.0 / 255.0, green: 194.0 / 255.0, blue: 183.0 / 255.0)
             : Color(red: 82.0 / 255.0, green: 81.0 / 255.0, blue: 78.0 / 255.0)
     }
+
+    /// Official sidebar primary text (`text100`): light #131313, dark #F9F9F7.
+    /// Sidebar row titles use this, not `.primary` (pure black/white).
+    static func sidebarTextPrimary(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 249.0 / 255.0, green: 249.0 / 255.0, blue: 247.0 / 255.0)
+            : Color(red: 19.0 / 255.0, green: 19.0 / 255.0, blue: 19.0 / 255.0)
+    }
+
+    /// Official new-session capsule (screenshots 2026-11-18): light #232323
+    /// fill with white label, dark #F9F9F8 fill with #20201F label. Used as
+    /// the tint of the system glass button — never as a hand-drawn fill.
+    static func sidebarProminentFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 249.0 / 255.0, green: 249.0 / 255.0, blue: 248.0 / 255.0)
+            : Color(red: 35.0 / 255.0, green: 35.0 / 255.0, blue: 35.0 / 255.0)
+    }
+
+    static func sidebarProminentLabel(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 32.0 / 255.0, green: 32.0 / 255.0, blue: 31.0 / 255.0)
+            : Color.white
+    }
 }

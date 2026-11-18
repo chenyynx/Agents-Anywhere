@@ -42,6 +42,7 @@ from connector.runtimes.claude.sessions.open_cards import KEY, ClaudeOpenAgentCa
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     scan_agent_call_cards,
+    _history_turn_id,
 )
 from connector.runtimes.claude.sessions.subagent_oracle import (
     AgentFileInfo,
@@ -675,3 +676,31 @@ def test_sweep_publishes_the_real_input_output_split(
     assert usage["inputTokens"] == 1_500
     assert usage["outputTokens"] == 500
     assert usage["cacheReadTokens"] == 9_000
+
+
+def test_a_dispatch_outside_the_window_keeps_the_raw_turns_anchor() -> None:
+    """A dispatch row the visible chain no longer has must keep its turn.
+
+    Compaction and incremental windows drop the dispatch message; the old
+    fallback hashed the dispatch message id, so the Agent card landed under a
+    turn id no neighbour carried and the client split the step run at the
+    card (pp 2026-11-18 分组三行). The raw transcript's own walk knows the
+    turn seed, so the card keeps the turn it was dispatched in.
+    """
+
+    prompt = _line(
+        {
+            "type": "user",
+            "uuid": "prompt-row",
+            "isSidechain": False,
+            "message": {"role": "user", "content": "run the review"},
+        }
+    )
+    items = _history_items_from_messages(
+        _session(),
+        (_stop_message(),),
+        raw_lines=(prompt, _dispatch_line(), _receipt_line(), _stopped_line()),
+    )
+
+    card = _card_items(items)[0]
+    assert card.turn_id == _history_turn_id(SESSION_ID, "prompt-row")

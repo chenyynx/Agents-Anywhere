@@ -1367,12 +1367,44 @@ def _raw_scan_calls(
     calls, _ = _history_tool_call_context(
         session, tuple(rows), turn_ids=turn_ids
     )
-    return {
-        tool_use_id: call
-        for tool_use_id, call in calls.items()
-        if tool_use_id in scan.verified_dispatch_ids
-        and call.block.tool_name == DISPATCH_TOOL_NAME
-    }
+    resolved: dict[str, ClaudePendingToolCall] = {}
+    for tool_use_id, call in calls.items():
+        if (
+            tool_use_id not in scan.verified_dispatch_ids
+            or call.block.tool_name != DISPATCH_TOOL_NAME
+        ):
+            continue
+        dispatch_row = scan.dispatch_records.get(tool_use_id, (None, None))[0]
+        raw_uuid = (
+            dispatch_row.get("uuid") if isinstance(dispatch_row, Mapping) else None
+        )
+        row_uuid = raw_uuid if isinstance(raw_uuid, str) and raw_uuid else None
+        seed = scan.turn_seeds.get(row_uuid) if row_uuid is not None else None
+        # A dispatch the visible chain no longer contains (compacted away, or
+        # an incremental window that starts after it) has no turn in
+        # ``turn_ids``: the fallback above would hash the dispatch message id
+        # (or ``initial``) and publish the card under a turn id no neighbour
+        # carries — the client then flushes a step run at the card and one
+        # turn shows as three one-line rows (pp 2026-11-18). The raw walk
+        # knows the real seed, so the card keeps the turn it was dispatched
+        # in.
+        if seed is not None and (turn_ids or {}).get(
+            _history_turn_key(dispatch_row)
+        ) is None:
+            call = replace(call, turn_id=_scan_turn_id(session, seed))
+        resolved[tool_use_id] = call
+    return resolved
+
+
+def _scan_turn_id(session: ClaudeSession, seed: str) -> str:
+    """The turn id a raw-walk seed names, in ``_history_turn_ids``' format."""
+
+    if seed.startswith("scheduled@"):
+        return _history_turn_id(
+            session.session_id,
+            f"{session.session_id}:scheduled:{seed.split('@', 1)[1]}",
+        )
+    return _history_turn_id(session.session_id, seed)
 
 
 def scan_agent_call_cards(

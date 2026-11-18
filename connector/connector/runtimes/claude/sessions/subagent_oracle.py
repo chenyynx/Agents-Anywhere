@@ -946,6 +946,19 @@ class RawTranscriptScan:
     #: line order (D-B, zombie-agent-card §9). Empty for hand-built scans,
     #: which then keep the window gate exactly as it was.
     uuid_line_index: Mapping[str, int] = field(default_factory=dict)
+    #: Row uuid -> the turn seed the raw transcript's own order assigns it.
+    #: The same rules ``_history_turn_ids`` applies to the SDK message view,
+    #: walked over the raw rows: a real user prompt seeds the turn, a
+    #: ``<task-notification>`` row opens a scheduled turn and the first
+    #: assistant row after it anchors that turn by its message id. The reader
+    #: uses it only for dispatch rows the visible chain no longer contains —
+    #: without it those rows hash an ``initial`` fallback and the Agent card
+    #: is published under a turn id no other row of the run carries (pp
+    #: 2026-11-18: the card alone in another turn split one step run into
+    #: three one-line rows). A ``scheduled@<line>`` seed is the anchor-less
+    #: fallback; the reader expands it to the session-scoped ``scheduled``
+    #: seed ``_history_turn_ids`` would have used.
+    turn_seeds: Mapping[str, str] = field(default_factory=dict)
     #: Hidden user-row uuid -> its 0-based line in ``raw_lines``: the prompt
     #: rows the CLI persists for turns it injected on its own (a fired
     #: scheduled task, a /loop wake, ...). A fired prompt is written as a
@@ -1117,6 +1130,10 @@ def scan_raw_transcript(
     # as a visible user row, which clears the buffer. Only the exact-text
     # pair counts (see ``injected_prompt_rows``).
     pending_enqueues: list[str] = []
+    # Turn walk over the raw rows (see ``RawTranscriptScan.turn_seeds``).
+    turn_seeds: dict[str, str] = {}
+    turn_seed: str | None = None
+    pending_scheduled = False
     for line_index, line in enumerate(raw_lines):
         wants_notice = "<task-notification>" in line
         wants_receipt = "agentId:" in line
@@ -1190,6 +1207,34 @@ def scan_raw_transcript(
             # way: the queued prompt is now the row's own, or it was never a
             # prompt (a command/notice enqueue).
             pending_enqueues.clear()
+            if row.get("isSidechain") is not True:
+                row_text = _transcript_row_prompt_text(row)
+                if row_type == "user" and row_text and "<task-notification>" in row_text:
+                    pending_scheduled = True
+                elif (
+                    row_type == "user"
+                    and row.get("isMeta") is not True
+                    and row_text
+                    and not row_text.startswith("<")
+                    and not row_text.startswith("Caveat:")
+                ):
+                    # A real prompt opens a turn; its own row uuid is the
+                    # seed, exactly like ``_history_user_turn_seed``.
+                    turn_seed = row_uuid
+                    pending_scheduled = False
+                elif pending_scheduled and row_type == "assistant":
+                    message = row.get("message")
+                    native_id = (
+                        _string(message.get("id")) if isinstance(message, Mapping) else None
+                    )
+                    turn_seed = native_id or f"scheduled@{line_index}"
+                    pending_scheduled = False
+                if (
+                    row_type == "assistant"
+                    and row_uuid is not None
+                    and turn_seed is not None
+                ):
+                    turn_seeds.setdefault(row_uuid, turn_seed)
         if wants_tool_use:
             _register_tool_use_names(row, tool_use_names)
         _capture_agent_call_rows(row, dispatch_rows, result_rows)
@@ -1279,6 +1324,7 @@ def scan_raw_transcript(
         },
         verified_dispatch_ids=verified_dispatch_ids,
         uuid_line_index=uuid_line_index,
+        turn_seeds=turn_seeds,
         injected_prompt_rows=injected_prompt_rows,
         tool_result_metadata=tool_result_metadata,
         dispatch_records={

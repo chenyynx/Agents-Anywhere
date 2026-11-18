@@ -516,7 +516,10 @@ final class TimelineChatBridge: ObservableObject {
     func jump(toRowID rowID: String) async -> Bool {
         if scrollToLoadedRow(rowID) { return true }
         var pages = 0
-        while pages < 20, model.session.canLoadOlder, !Task.isCancelled {
+        // The outline lists everything the row store holds (5000 rows), and a
+        // history page is 200 rows; 40 pages covers that whole cache when the
+        // goal is the oldest row in the list.
+        while pages < 40, model.session.canLoadOlder, !Task.isCancelled {
             let oldest = model.session.timeline.first?.value.orderSeq
             await model.session.loadOlder()
             pages += 1

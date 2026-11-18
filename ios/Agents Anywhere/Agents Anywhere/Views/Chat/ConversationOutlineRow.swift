@@ -37,7 +37,7 @@ struct ConversationOutlineRow: View {
                     Text(content.speaker)
                         .font(ClaudeFont.text(speakerSize))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
-                    Text(content.titleAttributed)
+                    Text(styledTitle)
                         .font(ClaudeFont.text(titleSize))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                         .lineLimit(content.titleLineLimit)
@@ -59,6 +59,18 @@ struct ConversationOutlineRow: View {
         .accessibilityLabel(Text(content.speaker))
         .accessibilityValue(Text(content.title))
         .accessibilityHint(Text(String(localized: "跳转到对话中的这条消息。")))
+    }
+
+    /// Inline code spans carry the official's mono face; the rest keeps the
+    /// Anthropic row face set by the outer `.font`.
+    private var styledTitle: AttributedString {
+        var attributed = content.titleAttributed
+        let codeRanges = attributed.runs.compactMap { run in
+            run.inlinePresentationIntent?.contains(.code) == true ? run.range : nil
+        }
+        let codeFont = ClaudeFont.mono(titleSize)
+        for range in codeRanges { attributed[range].font = codeFont }
+        return attributed
     }
 
     private var avatar: some View {

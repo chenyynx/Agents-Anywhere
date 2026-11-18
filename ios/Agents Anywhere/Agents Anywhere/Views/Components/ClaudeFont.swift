@@ -8,6 +8,7 @@ import UIKit
 /// back to the system face exactly as they do in the official app.
 enum ClaudeFont {
     static let postScriptName = "AnthropicSansMobileVariable-TextRegular"
+    static let monoPostScriptName = "JetBrainsMono-Regular"
 
     /// The capture's row text sits between the 400 and 500 named instances
     /// (stroke 5.29 px against 4.66 / 5.61); 460 reproduces it at the scaled
@@ -17,11 +18,13 @@ enum ClaudeFont {
     /// `UIAppFonts` registers the bundled file at launch; registering it here
     /// as well keeps previews and a missed plist path working, since a custom
     /// font is the only way to reproduce the capture's letterforms.
-    private static let isRegistered: Bool = {
-        guard let url = Bundle.main.url(forResource: postScriptName,
-                                        withExtension: "ttf") else { return false }
+    private static func register(_ name: String) -> Bool {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else { return false }
         return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-    }()
+    }
+
+    private static let isRegistered = register(postScriptName)
+    private static let isMonoRegistered = register(monoPostScriptName)
 
     static func text(_ size: CGFloat, weight: CGFloat = rowWeight) -> Font {
         _ = isRegistered
@@ -34,5 +37,14 @@ enum ClaudeFont {
                 [axis: NSNumber(value: weight)] as [NSNumber: NSNumber],
         ])
         return Font(UIFont(descriptor: descriptor, size: size))
+    }
+
+    /// Inline code spans use the official's JetBrains Mono, not SF Mono.
+    static func mono(_ size: CGFloat) -> Font {
+        _ = isMonoRegistered
+        guard let font = UIFont(name: monoPostScriptName, size: size) else {
+            return .system(size: size, design: .monospaced)
+        }
+        return Font(font)
     }
 }

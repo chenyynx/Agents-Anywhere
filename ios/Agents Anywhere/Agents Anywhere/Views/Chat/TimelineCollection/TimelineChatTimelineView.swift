@@ -45,7 +45,7 @@ struct TimelineChatTimelineView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
-         jumpRequest: ConversationOutlineJumpRequest = ConversationOutlineJumpRequest(),
+         jumpRequest: ConversationOutlineJumpRequest,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
          renderMode: TimelineRenderMode = .merged) {
         self.model = model

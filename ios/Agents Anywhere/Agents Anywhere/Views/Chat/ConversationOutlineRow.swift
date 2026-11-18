@@ -22,7 +22,7 @@ struct ConversationOutlineRow: View {
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
     @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3
-    @ScaledMetric(relativeTo: .body) private var detailTracking: CGFloat = 0.8
+    @ScaledMetric(relativeTo: .body) private var detailTracking: CGFloat = -0.7
 
     var body: some View {
         Button(action: action) {
@@ -32,11 +32,12 @@ struct ConversationOutlineRow: View {
             HStack(alignment: .top, spacing: 12) {
                 avatar
                 VStack(alignment: .leading, spacing: lineGap) {
-                    // The official speaker is the same #525150 ink but a
-                    // lighter stroke than ours (core 2.6 px vs 3.6 px at the
-                    // same glyph size); SF Regular read visibly bolder.
+                    // Same #525150 ink on both sides, but the official
+                    // speaker's stroke is heavier than SF Regular (2.97 px vs
+                    // 2.60 px at the same 31x30 glyph box); Medium is the
+                    // closest SF weight.
                     Text(content.speaker)
-                        .font(.system(size: speakerSize, weight: .light))
+                        .font(.system(size: speakerSize, weight: .medium))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
                     Text(content.title)
                         .font(.system(size: titleSize))
@@ -44,9 +45,9 @@ struct ConversationOutlineRow: View {
                         .lineLimit(content.titleLineLimit)
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
-                    // ClaudeFonts sets the stamp wider than SF; the capture's
-                    // "11月18日 17:23" runs 222 px where SF sets 199 px, so a
-                    // small tracking reproduces the same rhythm.
+                    // The official stamp is tighter than SF's default: its
+                    // line runs 199 px where SF sets 222 px at the same 13 pt,
+                    // so tighten the tracking instead of widening it.
                     Text(content.detail)
                         .font(.system(size: detailSize))
                         .tracking(detailTracking)

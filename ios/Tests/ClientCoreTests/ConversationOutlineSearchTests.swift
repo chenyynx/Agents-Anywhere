@@ -60,16 +60,63 @@ struct ConversationOutlineSearchTests {
         #expect(hit?.snippet == "second hit")
     }
 
-    @Test("long text produces an excerpt with ellipses")
-    func snippetTrimsBothSides() {
-        let prefix = String(repeating: "a", count: 200)
-        let suffix = String(repeating: "b", count: 200)
+    @Test("the excerpt resolves inline Markdown and folds whitespace")
+    func excerptResolvesMarkdown() throws {
+        let row = entry(text: "line one\nline two **证据**（已验证）：`code` tail")
+        let hit = try #require(ConversationOutlineSearch.hit(in: row, query: "证据"))
+        let snippet = hit.snippet
+        #expect(!snippet.contains("**"))
+        #expect(!snippet.contains("`"))
+        #expect(!snippet.contains("\n"))
+        #expect(snippet.contains("证据"))
+        #expect(String(hit.snippetAttributed.characters) == hit.snippet)
+        let hasBold = hit.snippetAttributed.runs.contains { run in
+            run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+        }
+        #expect(hasBold)
+    }
+
+    @Test("the search preview is the whole matched message, not a window")
+    func wholeMessagePreview() {
+        let prefix = String(repeating: "a", count: 300)
+        let suffix = String(repeating: "b", count: 300)
         let row = entry(text: prefix + " needle " + suffix)
-        let snippet = ConversationOutlineSearch.hit(in: row, query: "needle", maxSnippetLength: 120)?.snippet ?? ""
-        #expect(snippet.contains("needle"))
-        #expect(snippet.hasPrefix("…"))
-        #expect(snippet.hasSuffix("…"))
-        #expect(snippet.count <= 122)
+        let hit = ConversationOutlineSearch.hit(in: row, query: "needle")
+        #expect(hit?.snippet == prefix + " needle " + suffix)
+        #expect(hit?.snippet.contains("…") == false)
+    }
+
+    @Test("surrounding blank lines do not collapse the excerpt to an ellipsis")
+    func excerptIgnoresBlankLines() {
+        let row = entry(text: "\n\n  target text  \n")
+        #expect(ConversationOutlineSearch.hit(in: row, query: "target")?.snippet == "target text")
+    }
+
+    @Test("the count line counts matching messages, not rows")
+    func matchingMessageCountCountsParts() {
+        let first = entry(
+            id: "e1",
+            text: "alpha\nBeta",
+            parts: [("p1", "alpha one"), ("p2", "Beta two"), ("p3", "gamma")]
+        )
+        let second = entry(id: "e2", text: "beta", parts: [("p4", "beta three")])
+        #expect(ConversationOutlineSearch.matchingMessageCount([first, second], query: "beta") == 2)
+        #expect(ConversationOutlineSearch.matchingMessageCount([first, second], query: "alpha") == 1)
+        #expect(ConversationOutlineSearch.matchingMessageCount([first, second], query: "zzz") == 0)
+        #expect(ConversationOutlineSearch.matchingMessageCount([first, second], query: "   ") == 4)
+    }
+
+    @Test("the count line can exceed the rendered rows")
+    func countCanExceedRows() {
+        let multi = entry(
+            id: "e3",
+            text: "beta one\nbeta two",
+            parts: [("p5", "beta one"), ("p6", "beta two")]
+        )
+        let result = ConversationOutlineSearch.search([multi], query: "beta")
+        #expect(result.messageCount == 2)
+        #expect(result.hits.count == 1)
+        #expect(result.hits.first?.partID == "p5")
     }
 
     @Test("empty query filters nothing")

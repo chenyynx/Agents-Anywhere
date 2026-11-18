@@ -59,30 +59,25 @@ nonisolated enum ConversationOutlineRowContentMaker {
         locale: Locale = .current
     ) -> ConversationOutlineRowContent {
         let text = preview(entry.text)
-        let rawTitle: String
-        // Only the message preview carries Markdown; the placeholders and a
-        // search excerpt are already final text (an excerpt can be cut mid
-        // marker, where parsing would only produce stray asterisks).
-        let parsesMarkdown: Bool
+        let attributed: AttributedString
+        // Search rows are not clamped to two lines: the official result grows
+        // with the whole matched message (the flag that sets `lineLimit = 0`
+        // in the capture). The plain outline keeps the two-line preview.
+        var lineLimit = titleLineLimit
         if let hit, !hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            rawTitle = hit.snippet
-            parsesMarkdown = false
+            // The search hit already carries its Markdown-resolved excerpt
+            // (and the formatted slice), so it is ready to render as-is.
+            attributed = hit.snippetAttributed
+            lineLimit = 0
         } else if entry.attachmentCount > 0 {
-            rawTitle = strings.attachments(entry.attachmentCount)
-            parsesMarkdown = false
+            attributed = AttributedString(strings.attachments(entry.attachmentCount))
         } else if entry.isArriving {
-            rawTitle = strings.replyInProgress
-            parsesMarkdown = false
+            attributed = AttributedString(strings.replyInProgress)
         } else if text.isEmpty {
-            rawTitle = strings.emptyMessage
-            parsesMarkdown = false
+            attributed = AttributedString(strings.emptyMessage)
         } else {
-            rawTitle = text
-            parsesMarkdown = true
+            attributed = markdownTitle(text)
         }
-        let attributed = parsesMarkdown
-            ? markdownTitle(rawTitle)
-            : AttributedString(rawTitle)
         let title = String(attributed.characters)
         return ConversationOutlineRowContent(
             id: entry.id,
@@ -93,7 +88,7 @@ nonisolated enum ConversationOutlineRowContentMaker {
             title: title,
             spokenTitle: strings.spokenTitle(for: entry.sender, title: title),
             detail: stamp(entry.sentAt, now: now, calendar: calendar, locale: locale),
-            titleLineLimit: titleLineLimit
+            titleLineLimit: lineLimit
         )
     }
 

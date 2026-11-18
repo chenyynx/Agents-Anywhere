@@ -72,25 +72,25 @@ struct ConversationOutlineRowContentTests {
         #expect(hasStrong)
     }
 
-    @Test("a search excerpt is shown literally and is not parsed as markdown")
-    func searchExcerptStaysLiteral() {
+    @Test("a search excerpt carries the hit's Markdown-resolved attributed slice")
+    func searchExcerptUsesAttributedSnippet() {
+        var attributed = AttributedString("…needle…")
+        attributed[attributed.startIndex..<attributed.endIndex].inlinePresentationIntent =
+            .stronglyEmphasized
         let hit = ConversationOutlineSearchHit(entryID: "e1", partID: "p9",
-                                               snippet: "…**needle**…")
+                                               snippet: "…needle…",
+                                               snippetAttributed: attributed)
         let content = ConversationOutlineRowContentMaker.content(
             for: entry(text: "body"), hit: hit, strings: strings
         )
-        #expect(content.title == "…**needle**…")
-        #expect(String(content.titleAttributed.characters) == "…**needle**…")
-    }
-
-    @Test("a search hit replaces the title with its excerpt")
-    func searchSnippetWins() {
-        let hit = ConversationOutlineSearchHit(entryID: "e1", partID: "p9", snippet: "…needle…")
-        let content = ConversationOutlineRowContentMaker.content(
-            for: entry(text: "long body"), hit: hit, strings: strings
-        )
         #expect(content.title == "…needle…")
+        #expect(String(content.titleAttributed.characters) == "…needle…")
         #expect(content.partID == "p9")
+        #expect(content.titleLineLimit == 0)
+        let hasStrong = content.titleAttributed.runs.contains { run in
+            run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+        }
+        #expect(hasStrong)
     }
 
     @Test("attachments take precedence when the message has no text")

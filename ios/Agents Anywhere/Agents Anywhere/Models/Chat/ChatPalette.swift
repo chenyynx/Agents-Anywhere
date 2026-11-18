@@ -58,9 +58,9 @@ nonisolated enum ChatPalette {
     /// (core pixels `#525150`), not the pale `#C9C8C7` an early measurement
     /// recorded; the pale value made AA's dates look washed out.
     static let outlineDetail = Token(light: 0x525150, dark: 0x9A9A97)
-    /// The empty-state count line: warmer than a row's time, lighter than its
-    /// speaker (`#86857F` measured on the 0-match capture).
-    static let outlineCount = Token(light: 0x86857F, dark: 0x8E8E8A)
+    /// The empty-state count line. The 2026-11-19 capture's core converts to
+    /// `#7A7973` in sRGB; the earlier `#86857F` read a washed-out gray.
+    static let outlineCount = Token(light: 0x7A7973, dark: 0x8E8E8A)
     static let outlineDivider = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarFill = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarInitials = Token(light: 0x131313, dark: 0xF5F5F3)

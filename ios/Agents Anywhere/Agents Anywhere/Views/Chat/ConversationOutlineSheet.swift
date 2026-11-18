@@ -29,6 +29,9 @@ struct ConversationOutlineSheet: View {
     /// actor when the panel opens and merged under the live timeline.
     @State private var cachedItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
+    /// The capture's count line is a 15 pt token that scales with the reader's
+    /// text size (≈12.9 pt at the captured setting), not a fixed 15 pt.
+    @ScaledMetric(relativeTo: .body) private var countSize: CGFloat = 15
 
     var body: some View {
         NavigationStack {
@@ -72,31 +75,50 @@ struct ConversationOutlineSheet: View {
         var id: V2TimelineItemID { entry.id }
     }
 
-    private var rowModels: [RowModel] {
-        guard !ConversationOutlineSearch.tokens(query).isEmpty else {
-            return entries.map { RowModel(entry: $0, hit: nil) }
-        }
+    private func rowModels(from hits: [ConversationOutlineSearchHit]) -> [RowModel] {
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return ConversationOutlineSearch.filter(entries, query: query).compactMap { hit in
+        return hits.compactMap { hit in
             byID[hit.entryID].map { RowModel(entry: $0, hit: hit) }
         }
     }
 
-    @ViewBuilder private var content: some View {
-        if rowModels.isEmpty {
-            // The official empty state is the count line alone — no card, no
-            // illustration, and it is the only state that shows the line.
-            Text(countLine(shown: 0, total: messageCount))
-                .font(.system(size: 15))
-                .foregroundStyle(ChatPalette.outlineCount.color)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // The capture puts the line's left edge 43.7 pt from the
-                // screen edge; the scroll view itself has no inset.
-                .padding(.leading, 44)
-                .padding(.top, 12)
-        } else {
-            card(rowModels)
+    /// The official line appears throughout a search, with or without hits:
+    /// "已显示 22/72 条消息" sits above the result card. It stays hidden in
+    /// the plain, unsearched list.
+    private var isSearching: Bool {
+        !ConversationOutlineSearch.tokens(query).isEmpty
+    }
+
+    private var content: some View {
+        // One pass returns both the rows and the count-line numerator; the
+        // unsearched list just maps every entry without a hit.
+        let result: ConversationOutlineSearchResult? = isSearching
+            ? ConversationOutlineSearch.search(entries, query: query)
+            : nil
+        let rows = result.map { rowModels(from: $0.hits) }
+            ?? entries.map { RowModel(entry: $0, hit: nil) }
+        return VStack(alignment: .leading, spacing: 0) {
+            if let result {
+                countLineView(shown: result.messageCount)
+            } else if entries.isEmpty {
+                // An empty, unsearched outline keeps the measured 0/0 line.
+                countLineView(shown: 0)
+            }
+            if !rows.isEmpty {
+                card(rows)
+            }
         }
+    }
+
+    private func countLineView(shown: Int) -> some View {
+        Text(countLine(shown: shown, total: messageCount))
+            .font(ClaudeFont.text(countSize, weight: 400))
+            .foregroundStyle(ChatPalette.outlineCount.color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // The capture puts the line's left edge 37.3 pt from the screen
+            // edge and its ink 41.3 pt below the search pill.
+            .padding(.leading, 36)
+            .padding(.top, 26)
     }
 
     private func card(_ rows: [RowModel]) -> some View {
@@ -126,7 +148,9 @@ struct ConversationOutlineSheet: View {
         .background(ChatPalette.outlineCard.color)
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .padding(.horizontal, 16)
-        .padding(.top, 16)
+        // With the count line above, the capture puts the card's top edge
+        // ~10 pt below that line; without it the old gap stays.
+        .padding(.top, isSearching ? 10 : 16)
     }
 
     /// The agent this session runs (Claude, Codex, DSH …), for the speaker

@@ -24,6 +24,9 @@ struct ConversationOutlineSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var entries: [ConversationOutlineEntry] = []
+    /// Rows the local store holds beyond the loaded window. Read off the main
+    /// actor when the panel opens and merged under the live timeline.
+    @State private var cachedItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
 
     var body: some View {
@@ -42,7 +45,7 @@ struct ConversationOutlineSheet: View {
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: Text(String(localized: "消息中的字词"))
             )
-            .task { reload() }
+            .task { await loadCachedRows() }
             .onChange(of: chat.session.timeline.count) { _, _ in reload() }
         }
     }
@@ -69,7 +72,7 @@ struct ConversationOutlineSheet: View {
         if rowModels.isEmpty {
             // The official empty state is the count line alone — no card, no
             // illustration, and it is the only state that shows the line.
-            Text(countLine(shown: 0, total: entries.count))
+            Text(countLine(shown: 0, total: messageCount))
                 .font(.system(size: 15))
                 .foregroundStyle(ChatPalette.outlineSpeaker.color)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,10 +123,33 @@ struct ConversationOutlineSheet: View {
 
     // MARK: - Data
 
+    private func loadCachedRows() async {
+        // The loaded window renders first; the disk read only adds history
+        // that is outside it.
+        reload()
+        let items = await chat.repository.outlineItems(
+            sessionId: chat.session.id,
+            limit: ConversationOutlineSource.cacheRowLimit,
+            byteBudget: ConversationOutlineSource.cacheByteBudget
+        )
+        guard !Task.isCancelled else { return }
+        cachedItems = items
+        reload()
+    }
+
     private func reload() {
         entries = ConversationOutlineEntryBuilder.entries(
-            from: chat.session.timeline.map { $0.value }
+            from: ConversationOutlineSource.merged(
+                live: chat.session.timeline.map { $0.value },
+                cached: cachedItems
+            )
         )
+    }
+
+    /// The official count line counts messages, not outline rows: one row can
+    /// hold several messages of the same turn and sender.
+    private var messageCount: Int {
+        entries.reduce(0) { $0 + $1.parts.count }
     }
 
     private func countLine(shown: Int, total: Int) -> String {

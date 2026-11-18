@@ -126,6 +126,18 @@ actor V2LocalStore {
             cursor: stored.cursor, hasNewerRows: stored.hasNewerItems)
     }
 
+    /// Newest cached rows for the conversation outline, decoded here so the
+    /// panel never decodes JSON on the main actor. `nil` means the row store is
+    /// unavailable or holds none of this session's rows.
+    func outlineItems(sessionID: String, limit: Int, byteBudget: Int) -> [V2TimelineItem]? {
+        guard let database = timelineStore(),
+              let stored = try? database.read(sessionID: sessionID, limit: max(1, limit),
+                                              byteBudget: byteBudget),
+              !stored.rows.isEmpty else { return nil }
+        let items = decodeRows(stored.rows)
+        return items.isEmpty ? nil : items
+    }
+
     func cacheUsage() -> LocalCacheUsage {
         let legacy = legacyJSONBytes()
         guard let database = timelineStore(),

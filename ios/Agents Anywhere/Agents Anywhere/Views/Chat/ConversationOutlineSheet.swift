@@ -74,9 +74,11 @@ struct ConversationOutlineSheet: View {
             // illustration, and it is the only state that shows the line.
             Text(countLine(shown: 0, total: messageCount))
                 .font(.system(size: 15))
-                .foregroundStyle(ChatPalette.outlineSpeaker.color)
+                .foregroundStyle(ChatPalette.outlineCount.color)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 28)
+                // The capture puts the line's left edge 43.7 pt from the
+                // screen edge; the scroll view itself has no inset.
+                .padding(.leading, 44)
                 .padding(.top, 12)
         } else {
             card(rowModels)

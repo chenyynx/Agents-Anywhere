@@ -61,6 +61,16 @@ private func userItem(_ id: String, order: Int) throws -> V2TimelineItem {
                  content: ["text": "hi"], source: ["itemId": "msg-user"])
 }
 
+/// An Agent card row: `content.kind == "agent_call"`, published by the card's
+/// own fold — it can carry a different turn id than the message rows it was
+/// dispatched from (pp 2026-11-18 server row 2865).
+private func agentCardItem(_ id: String, order: Int,
+                           turn: String) throws -> V2TimelineItem {
+    try stepItem(id: id, order: order, type: "tool",
+                 content: ["kind": "agent_call", "action": "invoke"],
+                 source: ["itemId": id, "turnId": turn])
+}
+
 @Suite("Chat step-group grouping")
 struct TimelineStepGroupingTests {
 
@@ -243,6 +253,43 @@ struct TimelineStepGroupingTests {
         #expect(!group.hasInterruptedStep)
     }
 }
+
+    /// pp 2026-11-18：Agent 卡片行由自己的折叠发布，可能带着和同回合其它行
+    /// 不同的 turnId。它不该切步骤组——否则一个回合被切成三行，页脚分桶
+    /// 也跟着切（服务器第 2865 行：邻居全是 6447524c，卡片是 ed82e9b7）。
+    @Test func anAgentCardWithItsOwnTurnDoesNotSplitTheStepRun() throws {
+        let items = [
+            try thinkingItem("r1", order: 1, turn: "turn-a"),
+            try toolItem("t1", order: 2, name: "Bash", turn: "turn-a"),
+            try agentCardItem("card", order: 3, turn: "turn-b"),
+            try thinkingItem("r2", order: 4, turn: "turn-a"),
+            try bodyItem("b1", order: 5, text: "done", turn: "turn-a"),
+        ]
+        let units = TimelineChatGrouping.units(items: items, profile: .generic,
+                                               interactionTargets: [])
+        #expect(units.count == 2)
+        guard case let .stepGroup(_, rowIDs) = units[0] else {
+            Issue.record("the run did not stay one step group")
+            return
+        }
+        #expect(rowIDs == ["r1", "t1", "card", "r2"])
+        guard case .message = units[1] else {
+            Issue.record("the body row must stay its own message unit")
+            return
+        }
+    }
+
+    /// 卡片真的开启一个新回合（后面的行也都换了 turn）时，边界仍然生效。
+    @Test func anAgentCardThatOpensANewTurnStillSplitsTheRun() throws {
+        let items = [
+            try thinkingItem("r1", order: 1, turn: "turn-a"),
+            try agentCardItem("card", order: 2, turn: "turn-b"),
+            try thinkingItem("r2", order: 3, turn: "turn-b"),
+        ]
+        let units = TimelineChatGrouping.units(items: items, profile: .generic,
+                                               interactionTargets: [])
+        #expect(units.count == 2)
+    }
 
 @Suite("Chat step-group summary")
 struct TimelineStepGroupSummaryTests {

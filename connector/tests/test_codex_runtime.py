@@ -3012,6 +3012,9 @@ async def _test_codex_runtime_reads_typed_collab_agent_item_from_snapshot() -> N
         },
         "nativeAction": "spawnAgent",
         "action": "spawn",
+        # Codex's collab spawn is asynchronous: the child runs in the
+        # background while the parent continues (openai/codex #34919).
+        "runInBackground": True,
         "prompt": "inspect this",
         "agentId": "thread_2",
         "callerId": "thread_1",
@@ -3157,6 +3160,7 @@ def test_codex_runtime_maps_all_collab_agent_actions(
             "reasoningEffort": "high",
         },
         output={"thread_2": {"status": "completed", "message": "done"}},
+        dispatch=True,
     ).to_mapping()
 
     assert content["kind"] == "agent_call"
@@ -3165,6 +3169,55 @@ def test_codex_runtime_maps_all_collab_agent_actions(
     assert content["callerId"] == "thread_1"
     assert content["targetIds"] == ["thread_2"]
     assert content["agents"] == {"thread_2": {"status": "completed", "message": "done"}}
+    # Only a spawn is a background hand-off; control calls on agents that
+    # already exist never carry the flag (clients seal footers on it).
+    assert ("runInBackground" in content) is (native_action == "spawnAgent")
+
+
+def test_codex_background_flag_marks_real_spawns_only() -> None:
+    spawn = codex_agent_call_content(
+        native_action="spawnAgent",
+        arguments={"senderThreadId": "thread_1", "receiverThreadIds": ["thread_2"]},
+        output={},
+        dispatch=True,
+    ).to_mapping()
+    assert spawn["runInBackground"] is True
+    # A lifecycle observation of a child that already exists is not a
+    # hand-off: subagent-activity items share the spawn action word but must
+    # not seal the reply before them (pp 2026-11-18).
+    observed = timeline_projection_from_raw(
+        {
+            "id": "subagent_started",
+            "type": "subAgentActivity",
+            "agentPath": "/root/research_agent",
+            "agentThreadId": "thread_2",
+            "kind": "started",
+            "status": "completed",
+        }
+    )
+    item = timeline_item_from_projection(
+        observed, external_session_id="thread_1", fallback_index=0, event="thread/read"
+    ).to_platform_item(session_id="sess_1", order_seq=1)
+    assert item.content["action"] == "spawn"
+    assert "runInBackground" not in item.content
+    # The collab tool call itself is the dispatch and does carry it.
+    collab = timeline_projection_from_raw(
+        {
+            "id": "collab_1",
+            "type": "collabAgentToolCall",
+            "tool": "spawnAgent",
+            "status": "completed",
+            "senderThreadId": "thread_1",
+            "receiverThreadIds": ["thread_2"],
+            "prompt": "inspect this",
+            "agentsStates": {},
+        }
+    )
+    item = timeline_item_from_projection(
+        collab, external_session_id="thread_1", fallback_index=0, event="thread/read"
+    ).to_platform_item(session_id="sess_1", order_seq=1)
+    assert item.content["action"] == "spawn"
+    assert item.content["runInBackground"] is True
 
 
 def test_codex_snapshot_keeps_assistant_native_identity_without_turn_id() -> None:

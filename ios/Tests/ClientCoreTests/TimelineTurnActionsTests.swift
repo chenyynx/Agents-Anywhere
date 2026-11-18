@@ -308,6 +308,222 @@ import Testing
         let after = TimelineTurnActions.build(groups: echoed, suppressLatest: true)
         #expect(after["reply"]?.copyText == pending["reply"]?.copyText)
     }
+
+    /// pp 2026-11-18: a just-sent bubble has no row until its echo arrives,
+    /// so the live id must resolve to nothing — parking it on the previous
+    /// bubble merged the following turns and dropped their footers for 2.6 s
+    /// (`timeline.turn.footer` hosts 30 → 29 → 30). No runtime status is
+    /// consulted: `waiting` is also reported while a turn waits for an answer.
+    @Test func theLiveGroupResolvesOnlyWhileItsOwnTurnIsTheLiveOne() throws {
+        let settled = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 row("reply", text: "Answer")],
+            interactionTargets: [])
+        let live = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 row("reply", text: "Streaming", status: "running")],
+            interactionTargets: [])
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: false,
+            latestUserRowID: "user", groups: settled) == "user")
+        // A settled turn owns no live group: the running status belongs to the
+        // un-echoed new turn, which has no rows yet — protecting the old bubble
+        // merged every turn after it (pp 2026-11-18: hosts 30 → 29 → 30).
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: settled) == nil)
+        // A queued send riding a still-running turn keeps that turn's group
+        // (pp 2026-11-14: the turn-id flap must not split it mid-turn).
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: live) == "user")
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: false, hasUnEchoedPending: false,
+            latestUserRowID: "user", groups: settled) == nil)
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: false,
+            latestUserRowID: nil, groups: settled) == nil)
+    }
+
+    /// The shape behind the 2026-11-18 flicker: the user's bubble, then two
+    /// bubble-less turns (background-task wake-ups). With the live id parked
+    /// on the old bubble, turn-id splitting is off and the earlier turn's
+    /// footer disappears; the fixed wiring passes no live id while the send
+    /// awaits its echo, and both footers survive.
+    @Test func aStaleLiveGroupMergesTheFollowingTurnsAndDropsTheirFooters() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "turn-1"),
+                        row("first", text: "First answer", turnId: "turn-2"),
+                        row("second", text: "Second answer", turnId: "turn-3")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let stale = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            liveTurnGroupID: "user")
+        #expect(stale["second"] != nil)
+        #expect(stale["first"] == nil)
+        let fixed = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            liveTurnGroupID: nil)
+        #expect(fixed["first"] != nil)
+        #expect(fixed["second"] != nil)
+    }
+
+    /// A tool row with arbitrary content, for the background hand-off rows.
+    private func toolRow(_ id: String, content: [String: Any],
+                         status: String = "running", turnId: String? = nil) throws -> ChatTimelineRowModel {
+        var value = try itemObject(id: id, text: "")
+        value["type"] = "tool"; value["role"] = "assistant"; value["status"] = status
+        value["content"] = content
+        if let turnId {
+            var source = value["source"] as? [String: Any] ?? [:]
+            source["turnId"] = turnId
+            value["source"] = source
+        }
+        return ChatTimelineRowModel(try decode(value))
+    }
+
+    /// pp 2026-11-18（真机确认后收窄）：后台派发**不拆回合**。一段引导正文 →
+    /// 前台工具 → 后台子代理派发 → 回合的最后一条正文，仍然只是同一个回合：
+    /// 页脚只出现在回合末的最后一条正文上，引导语不带。
+    /// 真机 transcript：M1 正文 → Bash → Edit → Agent(bg) → M5 正文 → 用户
+    /// 下一条消息（回合在 M5 后结束）。
+    @Test func aBackgroundDispatchDoesNotSplitTheTurn() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "done", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running", turnId: "t1"),
+                        row("second", text: "Second answer", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions["first"] == nil)
+        #expect(actions["second"]?.copyText == "First answer\n\nSecond answer")
+        #expect(actions.count == 1)
+    }
+
+    /// 原问题（不等子代理）：回合结束时后台卡仍在 running，不能挡住这个
+    /// 回合的页脚——后台派发行不计入活跃。
+    @Test func aRunningBackgroundCardDoesNotSuppressTheTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// Claude 的任务事件把同一事实写在 `agents[*].isBackgrounded` 上：这种
+    /// 线缆形状同样让后台卡不挡页脚。
+    @Test func anEventFlaggedBackgroundAgentDoesNotSuppress() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "agents": ["agent-1": ["status": "running",
+                                                                 "isBackgrounded": true]]],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// 后台命令（runInBackground，比如监控）与后台子代理同等对待。
+    @Test func aRunningBackgroundCommandDoesNotSuppressTheTurnsFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("monitor", content: ["kind": "command", "runInBackground": true],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            // The adapter excludes the one-line step groups from hosting.
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions["first"]?.copyText == "First answer")
+        #expect(actions.count == 1)
+    }
+
+    /// 只有后台派发行豁免；同组的前台工具（连续工具行会合成一个步骤组）
+    /// 仍在运行 → 回合页脚保持关闭，与 `aRunningToolKeepsTheFooterClosed`
+    /// 一致。
+    @Test func aRunningForegroundToolStillSuppressesNextToABackgroundCard() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "done", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "running", turnId: "t1"),
+                        row("second", text: "Second answer", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions["second"] == nil)
+    }
+
+    /// 前台 Agent 调用（没有后台标志）就是普通工具步骤：运行中照常抑制回合
+    /// 页脚，不按运行时写死判断。
+    @Test func aRunningForegroundAgentSuppressesLikeAnyTool() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("agent", content: ["kind": "agent_call", "action": "invoke"],
+                                status: "running", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false)
+        #expect(actions.isEmpty)
+    }
+
+    /// 控制调用（send_input / wait / close / unknown）即使带着 runInBackground
+    /// 也不是后台接走：它们只是对已有子代理的管理调用，永远按普通工具计活跃。
+    @Test func aRunningControlCallCountsAsActivity() throws {
+        for action in ["send_input", "wait", "close", "unknown"] {
+            let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                            row("first", text: "First answer", turnId: "t1"),
+                            toolRow("ctl-\(action)",
+                                    content: ["kind": "agent_call", "action": action,
+                                              "runInBackground": true],
+                                    status: "running", turnId: "t1")]
+            let actions = TimelineTurnActions.build(
+                groups: TimelineGrouping.groups(rows, interactionTargets: []),
+                suppressLatest: false)
+            #expect(actions.isEmpty)
+        }
+    }
+
+    /// A foreground tool keeps the turn's single-footer rule: nothing commits
+    /// while the turn is still open.
+    @Test func aForegroundToolKeepsTheTurnOpen() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("bash", content: ["kind": "command", "command": "ls"],
+                                status: "done", turnId: "t1")]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true)
+        #expect(actions.isEmpty)
+    }
+
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.

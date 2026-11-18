@@ -1139,7 +1139,7 @@ final class CodeProfileAutoRunModel {
             (CodeToolLabels.anthropicon(for: writeUpdate), "anthropicon.edit"),
             (CodeToolLabels.anthropicon(for: grep), "anthropicon.search"),
             (CodeToolLabels.anthropicon(for: web), "anthropicon.globe"),
-            (CodeToolLabels.anthropicon(for: task), "anthropicon.agentSimple"),
+            (CodeToolLabels.anthropicon(for: task), "anthropicon.listBullet"),
             (CodeToolLabels.anthropicon(for: send1), "anthropicon.wrench"),
             (CodeToolLabels.anthropicon(for: [read, bashA]), "anthropicon.listBullet"),
             (CodeToolLabels.anthropicon(for: [edit, edit]), "anthropicon.edit"),

@@ -64,6 +64,9 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.fileAdd": [size(11, 15), size(13, 17), size(15, 20)],
         "anthropicon.agentSimple": [size(10, 10), size(11, 11), size(13, 13)],
         "anthropicon.wrench": [size(14, 14), size(16, 16), size(19, 19)],
+        // The drawer's top-left mark (pp 2026-11-18: 用官方左上角图标). Point
+        // sizes per `DATA/anthropicon-map.tsv`, same source as the rest.
+        "anthropicon.menu": [size(13, 11), size(15, 13), size(18, 15)],
     ]
 
     private static func size(_ width: CGFloat, _ height: CGFloat) -> CGSize {

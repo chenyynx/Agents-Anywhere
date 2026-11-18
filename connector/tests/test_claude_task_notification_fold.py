@@ -50,6 +50,8 @@ from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_terminal_status,
 )
 from connector.runtimes.claude.timeline.messages import (
+    ClaudeAgentTaskOverlay,
+    ClaudeMessageProjector,
     ClaudePendingToolCall,
     ClaudeToolBlock,
     is_synthetic_control_message,
@@ -913,3 +915,34 @@ def test_foreign_tool_id_still_folds_through_task_id_lineage() -> None:
     cards = _card_items(items)
     assert len(cards) == 1
     assert cards[0].status == "done"
+
+
+def test_a_card_minted_before_its_dispatch_frame_keeps_the_lookup_turn() -> None:
+    """A task event can fold before the dispatch frame mints the card.
+
+    The card's turn id must come from the dispatch call the lookup already
+    knows. A keyless card row lets a later history fold stamp a different
+    turn, and the client flushes a step run on every declared turn change —
+    the card then splits out as its own one-line row and the footer bucket
+    splits with it (the b1259/b1278 class; pp 2026-11-18 分组三行).
+    """
+
+    projector = ClaudeMessageProjector(
+        tool_call_lookup={
+            DISPATCH_TUID: _pending_call(
+                tool_use_id=DISPATCH_TUID,
+                tool_name="Agent",
+                tool_input={},
+            ),
+        }
+    )
+
+    items = projector.fold_agent_task_items(
+        _session(),
+        tool_use_id=DISPATCH_TUID,
+        overlay=ClaudeAgentTaskOverlay(agents={TASK_ID: {"status": "running"}}),
+        status="running",
+    )
+
+    assert len(items) == 1
+    assert items[0].turn_id == "turn_lookup"

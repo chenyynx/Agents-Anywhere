@@ -182,13 +182,22 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 nonisolated struct TimelineStepSummary: Hashable {
     var thinkingCount = 0
     var askedCount = 0
+    /// Subagent (`task`) calls. They get their own phrase because the generic
+    /// tool phrases do not cover them: without it a group of one thinking step
+    /// plus one subagent run read as 「思考 1 次」 and nothing else
+    /// (pp 2026-11-18).
+    var agentCount = 0
+    /// The dispatch calls among them that are still running. The phrase turns
+    /// present-tense while any is live: 「正在运行 N 个智能体」 — a subagent
+    /// working in the background is not a finished count (pp 2026-11-18).
+    var activeAgentCount = 0
     var readFiles = 0
     var ranCommands = 0
     var editedFiles = 0
     var toolCount = 0
 
     var isEmpty: Bool {
-        thinkingCount == 0 && askedCount == 0 && readFiles == 0
+        thinkingCount == 0 && askedCount == 0 && agentCount == 0 && readFiles == 0
             && ranCommands == 0 && editedFiles == 0 && toolCount == 0
     }
 }
@@ -213,6 +222,16 @@ nonisolated enum TimelineStepSummarizer {
                 summary.askedCount += 1
                 continue
             }
+            // A subagent call is its own phrase: `CodeToolLabelPlan` folds it
+            // into `.ranAgent`, which the verb switch below never matches, so
+            // without this branch the row would not mention it at all.
+            if call.kind == .task {
+                summary.agentCount += 1
+                if step.isRunning, TimelineTurnActions.isDispatchAgentCall(call.item) {
+                    summary.activeAgentCount += 1
+                }
+                continue
+            }
             guard let plan = CodeToolLabelPlan.make(calls: [call], cwd: cwd),
                   let verb = plan.verb else { continue }
             let target = plan.target ?? call.id
@@ -230,9 +249,11 @@ nonisolated enum TimelineStepSummarizer {
     }
 }
 
-/// The settled row's one-line text: 「思考 N 次 · 询问 X 次 · 读取 Y 个文件 ·
-/// 运行 Z 个命令 · 编辑 W 个文件」. Kept next to the counts so the row, the
-/// detail title and the gate cannot drift.
+/// The settled row's one-line text: 「思考 N 次 · 询问 X 次 · 运行了 A 个智能体 ·
+/// 读取 Y 个文件 · 运行 Z 个命令 · 编辑 W 个文件」. While a dispatched agent is
+/// still running the agent phrase turns present-tense (「正在运行 N 个智能体」),
+/// so a background subagent never reads as finished (pp 2026-11-18). Kept next
+/// to the counts so the row, the detail title and the gate cannot drift.
 nonisolated enum TimelineStepSummaryText {
     static func line(_ summary: TimelineStepSummary,
                      locale: Locale = .autoupdatingCurrent) -> String {
@@ -242,6 +263,11 @@ nonisolated enum TimelineStepSummaryText {
         }
         if summary.askedCount > 0 {
             parts.append(String(localized: "询问 \(summary.askedCount) 次", locale: locale))
+        }
+        if summary.agentCount > 0 {
+            parts.append(agentPhrase(count: summary.agentCount,
+                                     active: summary.activeAgentCount,
+                                     locale: locale))
         }
         if summary.readFiles > 0 {
             parts.append(String(localized: "读取 \(summary.readFiles) 个文件", locale: locale))
@@ -259,6 +285,19 @@ nonisolated enum TimelineStepSummaryText {
             parts.append(String(localized: "thought_process", locale: locale))
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// 「正在运行 N 个智能体」 while a dispatch is still running — a subagent
+    /// working in the background is not a finished count (pp 2026-11-18,
+    /// 文案改进行时) — else 「运行了 N 个智能体」, the wording the merged
+    /// row's official `ccr_summary_task_*` pairs use. Inline like the rest of
+    /// this line (「思考 N 次」…), so the phrase reads the same in every
+    /// locale the function falls back to.
+    private static func agentPhrase(count: Int, active: Int, locale: Locale) -> String {
+        guard active > 0 else {
+            return String(localized: "运行了 \(count) 个智能体", locale: locale)
+        }
+        return String(localized: "正在运行 \(active) 个智能体", locale: locale)
     }
 }
 

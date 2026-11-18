@@ -14,12 +14,15 @@ def codex_agent_call_content(
     native_action: str | None,
     arguments: Any,
     output: Any,
+    *,
+    dispatch: bool = False,
 ) -> AgentCallToolContent:
     call_arguments = arguments if isinstance(arguments, Mapping) else {}
     targets = _string_tuple(call_arguments.get("receiverThreadIds"))
     agents = output if isinstance(output, Mapping) else {}
+    action = codex_agent_call_action(native_action)
     return RuntimeAgentCall(
-        action=codex_agent_call_action(native_action),
+        action=action,
         title=(
             _optional_string(call_arguments.get("description"))
             or native_action
@@ -33,6 +36,16 @@ def codex_agent_call_content(
         model=_optional_string(call_arguments.get("model")),
         reasoning_effort=_optional_string(call_arguments.get("reasoningEffort")),
         agents=dict(agents),
+        # Codex's collab model is asynchronous: `spawnAgent` starts the child
+        # thread and returns while the parent keeps working, and the parent
+        # waits explicitly with `wait` (it carries a yield timeout). The IDE
+        # surfaces those children as background agents (openai/codex
+        # #33859/#34919/#35541). Only a real collab tool call is a dispatch —
+        # subagent-activity items are lifecycle observations of a child that
+        # already exists. `resumeAgent` stays unmarked: its items do not state
+        # whether the caller blocks, so it degrades to the turn-end footer
+        # instead of guessing (pp 2026-11-18).
+        run_in_background=True if dispatch and action == "spawn" else None,
         input=dict(call_arguments),
         output=dict(agents) if agents else None,
         metadata={"nativeAction": native_action or "agent"},

@@ -1204,6 +1204,20 @@ class ClaudeMessageProjector:
         item_id = stable_tool_item_id(session, tool_use_id)
         order_seq = self.order_seq_for(item_id)
         card = self._agent_card(item_id)
+        if card.turn_id is None and turn_id is None:
+            # A task event can fold before the dispatch frame mints the card
+            # (the two queues consume one stream). The lookup already carries
+            # the dispatch message's turn id, so the card never starts life
+            # keyless: a keyless card row lets a later history fold stamp a
+            # different turn, and the client flushes a step run on every
+            # declared turn change — the card then splits out as its own
+            # one-line row and the footer bucket splits with it (the
+            # b1259/b1278 class; pp 2026-11-18 分组三行).
+            pending = self._tool_calls.get(item_id) or self._tool_call_lookup.get(
+                tool_use_id
+            )
+            if pending is not None:
+                turn_id = pending.turn_id
         if card.turn_id is None and turn_id is not None:
             card.turn_id = turn_id
         previous_status = card.status

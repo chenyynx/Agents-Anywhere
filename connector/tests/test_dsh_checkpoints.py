@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from connector.runtime_protocol import RuntimeInstanceHost, RuntimeInstanceSpec, timeline_content_hash
-from connector.runtimes.dsh.bridge.sync import SyncRelay
+from connector.runtimes.dsh.bridge.sync import SyncRelay, _checkpoint
 from connector.server.runtime_host import ConnectorRuntimeHost
 from connector.server.sync_state import JsonSyncStateStore
 
@@ -31,8 +31,23 @@ def timeline_notice():
     return {"method": "timeline.itemUpsert", "params": {"sessionId": "session", "item": item}}
 
 
+@pytest.mark.parametrize(
+    ("projection_version", "accepted"),
+    [(2, True), (3, True), (4, True), (5, False), (99, False)],
+)
+def test_checkpoint_accepts_supported_projections_and_rejects_unknown(
+    projection_version: int, accepted: bool
+) -> None:
+    # v4 (dsh-bridge-next 2026-11-14) adds `content.turnInterrupted` on a
+    # user-stopped turn's last main row. Item content is forwarded opaquely,
+    # so accepting it is a gate change only; a future version still fails
+    # explicitly instead of being ingested blind.
+    value = _checkpoint({**CHECKPOINT, "projectionVersion": projection_version})
+    assert (value is not None) is accepted
+
+
 @pytest.mark.parametrize("fail", [False, True])
-@pytest.mark.parametrize("projection_version", [2, 3])
+@pytest.mark.parametrize("projection_version", [2, 3, 4])
 def test_ingestion_precedes_checkpoint_and_ack_and_json_survives_restart(tmp_path, fail, projection_version):
     checkpoint = {**CHECKPOINT, "projectionVersion": projection_version}
     async def run():

@@ -746,8 +746,12 @@ nonisolated enum CodeToolLabels {
 
     /// Official `category → Anthropicon` mapping (R28 §4.1, the 1023
     /// 13-category table). `write` is `fileAdd`, `bash` is
-    /// `commandLinePrompt`, `task` is `agentSimple`, and sessionMessage /
-    /// other / unknown use `wrench`.
+    /// `commandLinePrompt`, and sessionMessage / other / unknown use `wrench`.
+    ///
+    /// `task` is the exception (pp 2026-11-18): the official table draws it
+    /// with `agentSimple` (a diamond), but pp asked for the merged row's
+    /// `listBullet` (three dots and lines) instead — the diamond reads as an
+    /// abstract shape next to the subagent's own mark.
     static func anthropicon(for kind: CodeToolKind) -> String {
         switch kind {
         case .read: return "anthropicon.eye"
@@ -756,7 +760,7 @@ nonisolated enum CodeToolLabels {
         case .bash: return "anthropicon.commandLinePrompt"
         case .search: return "anthropicon.search"
         case .todo: return "anthropicon.checklist"
-        case .task: return "anthropicon.agentSimple"
+        case .task: return "anthropicon.listBullet"
         case .plan: return "anthropicon.checklist"
         case .question, .mcp, .other: return "anthropicon.wrench"
         }

@@ -246,7 +246,11 @@ class CodexTimelineProjection:
             "SubAgentActivityThreadItem",
             "subAgentActivity",
         }:
-            return self.agent_call_content()
+            return self.agent_call_content(
+                # Only a collab tool call is a dispatch the parent issued;
+                # subagent-activity items are lifecycle observations that must
+                # not hand the turn off (pp 2026-11-18).
+                dispatch=self.raw_type == "collabAgentToolCall")
         if self.raw_type == "webSearch":
             return self.web_search_content()
         if self.raw_type == "function_call":
@@ -313,11 +317,12 @@ class CodexTimelineProjection:
             "error": self.message,
         }
 
-    def agent_call_content(self) -> Mapping[str, Any]:
+    def agent_call_content(self, *, dispatch: bool = False) -> Mapping[str, Any]:
         return codex_agent_call_content(
             native_action=self.name,
             arguments=self.arguments,
             output=self.output,
+            dispatch=dispatch,
         ).to_mapping()
 
     def web_search_content(self) -> Mapping[str, Any]:

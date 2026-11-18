@@ -68,11 +68,18 @@ class _Quarantine:
                 "observedAt": _observed_now(), "observationOrigin": "event"}
 
 
+# Projection versions this Connector ingests. v2/v3 are the original item
+# vocabulary; v4 adds `content.turnInterrupted` on a user-stopped turn's last
+# main row. Item content is forwarded opaquely, so v4 needs no parser change —
+# only the gate (dsh-bridge-next history.ts PROJECTION_VERSION, 2026-11-14).
+SUPPORTED_PROJECTION_VERSIONS = (2, 3, 4)
+
+
 def _checkpoint(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
     seq, fingerprint = value.get("throughSeq"), value.get("historyHash")
-    if (value.get("version") != 1 or value.get("projectionVersion") not in (2, 3)
+    if (value.get("version") != 1 or value.get("projectionVersion") not in SUPPORTED_PROJECTION_VERSIONS
         or type(seq) is not int or not -1 <= seq <= 9007199254740991
         or type(value.get("settled")) is not bool or not isinstance(fingerprint, str)
         or len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint)):
@@ -481,7 +488,7 @@ class SyncRelay:
             })
             subscription = await self.client.request("runtime.sync.subscribe", {"checkpointVersion": 1, "uploadProgressVersion": 1})
             projection_version = subscription.get("projectionVersion")
-            if projection_version not in (2, 3):
+            if projection_version not in SUPPORTED_PROJECTION_VERSIONS:
                 raise ValueError("Unsupported DSH projection version")
             stream_id, expected = subscription["streamId"], 1
             self.durable_checkpoints = subscription.get("checkpointVersion") == 1

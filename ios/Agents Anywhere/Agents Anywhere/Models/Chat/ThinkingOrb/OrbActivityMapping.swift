@@ -34,9 +34,9 @@ enum OrbActivityResolver {
 
 extension SessionChatModel {
     /// Collects the orb's signals from this page's live sources (§6.1). The
-    /// row read mirrors `SubAgentCapsuleSlot` — presented rows plus the
-    /// projection's active-card sidecar — so the orb and the capsule can never
-    /// disagree about what is running. Every item predicate reuses the
+    /// row read mirrors `SubAgentToolbarSlot` — presented rows plus the
+    /// projection's active-card sidecar — so the orb and the toolbar entry can
+    /// never disagree about what is running. Every item predicate reuses the
     /// presentation's own definitions; nothing is re-derived here.
     var orbActivitySignals: OrbActivitySignals {
         // The page reads the orb on every body pass (the drawer's motion

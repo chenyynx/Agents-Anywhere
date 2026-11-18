@@ -279,6 +279,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// groups that carry copy/share, so a report like pp's 2026-11-16 「压缩
     /// 之后复制/分享出现又消失」 is read directly instead of reconstructed.
     private var lastTurnFooterProbe: String?
+    /// Last gate snapshot written by `recordFooterGateProbe`; the probe only
+    /// logs a change.
+    private var lastFooterGateProbe: String?
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -290,6 +293,34 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             kind: "timeline.turn.footer",
             sessionID: model.session.id,
             detail: ["hosts": probe, "count": String(hosts.count)],
+            dedupe: false)
+    }
+
+    /// Low-frequency footer-gate snapshot (pp 2026-11-18).
+    ///
+    /// A footer can leave the map while its rows stay put — the 2026-11-18
+    /// send-window drop was decided entirely by the gate's inputs, and the
+    /// exported log carried none of them. Only a change is written, so a
+    /// normal session adds a handful of lines.
+    private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
+                                       pendingHasEcho: Bool, liveTurnGroupID: String?,
+                                       gateLiveUserTurn: Bool) {
+        let status = model.session.runtime.state?.status.rawValue ?? "nil"
+        let probe = [
+            "suppress=\(suppressLatest ? 1 : 0)",
+            "gate=\(gateLiveUserTurn ? 1 : 0)",
+            "pending=\(pendingID == nil ? 0 : 1)",
+            "echo=\(pendingHasEcho ? 1 : 0)",
+            "running=\(model.isRunning ? 1 : 0)",
+            "status=\(status)",
+            "liveGroup=\(liveTurnGroupID == nil ? "nil" : "set")",
+        ].joined(separator: " ")
+        guard probe != lastFooterGateProbe else { return }
+        lastFooterGateProbe = probe
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.footer.gate",
+            sessionID: model.session.id,
+            detail: ["state": probe],
             dedupe: false)
     }
 
@@ -1773,9 +1804,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// summary must never carry the mark.
         var chatLastUserOrder = Int.min
         var chatLiveTurnHasSteps = false
-        /// The strict last unit is a steering user message. The live step
-        /// group above it keeps its running pose, but the turn's working mark
-        /// belongs at the tail, below the steer bubble (pp 2026-11-17).
+        /// The strict last unit is a steering user message. The turn's working
+        /// mark belongs at the tail, below the solid steer bubble: the group
+        /// above it settles (`TimelineChatLiveTail`), and this flag suppresses
+        /// the "a live turn with steps already has its mark" gate so the
+        /// standalone `正在处理中` row takes the mark (pp 2026-11-17).
         var lastUnitIsSteeringRow = false
         if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
@@ -2092,30 +2125,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #endif
             // The dots stay on the trailing group for the whole live turn
             // (pp's device observation) — but only while that group is the
-            // turn's last unit: once body text or anything else follows it,
-            // the dots leave and the row settles into its summary. Steering
-            // rows are user messages INSIDE the turn: they do not mean the
-            // model moved on, so they must not settle the group while the
-            // next step is still coming (pp 2026-11-17: the working mark
-            // dropped for a beat after the steer echo).
-            let lastUnitIsStepGroup: Bool = {
-                for unit in chatUnits.reversed() {
-                    switch unit {
-                    case .stepGroup:
-                        return true
-                    case let .message(_, rowIDs):
-                        let rows = rowIDs.compactMap { rowsByID[$0] }
-                        let isSteering = !rows.isEmpty && rows.allSatisfy {
-                            $0.value.role == .user && !$0.value.startsVisibleTurn
-                        }
-                        if isSteering { continue }
-                        return false
-                    case .standalone:
-                        return false
-                    }
-                }
-                return false
-            }()
+            // turn's strict last unit. A steering row takes the mark away:
+            // the SDK reads a steer at a tool boundary, so the group above it
+            // is done, and the standalone 「正在处理中」 row draws the mark
+            // under the solid steer bubble instead (pp 2026-11-17: keeping
+            // the group live across the steer row drew two working rows,
+            // device 23:50:39).
+            let lastUnitIsStepGroup = TimelineChatLiveTail.stepGroupOwnsMark(chatUnits)
             // The live tail exists only while the turn really streams. The
             // optimistic send window is deliberately excluded: it used to
             // keep the dots on the previous turn's group, which is what made
@@ -2329,19 +2345,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // whole build re-merged each finished turn with the scheduled turn
         // that followed it, so every send and every turn end toggled six
         // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
-        let liveTurnGroupID: String? = {
-            guard turnFooterGate.isLiveUserTurn else { return nil }
-            // An outgoing bubble without an echo row has no group yet; the
-            // trailing bucket is the previous turn, live only while the
-            // runtime still runs it. Once it ended, the window is history.
-            if submittingPendingID != nil, !submittingPendingHasEcho, !model.isRunning {
-                return nil
-            }
-            guard let latestUserRowID else { return nil }
-            return groups.last { group in
-                group.rows.contains { $0.id == latestUserRowID }
-            }?.id
-        }()
+        let suppressLatest = (latestTurnOpen && model.isRunning)
+            || model.session.hasNewerItems
+        let liveTurnGroupID = TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: turnFooterGate.isLiveUserTurn,
+            hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
+            latestUserRowID: latestUserRowID,
+            groups: groups)
+        recordFooterGateProbe(suppressLatest: suppressLatest,
+                              pendingID: submittingPendingID,
+                              pendingHasEcho: submittingPendingHasEcho,
+                              liveTurnGroupID: liveTurnGroupID,
+                              gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2351,8 +2366,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // reader sent the following message). A confirmed idle overrides
             // the open gate; a running tool step still suppresses, so the
             // footer cannot hop between reply segments.
-            suppressLatest: (latestTurnOpen && model.isRunning)
-                || model.session.hasNewerItems,
+            suppressLatest: suppressLatest,
             // Only an outgoing bubble that has not been echoed starts a new
             // turn for the previous footer. A confirmed record held by the
             // presentation until its echo row publishes is not a new turn.
@@ -2962,6 +2976,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         settled.combine(summary.ranCommands)
         settled.combine(summary.editedFiles)
         settled.combine(summary.toolCount)
+        // The agent phrase flips present tense while a dispatch runs and back
+        // when it settles; without the counts the row never reconfigures and
+        // stays on 「正在运行」 after the subagent returns (pp 2026-11-18).
+        settled.combine(summary.agentCount)
+        settled.combine(summary.activeAgentCount)
         rows.append(TimelineRowContentSignature(id: group.id + ":settled",
                                                 revision: settled.revision,
                                                 updatedSeq: 0))

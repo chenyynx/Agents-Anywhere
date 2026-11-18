@@ -158,9 +158,9 @@ enum TimelineTurnActions {
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
     ///
-    /// The footer is committed only when the turn is over (`suppressLatest`
-    /// false). It must not hop to each newly finished reply segment during a
-    /// running turn (pp 2026-11-14); the adapter's `TurnFooterGate` turns the
+    /// A turn commits one footer when the turn is over (`suppressLatest`
+    /// false); it must not hop to each newly finished reply segment while the
+    /// turn runs (pp 2026-11-14). The adapter's `TurnFooterGate` turns the
     /// volatile runtime status into a stable open/closed boundary, so a
     /// running/idle flap across tool steps cannot flicker the row.
     ///
@@ -178,6 +178,14 @@ enum TimelineTurnActions {
     ///   turn followed by a scheduled turn keeps its own footer, or it fell
     ///   into the next turn's bucket and six copy/share bars vanished and
     ///   returned with every send and turn end (pp 2026-11-16, b1279).
+    ///
+    /// One footer per turn, on its last hosting group (pp 2026-11-18). A
+    /// background hand-off (subagent / `runInBackground` command) does not
+    /// split the turn: the turn still ends when the assistant stops — the
+    /// CLI does not hold it open for a background child — so the footer lands
+    /// at the turn's real end without waiting for the child. The hand-off row
+    /// only stops counting as activity (`isBackgroundHandoffRow`), so a
+    /// still-running background card cannot suppress that footer either.
     static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
                       hasPendingUserMessage: Bool = false,
                       liveTurnGroupID: String? = nil,
@@ -219,7 +227,8 @@ enum TimelineTurnActions {
             if let endGroupID, (!replies.isEmpty || !changes.isEmpty), !hasActiveItems {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
             }
-            replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
+            replies = []; changes = []; endGroupID = nil
+            turnOpen = false; hasActiveItems = false
             bucketTurnID = nil
         }
 
@@ -263,9 +272,18 @@ enum TimelineTurnActions {
             // while it runs, the finished turn keeps its footer and the 30 pt
             // action bar with it (pp 2026-11-15: copy/share vanished for the
             // whole compaction and the page jumped twice).
+            //
+            // A background hand-off row never counts as activity: its card
+            // stays `running` for the whole background run, exactly the wait
+            // pp ruled out — a reply finished after the hand-off must get its
+            // footer while the subagent is still working (pp 2026-11-18 需求
+            // 2: 不等子代理). Foreground rows — including a foreground tool
+            // that shares the same step group — still suppress
+            // (`aRunningToolKeepsTheFooterClosed`).
             let active = group.rows.contains {
                 $0.structure.status.isActive
                     && !TimelineEntryPresentation.isCompactItem($0.value)
+                    && !isBackgroundHandoffRow($0.value)
             }
             hasActiveItems = hasActiveItems || active
         }
@@ -275,6 +293,99 @@ enum TimelineTurnActions {
             commit()
         }
         return actions
+    }
+
+    /// Whether the live user turn already owns a group in the timeline.
+    ///
+    /// An outgoing bubble has no row until its echo lands, so its turn owns no
+    /// group yet: parking `liveTurnGroupID` on an older user bubble disables
+    /// turn-id splitting for every following turn, merges them into one
+    /// bucket and drops their footers until the echo arrives (pp 2026-11-18:
+    /// 2.6 s, `timeline.turn.footer` hosts 30 → 29 → 30).
+    ///
+    /// No runtime status is consulted on purpose: `waiting` is also reported
+    /// while a turn waits for the reader to answer a question
+    /// (`claude.ask_user_question`, codex `request_user_input`), so a status
+    /// cannot tell the previous turn from the new one.
+    static func resolveLiveTurnGroupID(isLiveUserTurn: Bool,
+                                       hasUnEchoedPending: Bool,
+                                       latestUserRowID: String?,
+                                       groups: [ChatTimelineGroup]) -> String? {
+        guard isLiveUserTurn, let latestUserRowID else { return nil }
+        guard let bubbleIndex = groups.lastIndex(where: { group in
+            group.rows.contains { $0.id == latestUserRowID }
+        }) else { return nil }
+        guard hasUnEchoedPending else { return groups[bubbleIndex].id }
+        // A queued send riding a still-running turn keeps that turn's group:
+        // its turn-id flap must not split the bucket mid-turn (pp 2026-11-14).
+        // A turn that already settled owns no live group — the running status
+        // then belongs to the un-echoed new turn, which has no rows yet, and
+        // protecting the old bubble would merge every turn after it.
+        let liveRowsAfterBubble = groups[(bubbleIndex + 1)...].contains { group in
+            group.rows.contains { $0.structure.status.isActive }
+        }
+        return liveRowsAfterBubble ? groups[bubbleIndex].id : nil
+    }
+
+    /// One row that hands the turn off to the background: a subagent dispatch
+    /// that reports itself backgrounded, or a `runInBackground` command.
+    ///
+    /// The card stays `running` for the whole background run, so counting it
+    /// as activity would suppress the turn's footer until the background
+    /// returns — the wait pp ruled out (pp 2026-11-18: 回复完成了就带页脚，
+    /// 不等子代理). The turn itself still ends when the assistant stops: the
+    /// CLI does not hold a turn open for a background child (verified on this
+    /// session's transcript: turn = M1 text → tools → background dispatch →
+    /// final text → user's next message), so this exclusion is all the footer
+    /// needs — a dispatch never splits the turn (pp 2026-11-18 第二版: 一个回合
+    /// 只有最后一条正文带页脚，派发前的引导语不封口).
+    ///
+    /// Only a **background** hand-off counts, never a foreground one:
+    /// - an Agent dispatch must report itself backgrounded
+    ///   (`runInBackground` from Claude's tool input, or an
+    ///   `agents[*].isBackgrounded` task event). A foreground Agent call is an
+    ///   ordinary tool step and counts as activity like any other tool;
+    /// - a control call on an agent that already exists is never a dispatch:
+    ///   the wire's real action words are `send_input` / `wait` / `close`
+    ///   (DSH projects `send_message`/`list_agents` this way, `list_agents`
+    ///   degrading to `unknown`).
+    ///
+    /// `runInBackground` is written on Claude's rows. Codex's agent-call writer
+    /// never sets it, and DSH's command content has no such field: a runtime
+    /// that does not report the flag keeps the ordinary activity rule —
+    /// capability-driven, no provider branching.
+    private static func isBackgroundHandoffRow(_ item: V2TimelineItem) -> Bool {
+        if SubAgentProgress.isAgentCall(item) {
+            return isDispatchAgentCall(item) && reportsBackground(item)
+        }
+        return item.raw["content"]?["runInBackground"]?.boolValue == true
+    }
+
+    /// Whether an Agent card reports that its dispatch runs in the background.
+    /// Claude writes `runInBackground` from the tool input when the call is
+    /// made and `agents[*].isBackgrounded` from its task events later; the
+    /// same reading the card UI uses (`SubAgentProgress.card`). A runtime that
+    /// reports neither leaves the card foreground.
+    private static func reportsBackground(_ item: V2TimelineItem) -> Bool {
+        let content = item.raw["content"]
+        if content?["runInBackground"]?.boolValue == true { return true }
+        return content?["agents"]?.objectValue?.values.contains {
+            $0["isBackgrounded"]?.boolValue == true
+        } ?? false
+    }
+
+    /// A subagent row that hands work off (dispatch), as opposed to a control
+    /// call on an agent that already exists. Shared by the background
+    /// hand-off rule and the step summary's present-tense phrase so both agree
+    /// on what "an agent running" means.
+    static func isDispatchAgentCall(_ item: V2TimelineItem) -> Bool {
+        guard SubAgentProgress.isAgentCall(item) else { return false }
+        switch item.raw["content"]?["action"]?.stringValue {
+        case .some("invoke"), .some("spawn"), .some("resume"):
+            return true
+        default:
+            return false
+        }
     }
 
     /// Keep the footers a finished turn already had while the footer gate

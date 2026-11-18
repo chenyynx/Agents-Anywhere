@@ -104,6 +104,14 @@ struct ConversationOutlineRowContentTests {
         #expect(assistant.spokenTitle == "Claude said, hello")
     }
 
+    @Test("the preview folds newlines and repeated whitespace into one space")
+    func previewNormalizesWhitespace() {
+        let content = ConversationOutlineRowContentMaker.content(
+            for: entry(text: "first\nsecond  third\tfourth"), hit: nil, strings: strings
+        )
+        #expect(content.title == "first second third fourth")
+    }
+
     @Test("the detail uses month and day within the current year")
     func stampSameYear() {
         let content = ConversationOutlineRowContentMaker.content(

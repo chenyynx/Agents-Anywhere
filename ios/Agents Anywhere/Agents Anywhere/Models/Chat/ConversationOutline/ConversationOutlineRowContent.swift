@@ -51,7 +51,7 @@ nonisolated enum ConversationOutlineRowContentMaker {
         calendar: Calendar = .current,
         locale: Locale = .current
     ) -> ConversationOutlineRowContent {
-        let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = preview(entry.text)
         let title: String
         if let hit, !hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             title = hit.snippet
@@ -74,6 +74,13 @@ nonisolated enum ConversationOutlineRowContentMaker {
             detail: stamp(entry.sentAt, now: now, calendar: calendar, locale: locale),
             titleLineLimit: titleLineLimit
         )
+    }
+
+    /// The official preview folds every run of whitespace — including the
+    /// `\n` that joins a merged row's messages — into one space, so a row
+    /// reads as one continuous excerpt instead of stacked paragraphs.
+    static func preview(_ value: String) -> String {
+        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     /// The official outline keeps month/day for the current year and adds the

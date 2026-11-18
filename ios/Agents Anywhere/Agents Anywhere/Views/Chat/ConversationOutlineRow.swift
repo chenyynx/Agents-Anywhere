@@ -13,6 +13,7 @@ struct ConversationOutlineRow: View {
     @ScaledMetric(relativeTo: .body) private var speakerSize: CGFloat = 13
     @ScaledMetric(relativeTo: .body) private var titleSize: CGFloat = 15
     @ScaledMetric(relativeTo: .body) private var detailSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .body) private var initialsSize: CGFloat = 13
 
     var body: some View {
         Button(action: action) {
@@ -52,7 +53,7 @@ struct ConversationOutlineRow: View {
                     .fill(ChatPalette.outlineAvatarFill.color)
                     .overlay(
                         Text(monogram)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: initialsSize, weight: .semibold))
                             .foregroundStyle(ChatPalette.outlineAvatarInitials.color)
                     )
             } else {

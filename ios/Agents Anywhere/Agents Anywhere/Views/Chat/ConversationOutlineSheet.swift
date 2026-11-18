@@ -28,6 +28,9 @@ struct ConversationOutlineSheet: View {
     /// actor when the panel opens and merged under the live timeline.
     @State private var cachedItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
+    /// The official panel title is 20 pt bold and centered; the system inline
+    /// title renders 17 pt, so the toolbar carries the measured style.
+    @ScaledMetric(relativeTo: .headline) private var titleSize: CGFloat = 20
 
     var body: some View {
         NavigationStack {
@@ -38,6 +41,11 @@ struct ConversationOutlineSheet: View {
             .navigationTitle(Text(String(localized: "对话大纲")))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(String(localized: "对话大纲"))
+                        .font(.system(size: titleSize, weight: .bold))
+                        .foregroundStyle(ChatPalette.outlineTitle.color)
+                }
                 ToolbarItem(placement: .topBarLeading) { closeButton }
             }
             .searchable(

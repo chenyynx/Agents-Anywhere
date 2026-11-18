@@ -659,16 +659,18 @@ private struct ChatSidebarAvatar: View {
             // plain initials inside it (no second filled disc, or the glass
             // button would read as a double circle).
             Text(verbatim: initials)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
-                .frame(width: 41, height: 41)
+                // The photo/initials sit inside the 49 pt glass circle; keep
+                // the glass size and leave a visible rim around the avatar.
+                .frame(width: 34, height: 34)
                 .clipShape(Circle())
                 .accessibilityLabel(Text(account.displayName))
         } else {
             AccountAvatarView(
                 displayName: account.displayName,
                 source: account.avatarSource,
-                size: 41
+                size: 34
             )
         }
     }

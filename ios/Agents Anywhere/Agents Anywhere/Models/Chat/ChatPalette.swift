@@ -54,7 +54,10 @@ nonisolated enum ChatPalette {
     static let outlineCard = Token(light: 0xFFFFFF, dark: 0x2C2C2E)
     static let outlineTitle = Token(light: 0x0B0B0B, dark: 0xF5F5F3)
     static let outlineSpeaker = Token(light: 0x525150, dark: 0x9A9A97)
-    static let outlineDetail = Token(light: 0xC9C8C7, dark: 0x6E6E6B)
+    /// The time under a row shares the speaker's ink in the official capture
+    /// (core pixels `#525150`), not the pale `#C9C8C7` an early measurement
+    /// recorded; the pale value made AA's dates look washed out.
+    static let outlineDetail = Token(light: 0x525150, dark: 0x9A9A97)
     /// The empty-state count line: warmer than a row's time, lighter than its
     /// speaker (`#86857F` measured on the 0-match capture).
     static let outlineCount = Token(light: 0x86857F, dark: 0x8E8E8A)

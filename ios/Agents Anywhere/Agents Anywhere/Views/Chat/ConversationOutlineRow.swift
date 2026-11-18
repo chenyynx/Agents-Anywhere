@@ -19,12 +19,18 @@ struct ConversationOutlineRow: View {
     @ScaledMetric(relativeTo: .body) private var detailSize: CGFloat = 13
     @ScaledMetric(relativeTo: .body) private var initialsSize: CGFloat = 13
     @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 13
+    /// The extra leading between the row's three lines; the official type
+    /// tokens scale it with the reader's text size.
+    @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .center, spacing: 12) {
+            // The official avatar rides the top of the text column (its
+            // center stays ~25 pt below the row top on one- and two-line
+            // previews alike); centering it sank it on every 3-line row.
+            HStack(alignment: .top, spacing: 12) {
                 avatar
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: lineGap) {
                     Text(content.speaker)
                         .font(.system(size: speakerSize))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
@@ -32,6 +38,7 @@ struct ConversationOutlineRow: View {
                         .font(.system(size: titleSize))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                         .lineLimit(content.titleLineLimit)
+                        .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
                     Text(content.detail)
                         .font(.system(size: detailSize))
@@ -41,7 +48,7 @@ struct ConversationOutlineRow: View {
             }
             .padding(.leading, 20)
             .padding(.trailing, 20)
-            .padding(.vertical, 16)
+            .padding(.vertical, 15)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

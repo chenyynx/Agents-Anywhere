@@ -123,7 +123,7 @@ struct ConversationOutlineSheet: View {
         .background(ChatPalette.outlineCard.color)
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .padding(.horizontal, 16)
-        .padding(.top, 12)
+        .padding(.top, 16)
     }
 
     /// The official rows wear the signed-in viewer's initials (or photo), not

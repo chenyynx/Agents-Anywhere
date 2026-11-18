@@ -45,6 +45,22 @@ nonisolated enum ChatPalette {
     /// `[derived]` task-list checkbox stroke.
     static let checkboxBorder = Token(light: 0xA9A9AD, dark: 0x636366)
 
+    // MARK: Conversation outline (official 1.261109.19 capture)
+
+    /// Light values are measured from the official outline sheet; dark values
+    /// are derived to keep the same contrast inside AA (the capture had no
+    /// dark variant).
+    static let outlineSheetBackground = Token(light: 0xF9F9F7, dark: 0x1C1C1E)
+    static let outlineCard = Token(light: 0xFFFFFF, dark: 0x2C2C2E)
+    static let outlineTitle = Token(light: 0x0B0B0B, dark: 0xF5F5F3)
+    static let outlineSpeaker = Token(light: 0x525150, dark: 0x9A9A97)
+    static let outlineDetail = Token(light: 0xC9C8C7, dark: 0x6E6E6B)
+    static let outlineDivider = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
+    static let outlineAvatarFill = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
+    static let outlineAvatarInitials = Token(light: 0x131313, dark: 0xF5F5F3)
+    static let outlineClaudeAvatar = Token(light: 0xB96647, dark: 0xB96647)
+    static let outlineSearchField = Token(light: 0xF6F6F5, dark: 0x2C2C2E)
+
     // MARK: Code card (moonveil's `SelectableMarkdownTheme`)
 
     /// Card fill: white in light, warm dark grey in the dark. Same pair as the

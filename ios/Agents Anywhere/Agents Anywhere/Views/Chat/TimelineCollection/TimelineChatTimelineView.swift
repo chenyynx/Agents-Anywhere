@@ -18,6 +18,9 @@ struct TimelineChatTimelineView: View {
     /// are involved.
     let safeAreaInsets: EdgeInsets
     @StateObject private var bridge: TimelineChatBridge
+    /// The outline's outstanding "scroll to this message" request. The sheet
+    /// posts targets here; the bridge owns the paging and the scroll.
+    @ObservedObject private var jumpRequest: ConversationOutlineJumpRequest
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
@@ -42,10 +45,12 @@ struct TimelineChatTimelineView: View {
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
          onSubAgent: @escaping (String) -> Void,
+         jumpRequest: ConversationOutlineJumpRequest = ConversationOutlineJumpRequest(),
          safeAreaInsets: EdgeInsets = EdgeInsets(),
          renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
+        _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent,
             renderMode: renderMode))
@@ -197,6 +202,10 @@ struct TimelineChatTimelineView: View {
             .accessibilityHidden(!model.isOpeningReady)
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
                 if ready { bridge.beginOpening() }
+            }
+            .onChange(of: jumpRequest.token) { _, _ in
+                guard let rowID = jumpRequest.rowID else { return }
+                Task { await bridge.jump(toRowID: rowID) }
             }
             .onChange(of: model.openingRefreshCompleted) { _, _ in
                 // A cached window can be on screen before `open()` returns;
@@ -499,6 +508,36 @@ final class TimelineChatBridge: ObservableObject {
         controller.setInteractionPresented(hasInteractions)
         updateHistoryAvailability()
         if openingPending, !controller.items.isEmpty { applyCompleted() }
+    }
+
+    /// Scrolls to the row that carries `rowID`, paging older history while the
+    /// row is not in the loaded window. Returns true when the row landed.
+    @discardableResult
+    func jump(toRowID rowID: String) async -> Bool {
+        if scrollToLoadedRow(rowID) { return true }
+        var pages = 0
+        while pages < 20, model.session.canLoadOlder, !Task.isCancelled {
+            let oldest = model.session.timeline.first?.value.orderSeq
+            await model.session.loadOlder()
+            pages += 1
+            // The collection's diffable data source applies on the next run
+            // loop tick; poll briefly instead of racing the apply.
+            for _ in 0..<20 {
+                if scrollToLoadedRow(rowID) { return true }
+                if Task.isCancelled { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if model.session.timeline.first?.value.orderSeq == oldest { break }
+        }
+        return false
+    }
+
+    private func scrollToLoadedRow(_ rowID: String) -> Bool {
+        guard let controller,
+              let item = adapter.item(containingRow: rowID),
+              let path = controller.indexPath(for: item) else { return false }
+        controller.collectionView.scrollToItem(at: path, at: .centeredVertically, animated: true)
+        return true
     }
 
     /// The prompt/pull gates read the session's page flags, not a copy that

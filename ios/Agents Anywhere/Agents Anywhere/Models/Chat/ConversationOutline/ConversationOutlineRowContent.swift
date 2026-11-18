@@ -29,6 +29,8 @@ nonisolated struct ConversationOutlineRowContent: Equatable {
     let id: V2TimelineItemID
     /// The exact message a tap opens; nil for the row's first message.
     let partID: V2TimelineItemID?
+    /// Whether the row belongs to the human, so the view can pick the avatar.
+    let isUser: Bool
     let speaker: String
     let title: String
     let spokenTitle: String
@@ -65,6 +67,7 @@ nonisolated enum ConversationOutlineRowContentMaker {
         return ConversationOutlineRowContent(
             id: entry.id,
             partID: hit?.partID,
+            isUser: entry.sender == .user,
             speaker: strings.speaker(for: entry.sender),
             title: title,
             spokenTitle: strings.spokenTitle(for: entry.sender, title: title),

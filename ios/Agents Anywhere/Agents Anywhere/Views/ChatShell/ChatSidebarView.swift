@@ -224,7 +224,7 @@ struct ChatSidebarHeaderView: View {
                 Image("aa-IconSearch")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 18, height: 18)
+                    .frame(width: 19, height: 19)
                     .foregroundStyle(AppTheme.text300(colorScheme))
             }
             .buttonStyle(.glass)
@@ -395,7 +395,7 @@ private struct ChatSidebarDeviceRow: View {
                 Image("aa-IconComputer")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 19.5, height: 19.5)
+                    .frame(width: 20, height: 20)
                     .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     .opacity(device.presence == .offline ? 0.45 : 1)
 
@@ -459,7 +459,7 @@ struct ChatSidebarSessionRow: View {
                     Image("aa-IconChat")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 19.5, height: 19.5)
+                        .frame(width: 20, height: 20)
                         .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                         .accessibilityLabel(Text(SessionAgentMark.resolve(runtime: session.runtime, runtimeType: session.runtimeType).label))
                     Text(session.title ?? String(localized: "Untitled session"))

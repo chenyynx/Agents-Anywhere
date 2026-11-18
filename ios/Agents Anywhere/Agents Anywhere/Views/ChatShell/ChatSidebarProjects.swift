@@ -133,7 +133,7 @@ struct ChatSidebarProjects: View {
                     Image(expanded.contains(project.id) ? "aa-IconFolderOpen" : "aa-IconFolder")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 19.5, height: 19.5)
+                        .frame(width: 20, height: 20)
                         .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
                     Text(project.name)
                         .font(.system(size: 15, weight: .regular))

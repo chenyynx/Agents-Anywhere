@@ -1,50 +1,22 @@
-import CoreText
 import SwiftUI
 import UIKit
 
-/// The official app's UI face: Anthropic Sans Mobile, a variable font
-/// (`wght` 300–800) bundled from the 1.261109.19 capture. The outline rows use
-/// it so Latin text and digits match the official letterforms; CJK glyphs fall
-/// back to the system face exactly as they do in the official app.
+/// The outline's official type: the Code page's bundled Anthropic Sans for the
+/// rows and JetBrains Mono for inline code. `AppFontRegistry` already
+/// registers both faces at launch, so this only selects the captured weights.
 enum ClaudeFont {
-    static let postScriptName = "AnthropicSansMobileVariable-TextRegular"
-    static let monoPostScriptName = "JetBrainsMono-Regular"
-
-    /// The capture's row text sits between the 400 and 500 named instances
+    /// The capture's row text sits between the 400 and 500 instances
     /// (stroke 5.29 px against 4.66 / 5.61); 460 reproduces it at the scaled
     /// 13 pt size.
     static let rowWeight: CGFloat = 460
 
-    /// `UIAppFonts` registers the bundled file at launch; registering it here
-    /// as well keeps previews and a missed plist path working, since a custom
-    /// font is the only way to reproduce the capture's letterforms.
-    private static func register(_ name: String) -> Bool {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "ttf") else { return false }
-        return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-    }
-
-    private static let isRegistered = register(postScriptName)
-    private static let isMonoRegistered = register(monoPostScriptName)
-
     static func text(_ size: CGFloat, weight: CGFloat = rowWeight) -> Font {
-        _ = isRegistered
-        guard let base = UIFont(name: postScriptName, size: size) else {
-            return .system(size: size, weight: .regular)
-        }
-        let axis = NSNumber(value: 0x77676874) // 'wght'
-        let descriptor = base.fontDescriptor.addingAttributes([
-            UIFontDescriptor.AttributeName(rawValue: kCTFontVariationAttribute as String):
-                [axis: NSNumber(value: weight)] as [NSNumber: NSNumber],
-        ])
-        return Font(UIFont(descriptor: descriptor, size: size))
+        Font(MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                      size: size, weight: weight))
     }
 
-    /// Inline code spans use the official's JetBrains Mono, not SF Mono.
     static func mono(_ size: CGFloat) -> Font {
-        _ = isMonoRegistered
-        guard let font = UIFont(name: monoPostScriptName, size: size) else {
-            return .system(size: size, design: .monospaced)
-        }
-        return Font(font)
+        Font(MarkdownFontFactory.font(name: CodePageTheme.monoFontName,
+                                      size: size, weight: 400))
     }
 }

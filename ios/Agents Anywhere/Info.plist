@@ -17,11 +17,6 @@
 			</array>
 		</dict>
 	</array>
-	<key>UIAppFonts</key>
-	<array>
-		<string>AnthropicSansMobileVariable-TextRegular.ttf</string>
-		<string>JetBrainsMono-Regular.ttf</string>
-	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>拍摄照片并作为附件发送给 Agent。</string>
 	<key>NSPhotoLibraryUsageDescription</key>

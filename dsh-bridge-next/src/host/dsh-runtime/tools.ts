@@ -29,6 +29,13 @@ export function toolContent(name: string, rawArguments: unknown): Data {
     if (action[name]) {
       content.kind = 'agent_call'
       content.action = action[name]!
+      // DSH's delegation tools start a continuable child that keeps running in
+      // the background (official tools reference: 「Fan out independent tasks
+      // in the background」; subagent_fork is the same tool bound to the fork
+      // backend). The control tools above manage those children and never hand
+      // the turn off. Clients seal the reply that precedes a background
+      // hand-off and must not wait for the child (pp 2026-11-18).
+      if (name === 'subagent' || name === 'subagent_fork') content.runInBackground = true
       if (typeof args.target === 'string') content.targetIds = [args.target]
     }
   }

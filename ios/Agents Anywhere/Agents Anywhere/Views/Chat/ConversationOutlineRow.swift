@@ -37,7 +37,7 @@ struct ConversationOutlineRow: View {
                     Text(content.speaker)
                         .font(ClaudeFont.text(speakerSize))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
-                    Text(content.title)
+                    Text(content.titleAttributed)
                         .font(ClaudeFont.text(titleSize))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                         .lineLimit(content.titleLineLimit)

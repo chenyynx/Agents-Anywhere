@@ -51,8 +51,36 @@ struct ConversationOutlineRowContentTests {
             for: entry(text: "hello"), hit: nil, strings: strings
         )
         #expect(content.title == "hello")
+        #expect(String(content.titleAttributed.characters) == "hello")
         #expect(content.partID == nil)
         #expect(content.titleLineLimit == 2)
+    }
+
+    @Test("markdown markers become attributes instead of leaking into the title")
+    func markdownTitleIsAttributed() {
+        let content = ConversationOutlineRowContentMaker.content(
+            for: entry(text: "第一轮 **失败原因**(2 处)，都在 `ConversationOutline`"),
+            hit: nil, strings: strings
+        )
+        #expect(content.title == "第一轮 失败原因(2 处)，都在 ConversationOutline")
+        #expect(!content.title.contains("**"))
+        #expect(!content.title.contains("`"))
+        #expect(content.spokenTitle == "Claude said, 第一轮 失败原因(2 处)，都在 ConversationOutline")
+        let hasStrong = content.titleAttributed.runs.contains { run in
+            run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+        }
+        #expect(hasStrong)
+    }
+
+    @Test("a search excerpt is shown literally and is not parsed as markdown")
+    func searchExcerptStaysLiteral() {
+        let hit = ConversationOutlineSearchHit(entryID: "e1", partID: "p9",
+                                               snippet: "…**needle**…")
+        let content = ConversationOutlineRowContentMaker.content(
+            for: entry(text: "body"), hit: hit, strings: strings
+        )
+        #expect(content.title == "…**needle**…")
+        #expect(String(content.titleAttributed.characters) == "…**needle**…")
     }
 
     @Test("a search hit replaces the title with its excerpt")

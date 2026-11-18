@@ -32,6 +32,10 @@ nonisolated struct ConversationOutlineRowContent: Equatable {
     /// Whether the row belongs to the human, so the view can pick the avatar.
     let isUser: Bool
     let speaker: String
+    /// The title with its inline Markdown resolved (bold/code spans carry
+    /// their presentation intent) and the markers removed.
+    let titleAttributed: AttributedString
+    /// The same title as plain text, for VoiceOver and tests.
     let title: String
     let spokenTitle: String
     let detail: String
@@ -52,28 +56,51 @@ nonisolated enum ConversationOutlineRowContentMaker {
         locale: Locale = .current
     ) -> ConversationOutlineRowContent {
         let text = preview(entry.text)
-        let title: String
+        let rawTitle: String
+        // Only the message preview carries Markdown; the placeholders and a
+        // search excerpt are already final text (an excerpt can be cut mid
+        // marker, where parsing would only produce stray asterisks).
+        let parsesMarkdown: Bool
         if let hit, !hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            title = hit.snippet
+            rawTitle = hit.snippet
+            parsesMarkdown = false
         } else if entry.attachmentCount > 0 {
-            title = strings.attachments(entry.attachmentCount)
+            rawTitle = strings.attachments(entry.attachmentCount)
+            parsesMarkdown = false
         } else if entry.isArriving {
-            title = strings.replyInProgress
+            rawTitle = strings.replyInProgress
+            parsesMarkdown = false
         } else if text.isEmpty {
-            title = strings.emptyMessage
+            rawTitle = strings.emptyMessage
+            parsesMarkdown = false
         } else {
-            title = text
+            rawTitle = text
+            parsesMarkdown = true
         }
+        let attributed = parsesMarkdown
+            ? markdownTitle(rawTitle)
+            : AttributedString(rawTitle)
+        let title = String(attributed.characters)
         return ConversationOutlineRowContent(
             id: entry.id,
             partID: hit?.partID,
             isUser: entry.sender == .user,
             speaker: strings.speaker(for: entry.sender),
+            titleAttributed: attributed,
             title: title,
             spokenTitle: strings.spokenTitle(for: entry.sender, title: title),
             detail: stamp(entry.sentAt, now: now, calendar: calendar, locale: locale),
             titleLineLimit: titleLineLimit
         )
+    }
+
+    /// The official title is an AttributedString: `**bold**` and `` `code` ``
+    /// render as such instead of leaking their markers into the row.
+    static func markdownTitle(_ value: String) -> AttributedString {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+        return (try? AttributedString(markdown: value, options: options))
+            ?? AttributedString(value)
     }
 
     /// The official preview folds every run of whitespace — including the

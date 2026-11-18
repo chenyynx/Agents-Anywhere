@@ -22,7 +22,6 @@ struct ConversationOutlineRow: View {
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
     @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3
-    @ScaledMetric(relativeTo: .body) private var detailTracking: CGFloat = -0.7
 
     var body: some View {
         Button(action: action) {
@@ -32,25 +31,20 @@ struct ConversationOutlineRow: View {
             HStack(alignment: .top, spacing: 12) {
                 avatar
                 VStack(alignment: .leading, spacing: lineGap) {
-                    // Same #525150 ink on both sides, but the official
-                    // speaker's stroke is heavier than SF Regular (2.97 px vs
-                    // 2.60 px at the same 31x30 glyph box); Medium is the
-                    // closest SF weight.
+                    // The official row type is Anthropic Sans Mobile; using
+                    // it lets the Latin "Claude" and the stamp's digits match
+                    // the capture's letterforms and widths instead of SF's.
                     Text(content.speaker)
-                        .font(.system(size: speakerSize, weight: .medium))
+                        .font(ClaudeFont.text(speakerSize))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
                     Text(content.title)
-                        .font(.system(size: titleSize))
+                        .font(ClaudeFont.text(titleSize))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                         .lineLimit(content.titleLineLimit)
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
-                    // The official stamp is tighter than SF's default: its
-                    // line runs 199 px where SF sets 222 px at the same 13 pt,
-                    // so tighten the tracking instead of widening it.
                     Text(content.detail)
-                        .font(.system(size: detailSize))
-                        .tracking(detailTracking)
+                        .font(ClaudeFont.text(detailSize))
                         .foregroundStyle(ChatPalette.outlineDetail.color)
                 }
                 Spacer(minLength: 0)

@@ -17,7 +17,8 @@ let package = Package(
             path: "Agents Anywhere/Agents Anywhere",
             exclude: [
                 "App", "Assets.xcassets", "Resources", "Services", "Stores", "Views",
-                "ios-dark.icon", "Business/AccountAvatarProcessor.swift",
+                "ios-dark.icon", "AnthropicSansMobileVariable-TextRegular.ttf",
+                "Business/AccountAvatarProcessor.swift",
             ],
             sources: ["API", "Network", "Models", "Domain", "Business", "Repositories", "Diagnostics"],
             swiftSettings: [.defaultIsolation(MainActor.self)]

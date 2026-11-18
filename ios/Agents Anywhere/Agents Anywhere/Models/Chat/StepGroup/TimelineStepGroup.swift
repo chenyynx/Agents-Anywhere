@@ -396,7 +396,8 @@ nonisolated enum TimelineChatGrouping {
             flushMessage()
         }
 
-        for item in items.sorted(by: wireOrder) {
+        let ordered = items.sorted(by: wireOrder)
+        for (index, item) in ordered.enumerated() {
             guard consumed.insert(item.id).inserted else { continue }
             if excludesSubAgentChildren, isSubAgentChild(item) { continue }
             if standalone.contains(item.id) {
@@ -405,8 +406,24 @@ nonisolated enum TimelineChatGrouping {
                 continue
             }
             if let declared = item.turnId {
-                if let currentTurnID, currentTurnID != declared { flushAll() }
-                currentTurnID = declared
+                // An Agent card joins the step run it was dispatched from even
+                // when its own row declares another turn: the card is
+                // published by its own fold and can keep a turn id the message
+                // rows around it never carried (pp 2026-11-18: every neighbour
+                // in one turn, the card alone in another, and the run split
+                // into three one-line rows with the footer bucket split too).
+                // Only a card whose run really ends here — the next declaring
+                // row names a different turn — is a boundary. The card is a
+                // standalone card by product design, so it never opens a step
+                // run of its own.
+                let nextDeclared = ordered[(index + 1)...].lazy
+                    .compactMap { $0.turnId }.first
+                let cardJoinsTheRun = SubAgentProgress.isAgentCall(item)
+                    && currentTurnID != nil && nextDeclared == currentTurnID
+                if !cardJoinsTheRun {
+                    if let currentTurnID, currentTurnID != declared { flushAll() }
+                    currentTurnID = declared
+                }
             }
 
             if isReasoning(item) || isToolRow(item) {

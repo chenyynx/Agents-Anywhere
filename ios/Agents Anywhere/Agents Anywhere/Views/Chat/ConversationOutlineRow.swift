@@ -22,6 +22,7 @@ struct ConversationOutlineRow: View {
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
     @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3
+    @ScaledMetric(relativeTo: .body) private var detailTracking: CGFloat = 0.8
 
     var body: some View {
         Button(action: action) {
@@ -31,8 +32,11 @@ struct ConversationOutlineRow: View {
             HStack(alignment: .top, spacing: 12) {
                 avatar
                 VStack(alignment: .leading, spacing: lineGap) {
+                    // The official speaker is the same #525150 ink but a
+                    // lighter stroke than ours (core 2.6 px vs 3.6 px at the
+                    // same glyph size); SF Regular read visibly bolder.
                     Text(content.speaker)
-                        .font(.system(size: speakerSize))
+                        .font(.system(size: speakerSize, weight: .light))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
                     Text(content.title)
                         .font(.system(size: titleSize))
@@ -40,8 +44,12 @@ struct ConversationOutlineRow: View {
                         .lineLimit(content.titleLineLimit)
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
+                    // ClaudeFonts sets the stamp wider than SF; the capture's
+                    // "11月18日 17:23" runs 222 px where SF sets 199 px, so a
+                    // small tracking reproduces the same rhythm.
                     Text(content.detail)
                         .font(.system(size: detailSize))
+                        .tracking(detailTracking)
                         .foregroundStyle(ChatPalette.outlineDetail.color)
                 }
                 Spacer(minLength: 0)

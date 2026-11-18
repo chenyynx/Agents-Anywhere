@@ -21,7 +21,7 @@ struct ConversationOutlineRow: View {
     @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 14
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
-    @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 3
+    @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 2.5
 
     var body: some View {
         Button(action: action) {
@@ -38,13 +38,15 @@ struct ConversationOutlineRow: View {
                         .font(ClaudeFont.text(speakerSize))
                         .foregroundStyle(ChatPalette.outlineSpeaker.color)
                     Text(styledTitle)
-                        .font(ClaudeFont.text(titleSize))
+                        // The official title renders at the regular instance
+                        // (stroke 2.60 px); 460 made it visibly bold.
+                        .font(ClaudeFont.text(titleSize, weight: 400))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                         .lineLimit(content.titleLineLimit)
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
                     Text(content.detail)
-                        .font(ClaudeFont.text(detailSize))
+                        .font(ClaudeFont.text(detailSize, weight: 400))
                         .foregroundStyle(ChatPalette.outlineDetail.color)
                 }
                 Spacer(minLength: 0)

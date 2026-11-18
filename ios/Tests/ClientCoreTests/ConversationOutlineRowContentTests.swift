@@ -6,9 +6,9 @@ import Testing
 struct ConversationOutlineRowContentTests {
     private let strings = ConversationOutlineStrings(
         you: "You",
-        claude: "Claude",
+        agentName: "Claude",
         youSaidFormat: "You said, %@",
-        claudeSaidFormat: "Claude said, %@",
+        agentSaidFormat: "%1$@ said, %2$@",
         emptyMessage: "(Empty message)",
         replyInProgress: "(Reply in progress)",
         attachmentsFormat: "(%lld attachments)"
@@ -115,6 +115,23 @@ struct ConversationOutlineRowContentTests {
             for: entry(text: "   "), hit: nil, strings: strings
         )
         #expect(content.title == "(Empty message)")
+    }
+
+    @Test("the speaker uses the session's agent name, not a hardcoded Claude")
+    func agentNameIsInjectable() {
+        let codexStrings = ConversationOutlineStrings(
+            you: "You", agentName: "Codex",
+            youSaidFormat: "You said, %@",
+            agentSaidFormat: "%1$@ said, %2$@",
+            emptyMessage: "(Empty message)",
+            replyInProgress: "(Reply in progress)",
+            attachmentsFormat: "(%lld attachments)"
+        )
+        let content = ConversationOutlineRowContentMaker.content(
+            for: entry(text: "hi"), hit: nil, strings: codexStrings
+        )
+        #expect(content.speaker == "Codex")
+        #expect(content.spokenTitle == "Codex said, hi")
     }
 
     @Test("speaker and the spoken title follow the sender")

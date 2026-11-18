@@ -11,6 +11,10 @@ struct ConversationOutlineRow: View {
     /// `avatarSource`; the official row uses the account, not the message.
     let initials: String
     let avatarSource: AccountAvatarImageSource?
+    /// The session's agent mark (Claude, Codex, DSH …); the outline must not
+    /// assume every session is Claude.
+    let agentAsset: String
+    let agentTint: Color?
     let action: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var avatarSide: CGFloat = 24
@@ -92,17 +96,30 @@ struct ConversationOutlineRow: View {
                                 .minimumScaleFactor(0.8)
                         )
                 }
-            } else {
-                // The official mark is the 12-ray Claude logo, not SF Symbol's
-                // 6-ray asterisk; the app already ships that asset.
+            } else if agentAsset == "aa-AgentClaudeCode" {
+                // Claude keeps the official orange disc with the white
+                // 12-ray mark.
                 Circle()
                     .fill(ChatPalette.outlineClaudeAvatar.color)
                     .overlay(
-                        Image("aa-AgentClaudeCode")
+                        Image(agentAsset)
                             .renderingMode(.template)
                             .resizable()
                             .scaledToFit()
                             .foregroundStyle(.white)
+                            .frame(width: markSize, height: markSize)
+                    )
+            } else {
+                // Other runtimes keep the same disc geometry with their own
+                // mark and brand tint (DSH blue; Codex/Bot label ink).
+                Circle()
+                    .fill(ChatPalette.outlineAvatarFill.color)
+                    .overlay(
+                        Image(agentAsset)
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(agentTint ?? ChatPalette.outlineAvatarInitials.color)
                             .frame(width: markSize, height: markSize)
                     )
             }

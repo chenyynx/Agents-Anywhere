@@ -4,9 +4,11 @@ import Foundation
 /// without depending on the process locale.
 nonisolated struct ConversationOutlineStrings: Equatable, Sendable {
     var you: String = String(localized: "您")
-    var claude: String = "Claude"
+    /// The session's agent name, not a hardcoded "Claude": AA runs Claude,
+    /// Codex and DSH sessions through the same page.
+    var agentName: String = "Claude"
     var youSaidFormat: String = String(localized: "您说，%@")
-    var claudeSaidFormat: String = String(localized: "Claude 说，%@")
+    var agentSaidFormat: String = String(localized: "%1$@ 说，%2$@")
     var emptyMessage: String = String(localized: "（空消息）")
     var replyInProgress: String = String(localized: "（回复进行中）")
     var attachmentsFormat: String = String(localized: "（%lld 个附件）")
@@ -16,11 +18,12 @@ nonisolated struct ConversationOutlineStrings: Equatable, Sendable {
     }
 
     func speaker(for sender: V2MessageRole) -> String {
-        sender == .user ? you : claude
+        sender == .user ? you : agentName
     }
 
     func spokenTitle(for sender: V2MessageRole, title: String) -> String {
-        String(format: sender == .user ? youSaidFormat : claudeSaidFormat, title)
+        if sender == .user { return String(format: youSaidFormat, title) }
+        return String(format: agentSaidFormat, agentName, title)
     }
 }
 

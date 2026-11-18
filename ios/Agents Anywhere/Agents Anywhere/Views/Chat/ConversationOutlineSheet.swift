@@ -105,10 +105,13 @@ struct ConversationOutlineSheet: View {
                     ConversationOutlineRow(
                         content: ConversationOutlineRowContentMaker.content(
                             for: row.entry,
-                            hit: row.hit
+                            hit: row.hit,
+                            strings: outlineStrings
                         ),
                         initials: viewerInitials,
                         avatarSource: appState.accountAvatarSource,
+                        agentAsset: agentMark.asset,
+                        agentTint: agentTint,
                         action: { choose(row) }
                     )
                 if row.id != rows.last?.id {
@@ -124,6 +127,20 @@ struct ConversationOutlineSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .padding(.horizontal, 16)
         .padding(.top, 16)
+    }
+
+    /// The agent this session runs (Claude, Codex, DSH …), for the speaker
+    /// label and the row's mark. The outline must not assume Claude.
+    private var agentRuntime: String { chat.session.metadata?.runtime ?? "" }
+    private var agentRuntimeType: String? { chat.session.metadata?.runtimeType }
+    private var agentMark: (asset: String, label: String) {
+        SessionAgentMark.resolve(runtime: agentRuntime, runtimeType: agentRuntimeType)
+    }
+    private var agentTint: Color? {
+        SessionAgentMark.tint(runtime: agentRuntime, runtimeType: agentRuntimeType)
+    }
+    private var outlineStrings: ConversationOutlineStrings {
+        ConversationOutlineStrings(agentName: chat.agentName)
     }
 
     /// The official rows wear the signed-in viewer's initials (or photo), not

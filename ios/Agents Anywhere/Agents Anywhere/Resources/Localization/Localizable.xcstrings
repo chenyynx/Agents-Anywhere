@@ -20829,19 +20829,19 @@
         }
       }
     },
-    "Claude 说，%@": {
+    "%1$@ 说，%2$@": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude said, %@"
+            "value": "%1$@ said, %2$@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude 说，%@"
+            "value": "%1$@ 说，%2$@"
           }
         }
       }

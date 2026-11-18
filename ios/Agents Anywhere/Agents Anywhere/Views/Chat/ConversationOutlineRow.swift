@@ -7,6 +7,10 @@ import SwiftUI
 /// to the text column.
 struct ConversationOutlineRow: View {
     let content: ConversationOutlineRowContent
+    /// The signed-in viewer's initials, or the photo carried by
+    /// `avatarSource`; the official row uses the account, not the message.
+    let initials: String
+    let avatarSource: AccountAvatarImageSource?
     let action: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var avatarSide: CGFloat = 24
@@ -14,6 +18,7 @@ struct ConversationOutlineRow: View {
     @ScaledMetric(relativeTo: .body) private var titleSize: CGFloat = 15
     @ScaledMetric(relativeTo: .body) private var detailSize: CGFloat = 13
     @ScaledMetric(relativeTo: .body) private var initialsSize: CGFloat = 13
+    @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 13
 
     var body: some View {
         Button(action: action) {
@@ -49,30 +54,36 @@ struct ConversationOutlineRow: View {
     private var avatar: some View {
         Group {
             if content.isUser {
-                Circle()
-                    .fill(ChatPalette.outlineAvatarFill.color)
-                    .overlay(
-                        Text(monogram)
-                            .font(.system(size: initialsSize, weight: .semibold))
-                            .foregroundStyle(ChatPalette.outlineAvatarInitials.color)
-                    )
+                if let avatarSource {
+                    AccountAvatarView(displayName: initials, source: avatarSource,
+                                      size: avatarSide)
+                } else {
+                    Circle()
+                        .fill(ChatPalette.outlineAvatarFill.color)
+                        .overlay(
+                            Text(initials)
+                                .font(.system(size: initialsSize, weight: .semibold))
+                                .foregroundStyle(ChatPalette.outlineAvatarInitials.color)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        )
+                }
             } else {
+                // The official mark is the 12-ray Claude logo, not SF Symbol's
+                // 6-ray asterisk; the app already ships that asset.
                 Circle()
                     .fill(ChatPalette.outlineClaudeAvatar.color)
                     .overlay(
-                        Image(systemName: "asterisk")
-                            .font(.system(size: 12, weight: .semibold))
+                        Image("aa-AgentClaudeCode")
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
                             .foregroundStyle(.white)
+                            .frame(width: markSize, height: markSize)
                     )
             }
         }
         .frame(width: avatarSide, height: avatarSide)
         .accessibilityHidden(true)
-    }
-
-    /// The official client shows the account's initials. AA has no per-message
-    /// account snapshot here, so the row uses the speaker's first character.
-    private var monogram: String {
-        String(content.speaker.prefix(1))
     }
 }

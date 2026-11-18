@@ -22,15 +22,13 @@ struct ConversationOutlineSheet: View {
     let jump: ConversationOutlineJumpRequest
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
     @State private var query = ""
     @State private var entries: [ConversationOutlineEntry] = []
     /// Rows the local store holds beyond the loaded window. Read off the main
     /// actor when the panel opens and merged under the live timeline.
     @State private var cachedItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
-    /// The official panel title is 20 pt bold and centered; the system inline
-    /// title renders 17 pt, so the toolbar carries the measured style.
-    @ScaledMetric(relativeTo: .headline) private var titleSize: CGFloat = 20
 
     var body: some View {
         NavigationStack {
@@ -38,15 +36,18 @@ struct ConversationOutlineSheet: View {
                 content
             }
             .background(ChatPalette.outlineSheetBackground.color.ignoresSafeArea())
-            .navigationTitle(Text(String(localized: "对话大纲")))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(ChatPalette.outlineSheetBackground.color, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
+                // The app's standard sheet close is the system glass circle;
+                // drawing another circle inside it read as a double ring.
+                SheetCloseToolbar { dismiss() }
                 ToolbarItem(placement: .principal) {
                     Text(String(localized: "对话大纲"))
-                        .font(.system(size: titleSize, weight: .bold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(ChatPalette.outlineTitle.color)
                 }
-                ToolbarItem(placement: .topBarLeading) { closeButton }
             }
             .searchable(
                 text: $query,
@@ -56,6 +57,11 @@ struct ConversationOutlineSheet: View {
             .task { await loadCachedRows() }
             .onChange(of: chat.session.timeline.count) { _, _ in reload() }
         }
+        // The official panel opens as the draggable half sheet used by the
+        // step-group and add-to-chat pages, not full height.
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(ChatPalette.outlineSheetBackground.color)
     }
 
     // MARK: - Content
@@ -101,6 +107,8 @@ struct ConversationOutlineSheet: View {
                             for: row.entry,
                             hit: row.hit
                         ),
+                        initials: viewerInitials,
+                        avatarSource: appState.accountAvatarSource,
                         action: { choose(row) }
                     )
                 if row.id != rows.last?.id {
@@ -118,17 +126,13 @@ struct ConversationOutlineSheet: View {
         .padding(.top, 12)
     }
 
-    private var closeButton: some View {
-        Button { dismiss() } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(ChatPalette.outlineTitle.color)
-                .frame(width: 38, height: 38)
-                .background(Circle().fill(ChatPalette.outlineCard.color))
-                .overlay(Circle().stroke(ChatPalette.outlineDivider.color, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(String(localized: "关闭")))
+    /// The official rows wear the signed-in viewer's initials (or photo), not
+    /// the speaker's first character. Same rule as the sidebar avatar: the
+    /// first letter of the first two words.
+    private var viewerInitials: String {
+        let words = (appState.me?.displayName ?? "").split(whereSeparator: { $0.isWhitespace })
+        let letters = words.prefix(2).compactMap { $0.first }
+        return letters.isEmpty ? "?" : String(letters).uppercased()
     }
 
     // MARK: - Data

@@ -624,23 +624,22 @@ private struct ChatSidebarBottomControls: View {
             Spacer(minLength: 12)
 
             Button(action: onNewSession) {
-                HStack(spacing: 12) {
+                HStack(spacing: 12.7) {
                     Image("aa-IconAdd")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 13, height: 13)
-                    Text(String(localized: "New session"))
+                    Text(String(localized: "新建会话"))
                         .font(.system(size: 15, weight: .regular))
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 48)
+                .contentShape(Capsule())
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
-            .tint(AppTheme.sidebarProminentFill(colorScheme))
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive().tint(AppTheme.sidebarProminentFill(colorScheme)), in: Capsule())
             .foregroundStyle(AppTheme.sidebarProminentLabel(colorScheme))
-            .accessibilityLabel(String(localized: "New session"))
+            .accessibilityLabel(String(localized: "新建会话"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $isShowingSettings) {
@@ -662,14 +661,14 @@ private struct ChatSidebarAvatar: View {
             Text(verbatim: initials)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
-                .frame(width: 49, height: 49)
+                .frame(width: 41, height: 41)
                 .clipShape(Circle())
                 .accessibilityLabel(Text(account.displayName))
         } else {
             AccountAvatarView(
                 displayName: account.displayName,
                 source: account.avatarSource,
-                size: 49
+                size: 41
             )
         }
     }

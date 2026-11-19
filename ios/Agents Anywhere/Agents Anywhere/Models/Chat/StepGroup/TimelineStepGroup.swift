@@ -97,6 +97,14 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 
     var isRunning: Bool { steps.contains { $0.isRunning } }
 
+    /// Whether a dispatched background agent is still working (pp 2026-11-19).
+    ///
+    /// The settled row borrows the activity row's sweep while this is true:
+    /// 「正在运行 N 个智能体」 is a live status, not a finished count, and the
+    /// row read as done without the sweep. The row keeps its own icon — the
+    /// live dots stay on the working row.
+    var hasRunningBackgroundAgent: Bool { summary.activeAgentCount > 0 }
+
     /// Whether the chat profile's live mark may seat on this group while a turn
     /// is active, when the runtime does not report the turn itself
     /// (pp 2026-11-10).

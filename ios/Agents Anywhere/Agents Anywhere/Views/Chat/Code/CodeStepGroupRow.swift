@@ -116,7 +116,12 @@ struct CodeStepGroupRowView: View {
                 includesImages: false,
                 voiceControlName: nil,
                 spokenLabel: nil,
-                isRunning: false,
+                // A background subagent keeps working after the main turn
+                // settles; the row's own copy already turns present-tense
+                // (「正在运行 N 个智能体」), so it carries the activity sweep
+                // too (pp 2026-11-19). The icon does not change — only the
+                // text's sweep animation is borrowed.
+                isRunning: group.hasRunningBackgroundAgent && !treatsRunningAsFailed,
                 action: onTap)
         }
     }

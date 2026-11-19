@@ -392,6 +392,36 @@ struct TimelineStepGroupSummaryTests {
         #expect(line.contains("运行了 1 个智能体"))
     }
 
+    /// The settled row borrows the activity sweep while a dispatched agent is
+    /// still working (pp 2026-11-19): 「正在运行 N 个智能体」 alone read as a
+    /// finished row. Only the text sweeps — the icon stays the group's own.
+    @Test func aRunningBackgroundAgentKeepsTheSettledRowSweeping() throws {
+        let runningSteps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            try agentStep("a1", status: "running"),
+        ]
+        let running = TimelineStepGroup(
+            id: "steps:running", steps: runningSteps,
+            summary: TimelineStepSummarizer.summary(steps: runningSteps, cwd: nil))
+        #expect(running.hasRunningBackgroundAgent)
+
+        let settledSteps: [TimelineStep] = [try agentStep("a1", status: "done")]
+        let settled = TimelineStepGroup(
+            id: "steps:settled", steps: settledSteps,
+            summary: TimelineStepSummarizer.summary(steps: settledSteps, cwd: nil))
+        #expect(!settled.hasRunningBackgroundAgent)
+
+        // A control call on an agent that already exists is not a dispatch:
+        // it must not keep the row sweeping.
+        let controlSteps: [TimelineStep] = [
+            try agentStep("a1", status: "running", action: "wait"),
+        ]
+        let control = TimelineStepGroup(
+            id: "steps:control", steps: controlSteps,
+            summary: TimelineStepSummarizer.summary(steps: controlSteps, cwd: nil))
+        #expect(!control.hasRunningBackgroundAgent)
+    }
+
     @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {
         let steps: [TimelineStep] = [
             try agentStep("a1", status: "done"),

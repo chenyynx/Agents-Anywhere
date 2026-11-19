@@ -297,7 +297,7 @@ private struct ChatSidebarDeviceSection: View {
                     // labels it sits beside.
                     HStack(spacing: 3) {
                         Text(String(localized: "添加设备"))
-                        AppSymbol("anthropicon.caretRight", size: 9)
+                        AppSymbol("anthropicon.caretRight", size: 10)
                     }
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
@@ -308,7 +308,9 @@ private struct ChatSidebarDeviceSection: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 20)
+        // 16, not 20: the official drawer keeps ~39.7pt from the previous row
+        // to a section title; 20 drew 44 (pp 2026-11-20).
+        .padding(.top, 16)
         // Same trailing gap as ChatSidebarSectionLabel (Pinned/Recent): 0
         // here made the device row sit 6pt further from its header.
         .padding(.bottom, 6)
@@ -388,7 +390,9 @@ private struct ChatSidebarSectionLabel: View {
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             .padding(.horizontal, 10)
-            .padding(.top, 20)
+            // Matches the project list's sub-labels and the official drawer's
+            // ~39.7pt row-to-title gap (20 drew 44, pp 2026-11-20).
+            .padding(.top, 16)
             .padding(.bottom, 6)
     }
 }

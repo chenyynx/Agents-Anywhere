@@ -69,7 +69,7 @@ struct ChatSidebarProjects: View {
                 Button { createsProject = true } label: {
                     HStack(spacing: 3) {
                         Text(String(localized: "创建项目"))
-                        AppSymbol("anthropicon.caretRight", size: 9)
+                        AppSymbol("anthropicon.caretRight", size: 10)
                     }
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
@@ -81,10 +81,11 @@ struct ChatSidebarProjects: View {
                 .accessibilityLabel(Text(String(localized: "创建项目")))
             }
             // Same 44pt-row compensation as the Recent header: the collapse
-            // button and the ⋯ menu stretch this row to 44pt, so 16/0 put the
-            // title 9pt low and the list 16pt low; 7/-7 restores the section
-            // rhythm without shrinking the tap targets (pp 2026-11-20).
-            .padding(.horizontal, 10).padding(.top, 7).padding(.bottom, -7)
+            // button and the ⋯ menu stretch this row to 44pt, so the paddings
+            // subtract that extra height again. 2/-6 keeps the above gap at
+            // the official ~40pt and the block at the 40pt section rhythm,
+            // without shrinking any tap target (pp 2026-11-20).
+            .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -6)
             if repository.sidebarPreferences.projectsExpanded {
                 projectList(projects.filter { !$0.pinned }, busyProjects: busyProjects)
                 if repository.isLoading && repository.projects.isEmpty { ProgressView().padding(12) }

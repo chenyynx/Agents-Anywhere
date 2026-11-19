@@ -520,13 +520,18 @@ struct ChatSidebarSessionRow: View {
                 }
             }
             .disabled(session.id.hasPrefix("local:"))
-            Button(action: onArchive) {
-                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), menuSymbol: "anthropicon.archive")
-            }.disabled(session.id.hasPrefix("local:"))
-            Divider()
             Button(action: onCopyId) {
                 Label(String(localized: "Copy session ID"), menuSymbol: "anthropicon.copy")
             }
+            Divider()
+            // Archive closes the menu in red, the way the official menu ends on
+            // its destructive row; Restore is not destructive and stays plain
+            // (pp 2026-11-20).
+            Button(role: session.archived ? nil : .destructive, action: onArchive) {
+                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"),
+                      menuSymbol: "anthropicon.archive",
+                      destructive: !session.archived)
+            }.disabled(session.id.hasPrefix("local:"))
         }
         .alert(String(localized: "Rename session"), isPresented: $isRenaming) {
             TextField(String(localized: "Session title"), text: $titleDraft)

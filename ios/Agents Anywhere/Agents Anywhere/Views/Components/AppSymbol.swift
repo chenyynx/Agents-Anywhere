@@ -73,14 +73,23 @@ enum AppFileSymbol {
 /// (pp 2026-11-20, experiment A).
 struct MenuArtwork: View {
     let name: String
+    /// Destructive rows: the menu rasters this view before the system sees it,
+    /// so an action's red tint never reaches a template image — the title turns
+    /// red while the icon stays black (project menu, pp 2026-11-20). Painting
+    /// the tint here is the only way the icon follows the title.
+    var tint: Color? = nil
 
     var body: some View {
-        Image(name).renderingMode(.template)
+        if let tint {
+            Image(name).renderingMode(.template).foregroundStyle(tint)
+        } else {
+            Image(name).renderingMode(.template)
+        }
     }
 }
 
 extension Label where Title == Text, Icon == MenuArtwork {
-    init(_ title: String, menuSymbol: String) {
-        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol) }
+    init(_ title: String, menuSymbol: String, destructive: Bool = false) {
+        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol, tint: destructive ? .red : nil) }
     }
 }

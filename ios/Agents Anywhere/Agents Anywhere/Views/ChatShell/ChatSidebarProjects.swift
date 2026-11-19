@@ -182,11 +182,11 @@ struct ChatSidebarProjects: View {
         }
         Section {
             Button(role: .destructive) { action = .init(project: project, deletes: false) } label: {
-                Label(String(localized: "归档项目会话"), menuSymbol: "anthropicon.archive")
+                Label(String(localized: "归档项目会话"), menuSymbol: "anthropicon.archive", destructive: true)
             }
             .disabled(!repository.canWrite || isBusy)
             Button(role: .destructive) { action = .init(project: project, deletes: true) } label: {
-                Label(String(localized: "删除项目"), menuSymbol: "anthropicon.trash")
+                Label(String(localized: "删除项目"), menuSymbol: "anthropicon.trash", destructive: true)
             }
             .disabled(!repository.canWrite || isBusy)
         }

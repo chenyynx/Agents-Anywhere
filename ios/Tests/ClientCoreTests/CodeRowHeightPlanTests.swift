@@ -132,21 +132,20 @@ import Testing
 
     // `blockHeights` reads the shared `isImage` extension, which is
     // main-actor isolated under the package's default isolation.
-    @Test @MainActor func imagesAndFilesAreSeparateGrids() throws {
+    @Test @MainActor func imagesAndFilesShareOneGrid() throws {
         let image = try attachmentContent(["fileId": "i1", "mediaType": "image/png"])
         let secondImage = try attachmentContent(["fileId": "i2", "mediaType": "image/png"])
         let file = try attachmentContent(["fileId": "f1", "mediaType": "application/pdf"])
 
-        // Two images and one file: one square row, then the 4:3 file slot.
+        // One image and one file sit in a single square row (pp 2026-11-20).
+        let pair = CodeAttachmentLayout.blockHeights(files: [image, file])
+        #expect(pair == [140])
+        // Two images and one file: one grid of three squares (2+1) = 288.
         let mixedRow = CodeAttachmentLayout.blockHeights(files: [image, secondImage, file])
-        #expect(mixedRow.count == 2)
-        #expect(mixedRow[0] == 140)
-        #expect(mixedRow[1] == 140)
-        // One image and two files: the image's own grid, then a square row.
+        #expect(mixedRow == [288])
+        // One image and two files: same single 2+1 grid, no large image box.
         let mixed = CodeAttachmentLayout.blockHeights(files: [image, file, file])
-        #expect(mixed.count == 2)
-        #expect(approximately(mixed[0], 150))
-        #expect(mixed[1] == 140)
+        #expect(mixed == [288])
     }
 
     @Test @MainActor func failedDocumentsUseTheCardHeightBeforeTheFileGrid() throws {

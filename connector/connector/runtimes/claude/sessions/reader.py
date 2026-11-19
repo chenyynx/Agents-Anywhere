@@ -92,6 +92,7 @@ from connector.runtimes.claude.timeline.messages import (
     is_interrupted_request_message,
     is_synthetic_control_message,
     is_task_notification_message,
+    message_content_block_count,
     message_id,
     message_model,
     message_role,
@@ -713,10 +714,31 @@ def _history_items_from_messages(
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
     stopped_turns = set(interrupted_turns or ())
+    # Production lines carry ONE content block per message object while several
+    # lines share the assistant message id (thinking line, tool_use line, text
+    # line). The absolute block index is a per-message-id running counter
+    # across the batch — never the line's own `enumerate` (always 0). A
+    # projection that used the line-local index declared 0 for every sibling,
+    # the server's tie-break kept the old RBT order, and the lone tool row this
+    # fix exists to remove survived (pp 2026-11-19 device screenshot).
+    next_content_block: dict[str, int] = {}
+    content_index_bases: list[int] = []
+    for message in messages:
+        message_native_id = message_id(message)
+        base = 0
+        if message_native_id is not None:
+            base = next_content_block.get(message_native_id, 0)
+            next_content_block[message_native_id] = (
+                base + message_content_block_count(message)
+            )
+        content_index_bases.append(base)
     for index, message in enumerate(messages):
         role = message_role(message)
         text = message_text(message)
         native_id = message_id(message)
+        text_content_index = (
+            message_text_content_index(message) if role == "assistant" else None
+        )
         synthetic_control = is_synthetic_control_message(message)
         turn_id = turn_ids.get(_history_turn_key(message))
         if turn_id is None:
@@ -738,9 +760,10 @@ def _history_items_from_messages(
                 session=session,
                 turn_id=turn_id,
                 message=message,
-                # History messages hold the full content array, so every row
-                # can declare its absolute block index (pp 2026-11-19).
+                # History holds the message's blocks across its lines, so every
+                # row can declare its absolute block index (pp 2026-11-19).
                 full_content=True,
+                content_index_base=content_index_bases[index],
             )
         )
         items.extend(
@@ -750,6 +773,7 @@ def _history_items_from_messages(
                 message=message,
                 event="claude.history.system",
                 full_content=True,
+                content_index_base=content_index_bases[index],
             )
         )
         client_message = matches.get(native_id or "")
@@ -798,12 +822,11 @@ def _history_items_from_messages(
                     # landed, overrides it.
                     usage=message_usage(message) if role == "assistant" else None,
                     usage_model=message_model(message) if role == "assistant" else None,
-                    # History holds the full message content, so the body row
-                    # declares its real block index here (the live partial
-                    # frame cannot; see `stream.py::_partial_item`).
+                    # The body's absolute block index: the batch's per-message
+                    # counter base plus the block's index inside this line.
                     content_block_index=(
-                        message_text_content_index(message)
-                        if role == "assistant"
+                        content_index_bases[index] + text_content_index
+                        if text_content_index is not None
                         else None
                     ),
                 )

@@ -88,8 +88,21 @@ struct ConversationOutlineSearchTests {
         let range = try #require(hit.snippet.range(of: "needle"))
         let keywordOffset = hit.snippet.distance(from: hit.snippet.startIndex,
                                                  to: range.lowerBound)
-        #expect(keywordOffset <= 26) // "…" + the 24-character leading context
-        #expect(hit.snippet.count <= 262)
+        #expect(keywordOffset <= 22) // "…" + the 20-character leading context
+        #expect(hit.snippet.count <= 202)
+    }
+
+    @Test("every matched token occurrence is marked for the highlight")
+    func highlightRangesCoverAllHits() throws {
+        let row = entry(text: "needle in the middle, needle again")
+        let hit = try #require(ConversationOutlineSearch.hit(in: row, query: "needle"))
+        #expect(hit.highlightRanges.count == 2)
+        let characters = Array(hit.snippet)
+        for range in hit.highlightRanges {
+            #expect(range.lowerBound >= 0)
+            #expect(range.upperBound <= characters.count)
+            #expect(String(characters[range]).lowercased() == "needle")
+        }
     }
 
     @Test("surrounding blank lines do not collapse the excerpt to an ellipsis")

@@ -61,6 +61,9 @@ nonisolated enum ChatPalette {
     /// The empty-state count line. The 2026-11-19 capture's core converts to
     /// `#7A7973` in sRGB; the earlier `#86857F` read a washed-out gray.
     static let outlineCount = Token(light: 0x7A7973, dark: 0x8E8E8A)
+    /// Search-hit background in the outline preview. A low-saturation blue
+    /// keeps the hit readable without competing with the Claude orange.
+    static let outlineSearchHighlight = Token(light: 0xD9E8FF, dark: 0x203B5C)
     static let outlineDivider = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarFill = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
     static let outlineAvatarInitials = Token(light: 0x131313, dark: 0xF5F5F3)

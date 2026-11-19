@@ -17,6 +17,9 @@ nonisolated struct ConversationOutlineSearchHit: Equatable {
     let snippet: String
     /// The same message with its inline formatting preserved.
     let snippetAttributed: AttributedString
+    /// Character offsets of every matched token inside the excerpt, for the
+    /// row's highlight (the leading "…" counts as one character).
+    let highlightRanges: [Range<Int>]
 }
 
 /// Outline search: case- and diacritic-insensitive substring matching over the
@@ -81,7 +84,8 @@ nonisolated enum ConversationOutlineSearch {
                     entryID: entry.id,
                     partID: part.id,
                     snippet: excerpt.plain,
-                    snippetAttributed: excerpt.attributed
+                    snippetAttributed: excerpt.attributed,
+                    highlightRanges: excerpt.highlightRanges
                 )
             }
             if let firstHit { hits.append(firstHit) }
@@ -110,18 +114,18 @@ nonisolated enum ConversationOutlineSearch {
 
     /// Characters kept before the first hit, so the keyword is on the first
     /// visible line of the row; the capture's excerpts lead with "…".
-    private static let leadingContext = 24
-    /// The trailing context kept after the hit. The official window is longer
-    /// than the old 140/280 guesses but its exact rule is unrecovered; this
-    /// keeps the matched word and a full paragraph in view.
-    private static let previewLength = 260
+    private static let leadingContext = 20
+    /// The trailing context kept after the hit. AA's rule, not a captured
+    /// constant: about one line of lead plus 8–10 lines of body at the
+    /// outline's text width.
+    private static let previewLength = 200
 
     private static func excerpt(
         from attributed: AttributedString,
         plain: String,
         tokens: [String],
         locale: Locale
-    ) -> (plain: String, attributed: AttributedString) {
+    ) -> (plain: String, attributed: AttributedString, highlightRanges: [Range<Int>]) {
         let characters = Array(plain)
         let match = tokens.lazy
             .compactMap {
@@ -130,21 +134,46 @@ nonisolated enum ConversationOutlineSearch {
                             locale: locale)
             }
             .min { $0.lowerBound < $1.lowerBound }
-        guard let match else { return (plain, attributed) }
+        guard let match else {
+            return (plain, attributed, [])
+        }
         let matchStart = plain.distance(from: plain.startIndex, to: match.lowerBound)
         let start = max(0, matchStart - leadingContext)
         let end = min(characters.count, start + previewLength)
         let prefix = start > 0 ? "…" : ""
         let suffix = end < characters.count ? "…" : ""
-        let plainExcerpt = prefix + String(characters[start..<end]) + suffix
+        let body = String(characters[start..<end])
+        let plainExcerpt = prefix + body + suffix
+
+        // Every occurrence of every token inside the excerpt, in the excerpt's
+        // own coordinates (the leading "…" shifts them by one).
+        let shift = prefix.count
+        var ranges: [Range<Int>] = []
+        for token in tokens {
+            var searchRange = body.startIndex..<body.endIndex
+            while let found = body.range(
+                of: token,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchRange,
+                locale: locale
+            ) {
+                let lower = body.distance(from: body.startIndex, to: found.lowerBound) + shift
+                let upper = body.distance(from: body.startIndex, to: found.upperBound) + shift
+                ranges.append(lower..<upper)
+                guard found.upperBound < body.endIndex else { break }
+                searchRange = found.upperBound..<body.endIndex
+            }
+        }
+        ranges.sort { $0.lowerBound < $1.lowerBound }
+
         guard attributed.characters.count == characters.count else {
-            return (plainExcerpt, AttributedString(plainExcerpt))
+            return (plainExcerpt, AttributedString(plainExcerpt), ranges)
         }
         let startIndex = attributed.index(attributed.startIndex, offsetByCharacters: start)
         let endIndex = attributed.index(attributed.startIndex, offsetByCharacters: end)
         var attributedExcerpt = AttributedString(prefix)
         attributedExcerpt.append(attributed[startIndex..<endIndex])
         attributedExcerpt.append(AttributedString(suffix))
-        return (plainExcerpt, attributedExcerpt)
+        return (plainExcerpt, attributedExcerpt, ranges)
     }
 }

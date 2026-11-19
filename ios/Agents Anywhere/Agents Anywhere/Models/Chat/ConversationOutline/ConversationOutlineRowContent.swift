@@ -40,6 +40,8 @@ nonisolated struct ConversationOutlineRowContent: Equatable {
     let titleAttributed: AttributedString
     /// The same title as plain text, for VoiceOver and tests.
     let title: String
+    /// Character offsets of the matched tokens inside `titleAttributed`.
+    let highlightRanges: [Range<Int>]
     let spokenTitle: String
     let detail: String
     /// `nil` means unlimited (the official's lineLimit 0); 2 is the plain
@@ -63,14 +65,16 @@ nonisolated enum ConversationOutlineRowContentMaker {
     ) -> ConversationOutlineRowContent {
         let text = preview(entry.text)
         let attributed: AttributedString
+        var highlights: [Range<Int>] = []
         // Search rows are not clamped to two lines: the official result grows
-        // with the whole matched message (the flag that sets `lineLimit = 0`
-        // in the capture). The plain outline keeps the two-line preview.
+        // with the excerpt (the flag that sets `lineLimit = 0` in the
+        // capture). The plain outline keeps the two-line preview.
         var lineLimit: Int? = titleLineLimit
         if let hit, !hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // The search hit already carries its Markdown-resolved excerpt
             // (and the formatted slice), so it is ready to render as-is.
             attributed = hit.snippetAttributed
+            highlights = hit.highlightRanges
             lineLimit = nil
         } else if entry.attachmentCount > 0 {
             attributed = AttributedString(strings.attachments(entry.attachmentCount))
@@ -89,6 +93,7 @@ nonisolated enum ConversationOutlineRowContentMaker {
             speaker: strings.speaker(for: entry.sender),
             titleAttributed: attributed,
             title: title,
+            highlightRanges: highlights,
             spokenTitle: strings.spokenTitle(for: entry.sender, title: title),
             detail: stamp(entry.sentAt, now: now, calendar: calendar, locale: locale),
             titleLineLimit: lineLimit

@@ -26,6 +26,10 @@ struct ConversationOutlineRow: View {
     /// The extra leading between the row's three lines; the official type
     /// tokens scale it with the reader's text size.
     @ScaledMetric(relativeTo: .body) private var lineGap: CGFloat = 2.5
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Search rows fade in once when they first appear; typing does not
+    /// re-trigger it because the row keeps its entry identity.
+    @State private var appeared = false
 
     var body: some View {
         Button(action: action) {
@@ -61,6 +65,20 @@ struct ConversationOutlineRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .opacity(content.partID == nil || appeared ? 1 : 0)
+        .onAppear {
+            // Normal rows are never hidden; remember that they appeared so a
+            // later search hit on the same entry cannot start at opacity 0.
+            guard content.partID != nil else {
+                appeared = true
+                return
+            }
+            if reduceMotion {
+                appeared = true
+            } else {
+                withAnimation(.easeOut(duration: 0.25)) { appeared = true }
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(content.speaker))
         .accessibilityValue(Text(content.title))
@@ -76,6 +94,19 @@ struct ConversationOutlineRow: View {
         }
         let codeFont = ClaudeFont.mono(titleSize)
         for range in codeRanges { attributed[range].font = codeFont }
+        // Every matched token wears the search highlight; the row animation
+        // is only the one-shot fade-in above.
+        let highlight = ChatPalette.outlineSearchHighlight.color
+        for range in content.highlightRanges {
+            guard range.lowerBound >= 0,
+                  range.upperBound <= attributed.characters.count,
+                  range.lowerBound < range.upperBound else { continue }
+            let start = attributed.index(attributed.startIndex,
+                                         offsetByCharacters: range.lowerBound)
+            let end = attributed.index(attributed.startIndex,
+                                       offsetByCharacters: range.upperBound)
+            attributed[start..<end].backgroundColor = highlight
+        }
         return attributed
     }
 

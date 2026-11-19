@@ -79,7 +79,8 @@ struct ConversationOutlineRowContentTests {
             .stronglyEmphasized
         let hit = ConversationOutlineSearchHit(entryID: "e1", partID: "p9",
                                                snippet: "…needle…",
-                                               snippetAttributed: attributed)
+                                               snippetAttributed: attributed,
+                                               highlightRanges: [1..<7])
         let content = ConversationOutlineRowContentMaker.content(
             for: entry(text: "body"), hit: hit, strings: strings
         )
@@ -87,6 +88,7 @@ struct ConversationOutlineRowContentTests {
         #expect(String(content.titleAttributed.characters) == "…needle…")
         #expect(content.partID == "p9")
         #expect(content.titleLineLimit == nil)
+        #expect(content.highlightRanges == [1..<7])
         let hasStrong = content.titleAttributed.runs.contains { run in
             run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
         }

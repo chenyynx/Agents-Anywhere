@@ -45,6 +45,34 @@ nonisolated enum ChatPalette {
     /// `[derived]` task-list checkbox stroke.
     static let checkboxBorder = Token(light: 0xA9A9AD, dark: 0x636366)
 
+    // MARK: Conversation outline (official 1.261109.19 capture)
+
+    /// Light values are measured from the official outline sheet; dark values
+    /// are derived to keep the same contrast inside AA (the capture had no
+    /// dark variant).
+    static let outlineSheetBackground = Token(light: 0xF9F9F7, dark: 0x1C1C1E)
+    static let outlineCard = Token(light: 0xFFFFFF, dark: 0x2C2C2E)
+    static let outlineTitle = Token(light: 0x0B0B0B, dark: 0xF5F5F3)
+    static let outlineSpeaker = Token(light: 0x525150, dark: 0x9A9A97)
+    /// The time under a row shares the speaker's ink in the official capture
+    /// (core pixels `#525150`), not the pale `#C9C8C7` an early measurement
+    /// recorded; the pale value made AA's dates look washed out.
+    static let outlineDetail = Token(light: 0x525150, dark: 0x9A9A97)
+    /// The empty-state count line. The 2026-11-19 capture's core converts to
+    /// `#7A7973` in sRGB; the earlier `#86857F` read a washed-out gray.
+    static let outlineCount = Token(light: 0x7A7973, dark: 0x8E8E8A)
+    /// Search-hit background in the outline preview. A low-saturation blue
+    /// keeps the hit readable without competing with the Claude orange.
+    static let outlineSearchHighlight = Token(light: 0xD9E8FF, dark: 0x203B5C)
+    static let outlineDivider = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
+    static let outlineAvatarFill = Token(light: 0xE6E6E6, dark: 0x3A3A3C)
+    static let outlineAvatarInitials = Token(light: 0x131313, dark: 0xF5F5F3)
+    /// The official avatar's fill, converted from the capture's Display P3
+    /// profile to sRGB (`198, 96, 62`); `#B96647` was the raw P3 reading and
+    /// rendered visibly darker.
+    static let outlineClaudeAvatar = Token(light: 0xC6603E, dark: 0xC6603E)
+    static let outlineSearchField = Token(light: 0xF6F6F5, dark: 0x2C2C2E)
+
     // MARK: Code card (moonveil's `SelectableMarkdownTheme`)
 
     /// Card fill: white in light, warm dark grey in the dark. Same pair as the

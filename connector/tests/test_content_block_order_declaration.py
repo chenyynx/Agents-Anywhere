@@ -94,6 +94,63 @@ def test_message_body_index_is_the_first_text_block() -> None:
     assert message_text_content_index(message) == 2
 
 
+def _single_block_line(block: dict[str, Any], uuid: str) -> Any:
+    """One production transcript line: one block, sharing the message id."""
+
+    return _parse(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg-order-1",
+                "role": "assistant",
+                "model": "deepseek-v4.1-flash",
+                "content": [block],
+            },
+            "parent_tool_use_id": None,
+            "session_id": SESSION,
+            "uuid": uuid,
+        }
+    )
+
+
+def test_production_single_block_lines_get_a_running_index() -> None:
+    """Three lines share the message id; indices must be 0/1/2, not 0/0/0.
+
+    The engine writes one content block per message line. A projection that
+    used the line's own ``enumerate`` declared 0 for every sibling, the server
+    tie-break kept RBT, and the lone tool row survived (pp 2026-11-19 device
+    screenshot: text row 0, tool row 0 while the true order is tool → text).
+    """
+
+    messages = (
+        _single_block_line(
+            {"type": "thinking", "thinking": "think", "signature": "s"},
+            "line-thinking",
+        ),
+        _single_block_line(
+            {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {}},
+            "line-tool",
+        ),
+        _single_block_line(
+            {"type": "text", "text": "trailing text"}, "line-text"
+        ),
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    by_kind: dict[str, int | None] = {}
+    for item in items:
+        if item.type == "tool":
+            by_kind["tool"] = item.source.get("contentBlockIndex")
+        elif item.type == "system":
+            by_kind["reasoning"] = item.source.get("contentBlockIndex")
+        elif item.type == "message" and item.role == "assistant":
+            by_kind["body"] = item.source.get("contentBlockIndex")
+    assert by_kind == {"reasoning": 0, "tool": 1, "body": 2}
+
+
 def test_the_wire_source_payload_carries_the_field() -> None:
     _, tools, _ = _rows()
     payload = _timeline_source_payload(tools[0])

@@ -370,6 +370,7 @@ class ClaudeMessageProjector:
         message: Any,
         *,
         full_content: bool = False,
+        content_index_base: int = 0,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         # A tool-only API call produces no message or reasoning row, so the
@@ -395,7 +396,10 @@ class ClaudeMessageProjector:
             if block.block_type == "tool_use" and content_indexes:
                 block = replace(
                     block,
-                    content_block_index=content_indexes.get(block.tool_use_id),
+                    content_block_index=(
+                        content_index_base
+                        + content_indexes.get(block.tool_use_id, 0)
+                    ),
                 )
             if (
                 block.block_type == "tool_result"
@@ -435,6 +439,7 @@ class ClaudeMessageProjector:
         reasoning_revision: int | None = None,
         *,
         full_content: bool = False,
+        content_index_base: int = 0,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
@@ -505,7 +510,9 @@ class ClaudeMessageProjector:
                         event=event,
                         derived_key=block.block_type,
                         content_block_index=(
-                            block.block_index if full_content else None
+                            content_index_base + block.block_index
+                            if full_content
+                            else None
                         ),
                     ),
                     revision=revision,
@@ -2549,6 +2556,21 @@ def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
                 )
             )
     return tuple(blocks)
+
+
+def message_content_block_count(message: Any) -> int:
+    """How many content blocks this (possibly single-block) message line holds.
+
+    Production history/SDK lines carry ONE block per message object while
+    several lines share the same assistant message id. A projection that
+    declares an absolute index must advance a per-message-id counter by this
+    count, not restart at the line's own ``enumerate`` (which is always 0).
+    """
+
+    content = _message_content(message)
+    if not isinstance(content, list | tuple):
+        return 0
+    return len(content)
 
 
 def message_tool_use_content_indexes(message: Any) -> dict[str, int]:

@@ -86,7 +86,7 @@ struct ConversationOutlineRowContentTests {
         #expect(content.title == "…needle…")
         #expect(String(content.titleAttributed.characters) == "…needle…")
         #expect(content.partID == "p9")
-        #expect(content.titleLineLimit == 0)
+        #expect(content.titleLineLimit == nil)
         let hasStrong = content.titleAttributed.runs.contains { run in
             run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
         }

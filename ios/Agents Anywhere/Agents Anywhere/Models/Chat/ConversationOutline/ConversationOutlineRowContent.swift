@@ -42,7 +42,10 @@ nonisolated struct ConversationOutlineRowContent: Equatable {
     let title: String
     let spokenTitle: String
     let detail: String
-    let titleLineLimit: Int
+    /// `nil` means unlimited (the official's lineLimit 0); 2 is the plain
+    /// outline's clamp. SwiftUI's `.lineLimit(nil)` is the unlimited form —
+    /// passing 0 renders a single line.
+    let titleLineLimit: Int?
 }
 
 /// Applies the official row-content precedence:
@@ -63,12 +66,12 @@ nonisolated enum ConversationOutlineRowContentMaker {
         // Search rows are not clamped to two lines: the official result grows
         // with the whole matched message (the flag that sets `lineLimit = 0`
         // in the capture). The plain outline keeps the two-line preview.
-        var lineLimit = titleLineLimit
+        var lineLimit: Int? = titleLineLimit
         if let hit, !hit.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // The search hit already carries its Markdown-resolved excerpt
             // (and the formatted slice), so it is ready to render as-is.
             attributed = hit.snippetAttributed
-            lineLimit = 0
+            lineLimit = nil
         } else if entry.attachmentCount > 0 {
             attributed = AttributedString(strings.attachments(entry.attachmentCount))
         } else if entry.isArriving {

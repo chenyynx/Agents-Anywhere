@@ -65,7 +65,7 @@ struct ChatSidebarView: View {
                                 if request.ready { Button(String(localized: "配置 Agent")) { setup.configure(request.id) } }
                                 if request.error != nil { Button(String(localized: "重试")) { setup.retry(request.id) } }
                                 Button(request.ready ? String(localized: "稍后配置") : String(localized: "停止等待")) { setup.finish(request.id) }
-                            } label: { AppSymbol("ellipsis").frame(width: 36, height: 36) }
+                            } label: { AppSymbol("anthropicon.dotsHorizontal", size: 15).frame(width: 36, height: 36) }
                         }.padding(.horizontal, 10).padding(.vertical, 8)
                     }
                 }
@@ -558,8 +558,13 @@ struct ChatSidebarSessionIndicator: View {
                 .background(.mint.opacity(0.16), in: .capsule)
                 .fixedSize().accessibilityLabel(String(localized: "等待批准"))
         case .running:
-            ProgressView().controlSize(.mini).tint(.primary)
-                .frame(width: 14, height: 14).accessibilityLabel(String(localized: "运行中"))
+            // Official open-ring spinner (pp 2026-11-20); the system mini
+            // ProgressView drew the iOS petal spinner instead. The official
+            // running glyph measures 16 pt of ring (14.7x16.0 on the Code
+            // list screenshot), so the ring draws at 16.
+            AnthropiconSpinner(size: 16)
+                .frame(width: 16, height: 16)
+                .accessibilityLabel(String(localized: "运行中"))
         case .unread:
             Circle().fill(.green).frame(width: 8, height: 8).accessibilityLabel(String(localized: "未读"))
         case .none:

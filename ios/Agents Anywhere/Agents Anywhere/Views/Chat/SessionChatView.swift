@@ -632,7 +632,12 @@ struct SessionChatView: View, Equatable {
                     diagnosticsHUDVisible.toggle()
                 }
 #endif
-            } label: { AppSymbol("ellipsis") }
+            } label: {
+                // Official overflow dots (pp 2026-11-20). The vector is
+                // ink-tight at 9.68x2.18, so 15 pt draws the same 15x3 pt of
+                // ink the 20 pt Lucide ellipsis did.
+                AppSymbol("anthropicon.dotsHorizontal", size: 15)
+            }
             .accessibilityLabel(String(localized: "会话菜单"))
         }
     }

@@ -66,7 +66,7 @@ struct CacheSettingsView: View {
             }
 
             SettingsSection(footer: String(localized: "Takes effect on the next app launch. Turn off to fall back to the JSON archive.")) {
-                SettingsToggleRow(icon: "archivebox",
+                SettingsToggleRow(icon: "anthropicon.archive",
                                   title: String(localized: "Local transcript cache (Beta)"),
                                   isOn: Binding(get: { LocalTimelineStore.appEnabled },
                                                 set: { LocalTimelineStore.appEnabled = $0 }))

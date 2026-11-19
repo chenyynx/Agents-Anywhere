@@ -156,6 +156,10 @@ struct SettingsRowLabelContent: View {
 
     var body: some View {
         HStack(spacing: SettingsStyle.iconGap) {
+            // Official rows: 18 pt of icon ink against a 17 pt label. Our
+            // label deliberately runs one notch smaller (16, see the type
+            // note above), so the icon scales with it: 18 × 16/17 ≈ 17
+            // (pp 2026-11-20).
             AppSymbol(icon, size: 17)
                 .frame(width: SettingsStyle.iconFrame)
                 .foregroundStyle(SettingsStyle.icon(colorScheme))
@@ -312,7 +316,7 @@ struct SettingsMenuRow: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        Image(systemName: option.symbol)
+                        AppSymbol(option.symbol, size: 17)
                     }
                     .tag(option.id)
                 }

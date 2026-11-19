@@ -109,7 +109,7 @@ struct DeviceManagementView: View {
                     Button(String(localized: "Rotate credential"), systemImage: "key") { confirmsRotation = true }.disabled(!canManage)
                     Button(String(localized: "Delete device"), systemImage: "trash", role: .destructive) { confirmsDeletion = true }.disabled(!canManage)
                 } label: {
-                    AppSymbol("ellipsis")
+                    AppSymbol("anthropicon.dotsHorizontal", size: 15)
                 }.accessibilityLabel(String(localized: "Device actions"))
             }
         }

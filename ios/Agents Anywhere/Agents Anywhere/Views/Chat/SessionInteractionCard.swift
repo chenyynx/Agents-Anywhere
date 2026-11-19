@@ -125,7 +125,7 @@ struct SessionInteractionActions: View {
                                 .disabled(isDisabled(action))
                         }
                     } label: {
-                        Label(String(localized: "更多"), appSymbol: "ellipsis")
+                        Label(String(localized: "更多"), appSymbol: "anthropicon.dotsHorizontal", size: 15)
                             .opacity(layout.more.contains(where: item.isSending) ? 0 : 1)
                             .overlay {
                                 if layout.more.contains(where: item.isSending) { ProgressView().controlSize(.small) }

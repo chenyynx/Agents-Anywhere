@@ -169,7 +169,7 @@ struct NewSessionView: View, Equatable {
                 Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = device.id }
             }
         } label: {
-            if model.isPreparing { ProgressView().controlSize(.mini) } else { AppSymbol("ellipsis") }
+            if model.isPreparing { ProgressView().controlSize(.mini) } else { AppSymbol("anthropicon.dotsHorizontal", size: 15) }
         }
         .disabled(model.isCreating)
         .accessibilityLabel(String(localized: "Device actions"))

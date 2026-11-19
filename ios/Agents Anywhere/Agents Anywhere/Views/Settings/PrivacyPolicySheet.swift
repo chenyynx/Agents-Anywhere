@@ -72,11 +72,11 @@ struct PrivacyPolicyContent: View {
 
     private var summaryCard: some View {
         SettingsSection(String(localized: "privacyPolicy.summary.title")) {
-            summaryRow(icon: "iphone", text: "privacyPolicy.summary.local")
+            summaryRow(icon: "anthropicon.mobilePhone", text: "privacyPolicy.summary.local")
             SettingsRowDivider(leading: SettingsStyle.rowPadding)
-            summaryRow(icon: "server.rack", text: "privacyPolicy.summary.server")
+            summaryRow(icon: "anthropicon.cloud", text: "privacyPolicy.summary.server")
             SettingsRowDivider(leading: SettingsStyle.rowPadding)
-            summaryRow(icon: "hand.raised", text: "privacyPolicy.summary.tracking")
+            summaryRow(icon: "anthropicon.lockShield", text: "privacyPolicy.summary.tracking")
         }
     }
 

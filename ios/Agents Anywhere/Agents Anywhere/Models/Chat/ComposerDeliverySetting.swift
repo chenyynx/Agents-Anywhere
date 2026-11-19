@@ -23,10 +23,12 @@ enum ComposerDelivery: String, CaseIterable, Identifiable {
     /// The glyph the composer's long-press menu shows in front of each
     /// option: an arrow merging into the running work (steer), a clock for
     /// "after this turn" (queue).
+    /// Official Anthropicon names (pp 2026-11-20): a curved arrow bending into
+    /// the running work (steer), a clock for "after this turn" (queue).
     var menuSymbol: String {
         switch self {
-        case .steer: "arrow.turn.down.right"
-        case .queue: "clock"
+        case .steer: "anthropicon.arrowBendUpRight"
+        case .queue: "anthropicon.clock"
         }
     }
 }

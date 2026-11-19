@@ -49,7 +49,7 @@ struct RootView: View {
                     Menu {
                         Button(String(localized: "立即重试"), action: retryServerConnection)
                         Button(String(localized: "返回登录"), action: appState.returnToLogin)
-                    } label: { AppSymbol("ellipsis").frame(width: 36, height: 36) }
+                    } label: { AppSymbol("anthropicon.dotsHorizontal", size: 15).frame(width: 36, height: 36) }
                 }
                 .padding(14).glassEffect(.regular, in: .rect(cornerRadius: 20))
                 .padding(.horizontal, 22).padding(.top, 70).frame(maxWidth: 540)

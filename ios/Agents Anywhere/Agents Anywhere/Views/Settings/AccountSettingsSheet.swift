@@ -111,21 +111,21 @@ struct AccountSettingsSheet: View {
 
     private func accountSection(_ me: AuthMe) -> some View {
         SettingsSection(String(localized: "Account")) {
-            SettingsNavigationRow(icon: "person.text.rectangle",
+            SettingsNavigationRow(icon: "anthropicon.id",
                                   title: String(localized: "Nickname"),
                                   value: me.displayName,
                                   destination: AccountIdentitySettingsView(mode: .nickname, draft: $drafts.nickname))
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "envelope",
+            SettingsNavigationRow(icon: "anthropicon.email",
                                   title: String(localized: "Email"),
                                   value: me.email,
                                   destination: AccountIdentitySettingsView(mode: .email, draft: $drafts.email))
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "person.crop.circle",
+            SettingsNavigationRow(icon: "anthropicon.userCircle",
                                   title: String(localized: "Profile photo"),
                                   destination: AvatarSettingsView(draft: $drafts.avatar))
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "key",
+            SettingsNavigationRow(icon: "anthropicon.key",
                                   title: String(localized: "Password"),
                                   destination: PasswordSettingsView(draft: $drafts.password))
         }
@@ -133,21 +133,21 @@ struct AccountSettingsSheet: View {
 
     private var displaySection: some View {
         SettingsSection(String(localized: "Appearance & display")) {
-            SettingsNavigationRow(icon: "circle.lefthalf.filled",
+            SettingsNavigationRow(icon: "anthropicon.moon",
                                   title: String(localized: "Appearance"),
                                   value: String(localized: (AppAppearance(rawValue: appearanceValue) ?? .system).title),
                                   destination: AppearanceSettingsView())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "image",
+            SettingsNavigationRow(icon: "anthropicon.image",
                                   title: String(localized: "应用图标"),
                                   destination: AppIconSettingsView())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "paintpalette",
+            SettingsNavigationRow(icon: "anthropicon.palette",
                                   title: String(localized: "Accent color"),
                                   value: String(localized: AppAccent.resolve(accentValue).title),
                                   destination: AccentSettingsView())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "globe",
+            SettingsNavigationRow(icon: "anthropicon.globe",
                                   title: String(localized: "Language"),
                                   value: SettingsLanguageView.currentLanguage,
                                   destination: SettingsLanguageView())
@@ -159,7 +159,7 @@ struct AccountSettingsSheet: View {
             // Both choices are short enough for the official inline menu row
             // (value + up/down chevron), so neither opens a second-level page
             // (pp 2026-11-18).
-            SettingsMenuRow(icon: "square.and.pencil",
+            SettingsMenuRow(icon: "anthropicon.edit",
                             title: String(localized: "后续消息处理方式"),
                             value: delivery.title,
                             options: ComposerDelivery.allCases.map {
@@ -168,7 +168,7 @@ struct AccountSettingsSheet: View {
                             },
                             selection: $deliveryRaw)
             SettingsRowDivider()
-            SettingsMenuRow(icon: "arrow.down.document",
+            SettingsMenuRow(icon: "anthropicon.download",
                             title: String(localized: "工具渲染方式"),
                             value: renderMode.title,
                             options: TimelineRenderMode.allCases.map {
@@ -181,11 +181,11 @@ struct AccountSettingsSheet: View {
 
     private var sessionListSection: some View {
         SettingsSection(String(localized: "Session list")) {
-            SettingsToggleRow(icon: "folder",
+            SettingsToggleRow(icon: "anthropicon.folder",
                               title: String(localized: "Project mode"),
                               isOn: Binding(get: { !showsSessionList }, set: { showsSessionList = !$0 }))
             SettingsRowDivider()
-            SettingsToggleRow(icon: "sidebar.left",
+            SettingsToggleRow(icon: "anthropicon.sidebar",
                               title: String(localized: "Single-line sessions"),
                               isOn: $compactSessionList,
                               isEnabled: showsSessionList)
@@ -194,12 +194,12 @@ struct AccountSettingsSheet: View {
 
     private var storageSection: some View {
         SettingsSection(String(localized: "Storage & diagnostics")) {
-            SettingsNavigationRow(icon: "archivebox",
+            SettingsNavigationRow(icon: "anthropicon.archive",
                                   title: String(localized: "Cache"),
                                   value: (LocalCacheLimit(rawValue: cacheLimitRaw) ?? .defaultValue).title,
                                   destination: CacheSettingsView())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "doc.text.magnifyingglass",
+            SettingsNavigationRow(icon: "anthropicon.research",
                                   title: String(localized: "Diagnostics log"),
                                   showsStatusDot: true,
                                   destination: DiagnosticsLogSettingsView())
@@ -208,7 +208,7 @@ struct AccountSettingsSheet: View {
 
     private var connectionSection: some View {
         SettingsSection(String(localized: "Connection")) {
-            SettingsNavigationRow(icon: "server.rack",
+            SettingsNavigationRow(icon: "anthropicon.cloud",
                                   title: String(localized: "Server"),
                                   value: appState.serverURL?.host,
                                   destination: SettingsServerView())
@@ -217,11 +217,11 @@ struct AccountSettingsSheet: View {
 
     private var supportSection: some View {
         SettingsSection(String(localized: "About & support")) {
-            SettingsNavigationRow(icon: "hand.raised",
+            SettingsNavigationRow(icon: "anthropicon.lockShield",
                                   title: String(localized: "privacyPolicy.title"),
                                   destination: PrivacyPolicyContent())
             SettingsRowDivider()
-            SettingsNavigationRow(icon: "info.circle",
+            SettingsNavigationRow(icon: "anthropicon.info",
                                   title: String(localized: "About"),
                                   value: SettingsAboutView.version,
                                   destination: SettingsAboutView())
@@ -254,7 +254,7 @@ struct AccountSettingsSheet: View {
 #if AA_TIMELINE_PROBE
     private var developerSection: some View {
         SettingsSection(String(localized: "开发者")) {
-            SettingsDisclosureRow(icon: "gearshape",
+            SettingsDisclosureRow(icon: "anthropicon.settings",
                                   title: String(localized: "诊断与日志"),
                                   value: buildLabel) {
                 diagnosticsPresented = true

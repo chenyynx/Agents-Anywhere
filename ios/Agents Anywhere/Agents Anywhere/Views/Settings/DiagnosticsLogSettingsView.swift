@@ -33,7 +33,7 @@ struct DiagnosticsLogSettingsView: View {
     var body: some View {
         SettingsScreen(title: String(localized: "Diagnostics log")) {
             SettingsSection(footer: String(localized: "Diagnostics stay on this device, never include message content, and are kept for 7 days.")) {
-                SettingsToggleRow(icon: "doc.text.magnifyingglass",
+                SettingsToggleRow(icon: "anthropicon.research",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
             }
@@ -166,7 +166,7 @@ struct DiagnosticsLogSettingsView: View {
                 ClientDiagnosticsLog.shared.delete(day)
                 reload()
             } label: {
-                Label(String(localized: "Delete"), systemImage: "trash")
+                Label(String(localized: "Delete"), appSymbol: "anthropicon.trash", size: 17)
             }
         }
     }

@@ -6,12 +6,12 @@ struct SettingsLanguageView: View {
     var body: some View {
         SettingsScreen(title: String(localized: "Language")) {
             SettingsSection(footer: String(localized: "Choose English or Simplified Chinese in the app's iOS language settings. Without an override, the app follows your preferred system language.")) {
-                SettingsRowLabelContent(icon: "globe",
+                SettingsRowLabelContent(icon: "anthropicon.globe",
                                         title: String(localized: "Current language"),
                                         value: Self.currentLanguage, showsChevron: false)
             }
             SettingsSection {
-                SettingsDisclosureRow(icon: "arrow.up.right",
+                SettingsDisclosureRow(icon: "anthropicon.arrowUpRight",
                                       title: String(localized: "Open iOS Settings"),
                                       showsChevron: false) {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -35,7 +35,7 @@ struct SettingsServerView: View {
         SettingsScreen(title: String(localized: "Server")) {
             SettingsSection(String(localized: "Connection")) {
                 SettingsRowLabelContent(
-                    icon: "server.rack",
+                    icon: "anthropicon.cloud",
                     title: String(localized: "Status"),
                     value: appState.isServerConnected
                         ? String(localized: "Connected")
@@ -52,7 +52,7 @@ struct SettingsServerView: View {
                             Button {
                                 UIPasteboard.general.string = url.absoluteString
                             } label: {
-                                Label(String(localized: "Copy server address"), appSymbol: "doc.on.doc")
+                                Label(String(localized: "Copy server address"), appSymbol: "anthropicon.copy", size: 15)
                                     .font(SettingsStyle.text(15))
                                     .foregroundStyle(SettingsStyle.controlTint(colorScheme))
                             }
@@ -81,17 +81,17 @@ struct SettingsAboutView: View {
     var body: some View {
         SettingsScreen(title: String(localized: "About")) {
             SettingsSection {
-                SettingsRowLabelContent(icon: "info.circle",
+                SettingsRowLabelContent(icon: "anthropicon.info",
                                         title: String(localized: "Version"),
                                         value: Self.version, showsChevron: false)
                 SettingsRowDivider(leading: SettingsStyle.rowPadding)
-                SettingsRowLabelContent(icon: "number",
+                SettingsRowLabelContent(icon: "anthropicon.frameHash",
                                         title: String(localized: "Build"),
                                         value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—",
                                         showsChevron: false)
             }
             SettingsSection {
-                SettingsNavigationRow(icon: "doc.text",
+                SettingsNavigationRow(icon: "anthropicon.file",
                                       title: String(localized: "Open-source notices"),
                                       destination: OpenSourceNoticesView())
             }

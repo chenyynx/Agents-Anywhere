@@ -40,7 +40,7 @@ struct AccountIdentitySettingsView: View {
             if mode == .email {
                 if draft.text == draft.initialText && !draft.initialText.isEmpty {
                     SettingsSection {
-                        SettingsRowLabelContent(icon: "envelope",
+                        SettingsRowLabelContent(icon: "anthropicon.email",
                                                 title: String(localized: "Email status"),
                                                 value: appState.me?.emailVerified == true
                                                     ? String(localized: "Verified")
@@ -56,7 +56,7 @@ struct AccountIdentitySettingsView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else if config == nil {
-                        SettingsDisclosureRow(icon: "arrow.clockwise",
+                        SettingsDisclosureRow(icon: "anthropicon.arrowClockwise",
                                               title: String(localized: "Retry loading email settings"),
                                               showsChevron: false) {
                             Task { await loadConfig() }
@@ -71,7 +71,7 @@ struct AccountIdentitySettingsView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         SettingsRowDivider()
-                        SettingsDisclosureRow(icon: "arrow.up.right",
+                        SettingsDisclosureRow(icon: "anthropicon.arrowUpRight",
                                               title: cooldown > 0
                                                   ? String(localized: "Resend in \(cooldown) s")
                                                   : String(localized: "Send verification code"),

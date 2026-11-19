@@ -2161,7 +2161,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // and a previous turn's groups are excluded, so a background
             // subagent that outlived its turn never re-draws the working mark
             // when a new message starts streaming (pp 2026-11-19).
-            chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
+            //
+            // A steering row takes the mark away from the groups above it: the
+            // standalone 「正在处理中」 row owns it, and a group with a running
+            // background dispatch would otherwise draw a second mark the same
+            // frame (the 2026-11-18 two-working-rows bug; the live tail gate
+            // already excludes the group, this keeps the pose set aligned).
+            chatRunningPoseGroupIDs = (turnActive && !lastUnitIsSteeringRow)
+                ? chatRunningTurnGroupIDs : []
             // While the turn streams, a failed tool in the group is not
             // residue — the agent moves on and the row must keep the live
             // pose through the next gap (pp 2026-11-10: a mid-turn ⚠️ settled

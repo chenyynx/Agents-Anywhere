@@ -422,6 +422,28 @@ struct TimelineStepGroupSummaryTests {
         #expect(!control.hasRunningBackgroundAgent)
     }
 
+    /// The turn's working row keeps its mark while the turn streams, even when
+    /// the only running step is a **background** dispatch (pp 2026-11-19:
+    /// 「我还在调工具，那还是保持三个点」). Pins the rule against re-adding a
+    /// per-hand-off live-pose guard — with such a guard this expectation goes
+    /// red, because the dispatch reports `runInBackground`.
+    @Test func aRunningBackgroundDispatchKeepsTheTurnMark() throws {
+        var value = try itemObject(id: "a1", text: "")
+        value["type"] = "tool"; value["role"] = "assistant"; value["status"] = "running"
+        value["content"] = ["kind": "agent_call", "action": "invoke",
+                            "description": "Third 2-minute timing test",
+                            "runInBackground": true]
+        let steps: [TimelineStep] = [
+            .thinking(id: "r1", text: "think", status: .done),
+            .tool(call: CodeToolCall(item: try decode(value))),
+        ]
+        let group = TimelineStepGroup(id: "steps:background", steps: steps)
+        #expect(group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        // The turn-membership gate still decides: without the current turn's
+        // allowance the group must settle (reply over, agent still running).
+        #expect(!group.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+    }
+
     @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {
         let steps: [TimelineStep] = [
             try agentStep("a1", status: "done"),

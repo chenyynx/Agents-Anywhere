@@ -354,7 +354,7 @@ enum TimelineTurnActions {
     /// never sets it, and DSH's command content has no such field: a runtime
     /// that does not report the flag keeps the ordinary activity rule —
     /// capability-driven, no provider branching.
-    static func isBackgroundHandoffRow(_ item: V2TimelineItem) -> Bool {
+    private static func isBackgroundHandoffRow(_ item: V2TimelineItem) -> Bool {
         if SubAgentProgress.isAgentCall(item) {
             return isDispatchAgentCall(item) && reportsBackground(item)
         }

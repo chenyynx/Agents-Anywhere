@@ -161,12 +161,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var chatLiveTailGroupID: String?
     /// Last queue roster the handoff probe saw (diagnostics only).
     private var lastQueueProbeRoster: String?
-    /// Live facts are not fresh (cold load): draw the running pose from the
-    /// row status, because nothing better is known yet.
-    private var chatAllowsRunningPose = false
     /// The groups of the actively streaming turn. Only these may animate a
     /// step that still reports `running`; a previous turn's stale snapshot
-    /// must not (pp 2026-11-14).
+    /// must not (pp 2026-11-14), and a background subagent that outlived its
+    /// turn must stay on the settled row when a new turn streams
+    /// (pp 2026-11-19).
     private var chatRunningPoseGroupIDs: Set<String> = []
     /// The top-level items the interrupted-turn notices follow (the units
     /// that hold each stopped turn's last row). Empty when no stop is known
@@ -1305,8 +1304,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             if let stepGroup = stepGroupsByID[id] {
                 let cwd = model.session.metadata?.cwd
                 let isLiveTail = id == chatLiveTailGroupID
-                let allowsPose = chatAllowsRunningPose
-                    || chatRunningPoseGroupIDs.contains(stepGroup.id)
+                // Only the groups of the actively streaming turn may animate a
+                // step that still reports `running`. A previous turn's group —
+                // e.g. one holding a background subagent that outlives the
+                // turn — must stay on its settled row (icon + sweep), never
+                // re-draw the working mark when a new turn starts (pp
+                // 2026-11-19: the icon flashed the dots and reverted).
+                let allowsPose = chatRunningPoseGroupIDs.contains(stepGroup.id)
                 // Probe for the intermittent "a stopped turn still drew the
                 // working pose" report (device 2026-11-14, fixed then; kept as
                 // a tripwire because it was layout-dependent). One diagnostics
@@ -2152,26 +2156,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 || model.timeline.pendingMessages.contains { !$0.isSteer }
             let turnActive = turnStreaming && !hasPendingSend
             // A fresh idle — or the accepted stop's optimistic idle — proves
-            // every still-`running` step snapshot is stale. Only the group of
-            // the actively streaming turn may animate; keep drawing from row
-            // status only while live facts are not fresh (cold load).
-            // A stale projection is only a reason to trust row status when
-            // nothing better is known. A stop tap or its ack is better: the
-            // post-stop stale window revived the old step row's working pose
-            // (diagnostics 2026-11-14 19:22:41: allowsPose=1 fresh=0
-            // stopRequested=1), and that row's live/settled height difference
-            // also moved the bottom — the flash and the jump share this gate.
-            // A cold open has no runtime status yet; the local row snapshot
-            // can still say `running` from the previous launch, and drawing
-            // that pose before any live fact arrives is a false active row
-            // (device 2026-11-14 21:03:00: fresh=0, status=nil, 4 stale
-            // steps). Only trust row status once the runtime has reported
-            // something; the `!isFresh` fallback still covers a known-stale
-            // projection.
-            chatAllowsRunningPose = !model.session.runtime.isFresh
-                && !model.session.runtime.stopRequested
-                && !model.session.runtime.predictedIdle
-                && model.session.runtime.state != nil
+            // every still-`running` step snapshot is stale. Only the groups of
+            // the actively streaming turn may animate. The pending-send window
+            // and a previous turn's groups are excluded, so a background
+            // subagent that outlived its turn never re-draws the working mark
+            // when a new message starts streaming (pp 2026-11-19).
             chatRunningPoseGroupIDs = turnActive ? chatRunningTurnGroupIDs : []
             // While the turn streams, a failed tool in the group is not
             // residue — the agent moves on and the row must keep the live
@@ -2597,8 +2586,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let posing = stepGroupsByID.values.filter {
             $0.showsRunningPose(
                 isLiveTail: $0.id == chatLiveTailGroupID,
-                allowsRunningPose: chatAllowsRunningPose
-                    || chatRunningPoseGroupIDs.contains($0.id))
+                allowsRunningPose: chatRunningPoseGroupIDs.contains($0.id))
         }
         ClientDiagnosticsLog.shared.record(
             kind: "timeline.queue.handoff",
@@ -2944,8 +2932,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let isLiveTail = group.id == chatLiveTailGroupID
         let showsLivePose = group.showsRunningPose(
             isLiveTail: isLiveTail,
-            allowsRunningPose: chatAllowsRunningPose
-                || chatRunningPoseGroupIDs.contains(group.id))
+            allowsRunningPose: chatRunningPoseGroupIDs.contains(group.id))
         if let live = group.liveStep, showsLivePose {
             var hasher = TimelineStableHasher()
             hasher.combine(live.id)

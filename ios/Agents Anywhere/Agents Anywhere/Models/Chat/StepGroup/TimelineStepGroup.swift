@@ -105,23 +105,6 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// live dots stay on the working row.
     var hasRunningBackgroundAgent: Bool { summary.activeAgentCount > 0 }
 
-    /// Whether the group's only running steps are background hand-offs — a
-    /// dispatched subagent that outlives the turn.
-    ///
-    /// Such a step keeps `isRunning` true between turns. Without this guard
-    /// the live-pose rule drew the working mark the moment a *new* message
-    /// started streaming, so the settled row's icon flashed the mark and then
-    /// reverted (pp 2026-11-19). Background work is represented by the summary
-    /// row and its sweep, never by the live pose.
-    var runningStepsAreBackgroundHandoffs: Bool {
-        let running = steps.filter { $0.isRunning }
-        guard !running.isEmpty else { return false }
-        return running.allSatisfy { step in
-            guard let call = step.toolCall, call.kind == .task else { return false }
-            return TimelineTurnActions.isBackgroundHandoffRow(call.item)
-        }
-    }
-
     /// Whether the chat profile's live mark may seat on this group while a turn
     /// is active, when the runtime does not report the turn itself
     /// (pp 2026-11-10).
@@ -181,11 +164,7 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// turn may animate it. This is the stop-tap half of the 2026-11-14 fix:
     /// the stop ack proves the turn is over even while row snapshots lag.
     func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
-        // A background subagent outlives the turn: its group stays in the
-        // settled summary row (with the sweep) instead of re-drawing the live
-        // mark whenever another turn streams (pp 2026-11-19).
-        guard !runningStepsAreBackgroundHandoffs else { return false }
-        return isLiveTail || (isRunning && allowsRunningPose)
+        isLiveTail || (isRunning && allowsRunningPose)
     }
 
     /// The step the live row shows: the trailing-most running step, else the

@@ -304,13 +304,11 @@ struct TimelineStepGroupSummaryTests {
     /// A subagent dispatch row the way the runtimes project it: an
     /// `agent_call` tool row with a dispatch action.
     private func agentStep(_ id: String, status: String,
-                           action: String = "invoke",
-                           background: Bool = false) throws -> TimelineStep {
+                           action: String = "invoke") throws -> TimelineStep {
         var value = try itemObject(id: id, text: "")
         value["type"] = "tool"; value["role"] = "assistant"; value["status"] = status
         value["content"] = ["kind": "agent_call", "action": action,
-                            "description": "Third 2-minute timing test",
-                            "runInBackground": background]
+                            "description": "Third 2-minute timing test"]
         return .tool(call: CodeToolCall(item: try decode(value)))
     }
 
@@ -422,37 +420,6 @@ struct TimelineStepGroupSummaryTests {
             id: "steps:control", steps: controlSteps,
             summary: TimelineStepSummarizer.summary(steps: controlSteps, cwd: nil))
         #expect(!control.hasRunningBackgroundAgent)
-    }
-
-    /// A background subagent keeps its dispatch step `running` across turns.
-    /// The live-pose rule must not draw that group's working mark when a new
-    /// message starts streaming — the settled row would flash the mark and
-    /// revert (pp 2026-11-19).
-    @Test func aBackgroundHandoffNeverDrawsTheLivePose() throws {
-        let steps: [TimelineStep] = [
-            .thinking(id: "r1", text: "think", status: .done),
-            try agentStep("a1", status: "running", background: true),
-        ]
-        let group = TimelineStepGroup(id: "steps:background", steps: steps)
-        #expect(!group.showsRunningPose(isLiveTail: true, allowsRunningPose: true))
-        #expect(!group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(!group.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
-    }
-
-    @Test func aForegroundAgentStillDrawsTheLivePose() throws {
-        let steps: [TimelineStep] = [try agentStep("a1", status: "running")]
-        let group = TimelineStepGroup(id: "steps:foreground", steps: steps)
-        #expect(group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(group.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
-    }
-
-    @Test func aGroupWithOtherRunningWorkStillDrawsTheLivePose() throws {
-        let steps: [TimelineStep] = [
-            .thinking(id: "r1", text: "think", status: .running),
-            try agentStep("a1", status: "running", background: true),
-        ]
-        let group = TimelineStepGroup(id: "steps:mixed", steps: steps)
-        #expect(group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
     }
 
     @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {

@@ -316,7 +316,7 @@ struct SettingsMenuRow: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        AppSymbol(option.symbol, size: 17)
+                        AppSymbol(option.symbol, size: AppSymbol.menuSize)
                     }
                     .tag(option.id)
                 }

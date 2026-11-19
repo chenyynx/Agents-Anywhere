@@ -195,7 +195,7 @@ struct ChatComposer: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        AppSymbol(option.menuSymbol, size: 17)
+                        AppSymbol(option.menuSymbol, size: AppSymbol.menuSize)
                     }
                     .tag(option.rawValue)
                 }

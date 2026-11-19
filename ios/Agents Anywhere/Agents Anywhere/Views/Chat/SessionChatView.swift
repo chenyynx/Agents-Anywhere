@@ -646,7 +646,7 @@ struct SessionChatView: View, Equatable {
     /// the system menu scale, smaller than this page's 20 pt row icons; the
     /// system-image rows keep their own sizing.
     private static func menuLabel(_ title: String, icon: String) -> some View {
-        Label(title, appSymbol: icon, size: 17)
+        Label(title, appSymbol: icon, size: AppSymbol.menuSize)
     }
 
     /// Same reason as `trailingToolbar`: this builder block resolves on its

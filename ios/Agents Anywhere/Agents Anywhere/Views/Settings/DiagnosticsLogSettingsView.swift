@@ -166,7 +166,7 @@ struct DiagnosticsLogSettingsView: View {
                 ClientDiagnosticsLog.shared.delete(day)
                 reload()
             } label: {
-                Label(String(localized: "Delete"), appSymbol: "anthropicon.trash", size: 17)
+                Label(String(localized: "Delete"), appSymbol: "anthropicon.trash", size: AppSymbol.menuSize)
             }
         }
     }

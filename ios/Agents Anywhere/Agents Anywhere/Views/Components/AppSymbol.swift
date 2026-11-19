@@ -3,6 +3,12 @@ import SwiftUI
 /// Web's Lucide paths rendered as native template vectors. Native controls keep
 /// their system drawing; app-owned actions share this mapping across screens.
 struct AppSymbol: View {
+    /// Declared size for menu-item artwork. iOS menus draw custom label icons
+    /// at roughly two thirds of their frame (a declared 17 measured 11 pt of
+    /// ink on device); 28 declared lands on the official menu's 18 pt
+    /// (pp 2026-11-20).
+    static let menuSize: CGFloat = 28
+
     let name: String
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 20
 

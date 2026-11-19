@@ -158,15 +158,22 @@ struct NewSessionView: View, Equatable {
     }
 
     private var deviceMenu: some View {
-        // Menu rows use SF Symbols like the rest of the system menu.
         Menu {
-            Button(String(localized: "选择设备和 Agent"), systemImage: "cpu") { chooseTarget() }
-            Button(String(localized: "选择工作目录"), systemImage: "folder") { showsWorkspace = true }
-                .disabled(model.connector == nil)
+            Button(action: chooseTarget) {
+                Label(String(localized: "选择设备和 Agent"), menuSymbol: "anthropicon.computer")
+            }
+            Button { showsWorkspace = true } label: {
+                Label(String(localized: "选择工作目录"), menuSymbol: "anthropicon.folder")
+            }
+            .disabled(model.connector == nil)
             if let device = model.connector {
                 Divider()
-                Button(String(localized: "设备详情"), systemImage: "info.circle") { onOpenDevice(device.id) }
-                Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = device.id }
+                Button { onOpenDevice(device.id) } label: {
+                    Label(String(localized: "设备详情"), menuSymbol: "anthropicon.info")
+                }
+                Button { UIPasteboard.general.string = device.id } label: {
+                    Label(String(localized: "Copy device ID"), menuSymbol: "anthropicon.copy")
+                }
             }
         } label: {
             if model.isPreparing { ProgressView().controlSize(.mini) } else { AppSymbol("anthropicon.dotsHorizontal", size: 15) }

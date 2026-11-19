@@ -95,7 +95,11 @@ struct ChatSidebarView: View {
                             ChatSidebarListMenu(showsSessionList: $showsSessionList,
                                 onShowArchives: { showsArchives = true }) {}
                         }
-                        .padding(.horizontal, 10).padding(.top, 20).padding(.bottom, 6)
+                        // Matched to the official drawer's ink gaps around
+                        // this header (3x screenshot: 39.7pt above, 32.3pt
+                        // below; we drew 57.7/43.3 because the ⋯ menu's 44pt
+                        // tap target centres the title 13pt low).
+                        .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -5)
                         ChatSidebarSessionSection(
                             title: nil,
                             sessions: recentSessions,
@@ -281,17 +285,23 @@ private struct ChatSidebarDeviceSection: View {
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             if !isLoading && !devices.isEmpty {
-                // Header actions stay chrome-less (official section headers
-                // never wear a filled round button); 44pt stays as the tap
-                // target while the glyph itself is 20pt.
+                // A text link with a caret, like the official drawer's
+                // "查看全部 ›" — a bare plus reads as noise once the sidebar
+                // has several of them. The official link uses the primary
+                // text colour (#131313), darker than the grey section titles
+                // (measured 2026-11-20).
                 Button(action: onPair) {
-                    Image("aa-IconAdd")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 13, height: 13)
-                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.rect)
+                    // No 44pt frame: it inflated the header block and pushed
+                    // this section's rhythm off the pinned section's (pp
+                    // 2026-11-20). The link spans its text, like the section
+                    // labels it sits beside.
+                    HStack(spacing: 3) {
+                        Text(String(localized: "添加设备"))
+                        AppSymbol("anthropicon.caretRight", size: 9)
+                    }
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                    .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(String(localized: "Pair device"))
@@ -299,7 +309,9 @@ private struct ChatSidebarDeviceSection: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 20)
-        .padding(.bottom, 0)
+        // Same trailing gap as ChatSidebarSectionLabel (Pinned/Recent): 0
+        // here made the device row sit 6pt further from its header.
+        .padding(.bottom, 6)
     }
 
     private var pairRow: some View {
@@ -314,8 +326,7 @@ private struct ChatSidebarDeviceSection: View {
                     .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .regular))
+                AppSymbol("anthropicon.caretRight", size: 10)
                     .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             }
             .padding(.leading, 11)

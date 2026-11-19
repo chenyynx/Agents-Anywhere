@@ -1,19 +1,19 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "指令图标常驻输入框": {
+    "隐藏指令图标": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Always show the commands key"
+            "value": "Hide the commands key"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "指令图标常驻输入框"
+            "value": "隐藏指令图标"
           }
         }
       }

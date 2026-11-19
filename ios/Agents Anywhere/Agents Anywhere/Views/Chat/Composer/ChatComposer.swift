@@ -48,9 +48,9 @@ struct ChatComposer: View {
     /// temporary override.
     @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
         ComposerDeliverySetting.defaultValue.rawValue
-    /// Settings → 编写器 → 指令图标常驻输入框. Keeps the commands key on screen
-    /// even for runtimes without slash commands (pp 2026-11-20).
-    @AppStorage(ComposerCommandsSetting.storageKey) private var commandsAlwaysVisible = false
+    /// Settings → 编写器 → 隐藏指令图标. On, the commands key is hidden for
+    /// every runtime; off keeps the capability-driven default (pp 2026-11-20).
+    @AppStorage(ComposerCommandsSetting.storageKey) private var commandsHidden = false
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
     private var delivery: ComposerDelivery { ComposerDeliverySetting.resolve(deliveryRaw) }
 
@@ -139,7 +139,7 @@ struct ChatComposer: View {
                     .accessibilityLabel(String(localized: "语音输入"))
                     .accessibilityIdentifier("chat.composer.voice")
 
-                    if showsCommands || commandsAlwaysVisible {
+                    if showsCommands && !commandsHidden {
                         Button(action: onCommands) {
                             // Official Skills artwork (pp 2026-11-19): the
                             // rounded sheet with a tag. Both secondary keys

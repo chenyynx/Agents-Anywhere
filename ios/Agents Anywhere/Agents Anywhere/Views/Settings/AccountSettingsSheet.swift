@@ -15,7 +15,7 @@ struct AccountSettingsSheet: View {
     @AppStorage(ComposerDeliverySetting.storageKey)
     private var deliveryRaw = ComposerDeliverySetting.defaultValue.rawValue
     @AppStorage(ComposerCommandsSetting.storageKey)
-    private var commandsAlwaysVisible = false
+    private var commandsHidden = false
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
@@ -179,12 +179,11 @@ struct AccountSettingsSheet: View {
                             },
                             selection: $renderModeRaw)
             SettingsRowDivider()
-            // Off by default: the key appears only for runtimes that offer
-            // slash commands; on, it stays in the composer everywhere
-            // (pp 2026-11-20).
+            // Off by default: the key follows the runtime's slash-command
+            // capability; on, it is hidden everywhere (pp 2026-11-20).
             SettingsToggleRow(icon: "anthropicon.scroll",
-                              title: String(localized: "指令图标常驻输入框"),
-                              isOn: $commandsAlwaysVisible)
+                              title: String(localized: "隐藏指令图标"),
+                              isOn: $commandsHidden)
         }
     }
 

@@ -76,14 +76,20 @@ struct ConversationOutlineSearchTests {
         #expect(hasBold)
     }
 
-    @Test("the search preview is the whole matched message, not a window")
-    func wholeMessagePreview() {
+    @Test("the excerpt starts just before the matched word so the row shows it")
+    func excerptStartsBeforeKeyword() throws {
         let prefix = String(repeating: "a", count: 300)
         let suffix = String(repeating: "b", count: 300)
         let row = entry(text: prefix + " needle " + suffix)
-        let hit = ConversationOutlineSearch.hit(in: row, query: "needle")
-        #expect(hit?.snippet == prefix + " needle " + suffix)
-        #expect(hit?.snippet.contains("…") == false)
+        let hit = try #require(ConversationOutlineSearch.hit(in: row, query: "needle"))
+        #expect(hit.snippet.contains("needle"))
+        #expect(hit.snippet.hasPrefix("…"))
+        #expect(hit.snippet.hasSuffix("…"))
+        let range = try #require(hit.snippet.range(of: "needle"))
+        let keywordOffset = hit.snippet.distance(from: hit.snippet.startIndex,
+                                                 to: range.lowerBound)
+        #expect(keywordOffset <= 26) // "…" + the 24-character leading context
+        #expect(hit.snippet.count <= 262)
     }
 
     @Test("surrounding blank lines do not collapse the excerpt to an ellipsis")

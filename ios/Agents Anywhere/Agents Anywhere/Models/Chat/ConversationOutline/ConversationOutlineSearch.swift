@@ -67,18 +67,21 @@ nonisolated enum ConversationOutlineSearch {
                 guard foldedTokens.allSatisfy({ foldedText.contains($0) }) else { continue }
                 messageCount += 1
                 guard firstHit == nil else { continue }
-                // The captured search rows show the whole matched message:
-                // whitespace folded, inline Markdown resolved. Short messages
-                // stay short, long ones run many lines, and the "…" they show
-                // belong to the messages themselves.
+                // The preview must show the matched word: start just before
+                // the first hit (the capture's excerpts lead with "…" and put
+                // the keyword on the first visible line), then keep a long
+                // trailing window for context.
                 let normalized = ConversationOutlineRowContentMaker.preview(part.text)
                 guard !normalized.isEmpty else { continue }
                 let attributed = ConversationOutlineRowContentMaker.markdownTitle(normalized)
+                let plain = String(attributed.characters)
+                let excerpt = excerpt(from: attributed, plain: plain,
+                                      tokens: tokens, locale: locale)
                 firstHit = ConversationOutlineSearchHit(
                     entryID: entry.id,
                     partID: part.id,
-                    snippet: String(attributed.characters),
-                    snippetAttributed: attributed
+                    snippet: excerpt.plain,
+                    snippetAttributed: excerpt.attributed
                 )
             }
             if let firstHit { hits.append(firstHit) }
@@ -103,5 +106,45 @@ nonisolated enum ConversationOutlineSearch {
         locale: Locale = .current
     ) -> Int {
         search(entries, query: query, locale: locale).messageCount
+    }
+
+    /// Characters kept before the first hit, so the keyword is on the first
+    /// visible line of the row; the capture's excerpts lead with "…".
+    private static let leadingContext = 24
+    /// The trailing context kept after the hit. The official window is longer
+    /// than the old 140/280 guesses but its exact rule is unrecovered; this
+    /// keeps the matched word and a full paragraph in view.
+    private static let previewLength = 260
+
+    private static func excerpt(
+        from attributed: AttributedString,
+        plain: String,
+        tokens: [String],
+        locale: Locale
+    ) -> (plain: String, attributed: AttributedString) {
+        let characters = Array(plain)
+        let match = tokens.lazy
+            .compactMap {
+                plain.range(of: $0,
+                            options: [.caseInsensitive, .diacriticInsensitive],
+                            locale: locale)
+            }
+            .min { $0.lowerBound < $1.lowerBound }
+        guard let match else { return (plain, attributed) }
+        let matchStart = plain.distance(from: plain.startIndex, to: match.lowerBound)
+        let start = max(0, matchStart - leadingContext)
+        let end = min(characters.count, start + previewLength)
+        let prefix = start > 0 ? "…" : ""
+        let suffix = end < characters.count ? "…" : ""
+        let plainExcerpt = prefix + String(characters[start..<end]) + suffix
+        guard attributed.characters.count == characters.count else {
+            return (plainExcerpt, AttributedString(plainExcerpt))
+        }
+        let startIndex = attributed.index(attributed.startIndex, offsetByCharacters: start)
+        let endIndex = attributed.index(attributed.startIndex, offsetByCharacters: end)
+        var attributedExcerpt = AttributedString(prefix)
+        attributedExcerpt.append(attributed[startIndex..<endIndex])
+        attributedExcerpt.append(AttributedString(suffix))
+        return (plainExcerpt, attributedExcerpt)
     }
 }

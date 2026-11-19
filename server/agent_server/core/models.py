@@ -1062,6 +1062,13 @@ class TimelineSource(BaseModel):
     # on rows a Runtime does not declare them for.
     nativeMessageId: str | None = None
     blockIndex: int | None = None
+    # The row's absolute index inside its message's ``content`` array. The
+    # Runtime declares it for every orderable row (reasoning, body, tool) so
+    # the server can keep the message's real block order. ``blockIndex`` above
+    # stays the tool-only ordinal it has always been; these are two different
+    # scales and must not be mixed (pp 2026-11-19). Absent on rows a Runtime
+    # does not declare it for.
+    contentBlockIndex: int | None = None
 
 
 class TimelineItemIn(BaseModel):

@@ -510,6 +510,9 @@ class TimelineRepositoryMixin:
                     order_seq=int(order_seq),
                     stored=None,
                     block_index=block_index,
+                    content_block_index=_stored_intra_message_content_index(
+                        payload_json
+                    ),
                 )
             )
         broken: list[tuple[str, str]] = []
@@ -726,15 +729,23 @@ class TimelineRepositoryMixin:
                     session_id,
                     items,
                 )
+            current_items = await self.timeline.read_many(
+                session_id,
+                {item.id for item in items},
+            )
+            current_by_id = {item.id: item for item in current_items}
+            # A live rewrite carries one frame and cannot declare the absolute
+            # content index; it must not erase the one a history/repair write
+            # already stored, or the group falls back to RBT for the rest of
+            # the session (pp 2026-11-19).
+            items = [
+                _preserve_content_block_index(current_by_id.get(item.id), item)
+                for item in items
+            ]
             incoming_by_id = {
                 item.id: item
                 for item in sorted(items, key=lambda value: value.updatedSeq)
             }
-            current_items = await self.timeline.read_many(
-                session_id,
-                set(incoming_by_id),
-            )
-            current_by_id = {item.id: item for item in current_items}
             async with self._engine.begin() as conn:
                 row = (
                     await conn.execute(
@@ -1050,6 +1061,15 @@ class TimelineRepositoryMixin:
                 set(incoming_by_id),
             )
             current_by_id = {item.id: item for item in current_items}
+            # A row that cannot declare the absolute content index (an old
+            # desktop connector, a fold rebuild) must not strip the one a
+            # history write already stored (pp 2026-11-19).
+            incoming_by_id = {
+                item_id: _preserve_content_block_index(
+                    current_by_id.get(item_id), item
+                )
+                for item_id, item in incoming_by_id.items()
+            }
             reorder: dict[str, int] = {}
             order_changed: set[str] = set()
             moved_existing_ids: list[str] = []
@@ -1716,6 +1736,14 @@ class TimelineRepositoryMixin:
             incoming_by_id = latest_timeline_items_by_id(items)
             current_items = await self.timeline.read(session_id)
             current_by_id = {item.id: item for item in current_items}
+            # A snapshot whose rows cannot declare the absolute content index
+            # must not strip the stored one (pp 2026-11-19).
+            incoming_by_id = {
+                item_id: _preserve_content_block_index(
+                    current_by_id.get(item_id), item
+                )
+                for item_id, item in incoming_by_id.items()
+            }
             if timeline_snapshot_is_unchanged(current_by_id, incoming_by_id):
                 async with self._engine.begin() as conn:
                     await update_source_observed_at(
@@ -1837,6 +1865,10 @@ class TimelineRepositoryMixin:
                 )
             item = converged[0]
             existing = await self.timeline.read_one(session_id, item.id)
+            # A live rewrite that cannot declare the absolute content index
+            # must not strip the stored one (see
+            # `_preserve_content_block_index`).
+            item = _preserve_content_block_index(existing, item)
             unchanged = existing is not None and timeline_item_state_is_unchanged(
                 existing, item
             )
@@ -2831,6 +2863,9 @@ class TimelineRepositoryMixin:
                     order_seq=int(row_order_seq),
                     stored=TimelineItem.model_validate_json(payload_json),
                     block_index=block_index,
+                    content_block_index=_stored_intra_message_content_index(
+                        payload_json
+                    ),
                 )
             )
         return group
@@ -3163,6 +3198,7 @@ class _IntraMessageGroupRow:
     order_seq: int
     stored: TimelineItem | None
     block_index: int | None = None
+    content_block_index: int | None = None
 
 
 # The Runtime protocol's ``SystemContentKind`` reasoning member. Named and
@@ -3249,6 +3285,53 @@ def _stored_intra_message_row(
     return kind, block_index
 
 
+def _preserve_content_block_index(existing: Any, item: Any) -> Any:
+    """Keep a stored absolute content index when a rewrite omits it.
+
+    A live frame carries one content block and cannot declare the index; the
+    history/turn-end projection can. Writes replace the payload, so without
+    this carry a live rewrite after a history sync would erase the truth and
+    the group would fall back to RBT for the rest of the session
+    (pp 2026-11-19).
+    """
+
+    if existing is None or item is None:
+        return item
+    if item.source.contentBlockIndex is not None:
+        return item
+    stored = existing.source.contentBlockIndex
+    if stored is None:
+        return item
+    return item.model_copy(
+        update={
+            "source": item.source.model_copy(
+                update={"contentBlockIndex": stored}
+            )
+        }
+    )
+
+
+def _stored_intra_message_content_index(payload_json: str) -> int | None:
+    """The stored row's absolute content index (``source.contentBlockIndex``).
+
+    Separate from ``blockIndex`` on purpose: the legacy tool field is a
+    tool-only ordinal while this one indexes the whole message content. A
+    payload that cannot be read as a mapping, or that declares no index,
+    yields ``None`` — the group then keeps the legacy RBT order.
+    """
+
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return None
+    return _intra_message_block_index(source.get("contentBlockIndex"))
+
+
 def _intra_message_input_group_key(item: TimelineItem | TimelineItemIn) -> str | None:
     """The assistant-message key an in-flight row belongs to.
 
@@ -3289,6 +3372,9 @@ def _intra_message_input_group_row(
             _intra_message_block_index(item.source.blockIndex)
             if kind == "tool"
             else None
+        ),
+        content_block_index=_intra_message_block_index(
+            item.source.contentBlockIndex
         ),
     )
 
@@ -3363,6 +3449,20 @@ def _intra_message_target_order(
     order already matches, so a late sibling can be given its proper place.
     """
 
+    rows = list(group.values())
+    if len(rows) < 2:
+        return None  # singleton group: no invariant to enforce
+    # Truth first: when every orderable row of the message declares its
+    # absolute content index, keep the message's real block order. RBT below
+    # is the repair for rows that arrived without that truth; it must not
+    # rewrite a group that has it. A message may legitimately emit a tool
+    # call before its trailing text, and moving that tool below the text
+    # split the client's step group into a lone tool row (pp 2026-11-19).
+    if all(row.content_block_index is not None for row in rows):
+        return sorted(
+            rows,
+            key=lambda row: (row.content_block_index, row.order_seq, row.id),
+        )
     reasoning = sorted(
         (row for row in group.values() if row.kind == "reasoning"),
         key=lambda row: (row.order_seq, row.id),

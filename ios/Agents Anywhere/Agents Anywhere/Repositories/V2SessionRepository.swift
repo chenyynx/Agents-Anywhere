@@ -182,6 +182,15 @@ final class V2SessionRepository {
         return entry.projection?.data
     }
 
+    /// Cached rows for the conversation outline, decoded in the store actor.
+    /// Empty when the row store is off or the session has nothing cached.
+    func outlineItems(sessionId: V2SessionID, limit: Int,
+                      byteBudget: Int) async -> [V2TimelineItem] {
+        guard let localStore else { return [] }
+        return await localStore.outlineItems(sessionID: sessionId, limit: limit,
+                                             byteBudget: byteBudget) ?? []
+    }
+
     /// Follows creation renames to the id that currently owns the entry. Any
     /// holder of a pre-bind id (closures, coordinators, subscriptions) goes
     /// through here rather than minting an entry under the dead id.

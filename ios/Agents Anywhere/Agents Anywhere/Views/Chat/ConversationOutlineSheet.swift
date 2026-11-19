@@ -1,0 +1,229 @@
+import Combine
+import SwiftUI
+
+/// A one-shot request to scroll the timeline to a message row. The page holds
+/// one instance and hands it to both the timeline (which performs the scroll,
+/// paging history when needed) and the outline sheet (which posts the target).
+@MainActor
+final class ConversationOutlineJumpRequest: ObservableObject {
+    @Published private(set) var token = 0
+    private(set) var rowID: String?
+
+    func request(_ rowID: String) {
+        self.rowID = rowID
+        token &+= 1
+    }
+}
+
+/// The conversation outline panel: title + search drawer, a single white card
+/// of rows, and the official count line while the list is empty.
+struct ConversationOutlineSheet: View {
+    let chat: SessionChatModel
+    let jump: ConversationOutlineJumpRequest
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
+    @State private var query = ""
+    @State private var entries: [ConversationOutlineEntry] = []
+    /// Rows the local store holds beyond the loaded window. Read off the main
+    /// actor when the panel opens and merged under the live timeline.
+    @State private var cachedItems: [V2TimelineItem] = []
+    @State private var machine = ConversationOutlineJumpMachine()
+    /// The capture's count line is a 15 pt token that scales with the reader's
+    /// text size (≈12.9 pt at the captured setting), not a fixed 15 pt.
+    @ScaledMetric(relativeTo: .body) private var countSize: CGFloat = 15
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                content
+            }
+            .background(ChatPalette.outlineSheetBackground.color.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(ChatPalette.outlineSheetBackground.color, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+            .toolbar {
+                // The app's standard sheet close is the system glass circle;
+                // drawing another circle inside it read as a double ring.
+                SheetCloseToolbar { dismiss() }
+                ToolbarItem(placement: .principal) {
+                    Text(String(localized: "对话大纲"))
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(ChatPalette.outlineTitle.color)
+                }
+            }
+            .searchable(
+                text: $query,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: Text(String(localized: "消息中的字词"))
+            )
+            .task { await loadCachedRows() }
+            .onChange(of: chat.session.timeline.count) { _, _ in reload() }
+        }
+        // The official panel opens as the draggable half sheet used by the
+        // step-group and add-to-chat pages, not full height.
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(ChatPalette.outlineSheetBackground.color)
+    }
+
+    // MARK: - Content
+
+    private struct RowModel: Identifiable {
+        let entry: ConversationOutlineEntry
+        let hit: ConversationOutlineSearchHit?
+        var id: V2TimelineItemID { entry.id }
+    }
+
+    private func rowModels(from hits: [ConversationOutlineSearchHit]) -> [RowModel] {
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return hits.compactMap { hit in
+            byID[hit.entryID].map { RowModel(entry: $0, hit: hit) }
+        }
+    }
+
+    /// The official line appears throughout a search, with or without hits:
+    /// "已显示 22/72 条消息" sits above the result card. It stays hidden in
+    /// the plain, unsearched list.
+    private var isSearching: Bool {
+        !ConversationOutlineSearch.tokens(query).isEmpty
+    }
+
+    private var content: some View {
+        // One pass returns both the rows and the count-line numerator; the
+        // unsearched list just maps every entry without a hit.
+        let result: ConversationOutlineSearchResult? = isSearching
+            ? ConversationOutlineSearch.search(entries, query: query)
+            : nil
+        let rows = result.map { rowModels(from: $0.hits) }
+            ?? entries.map { RowModel(entry: $0, hit: nil) }
+        return VStack(alignment: .leading, spacing: 0) {
+            if let result {
+                countLineView(shown: result.messageCount)
+            } else if entries.isEmpty {
+                // An empty, unsearched outline keeps the measured 0/0 line.
+                countLineView(shown: 0)
+            }
+            if !rows.isEmpty {
+                card(rows)
+            }
+        }
+    }
+
+    private func countLineView(shown: Int) -> some View {
+        Text(countLine(shown: shown, total: messageCount))
+            .font(ClaudeFont.text(countSize, weight: 400))
+            .foregroundStyle(ChatPalette.outlineCount.color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // The capture puts the line's left edge 37.3 pt from the screen
+            // edge and its ink 41.3 pt below the search pill.
+            .padding(.leading, 36)
+            .padding(.top, 26)
+    }
+
+    private func card(_ rows: [RowModel]) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(rows) { row in
+                    ConversationOutlineRow(
+                        content: ConversationOutlineRowContentMaker.content(
+                            for: row.entry,
+                            hit: row.hit,
+                            strings: outlineStrings
+                        ),
+                        initials: viewerInitials,
+                        avatarSource: appState.accountAvatarSource,
+                        agentAsset: agentMark.asset,
+                        agentTint: agentTint,
+                        action: { choose(row) }
+                    )
+                if row.id != rows.last?.id {
+                    Rectangle()
+                        .fill(ChatPalette.outlineDivider.color)
+                        .frame(height: 0.5)
+                        .padding(.leading, 54)
+                        .padding(.trailing, 20)
+                }
+            }
+        }
+        .background(ChatPalette.outlineCard.color)
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(.horizontal, 16)
+        // With the count line above, the capture puts the card's top edge
+        // ~10 pt below that line; without it the old gap stays.
+        .padding(.top, isSearching ? 10 : 16)
+    }
+
+    /// The agent this session runs (Claude, Codex, DSH …), for the speaker
+    /// label and the row's mark. The outline must not assume Claude.
+    private var agentRuntime: String { chat.session.metadata?.runtime ?? "" }
+    private var agentRuntimeType: String? { chat.session.metadata?.runtimeType }
+    private var agentMark: (asset: String, label: String) {
+        SessionAgentMark.resolve(runtime: agentRuntime, runtimeType: agentRuntimeType)
+    }
+    private var agentTint: Color? {
+        SessionAgentMark.tint(runtime: agentRuntime, runtimeType: agentRuntimeType)
+    }
+    private var outlineStrings: ConversationOutlineStrings {
+        ConversationOutlineStrings(agentName: chat.agentName)
+    }
+
+    /// The official rows wear the signed-in viewer's initials (or photo), not
+    /// the speaker's first character. Same rule as the sidebar avatar: the
+    /// first letter of the first two words.
+    private var viewerInitials: String {
+        let words = (appState.me?.displayName ?? "").split(whereSeparator: { $0.isWhitespace })
+        let letters = words.prefix(2).compactMap { $0.first }
+        return letters.isEmpty ? "?" : String(letters).uppercased()
+    }
+
+    // MARK: - Data
+
+    private func loadCachedRows() async {
+        // The loaded window renders first; the disk read only adds history
+        // that is outside it.
+        reload()
+        let items = await chat.repository.outlineItems(
+            sessionId: chat.session.id,
+            limit: ConversationOutlineSource.cacheRowLimit,
+            byteBudget: ConversationOutlineSource.cacheByteBudget
+        )
+        guard !Task.isCancelled else { return }
+        cachedItems = items
+        reload()
+    }
+
+    private func reload() {
+        entries = ConversationOutlineEntryBuilder.entries(
+            from: ConversationOutlineSource.merged(
+                live: chat.session.timeline.map { $0.value },
+                cached: cachedItems
+            )
+        )
+    }
+
+    /// The official count line counts messages, not outline rows: one row can
+    /// hold several messages of the same turn and sender.
+    private var messageCount: Int {
+        entries.reduce(0) { $0 + $1.parts.count }
+    }
+
+    private func countLine(shown: Int, total: Int) -> String {
+        String(
+            format: String(localized: "已显示 %1$lld/%2$lld 条消息"),
+            Int64(shown),
+            Int64(total)
+        )
+    }
+
+    // MARK: - Jump
+
+    private func choose(_ row: RowModel) {
+        guard !machine.state.isBusy else { return }
+        let partID = row.hit?.partID ?? row.entry.parts.first?.id ?? row.entry.id
+        let target = ConversationOutlineJumpTarget(entryID: row.entry.id, partID: partID)
+        _ = machine.handle(.choose(target))
+        _ = machine.handle(.begin)
+        jump.request(partID)
+        dismiss()
+    }
+}

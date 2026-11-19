@@ -22,7 +22,7 @@ struct SessionChatView: View, Equatable {
     private let fileService: V2WorkspaceFilesService
     private let detailService: V2SessionDetailService
     private enum SessionSheet: Identifiable {
-        case notices, details, files, contextUsage
+        case notices, details, files, contextUsage, outline
         /// The SubAgent panel: the anchor card id plus its entry point. The
         /// capsule (entry A) lists every active card; a timeline card (entry B)
         /// shows that one card's detail alone (pp 2026-10-08).
@@ -40,6 +40,7 @@ struct SessionChatView: View, Equatable {
             case .details: "details"
             case .files: "files"
             case .contextUsage: "contextUsage"
+            case .outline: "outline"
             case .subagents(let cardID, let fromCapsule): "subagents:\(fromCapsule ? "capsule" : "card"):\(cardID)"
             case .preview(let reference, let root): "file:\(root ?? ""):\(reference.id)"
             case .attachmentImage(let file, _, _, _): "attachment:\(file.fileId ?? file.cacheKey)"
@@ -47,6 +48,8 @@ struct SessionChatView: View, Equatable {
         }
     }
     @State private var previewURL: URL?
+    /// The outline panel's one-shot scroll request; the timeline consumes it.
+    @State private var outlineJump = ConversationOutlineJumpRequest()
     @State private var previewDirectory: URL?
     @State private var isDownloading = false
     /// The trailing slot shows the context ring once any reading exists
@@ -103,6 +106,7 @@ struct SessionChatView: View, Equatable {
             TimelineChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
+                jumpRequest: outlineJump,
                 safeAreaInsets: proxy.safeAreaInsets,
                 renderMode: renderMode)
                 // The command card floats over the page, not inside the
@@ -246,6 +250,7 @@ struct SessionChatView: View, Equatable {
         case .notices: SessionNoticesSheet(model: model, initialNoticeID: expandedNoticeID)
         case .details: SessionDetailsSheet(chat: model, service: detailService)
         case .contextUsage: ContextUsageSheet(chat: model, sessionID: session.id)
+        case .outline: ConversationOutlineSheet(chat: model, jump: outlineJump)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
                 initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
@@ -587,6 +592,7 @@ struct SessionChatView: View, Equatable {
                     Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
                         .disabled(session.metadata?.cwd?.isEmpty != false)
                 }
+                Button(String(localized: "对话大纲"), systemImage: "list.bullet") { sheet = .outline }
                 Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                 Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
 #if AA_TIMELINE_PROBE

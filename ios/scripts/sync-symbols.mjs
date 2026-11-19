@@ -17,7 +17,7 @@ const mapping = JSON.parse(fs.readFileSync(path.join(ios, 'Design/Symbols.json')
 // artwork it sits beside measures ~8% of the frame (median 0.080 across
 // fileAdd/agent/fastforward/connectors/extendedThinking), so the 2/24 default
 // reads a shade heavy in the same row (pp 2026-11-19). 1.8 measures 0.0807.
-const strokeWidths = { Boxes: 1.8 };
+const strokeWidths = { Boxes: 1.6 };
 const app = path.join(ios, 'Agents Anywhere/Agents Anywhere');
 // Xcode strips a trailing 'Image' from asset symbols, which would collide with File.
 const assetName = name => name === 'FileImage' ? 'aa-ImageFile' : 'aa-' + name;

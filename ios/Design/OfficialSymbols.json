@@ -40,5 +40,8 @@
   "anthropicon.sidebar": "anthropicon.sidebar",
   "anthropicon.spinner": "anthropicon.spinner",
   "anthropicon.trash": "anthropicon.trash",
-  "anthropicon.userCircle": "anthropicon.userCircle"
+  "anthropicon.userCircle": "anthropicon.userCircle",
+  "square": "aa-SquareFilled",
+  "square.fill": "aa-SquareFilled",
+  "stop.fill": "aa-SquareFilled"
 }

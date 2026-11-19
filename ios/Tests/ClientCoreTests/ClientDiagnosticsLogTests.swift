@@ -244,6 +244,74 @@ private func utcCalendar() -> Calendar {
         #expect(!FileManager.default.fileExists(atPath: older.fileURL.path))
     }
 
+    /// A full re-sync lands as hundreds of ordinary records. The logger folds
+    /// a flooded second into one `log.burst` summary so the storm is readable
+    /// as a single event (pp 2026-11-19).
+    @Test func aFloodIsSummarisedInOneLine() throws {
+        let calendar = utcCalendar()
+        let start = calendar.date(
+            from: DateComponents(year: 2026, month: 1, day: 1, hour: 12)
+        )!
+        let clock = DiagnosticsClock(start)
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: diagnosticsDefaults(enabled: true),
+            now: { clock.now },
+            calendar: calendar
+        )
+        for index in 0..<40 {
+            log.record(
+                kind: "timeline.row.moved",
+                sessionID: "s",
+                detail: ["id": "row-\(index)"],
+                dedupe: false
+            )
+        }
+        // The summary flushes when the next second opens.
+        clock.set(start.addingTimeInterval(1.1))
+        log.record(
+            kind: "session.open", sessionID: "s",
+            detail: ["cached": "0"], dedupe: false
+        )
+        let day = try #require(log.days().first)
+        let bursts = log.entries(for: day).filter { $0.kind == "log.burst" }
+        #expect(bursts.count == 1)
+        #expect(bursts.first?.detail["hot"]?
+            .contains("timeline.row.moved|s=40") == true)
+        // The summary is informational and must not raise the anomaly flag
+        // by itself; the flood's own rows already do.
+        #expect(ClientDiagnosticsLog.severity(for: "log.burst") == "info")
+    }
+
+    @Test func moderateTrafficDoesNotBurst() throws {
+        let calendar = utcCalendar()
+        let start = calendar.date(
+            from: DateComponents(year: 2026, month: 1, day: 1, hour: 12)
+        )!
+        let clock = DiagnosticsClock(start)
+        let log = ClientDiagnosticsLog(
+            directory: diagnosticsDirectory(),
+            defaults: diagnosticsDefaults(enabled: true),
+            now: { clock.now },
+            calendar: calendar
+        )
+        for index in 0..<5 {
+            log.record(
+                kind: "timeline.row.moved",
+                sessionID: "s",
+                detail: ["id": "row-\(index)"],
+                dedupe: false
+            )
+        }
+        clock.set(start.addingTimeInterval(1.1))
+        log.record(
+            kind: "session.open", sessionID: "s",
+            detail: ["cached": "0"], dedupe: false
+        )
+        let day = try #require(log.days().first)
+        #expect(log.entries(for: day).allSatisfy { $0.kind != "log.burst" })
+    }
+
     @Test func clearRemovesEveryDay() {
         let log = ClientDiagnosticsLog(
             directory: diagnosticsDirectory(),

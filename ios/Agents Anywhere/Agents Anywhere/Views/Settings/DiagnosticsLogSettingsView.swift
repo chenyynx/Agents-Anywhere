@@ -179,7 +179,7 @@ struct DiagnosticsLogSettingsView: View {
 /// One daily file opened like an attachment: the raw text fills the page and
 /// the navigation bar carries copy and share. No actions live at the bottom.
 ///
-/// A day may hold up to 5 MB, so the file is read off the main thread and
+/// A day may hold up to 30 MB, so the file is read off the main thread and
 /// rendered by TextKit 2, which lays out only what is on screen. Reading it
 /// in `init` and handing the whole string to a SwiftUI `Text` made the push
 /// wait for every glyph and land on a white page (device 2026-11-11); the

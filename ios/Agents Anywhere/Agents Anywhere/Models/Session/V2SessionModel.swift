@@ -139,6 +139,7 @@ final class V2SessionRuntimeModel {
         let previousStatus = state?.status
         let previousFresh = isFresh
         let previousEnds = authoritativeTurnEnds
+        let previousRuntimeID = state?.runtimeId
         if state != data?.state { state = data?.state }
         if capabilities != data?.capabilities { capabilities = data?.capabilities }
         let notices = data?.notices ?? []
@@ -168,8 +169,10 @@ final class V2SessionRuntimeModel {
         // 2026-11-17). One line per status change / freshness flip / end
         // count — never per streaming flush.
         let appliedStatus = data?.state?.status
+        let appliedRuntimeID = data?.state?.runtimeId
         if previousStatus != appliedStatus || previousFresh != isFresh
-            || previousEnds != authoritativeTurnEnds {
+            || previousEnds != authoritativeTurnEnds
+            || previousRuntimeID != appliedRuntimeID {
             ClientDiagnosticsLog.shared.record(
                 kind: "timeline.state",
                 sessionID: data?.session.id,
@@ -181,6 +184,12 @@ final class V2SessionRuntimeModel {
                     "turnEnds": String(authoritativeTurnEnds),
                     "hasState": data?.state == nil ? "0" : "1",
                     "connection": String(describing: connection),
+                    // A new runtime instance id means the connector restarted
+                    // (every connector restart mints one). Without it a client
+                    // log could not tell a restart apart from a plain
+                    // reconnect (pp 2026-11-19).
+                    "runtime": data?.state?.runtime ?? "-",
+                    "runtimeId": appliedRuntimeID ?? "-",
                 ],
                 dedupe: false)
         }

@@ -165,18 +165,30 @@ struct ChatSidebarProjects: View {
     private func projectMenu(_ project: V2Project, isBusy: Bool) -> some View {
         let deviceName = repository.connectors.first { $0.id == project.connectorId }?.name ?? String(localized: "设备不可用")
         Section(deviceName) {
-            Button(String(localized: "新建会话"), systemImage: "square.and.pencil") { onNewSession(project.id) }
-            Button(String(localized: "编辑项目"), systemImage: "pencil") { editing = project }
-                .disabled(!repository.canWrite || isBusy)
-            Button(project.pinned ? String(localized: "取消置顶") : String(localized: "置顶"), systemImage: "pin") {
+            Button { onNewSession(project.id) } label: {
+                Label(String(localized: "新建会话"), appSymbol: "anthropicon.add", size: 17)
+            }
+            Button { editing = project } label: {
+                Label(String(localized: "编辑项目"), appSymbol: "anthropicon.edit", size: 17)
+            }
+            .disabled(!repository.canWrite || isBusy)
+            Button {
                 perform(project.id) { try await repository.updateProject(project.id, pinned: !project.pinned) }
-            }.disabled(!repository.canWrite || isBusy)
+            } label: {
+                Label(project.pinned ? String(localized: "取消置顶") : String(localized: "置顶"),
+                      appSymbol: "anthropicon.pin", size: 17)
+            }
+            .disabled(!repository.canWrite || isBusy)
         }
         Section {
-            Button(String(localized: "归档项目会话"), systemImage: "archivebox", role: .destructive) { action = .init(project: project, deletes: false) }
-                .disabled(!repository.canWrite || isBusy)
-            Button(String(localized: "删除项目"), systemImage: "trash", role: .destructive) { action = .init(project: project, deletes: true) }
-                .disabled(!repository.canWrite || isBusy)
+            Button(role: .destructive) { action = .init(project: project, deletes: false) } label: {
+                Label(String(localized: "归档项目会话"), appSymbol: "anthropicon.archive", size: 17)
+            }
+            .disabled(!repository.canWrite || isBusy)
+            Button(role: .destructive) { action = .init(project: project, deletes: true) } label: {
+                Label(String(localized: "删除项目"), appSymbol: "anthropicon.trash", size: 17)
+            }
+            .disabled(!repository.canWrite || isBusy)
         }
     }
 

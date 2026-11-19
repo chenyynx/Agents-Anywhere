@@ -1,4 +1,4 @@
-Lucide 1.31.0
+Lucide 1.76.0
 https://lucide.dev
 
 ISC License

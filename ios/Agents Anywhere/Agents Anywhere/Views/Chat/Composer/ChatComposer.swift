@@ -61,7 +61,9 @@ struct ChatComposer: View {
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     HStack(spacing: 8) {
                         Button(action: onOptions) {
-                            AppSymbol("plus", size: controls.profile.plusSymbolSize)
+                            // Official add artwork (pp 2026-11-20); the metric
+                            // now carries the ink-tight point size.
+                            AppSymbol("anthropicon.add", size: controls.profile.plusSymbolSize)
                                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                                 .frame(width: controls.touchTarget, height: controls.touchTarget)
                                 .background {
@@ -111,7 +113,14 @@ struct ChatComposer: View {
 
                     if showsCommands {
                         Button(action: onCommands) {
-                            AppSymbol("command", size: 18)
+                            // Official Skills artwork (pp 2026-11-19): the
+                            // rounded sheet with a tag. Both secondary keys
+                            // ride the same ink-tight metric, so skills and
+                            // plus stay the same optical size in every
+                            // profile; the send arrow keeps its own smaller
+                            // official glyph.
+                            AppSymbol("anthropicon.scroll",
+                                      size: controls.profile.plusSymbolSize)
                                 .foregroundStyle(commandsActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                                 .frame(width: controls.touchTarget, height: controls.touchTarget)
                                 .contentShape(Circle())

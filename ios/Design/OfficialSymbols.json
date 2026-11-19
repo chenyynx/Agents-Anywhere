@@ -1,0 +1,20 @@
+{
+  "anthropicon.add": "anthropicon.add",
+  "anthropicon.agent": "anthropicon-agent",
+  "anthropicon.archive": "anthropicon.archive",
+  "anthropicon.camera": "anthropicon-camera",
+  "anthropicon.connectors": "anthropicon-connectors",
+  "anthropicon.copy": "anthropicon.copy",
+  "anthropicon.edit": "anthropicon.edit",
+  "anthropicon.extendedThinking": "anthropicon.extendedThinking",
+  "anthropicon.fastforward": "anthropicon-fastforward",
+  "anthropicon.fileAdd": "anthropicon-fileAdd",
+  "anthropicon.folder": "anthropicon.folder",
+  "anthropicon.folderOpen": "anthropicon.folderOpen",
+  "anthropicon.hand": "anthropicon-hand",
+  "anthropicon.info": "anthropicon.info",
+  "anthropicon.listBullet": "anthropicon.listBullet",
+  "anthropicon.pin": "anthropicon.pin",
+  "anthropicon.scroll": "anthropicon.scroll",
+  "anthropicon.trash": "anthropicon.trash"
+}

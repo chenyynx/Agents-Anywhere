@@ -78,7 +78,10 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
             expandedCornerRadius: height / 2 + 2,
             plusStyle: .bare,
             plusCircleDiameter: touch,
-            plusSymbolSize: 24,
+            // Official Anthropicon add is ink-tight: 16 pt draws the same ink
+            // the 24 pt Lucide plus did (that glyph filled 2/3 of its frame).
+            // The skills key rides the same metric (pp 2026-11-20).
+            plusSymbolSize: 16,
             expandAnimation: .smooth(duration: 0.24)
         )
     }
@@ -113,7 +116,8 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         expandedCornerRadius: 24,
         plusStyle: .circle,
         plusCircleDiameter: 36,
-        plusSymbolSize: 23,
+        // Same ink as the 23 pt Lucide plus (2/3 of its frame), see `.chat`.
+        plusSymbolSize: 15.3,
         expandAnimation: .spring(response: 0.22, dampingFraction: 0.77)
     )
 }

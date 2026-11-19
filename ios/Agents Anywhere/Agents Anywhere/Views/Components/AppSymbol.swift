@@ -27,6 +27,11 @@ extension Label where Title == Text, Icon == AppSymbol {
     init(_ title: String, appSymbol: String) {
         self.init { Text(verbatim: title) } icon: { AppSymbol(appSymbol) }
     }
+    /// Menu rows draw the official artwork at the system menu scale — smaller
+    /// than the 20 pt row icons the other initializers keep (pp 2026-11-19).
+    init(_ title: String, appSymbol: String, size: CGFloat) {
+        self.init { Text(verbatim: title) } icon: { AppSymbol(appSymbol, size: size) }
+    }
     init(_ title: LocalizedStringResource, appSymbol: String) {
         self.init { Text(title) } icon: { AppSymbol(appSymbol) }
     }

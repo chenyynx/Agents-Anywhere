@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "指令图标常驻输入框": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Always show the commands key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "指令图标常驻输入框"
+          }
+        }
+      }
+    },
     "语音输入": {
       "extractionState": "manual",
       "localizations": {

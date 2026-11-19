@@ -36,6 +36,13 @@ enum ComposerDelivery: String, CaseIterable, Identifiable {
     }
 }
 
+/// Keeps the commands (指令) key in the composer even when the runtime does not
+/// offer slash commands. Off by default: the key appears only for runtimes
+/// with the capability. The setting lives in the 编写器 section (pp 2026-11-20).
+enum ComposerCommandsSetting {
+    static let storageKey = "AA.Composer.ShowCommandsAlways"
+}
+
 enum ComposerDeliverySetting {
     /// The single source of truth shared by the settings row and the
     /// composer's long-press menu.

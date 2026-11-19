@@ -14,6 +14,8 @@ struct AccountSettingsSheet: View {
     private var cacheLimitRaw = LocalCacheLimit.defaultValue.rawValue
     @AppStorage(ComposerDeliverySetting.storageKey)
     private var deliveryRaw = ComposerDeliverySetting.defaultValue.rawValue
+    @AppStorage(ComposerCommandsSetting.storageKey)
+    private var commandsAlwaysVisible = false
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
@@ -176,6 +178,13 @@ struct AccountSettingsSheet: View {
                                                    title: $0.title, symbol: $0.menuSymbol)
                             },
                             selection: $renderModeRaw)
+            SettingsRowDivider()
+            // Off by default: the key appears only for runtimes that offer
+            // slash commands; on, it stays in the composer everywhere
+            // (pp 2026-11-20).
+            SettingsToggleRow(icon: "anthropicon.scroll",
+                              title: String(localized: "指令图标常驻输入框"),
+                              isOn: $commandsAlwaysVisible)
         }
     }
 

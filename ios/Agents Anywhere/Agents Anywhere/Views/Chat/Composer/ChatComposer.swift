@@ -116,7 +116,12 @@ struct ChatComposer: View {
                     // left of the accent key. Voice input is not implemented
                     // yet, so the tap does nothing for now.
                     Button(action: {}) {
-                        AppSymbol("anthropicon.microphone", size: 16)
+                        // 19, not 16: the cluster's sizes are tuned against the
+                        // reference device, where @ScaledMetric shrinks glyphs
+                        // ~14% (the plus draws 13 pt ink from a 15.3 config,
+                        // matching the official 13). Official mic ink is
+                        // 14x16 pt; 19 renders 14.6x16.3 there (2026-11-20).
+                        AppSymbol("anthropicon.microphone", size: 19)
                             .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .background {
@@ -186,8 +191,10 @@ struct ChatComposer: View {
     /// The send/queue/stop key the bar draws. Display only: the overlay
     /// `sendKeyMenu` above it owns the tap and the long press.
     private var sendKey: some View {
+        // Voice glyph 21, not 15: same scaled-metric compensation as the mic
+        // — official waveform ink is 18x18 pt (2026-11-20).
         AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
-                  size: showsVoiceKey ? 15 : accentSymbolSize)
+                  size: showsVoiceKey ? 21 : accentSymbolSize)
             .contentTransition(.symbolEffect(.replace))
             // Official stop key: neutral chrome (light #F0EFEC / dark white
             // 8%) with a black text100 square — only the send key wears the

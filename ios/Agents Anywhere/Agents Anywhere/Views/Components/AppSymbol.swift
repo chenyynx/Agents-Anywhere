@@ -73,15 +73,21 @@ enum AppFileSymbol {
 /// (pp 2026-11-20, experiment A).
 struct MenuArtwork: View {
     let name: String
-    /// Destructive rows: the menu rasters this view before the system sees it,
-    /// so an action's red tint never reaches a template image — the title turns
-    /// red while the icon stays black (project menu, pp 2026-11-20). Painting
-    /// the tint here is the only way the icon follows the title.
-    var tint: Color? = nil
+    /// Destructive rows draw a pre-coloured rendition. The menu rasters this
+    /// view into a template image tinted with the action colour's shape: red
+    /// never reaches the icon through the destructive role, and an explicit
+    /// foregroundStyle is dropped as well (b1375 device check: red title,
+    /// black icon). So the red is part of the artwork, rendered as original.
+    var destructive = false
+
+    private static let redArtwork: [String: String] = [
+        "anthropicon.archive": "anthropicon.archive.red",
+        "anthropicon.trash": "anthropicon.trash.red",
+    ]
 
     var body: some View {
-        if let tint {
-            Image(name).renderingMode(.template).foregroundStyle(tint)
+        if destructive, let red = Self.redArtwork[name] {
+            Image(red).renderingMode(.original)
         } else {
             Image(name).renderingMode(.template)
         }
@@ -90,6 +96,6 @@ struct MenuArtwork: View {
 
 extension Label where Title == Text, Icon == MenuArtwork {
     init(_ title: String, menuSymbol: String, destructive: Bool = false) {
-        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol, tint: destructive ? .red : nil) }
+        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol, destructive: destructive) }
     }
 }

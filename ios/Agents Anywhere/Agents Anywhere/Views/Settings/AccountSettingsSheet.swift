@@ -234,7 +234,7 @@ struct AccountSettingsSheet: View {
                 confirmsSignOut = true
             } label: {
                 HStack(spacing: SettingsStyle.iconGap) {
-                    AppSymbol("rectangle.portrait.and.arrow.forward", size: 18)
+                    AppSymbol("anthropicon.arrowOutSquare", size: 18)
                         .frame(width: SettingsStyle.iconFrame)
                     Text(String(localized: "Sign out"))
                         .font(SettingsStyle.text(16))

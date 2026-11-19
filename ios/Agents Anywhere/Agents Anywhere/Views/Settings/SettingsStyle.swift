@@ -156,11 +156,11 @@ struct SettingsRowLabelContent: View {
 
     var body: some View {
         HStack(spacing: SettingsStyle.iconGap) {
-            // Official rows: 18 pt of icon ink against a 17 pt label. Our
-            // label deliberately runs one notch smaller (16, see the type
-            // note above), so the icon scales with it: 18 × 16/17 ≈ 17
+            // Official settings rows measure 18-20 pt of icon ink; 18 keeps
+            // the rows equal to the official size while the lighter v1
+            // rendition keeps the stroke in the official 1.3-1.6 pt band
             // (pp 2026-11-20).
-            AppSymbol(icon, size: 17)
+            AppSymbol(icon, size: 18)
                 .frame(width: SettingsStyle.iconFrame)
                 .foregroundStyle(SettingsStyle.icon(colorScheme))
             VStack(alignment: .leading, spacing: 2) {

@@ -447,6 +447,11 @@ class ClaudeStreamAccumulator:
             revision=self.partial_revision,
             usage=None if _is_sidechain(message) else self.partial_usage,
             usage_model=None if _is_sidechain(message) else self.partial_model,
+            # The stream keeps every text block's event index; the merged body
+            # row belongs at the first one. Tools/reasoning are separate rows.
+            content_block_index=(
+                min(self.partial_text_blocks) if self.partial_text_blocks else None
+            ),
         )
         # Like the reasoning row above, the text partial carries the parent of
         # the frame that OPENED its message (`partial_text_parent`), not the

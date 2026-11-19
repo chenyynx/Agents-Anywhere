@@ -1221,6 +1221,18 @@
           "default": null,
           "title": "Clientmessageid"
         },
+        "contentBlockIndex": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contentblockindex"
+        },
         "derivedKey": {
           "anyOf": [
             {

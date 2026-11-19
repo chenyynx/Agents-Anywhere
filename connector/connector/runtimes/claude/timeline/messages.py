@@ -157,6 +157,13 @@ class ClaudeToolBlock:
     # `tool_result` frame has neither and degrades to None.
     block_index: int | None = None
     native_message_id: str | None = None
+    # The call's absolute index in its message's content array (the scale the
+    # reasoning/body rows use). ``block_index`` above stays the tool-only
+    # ordinal; this one lets the server keep the message's real block order
+    # when every sibling row declares it (pp 2026-11-19). Filled from the
+    # full message content the history/turn-end projection holds; a bare live
+    # frame cannot know it and leaves None.
+    content_block_index: int | None = None
     # The per-call usage of the assistant frame this `tool_use` arrived on,
     # already enriched with the model/window keys (`enrich_usage`). Carried on
     # the block (not just the item) so the pending call keeps it: the later
@@ -281,6 +288,7 @@ class ClaudeMessageProjector:
         attachments: tuple[Mapping[str, object], ...] = (),
         usage: Mapping[str, Any] | None = None,
         usage_model: str | None = None,
+        content_block_index: int | None = None,
     ) -> RuntimeTimelineItem:
         stable_key = native_item_id or client_message_id or text
         resolved_item_id = item_id or (
@@ -326,6 +334,7 @@ class ClaudeMessageProjector:
                 native_item_type=native_item_type or role,
                 event=event,
                 client_message_id=client_message_id,
+                content_block_index=content_block_index,
             ),
             revision=revision,
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
@@ -359,6 +368,8 @@ class ClaudeMessageProjector:
         session: ClaudeSession,
         turn_id: str,
         message: Any,
+        *,
+        full_content: bool = False,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         # A tool-only API call produces no message or reasoning row, so the
@@ -372,7 +383,20 @@ class ClaudeMessageProjector:
             model=message_model(message),
             probe=session.context_probe,
         )
+        # The absolute content index of each call in THIS message. Only a
+        # projection that holds the message's FULL content array may declare
+        # it: a live frame carries one block, whose ``content`` index is 0 for
+        # every block and would falsely tie every row (pp 2026-11-19). Tools
+        # also keep the legacy tool-only ordinal in ``block_index``.
+        content_indexes = (
+            message_tool_use_content_indexes(message) if full_content else {}
+        )
         for block in message_tool_blocks(message):
+            if block.block_type == "tool_use" and content_indexes:
+                block = replace(
+                    block,
+                    content_block_index=content_indexes.get(block.tool_use_id),
+                )
             if (
                 block.block_type == "tool_result"
                 and block.tool_result_metadata is None
@@ -409,6 +433,8 @@ class ClaudeMessageProjector:
         message: Any,
         event: str,
         reasoning_revision: int | None = None,
+        *,
+        full_content: bool = False,
     ) -> tuple[RuntimeTimelineItem, ...]:
         items: list[RuntimeTimelineItem] = []
         native_message_id = message_id(message)
@@ -478,6 +504,9 @@ class ClaudeMessageProjector:
                         native_item_type=block.block_type,
                         event=event,
                         derived_key=block.block_type,
+                        content_block_index=(
+                            block.block_index if full_content else None
+                        ),
                     ),
                     revision=revision,
                 ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
@@ -548,6 +577,7 @@ class ClaudeMessageProjector:
                 native_item_type="thinking",
                 event="claude.turn.system",
                 derived_key="thinking",
+                content_block_index=block_index,
             ),
             revision=revision,
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
@@ -644,6 +674,7 @@ class ClaudeMessageProjector:
                     block,
                     block_index=call.block_index,
                     native_message_id=call.native_message_id,
+                    content_block_index=call.content_block_index,
                 )
             if (
                 call is not None
@@ -687,6 +718,7 @@ class ClaudeMessageProjector:
                 tool_use_id=block.tool_use_id,
                 native_message_id=block.native_message_id,
                 block_index=block.block_index,
+                content_block_index=block.content_block_index,
             )
             self._learn_agent_lineage(content, tool_use_id=block.tool_use_id)
             if status in AGENT_CARD_TERMINAL_STATUSES and has_running_agent_tasks(
@@ -725,6 +757,7 @@ class ClaudeMessageProjector:
                 event=f"claude.{block.block_type}",
                 native_message_id=block.native_message_id,
                 block_index=block.block_index,
+                content_block_index=block.content_block_index,
             ),
         ).to_platform_item(session_id=session.session_id, order_seq=order_seq)
 
@@ -739,6 +772,7 @@ class ClaudeMessageProjector:
         tool_use_id: str,
         native_message_id: str | None = None,
         block_index: int | None = None,
+        content_block_index: int | None = None,
     ) -> tuple[str, AgentCallToolContent]:
         """Remember one wire-projected Agent card and merge live task state.
 
@@ -766,6 +800,8 @@ class ClaudeMessageProjector:
             card.native_message_id = native_message_id
         if block_index is not None:
             card.block_index = block_index
+        if content_block_index is not None:
+            card.content_block_index = content_block_index
         card.status = resolve_agent_card_status(card.status, status)
         return card.status, card.overlay.apply(content)
 
@@ -1282,6 +1318,7 @@ class ClaudeMessageProjector:
                     event="claude.agent.task",
                     native_message_id=card.native_message_id,
                     block_index=card.block_index,
+                    content_block_index=card.content_block_index,
                 ),
             ).to_platform_item(session_id=session.session_id, order_seq=order_seq),
             reopened,
@@ -1734,6 +1771,7 @@ class ClaudeMessageProjector:
                 event=event,
                 native_message_id=card.native_message_id,
                 block_index=card.block_index,
+                content_block_index=card.content_block_index,
             ),
         ).to_platform_item(
             session_id=session.session_id,
@@ -2511,6 +2549,49 @@ def message_tool_blocks(message: Any) -> tuple[ClaudeToolBlock, ...]:
                 )
             )
     return tuple(blocks)
+
+
+def message_tool_use_content_indexes(message: Any) -> dict[str, int]:
+    """``tool_use id → absolute content index`` for one full message.
+
+    Only the history/turn-end projection holds the whole ``content`` array
+    (a live frame carries one block and reports index 0). A message the
+    runtime cannot enumerate returns ``{}`` and its tool rows keep
+    ``contentBlockIndex`` unset.
+    """
+
+    content = _message_content(message)
+    if not isinstance(content, list | tuple):
+        return {}
+    indexes: dict[str, int] = {}
+    for index, block in enumerate(content):
+        if _block_type(block) != "tool_use":
+            continue
+        tool_use_id = _string(_extract(block, "id", "tool_use_id", "toolUseId"))
+        if tool_use_id:
+            indexes.setdefault(tool_use_id, index)
+    return indexes
+
+
+def message_text_content_index(message: Any) -> int | None:
+    """The index of the message's first text block, or ``None``.
+
+    The body row is one merged markdown row for the whole message; the first
+    text block's index is where that row belongs in the real block order.
+    """
+
+    content = _message_content(message)
+    if not isinstance(content, list | tuple):
+        return None
+    for index, block in enumerate(content):
+        # Same predicate as `_content_text`: an SDK/dict block is a body block
+        # when it carries a non-empty ``text``. `_block_type` cannot answer this
+        # (the SDK classes spell their kind in the class name, and only the
+        # tool kinds are mapped).
+        text = _extract(block, "text")
+        if isinstance(text, str) and text:
+            return index
+    return None
 
 
 def message_system_blocks(message: Any) -> tuple[ClaudeSystemBlock, ...]:

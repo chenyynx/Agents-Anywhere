@@ -301,6 +301,17 @@ def timeline_item_state_is_unchanged(
     # and every other source field keeps the old contentHash-only behaviour.
     if incoming.source.turnId and incoming.source.turnId != existing.source.turnId:
         return False
+    # Same rationale for the absolute content index: a history rebuild that
+    # now declares it on an otherwise identical row must be written, or the
+    # stored payload never gains the truth and the message's real block order
+    # can never be restored (pp 2026-11-19). Only a *declared* index forces a
+    # rewrite — a write without one never clears a stored one (the writers
+    # preserve it explicitly), so live rewrites stay unchanged and cheap.
+    if (
+        incoming.source.contentBlockIndex is not None
+        and incoming.source.contentBlockIndex != existing.source.contentBlockIndex
+    ):
+        return False
     return True
 
 

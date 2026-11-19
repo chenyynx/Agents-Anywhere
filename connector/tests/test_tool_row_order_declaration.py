@@ -472,6 +472,41 @@ def test_agent_card_fold_keeps_the_dispatch_position() -> None:
     assert _declaration(folded) == ("msg_agent", 1)
 
 
+def test_agent_fold_keeps_the_absolute_content_index() -> None:
+    """A fold rebuild must republish ``contentBlockIndex`` too.
+
+    The card carries the absolute index the full-content projection declared;
+    a task-event/stop fold rebuilds the row and used to drop it, leaving the
+    group incomplete (RBT fallback) or flipping an ordered group back to RBT
+    (red team C, pp 2026-11-19).
+    """
+
+    projector = ClaudeMessageProjector()
+    session = _session()
+    message = _assistant(
+        "msg_agent_full",
+        [
+            {"type": "thinking", "thinking": "t", "signature": "s"},
+            {
+                "type": "tool_use",
+                "id": "call_agent",
+                "name": "Agent",
+                "input": {"description": "x", "prompt": "y"},
+            },
+        ],
+    )
+    items = projector.tool_items_for_message(
+        session=session, turn_id="turn-1", message=message, full_content=True
+    )
+    agent_item = items[0]
+    assert agent_item.source["contentBlockIndex"] == 1
+
+    folded = _fold_agent(
+        projector, session, _task_started("call_agent", "task_x"), "call_agent"
+    )
+    assert folded.source["contentBlockIndex"] == 1
+
+
 def test_agent_and_plain_rows_still_group_by_index_after_fold() -> None:
     """End-to-end shape: one message holds an Agent row and a plain row. After
     the Agent row is folded by a task event, both rows still declare the same

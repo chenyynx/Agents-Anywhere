@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "语音输入": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音输入"
+          }
+        }
+      }
+    },
     "": {
       "extractionState": "manual",
       "localizations": {

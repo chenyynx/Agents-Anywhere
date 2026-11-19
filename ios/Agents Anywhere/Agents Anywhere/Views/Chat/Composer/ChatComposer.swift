@@ -111,6 +111,26 @@ struct ChatComposer: View {
                             $0.frame(in: .global)
                         } action: { sendSlotFrame = $0 }
 
+                    // Voice-input placeholder (pp 2026-11-20): the official
+                    // empty composer shows a mic inside a 36 pt chrome circle
+                    // left of the accent key. Voice input is not implemented
+                    // yet, so the tap does nothing for now.
+                    Button(action: {}) {
+                        AppSymbol("anthropicon.microphone", size: 16)
+                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                            .frame(width: controls.touchTarget, height: controls.touchTarget)
+                            .background {
+                                Circle()
+                                    .fill(AppTheme.composerControlFill(colorScheme))
+                                    .frame(width: controls.sendDiameter,
+                                           height: controls.sendDiameter)
+                            }
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "语音输入"))
+                    .accessibilityIdentifier("chat.composer.voice")
+
                     if showsCommands {
                         Button(action: onCommands) {
                             // Official Skills artwork (pp 2026-11-19): the
@@ -155,24 +175,36 @@ struct ChatComposer: View {
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
     }
 
+    /// Idle composer with nothing sendable: the accent key wears the official
+    /// voice-mode look — black 36 pt disk, white waveform — and swaps back to
+    /// the send arrow (animated) as soon as the draft has content
+    /// (pp 2026-11-20).
+    private var showsVoiceKey: Bool {
+        affordance.shape == .send && !draft.hasSendableContent && !isBusy
+    }
+
     /// The send/queue/stop key the bar draws. Display only: the overlay
     /// `sendKeyMenu` above it owns the tap and the long press.
     private var sendKey: some View {
-        AppSymbol(accentSymbol, size: accentSymbolSize)
+        AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
+                  size: showsVoiceKey ? 15 : accentSymbolSize)
             .contentTransition(.symbolEffect(.replace))
             // Official stop key: neutral chrome (light #F0EFEC / dark white
             // 8%) with a black text100 square — only the send key wears the
-            // accent fill.
-            .foregroundStyle(isStopState
-                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
-                : AnyShapeStyle(sendGlyph))
+            // accent fill. The voice key is solid black with white glyph.
+            .foregroundStyle(showsVoiceKey
+                ? AnyShapeStyle(Color.white)
+                : AnyShapeStyle(isStopState
+                    ? AppTheme.composerControlGlyph(colorScheme)
+                    : sendGlyph))
             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-            .background((isStopState
-                ? AppTheme.composerControlFill(colorScheme)
-                : sendFill)
-                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
+            .background((showsVoiceKey
+                ? Color.black
+                : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
+                .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42), in: Circle())
             .frame(width: controls.touchTarget, height: controls.touchTarget)
             .contentShape(Circle())
+            .animation(.snappy(duration: 0.2), value: showsVoiceKey)
     }
 
     /// The native menu the long press opens, anchored back onto the key.
@@ -292,6 +324,7 @@ struct ChatComposer: View {
     }
 
     private var accentLabel: String {
+        if showsVoiceKey { return String(localized: "语音输入") }
         switch affordance.shape {
         case .queueSend:
             // VoiceOver must hear what this tap will actually do.

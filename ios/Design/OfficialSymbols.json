@@ -33,6 +33,7 @@
   "anthropicon.key": "anthropicon.key",
   "anthropicon.listBullet": "anthropicon.listBullet",
   "anthropicon.lockShield": "anthropicon.lockShield",
+  "anthropicon.microphone": "anthropicon.microphone",
   "anthropicon.mobilePhone": "anthropicon.mobilePhone",
   "anthropicon.moon": "anthropicon.moon",
   "anthropicon.palette": "anthropicon.palette",
@@ -44,6 +45,7 @@
   "anthropicon.spinner": "anthropicon.spinner",
   "anthropicon.trash": "anthropicon.trash",
   "anthropicon.userCircle": "anthropicon.userCircle",
+  "anthropicon.voice": "anthropicon.voice",
   "square": "aa-SquareFilled",
   "square.fill": "aa-SquareFilled",
   "stop.fill": "aa-SquareFilled"

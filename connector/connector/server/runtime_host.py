@@ -520,6 +520,12 @@ def _timeline_source_payload(item: RuntimeTimelineItem) -> dict[str, Any]:
             # rather than arrival. Absent on frames that declare neither.
             "nativeMessageId": source.get("nativeMessageId"),
             "blockIndex": source.get("blockIndex"),
+            # The row's absolute content index, declared by every orderable
+            # row once the projection holds the full message. The server keeps
+            # the message's real block order when a group has it on every row
+            # (pp 2026-11-19); this whitelist is the only way it leaves the
+            # connector.
+            "contentBlockIndex": source.get("contentBlockIndex"),
         }
     )
 

@@ -90,7 +90,14 @@ class TimelineSource:
     # that message's content. Both optional — a runtime or frame that cannot
     # name them simply omits them and takes no part in in-message ordering.
     native_message_id: str | None = None
+    # The tool-only ordinal the legacy in-message invariant sorts tools by.
     block_index: int | None = None
+    # The row's absolute index in its message's ``content`` array, declared by
+    # every orderable row (reasoning/body/tool). Distinct from ``block_index``:
+    # that one counts tool_use blocks only. The server keeps the message's real
+    # block order when every sibling carries this index and falls back to the
+    # legacy RBT order otherwise (pp 2026-11-19).
+    content_block_index: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_mapping(self) -> Mapping[str, Any]:
@@ -115,6 +122,8 @@ class TimelineSource:
             payload["nativeMessageId"] = self.native_message_id
         if self.block_index is not None:
             payload["blockIndex"] = self.block_index
+        if self.content_block_index is not None:
+            payload["contentBlockIndex"] = self.content_block_index
         payload.update(self.metadata)
         return payload
 

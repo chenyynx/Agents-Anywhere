@@ -537,6 +537,13 @@ class ClaudeAgentCallCard:
     #: neither (宁缺勿假).
     native_message_id: str | None = None
     block_index: int | None = None
+    #: The dispatch block's absolute index in its message's ``content`` array
+    #: (the scale reasoning/body rows use). Carried so a fold that rebuilds the
+    #: tool row republishes ``source.contentBlockIndex``; without it one fold
+    #: would leave a ``None`` in an otherwise complete group and force the
+    #: server back to RBT — or flip a correctly ordered group back
+    #: (pp 2026-11-19). None when the dispatch frame named no absolute index.
+    content_block_index: int | None = None
     #: Wall-clock seconds when this card was first seen (its dispatch frame
     #: landed). The wire frames carry no timestamps, so this is the live path's
     #: only launch time — the input the never-started grace needs when a task

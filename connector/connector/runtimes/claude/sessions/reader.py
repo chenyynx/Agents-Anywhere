@@ -96,6 +96,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_model,
     message_role,
     message_text,
+    message_text_content_index,
     message_tool_blocks,
     message_usage,
     receipt_agent_id,
@@ -737,6 +738,9 @@ def _history_items_from_messages(
                 session=session,
                 turn_id=turn_id,
                 message=message,
+                # History messages hold the full content array, so every row
+                # can declare its absolute block index (pp 2026-11-19).
+                full_content=True,
             )
         )
         items.extend(
@@ -745,6 +749,7 @@ def _history_items_from_messages(
                 turn_id=turn_id,
                 message=message,
                 event="claude.history.system",
+                full_content=True,
             )
         )
         client_message = matches.get(native_id or "")
@@ -793,6 +798,14 @@ def _history_items_from_messages(
                     # landed, overrides it.
                     usage=message_usage(message) if role == "assistant" else None,
                     usage_model=message_model(message) if role == "assistant" else None,
+                    # History holds the full message content, so the body row
+                    # declares its real block index here (the live partial
+                    # frame cannot; see `stream.py::_partial_item`).
+                    content_block_index=(
+                        message_text_content_index(message)
+                        if role == "assistant"
+                        else None
+                    ),
                 )
             )
         # The live projector is the first publisher of these rows; a history

@@ -3,12 +3,6 @@ import SwiftUI
 /// Web's Lucide paths rendered as native template vectors. Native controls keep
 /// their system drawing; app-owned actions share this mapping across screens.
 struct AppSymbol: View {
-    /// Declared size for menu-item artwork. iOS menus draw custom label icons
-    /// at roughly two thirds of their frame (a declared 17 measured 11 pt of
-    /// ink on device); 28 declared lands on the official menu's 18 pt
-    /// (pp 2026-11-20).
-    static let menuSize: CGFloat = 28
-
     let name: String
     @ScaledMetric(relativeTo: .body) private var size: CGFloat = 20
 
@@ -69,5 +63,24 @@ enum AppFileSymbol {
         if ["ts", "tsx", "js", "jsx", "json", "py", "rs", "go", "java", "c", "cpp", "h", "css", "html", "vue", "sh", "yaml", "yml", "toml", "swift"].contains(ext) { return "doc.text.magnifyingglass" }
         if ["md", "mdx", "txt", "log", "pdf"].contains(ext) { return "doc.text" }
         return "doc"
+    }
+}
+
+/// Menu-row artwork at its natural size. iOS renders menu labels through its
+/// own image slot: a resizable SwiftUI view is shrunk to that slot whatever
+/// frame it declares (a declared 28 still measured 11 pt of ink on device),
+/// while an image with a declared intrinsic size keeps it
+/// (pp 2026-11-20, experiment A).
+struct MenuArtwork: View {
+    let name: String
+
+    var body: some View {
+        Image(name).renderingMode(.template)
+    }
+}
+
+extension Label where Title == Text, Icon == MenuArtwork {
+    init(_ title: String, menuSymbol: String) {
+        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol) }
     }
 }

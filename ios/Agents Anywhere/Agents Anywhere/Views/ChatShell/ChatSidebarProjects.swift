@@ -166,27 +166,27 @@ struct ChatSidebarProjects: View {
         let deviceName = repository.connectors.first { $0.id == project.connectorId }?.name ?? String(localized: "设备不可用")
         Section(deviceName) {
             Button { onNewSession(project.id) } label: {
-                Label(String(localized: "新建会话"), appSymbol: "anthropicon.add", size: AppSymbol.menuSize)
+                Label(String(localized: "新建会话"), menuSymbol: "anthropicon.add")
             }
             Button { editing = project } label: {
-                Label(String(localized: "编辑项目"), appSymbol: "anthropicon.edit", size: AppSymbol.menuSize)
+                Label(String(localized: "编辑项目"), menuSymbol: "anthropicon.edit")
             }
             .disabled(!repository.canWrite || isBusy)
             Button {
                 perform(project.id) { try await repository.updateProject(project.id, pinned: !project.pinned) }
             } label: {
                 Label(project.pinned ? String(localized: "取消置顶") : String(localized: "置顶"),
-                      appSymbol: "anthropicon.pin", size: AppSymbol.menuSize)
+                      menuSymbol: "anthropicon.pin")
             }
             .disabled(!repository.canWrite || isBusy)
         }
         Section {
             Button(role: .destructive) { action = .init(project: project, deletes: false) } label: {
-                Label(String(localized: "归档项目会话"), appSymbol: "anthropicon.archive", size: AppSymbol.menuSize)
+                Label(String(localized: "归档项目会话"), menuSymbol: "anthropicon.archive")
             }
             .disabled(!repository.canWrite || isBusy)
             Button(role: .destructive) { action = .init(project: project, deletes: true) } label: {
-                Label(String(localized: "删除项目"), appSymbol: "anthropicon.trash", size: AppSymbol.menuSize)
+                Label(String(localized: "删除项目"), menuSymbol: "anthropicon.trash")
             }
             .disabled(!repository.canWrite || isBusy)
         }

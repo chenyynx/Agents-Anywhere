@@ -321,7 +321,7 @@ struct SettingsMenuRow: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        AppSymbol(option.symbol, size: AppSymbol.menuSize)
+                        MenuArtwork(name: option.symbol)
                     }
                     .tag(option.id)
                 }

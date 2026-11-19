@@ -183,7 +183,7 @@ struct ChatSidebarListMenu<Filters: View>: View {
             filters()
             Divider()
             Button(action: onShowArchives) {
-                Label(String(localized: "归档会话"), appSymbol: "anthropicon.archive", size: AppSymbol.menuSize)
+                Label(String(localized: "归档会话"), menuSymbol: "anthropicon.archive")
             }
         } label: {
             Image("aa-IconMore")
@@ -423,11 +423,11 @@ private struct ChatSidebarDeviceRow: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(action: onOpen) {
-                Label(String(localized: "Open"), appSymbol: "anthropicon.folderOpen", size: AppSymbol.menuSize)
+                Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
             }
             Divider()
             Button(action: onCopyId) {
-                Label(String(localized: "Copy device ID"), appSymbol: "anthropicon.copy", size: AppSymbol.menuSize)
+                Label(String(localized: "Copy device ID"), menuSymbol: "anthropicon.copy")
             }
         }
     }
@@ -507,25 +507,25 @@ struct ChatSidebarSessionRow: View {
                 }
             }
             Button(action: onOpen) {
-                Label(String(localized: "Open"), appSymbol: "anthropicon.folderOpen", size: AppSymbol.menuSize)
+                Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
             }
             Button(action: beginRename) {
-                Label(String(localized: "Rename"), appSymbol: "anthropicon.edit", size: AppSymbol.menuSize)
+                Label(String(localized: "Rename"), menuSymbol: "anthropicon.edit")
             }.disabled(session.id.hasPrefix("local:"))
             Button(action: onTogglePinned) {
                 if session.pinned {
-                    Label(String(localized: "Unpin"), appSymbol: "anthropicon.pin", size: AppSymbol.menuSize)
+                    Label(String(localized: "Unpin"), menuSymbol: "anthropicon.pin")
                 } else {
-                    Label(String(localized: "Pin"), appSymbol: "anthropicon.pin", size: AppSymbol.menuSize)
+                    Label(String(localized: "Pin"), menuSymbol: "anthropicon.pin")
                 }
             }
             .disabled(session.id.hasPrefix("local:"))
             Button(action: onArchive) {
-                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), appSymbol: "anthropicon.archive", size: AppSymbol.menuSize)
+                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), menuSymbol: "anthropicon.archive")
             }.disabled(session.id.hasPrefix("local:"))
             Divider()
             Button(action: onCopyId) {
-                Label(String(localized: "Copy session ID"), appSymbol: "anthropicon.copy", size: AppSymbol.menuSize)
+                Label(String(localized: "Copy session ID"), menuSymbol: "anthropicon.copy")
             }
         }
         .alert(String(localized: "Rename session"), isPresented: $isRenaming) {

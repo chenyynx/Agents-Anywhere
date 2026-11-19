@@ -53,6 +53,11 @@ struct ConversationOutlineRow: View {
                         .lineLimit(content.titleLineLimit)
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
+                        // A rounded background needs bounds per matched
+                        // slice; AttributedString's background is square.
+                        .textRenderer(ConversationOutlineSearchHighlightRenderer(
+                            ranges: content.highlightRanges,
+                            color: ChatPalette.outlineSearchHighlight.color))
                     Text(content.detail)
                         .font(ClaudeFont.text(detailSize, weight: 400))
                         .foregroundStyle(ChatPalette.outlineDetail.color)
@@ -94,19 +99,6 @@ struct ConversationOutlineRow: View {
         }
         let codeFont = ClaudeFont.mono(titleSize)
         for range in codeRanges { attributed[range].font = codeFont }
-        // Every matched token wears the search highlight; the row animation
-        // is only the one-shot fade-in above.
-        let highlight = ChatPalette.outlineSearchHighlight.color
-        for range in content.highlightRanges {
-            guard range.lowerBound >= 0,
-                  range.upperBound <= attributed.characters.count,
-                  range.lowerBound < range.upperBound else { continue }
-            let start = attributed.index(attributed.startIndex,
-                                         offsetByCharacters: range.lowerBound)
-            let end = attributed.index(attributed.startIndex,
-                                       offsetByCharacters: range.upperBound)
-            attributed[start..<end].backgroundColor = highlight
-        }
         return attributed
     }
 
@@ -157,5 +149,38 @@ struct ConversationOutlineRow: View {
         }
         .frame(width: avatarSide, height: avatarSide)
         .accessibilityHidden(true)
+    }
+}
+
+/// Draws a small rounded highlight behind each matched slice. `Text`'s
+/// AttributedString background is square, so the renderer slices each run at
+/// the match boundaries and fills the slice's own typographic bounds.
+nonisolated struct ConversationOutlineSearchHighlightRenderer: TextRenderer {
+    let ranges: [Range<Int>]
+    let color: Color
+    var cornerRadius: CGFloat = 4
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        guard !ranges.isEmpty else {
+            for line in layout { context.draw(line) }
+            return
+        }
+        var offset = 0
+        for line in layout {
+            for run in line {
+                let runEnd = offset + run.count
+                for range in ranges {
+                    let lower = max(range.lowerBound, offset)
+                    let upper = min(range.upperBound, runEnd)
+                    guard lower < upper else { continue }
+                    let slice = run[(lower - offset)..<(upper - offset)]
+                    let rect = slice.typographicBounds.rect.insetBy(dx: -1, dy: 1)
+                    context.fill(Path(roundedRect: rect, cornerRadius: cornerRadius),
+                                 with: .color(color))
+                }
+                context.draw(run)
+                offset = runEnd
+            }
+        }
     }
 }

@@ -114,11 +114,11 @@ nonisolated enum ConversationOutlineSearch {
 
     /// Characters kept before the first hit, so the keyword is on the first
     /// visible line of the row; the capture's excerpts lead with "…".
-    private static let leadingContext = 20
+    private static let leadingContext = 24
     /// The trailing context kept after the hit. AA's rule, not a captured
-    /// constant: about one line of lead plus 8–10 lines of body at the
+    /// constant: about one line of lead plus 10–12 lines of body at the
     /// outline's text width.
-    private static let previewLength = 200
+    private static let previewLength = 260
 
     private static func excerpt(
         from attributed: AttributedString,

@@ -88,8 +88,8 @@ struct ConversationOutlineSearchTests {
         let range = try #require(hit.snippet.range(of: "needle"))
         let keywordOffset = hit.snippet.distance(from: hit.snippet.startIndex,
                                                  to: range.lowerBound)
-        #expect(keywordOffset <= 22) // "…" + the 20-character leading context
-        #expect(hit.snippet.count <= 202)
+        #expect(keywordOffset <= 26) // "…" + the 24-character leading context
+        #expect(hit.snippet.count <= 262)
     }
 
     @Test("every matched token occurrence is marked for the highlight")

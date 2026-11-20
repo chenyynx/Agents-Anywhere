@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UIKit
 
 /// A one-shot request to scroll the timeline to a message row. The page holds
 /// one instance and hands it to both the timeline (which performs the scroll,
@@ -34,6 +35,14 @@ struct ConversationOutlineSheet: View {
     /// (pp 2026-11-21). A task refreshes this at a calm cadence instead.
     @State private var liveItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
+    /// True while the search field's keyboard is up. A downward drag then
+    /// belongs to the keyboard, not the sheet: letting the sheet's own drag
+    /// run at the same time put two animations on one finger — the keyboard
+    /// interactive dismissal and the detent drag — and read as a stutter
+    /// (pp 2026-11-21). With the sheet pinned, the list owns the drag and the
+    /// keyboard follows it; once the keyboard is gone the usual drag-dismiss
+    /// comes back.
+    @State private var keyboardVisible = false
     /// The capture's count line is a 15 pt token that scales with the reader's
     /// text size (≈12.9 pt at the captured setting), not a fixed 15 pt.
     @ScaledMetric(relativeTo: .body) private var countSize: CGFloat = 15
@@ -83,6 +92,18 @@ struct ConversationOutlineSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(ChatPalette.outlineSheetBackground.color)
+        // While the keyboard is up, downward drags drive the keyboard's
+        // interactive dismissal instead of the sheet's detent drag; the two
+        // at once are what stuttered (pp 2026-11-21).
+        .interactiveDismissDisabled(keyboardVisible)
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
     }
 
     // MARK: - Content

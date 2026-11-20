@@ -178,8 +178,11 @@ final class SessionChatModel {
     /// explain it ("等待 X 回应…") belonged to the retired Chat page; the Code
     /// page draws `CodeWorkingStatusRow` instead (pp 2026-11-17).
     var isAwaitingReply: Bool {
+        // A held steer waits for the next turn's boundary, not for this
+        // turn's reply: it must not keep the working row on screen after a
+        // stop. While the turn runs, `runtime.state.status` already covers it.
         let submitting = session.pendingMessages.contains {
-            $0.delivery == .sending || $0.delivery == .accepted
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
         }
         if submitting || session.awaitingReplyID != nil { return true }
         guard session.runtime.isFresh, let status = session.runtime.state?.status else { return false }
@@ -943,12 +946,20 @@ final class SessionChatModel {
         // its final place. Only the composer's send window waits for the
         // accepted ack.
         session.runtime.beginStopRequest()
+        var steerOutcomes: JSONValue?
         let stopped = await perform {
-            try await self.repository.interrupt(sessionId: self.session.id,
-                                                preserveBackground: true)
+            let response = try await self.repository.interrupt(
+                sessionId: self.session.id,
+                preserveBackground: true
+            )
+            steerOutcomes = response?.result?["steerOutcomes"]
         }
         session.runtime.endStopRequest()
         if stopped {
+            // The stop ended this turn's reply window for any steer it held;
+            // the runtime's own verdict then resolves each bubble.
+            session.clearSteerAwaitingReply()
+            session.applySteerOutcomes(steerOutcomes)
             // A stop the server acknowledged can orphan a send whose echo the
             // interrupted turn never produced; hand that payload back to the
             // editor instead of leaving a zombie row and a permanent working

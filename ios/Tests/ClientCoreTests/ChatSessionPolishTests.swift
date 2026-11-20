@@ -488,4 +488,133 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(inline["fileId"] == .string("file_1"))
         #expect(inline["width"] == .number(1179) && inline["height"] == .number(2556))
     }
+
+    @Test func stopNeverReclaimsASteerPending() {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let pending = V2PendingMessage(id: "client_steer", content: "steer", attachmentIDs: [])
+        pending.isSteer = true
+        session.stage(pending)
+
+        session.reclaimUnconfirmedPendings()
+
+        // A steer is runtime-owned once submitted; only the interrupt's
+        // `steerOutcomes` may resolve it (probe 2026-11-21).
+        #expect(session.pendingMessages.map(\.id) == ["client_steer"])
+        #expect(session.draft.isEmpty)
+    }
+
+    @Test func withdrawnSteerOutcomeReturnsTheTextAndDropsTheRecord() {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let pending = V2PendingMessage(id: "client_steer", content: "never read", attachmentIDs: [])
+        pending.isSteer = true
+        session.stage(pending)
+
+        session.applySteerOutcomes(.object([
+            "steerOutcomes": .array([
+                .object([
+                    "clientMessageId": .string("client_steer"),
+                    "outcome": .string("withdrawn"),
+                ])
+            ])
+        ]))
+
+        #expect(session.pendingMessages.isEmpty)
+        #expect(session.draft == "never read")
+    }
+
+    @Test func deliveredAndUnknownSteerOutcomesKeepTheRecord() {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        for (id, outcome) in [("client_read", "delivered"), ("client_unknown", "unknown")] {
+            let pending = V2PendingMessage(id: id, content: id, attachmentIDs: [])
+            pending.isSteer = true
+            session.stage(pending)
+            session.applySteerOutcomes(.object([
+                "steerOutcomes": .array([
+                    .object([
+                        "clientMessageId": .string(id),
+                        "outcome": .string(outcome),
+                    ])
+                ])
+            ]))
+        }
+
+        // Delivered waits for its echo row; unknown has no verdict yet. Both
+        // stay visible (and keep blocking an identical resend).
+        #expect(Set(session.pendingMessages.map(\.id)) == ["client_read", "client_unknown"])
+        #expect(session.draft.isEmpty)
+    }
+
+    @Test func withdrawnSteerKeepsItsTextWhenTheDraftIsBusy() {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        session.draft = "new work in progress"
+        let pending = V2PendingMessage(id: "client_steer", content: "withdrawn text", attachmentIDs: [])
+        pending.isSteer = true
+        session.stage(pending)
+
+        session.applySteerOutcomes(.object([
+            "steerOutcomes": .array([
+                .object([
+                    "clientMessageId": .string("client_steer"),
+                    "outcome": .string("withdrawn"),
+                ])
+            ])
+        ]))
+
+        // Never drop the message text silently: the user's draft stays, and
+        // the withdrawn record remains readable until dismissed.
+        #expect(session.draft == "new work in progress")
+        #expect(session.pendingMessages.map(\.id) == ["client_steer"])
+        guard case .rejected = session.pendingMessages.first?.delivery else {
+            Issue.record("A withdrawn steer with a busy draft must stay as a rejected record")
+            return
+        }
+    }
+
+    @Test func aNewRuntimeInstanceDemotesAHeldSteerToUncertain() async throws {
+        let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let connection = Task { await repo.session(id: "session").connect() }
+        defer { connection.cancel() }
+        try await eventually { session.canSend }
+
+        let pending = V2PendingMessage(id: "client_steer", content: "held", attachmentIDs: [])
+        pending.isSteer = true
+        pending.update(.accepted)
+        session.stage(pending)
+
+        var state = try fixtureObject("state")["state"] as! [String: Any]
+        state["runtimeId"] = "rti_first"
+        state["status"] = "idle"
+        state["updatedSeq"] = (session.runtime.state?.updatedSeq ?? 0) + 1
+        realtime.yield(try event("runtime.state.updated", seq: 900, id: "state_a",
+                                 payload: ["state": state]))
+        try await eventually { session.runtime.state?.runtimeId == "rti_first" }
+
+        state["runtimeId"] = "rti_second"
+        state["updatedSeq"] = (session.runtime.state?.updatedSeq ?? 0) + 1
+        realtime.yield(try event("runtime.state.updated", seq: 901, id: "state_b",
+                                 payload: ["state": state]))
+
+        // A connector restart mints a new runtime instance; the steer queued
+        // in the old process is gone, so the record becomes retryable-uncertain
+        // instead of waiting for an echo that can never come.
+        try await eventually {
+            if case .uncertain = session.pendingMessages.first?.delivery { return true }
+            return false
+        }
+    }
 }

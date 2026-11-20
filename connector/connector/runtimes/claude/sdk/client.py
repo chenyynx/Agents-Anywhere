@@ -215,6 +215,55 @@ async def interrupt_client(
     return True
 
 
+#: Bound for one steer withdrawal. The CLI answers the control request
+#: immediately; a silent CLI must not stall the user's stop.
+CLAUDE_STEER_CANCEL_TIMEOUT_SECONDS = 2.0
+
+
+async def cancel_async_message_client(
+    client: Any,
+    message_uuid: str,
+    *,
+    timeout: float = CLAUDE_STEER_CANCEL_TIMEOUT_SECONDS,
+) -> bool | None:
+    """Withdraw one queued steer (``priority: "next"``) from the CLI.
+
+    Sent BEFORE the interrupt on purpose. Verified against the bundled CLI
+    2.1.316 (probe 2026-11-21): a steer still in the CLI queue answers
+    ``{"cancelled": true}`` and is never delivered; once it has been read at a
+    model boundary the same request answers ``false``; and after an interrupt
+    the CLI puts the queued steer back for the next turn, so a later cancel
+    answers ``false`` and the steer leaks into that turn. The stop path
+    therefore withdraws first, then interrupts.
+
+    Returns ``True`` (withdrawn), ``False`` (already taken into the turn), or
+    ``None`` when the SDK/CLI seam is unavailable or the request failed — the
+    caller reports ``unknown`` and leaves today's behavior in place.
+    """
+
+    query = getattr(client, "_query", None)
+    sender = getattr(query, "_send_control_request", None)
+    if not callable(sender):
+        return None
+    try:
+        response = sender(
+            {"subtype": "cancel_async_message", "message_uuid": message_uuid},
+            timeout=timeout,
+        )
+        if inspect.isawaitable(response):
+            response = await asyncio.wait_for(response, timeout=timeout + 1.0)
+    except Exception:  # noqa: BLE001 - unknown outcome must not fail the stop
+        logger.warning(
+            "Claude steer withdraw failed message_uuid={}", message_uuid
+        )
+        return None
+    if isinstance(response, dict):
+        cancelled = response.get("cancelled")
+        if isinstance(cancelled, bool):
+            return cancelled
+    return None
+
+
 # A runtime selection change (model / permission) can be applied to the live
 # CLI process instead of rebuilding it. The SDK exposes that as the
 # `set_model` / `set_permission_mode` control requests (client.py:341/314,

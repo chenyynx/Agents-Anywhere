@@ -19,7 +19,10 @@ from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSess
 from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
-from connector.runtimes.claude.sdk.client import interrupt_client
+from connector.runtimes.claude.sdk.client import (
+    cancel_async_message_client,
+    interrupt_client,
+)
 from connector.runtimes.claude.sdk.events import (
     interrupted_terminal_event,
     is_result_message,
@@ -316,6 +319,14 @@ class ClaudeTurnActionHandler:
             execution.interrupt_source = "claude.session.interrupt"
             execution.interrupt_reason = reason
             queued = session.queued_execution
+            # Withdraw before interrupting, under the same lock a steer submits
+            # through: the CLI turns a queued steer loose into the NEXT turn
+            # once interrupted, and a later cancel then answers false (probe
+            # 2026-11-21, bundled 2.1.316). The lock keeps a concurrent
+            # steer_turn out until the withdraw pass has run.
+            steer_outcomes = await self._withdraw_pending_steers(
+                session=session, execution=execution
+            )
         if queued is not None:
             # A queued execution is an unstarted user message, not background
             # work: it is always dropped, whichever flavor the caller asked for.
@@ -332,10 +343,69 @@ class ClaudeTurnActionHandler:
             reason=reason,
             preserve_background=preserve_background,
         )
-        return RuntimeOperationResult(
-            ok=True,
-            result={"interrupted": True, "alreadyStopped": False},
-        )
+        result: dict[str, Any] = {
+            "interrupted": True,
+            "alreadyStopped": False,
+        }
+        if steer_outcomes:
+            result["steerOutcomes"] = steer_outcomes
+        return RuntimeOperationResult(ok=True, result=result)
+
+    async def _withdraw_pending_steers(
+        self,
+        *,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+    ) -> list[dict[str, str]]:
+        """Try to take back every steer the stopped turn has not consumed.
+
+        Called before the interrupt. One outcome per steer, keyed by the
+        client message id so the sender can resolve its optimistic bubble:
+
+        - ``withdrawn``  — the CLI confirmed the steer was still queued and
+          dropped it; no row will ever appear, so the client may return the
+          text to the composer or re-send it as the next turn;
+        - ``delivered``  — the runtime already took it into the turn; the
+          existing echo path will publish its row;
+        - ``unknown``    — the SDK/CLI seam is unavailable or the request
+          failed; the client keeps its conservative wait.
+        """
+
+        if not session.pending_steers:
+            return []
+        # `execution.client` is the response wrapper; the control seam lives on
+        # the SDK client behind its connection (the same one `steer()` sends
+        # through).
+        response = execution.client
+        client = getattr(getattr(response, "connection", None), "client", None)
+        if client is None:
+            client = response
+        outcomes: list[dict[str, str]] = []
+        for steer_uuid, (_text, client_message_id) in list(
+            session.pending_steers.items()
+        ):
+            cancelled = (
+                await cancel_async_message_client(client, steer_uuid)
+                if client is not None
+                else None
+            )
+            if cancelled is True:
+                # No echo will ever come for it: dropping the record keeps a
+                # late frame from publishing a row for a withdrawn steer.
+                session.take_steer(steer_uuid)
+                outcome = "withdrawn"
+            elif cancelled is False:
+                outcome = "delivered"
+            else:
+                outcome = "unknown"
+            if client_message_id:
+                outcomes.append(
+                    {
+                        "clientMessageId": client_message_id,
+                        "outcome": outcome,
+                    }
+                )
+        return outcomes
 
     async def stop_subagent(
         self,

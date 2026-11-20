@@ -7,11 +7,11 @@ import Testing
 /// card parsed from a completed question row.
 @Suite @MainActor struct QuestionCardTests {
 
-    private func inputNotice(revision: Int = 1) throws -> V2RuntimeNotice {
+    private func inputNotice(revision: Int = 1, status: String = "open") throws -> V2RuntimeNotice {
         var value = (try fixtureObject("notices")["notices"] as! [[String: Any]])[0]
         value["type"] = "interaction"
         value["interactionType"] = "input_request"
-        value["status"] = "open"
+        value["status"] = status
         value["revision"] = revision
         value["blocking"] = ["scope": "session", "targetId": "session"]
         value["actions"] = [["actionId": "submit", "label": "Submit", "style": "primary", "input": [
@@ -96,6 +96,32 @@ import Testing
         #expect(QuestionCardMetrics.selectedBadge.light.blue == 0.839)
         #expect(QuestionCardMetrics.unselectedRing.light.alpha == 0.465)
         #expect(QuestionCardMetrics.divider.light.alpha == 0.3)
+    }
+
+    // MARK: - Optimistic collapse
+
+    @Test func aLocalDismissalHidesTheCardImmediately() throws {
+        let item = SessionNoticeModel(try inputNotice())
+        #expect(item.isVisible)
+        item.dismissLocally()
+        #expect(!item.isVisible)
+        #expect(!item.blocks("session"))
+    }
+
+    @Test func aRejectedWriteBringsTheDismissedCardBack() throws {
+        struct WriteRejected: Error {}
+        let item = SessionNoticeModel(try inputNotice())
+        item.dismissLocally()
+        item.fail(WriteRejected())
+        #expect(item.isVisible)
+    }
+
+    @Test func aFailedRevisionBringsTheDismissedCardBack() throws {
+        let item = SessionNoticeModel(try inputNotice())
+        item.dismissLocally()
+        #expect(!item.isVisible)
+        item.update(try inputNotice(revision: 2, status: "failed"))
+        #expect(item.isVisible)
     }
 
     // MARK: - Skip semantics

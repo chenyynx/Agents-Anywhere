@@ -958,11 +958,18 @@ final class SessionChatModel {
         stoppingSubagentTaskIDs.remove(taskID)
     }
 
-    func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction) async {
+    /// - Parameter dismissOnSend: the question card stands in for the
+    ///   composer, so it hands the screen back at tap time instead of waiting
+    ///   for the write's reconcile round and the server's notice event — that
+    ///   wait read as a pause before the collapse (pp 2026-11-20). A failed
+    ///   write puts the card back.
+    func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction,
+                 dismissOnSend: Bool = false) async {
         guard !isWorking, notice.canRespond(fresh: session.runtime.isFresh),
               notice.notice.actions.contains(action), notice.hasValidInput(for: action) else { return }
         let input = notice.payload(for: action)
         notice.begin(actionID: action.id)
+        if dismissOnSend { notice.dismissLocally() }
         isWorking = true
         defer { isWorking = false }
         do {

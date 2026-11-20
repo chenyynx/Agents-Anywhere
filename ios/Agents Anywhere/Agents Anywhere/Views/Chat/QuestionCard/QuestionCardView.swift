@@ -500,12 +500,16 @@ struct QuestionCardView: View {
             pageIndex = index
             return
         }
-        Task { await chat.respond(notice: item, action: action) }
+        // The card collapses with the tap; the keyboard goes down in the same
+        // beat instead of a frame later when the editor disappears.
+        dismissKeyboard()
+        Task { await chat.respond(notice: item, action: action, dismissOnSend: true) }
     }
 
     private func cancel() {
         guard let action = cancelAction else { return }
-        Task { await chat.respond(notice: item, action: action) }
+        dismissKeyboard()
+        Task { await chat.respond(notice: item, action: action, dismissOnSend: true) }
     }
 }
 

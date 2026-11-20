@@ -26,7 +26,13 @@ struct SessionInteractionDock: View {
                 ForEach(questionItems) { item in
                     QuestionCardView(item: item, chat: chat)
                         .padding(.horizontal, QuestionCardMetrics.screenMargin)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        // Slide in from below, but leave by fading: a tall
+                        // card sliding down while the bar shrinks and the
+                        // keyboard drops in the same transaction read as one
+                        // hitch (pp 2026-11-20).
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .opacity))
                         .id(item.id)
                 }
                 if !compactItems.isEmpty {

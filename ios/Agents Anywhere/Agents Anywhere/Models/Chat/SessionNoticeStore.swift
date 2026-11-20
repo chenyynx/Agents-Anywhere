@@ -17,6 +17,11 @@ final class SessionNoticeModel: Identifiable {
     private(set) var skipped: Set<String> = []
     var fields: [String: [String: JSONValue]] = [:]
     var composingFields: Set<String> = []
+    /// The card leaves the moment the user acts, instead of waiting for the
+    /// write's reconciliation round and the server's notice event — that wait
+    /// read as a pause before the collapse (pp 2026-11-20). A failed response
+    /// clears it, so the card returns carrying the error.
+    private(set) var locallyDismissed = false
     @ObservationIgnored private var submittedRevision = 0
 
     init(_ notice: V2RuntimeNotice) {
@@ -24,7 +29,7 @@ final class SessionNoticeModel: Identifiable {
     }
     var hasDraft: Bool { !choices.isEmpty || !custom.isEmpty || !skipped.isEmpty || !fields.isEmpty }
     var isVisible: Bool {
-        guard submission != .unavailable else { return false }
+        guard !locallyDismissed, submission != .unavailable else { return false }
         if notice.type == "notification" { return notice.status == .open }
         return notice.type == "interaction" && [.open, .failed, .responding, .responseAccepted, .resolving].contains(notice.status)
     }
@@ -51,9 +56,11 @@ final class SessionNoticeModel: Identifiable {
         // accidentally submit values collected for an obsolete question set.
         if form != nextForm || notice.actions != next.actions {
             choices = [:]; custom = [:]; customQuestions = []; skipped = []; fields = [:]; composingFields = []; submission = .idle; error = nil
+            locallyDismissed = false
         }
         if next.revision > submittedRevision && next.status == .failed {
             submission = .idle
+            locallyDismissed = false
             error = next.context["error"]?["message"]?.stringValue ?? next.context["error"]?.stringValue
         }
         if submission == .unavailable && next.revision > submittedRevision { submission = .idle }
@@ -130,9 +137,16 @@ final class SessionNoticeModel: Identifiable {
         if notice.revision > submittedRevision && notice.status == .failed { submission = .idle }
         else { submission = .accepted }
     }
+    /// Collapse the card optimistically at tap time. Kept separate from
+    /// `begin` because only the surfaces that stand in for the composer (the
+    /// question card) hand over the screen; anything that fails to write puts
+    /// the card back below.
+    func dismissLocally() { locallyDismissed = true }
     func fail(_ failure: Error) {
         if [.resolved, .closed, .expired, .cancelled].contains(notice.status) { return }
         if [.responding, .responseAccepted, .resolving].contains(notice.status) { submission = .accepted; return }
+        // The write did not land: give the card back with the error.
+        locallyDismissed = false
         let value = V2ClientFailure(failure)
         error = value.message
         let missing = ["not_found", "notice_not_found", "interaction_not_found", "request_not_found", "approval_not_found"]

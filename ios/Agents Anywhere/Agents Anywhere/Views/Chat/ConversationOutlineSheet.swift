@@ -59,10 +59,15 @@ struct ConversationOutlineSheet: View {
             ScrollView {
                 content
             }
-            // The keyboard follows the drag instead of dropping in its own
-            // animation the moment the list starts to scroll — the same
-            // interactive dismissal the transcript uses (pp 2026-11-21).
-            .scrollDismissesKeyboard(.interactively)
+            // The keyboard drops once when the drag starts instead of
+            // following the finger frame by frame. Following it coupled two
+            // per-frame movements to one finger — the keyboard's interactive
+            // dismissal and the list's scroll, with the list's keyboard inset
+            // changing on every frame — and dragging the card stuttered while
+            // the same drag started on the search bar stayed smooth
+            // (pp 2026-11-21, b1409/b1410). `.immediately` runs one system
+            // dismissal animation, then plain scrolling.
+            .scrollDismissesKeyboard(.immediately)
             // Whether a downward drag actually reaches this list, and whether
             // the keyboard follows it, is the question two device rounds could
             // not answer (pp 2026-11-21). Phase changes only: per-frame

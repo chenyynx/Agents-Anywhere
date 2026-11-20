@@ -46,6 +46,9 @@ struct QuestionCardView: View {
     private var currentQuestion: NoticeInputQuestion? {
         questions.indices.contains(pageIndex) ? questions[pageIndex] : nil
     }
+    /// A single-question card has no paging row, so the header/question is the
+    /// first row and shares its band with the floating X.
+    private var avoidsDismiss: Bool { questions.count == 1 && cancelAction != nil }
     private var isLastPage: Bool { pageIndex >= questions.count - 1 }
     /// "Next" needs this question answered; "Submit" needs every non-skipped
     /// question answered (the notice payload builder is the single judge).
@@ -187,20 +190,27 @@ struct QuestionCardView: View {
             // Swipe left/right here to change pages; the custom-answer field
             // stays outside so the gesture never fights the text editor.
             VStack(alignment: .leading, spacing: 16) {
-                if let header = question.header, !header.isEmpty {
-                    typography(header,
-                               size: QuestionCardMetrics.titleSize,
-                               lineHeight: QuestionCardMetrics.titleLineHeight,
-                               weight: QuestionCardMetrics.titleWeight)
-                        // R5: the card title is primary ink, not the
-                        // secondary token used by descriptions/paging.
+                VStack(alignment: .leading, spacing: 16) {
+                    if let header = question.header, !header.isEmpty {
+                        typography(header,
+                                   size: QuestionCardMetrics.titleSize,
+                                   lineHeight: QuestionCardMetrics.titleLineHeight,
+                                   weight: QuestionCardMetrics.titleWeight)
+                            // R5: the card title is primary ink, not the
+                            // secondary token used by descriptions/paging.
+                            .foregroundStyle(.primary)
+                    }
+                    typography(question.prompt,
+                               size: QuestionCardMetrics.questionSize,
+                               lineHeight: QuestionCardMetrics.questionLineHeight,
+                               weight: QuestionCardMetrics.questionWeight)
                         .foregroundStyle(.primary)
                 }
-                typography(question.prompt,
-                           size: QuestionCardMetrics.questionSize,
-                           lineHeight: QuestionCardMetrics.questionLineHeight,
-                           weight: QuestionCardMetrics.questionWeight)
-                    .foregroundStyle(.primary)
+                // Only a single-question card starts its text inside the
+                // floating X's band; multi-question cards begin below the
+                // paging row, so their questions may use the full width.
+                .padding(.trailing, avoidsDismiss
+                         ? QuestionCardMetrics.questionTrailingAvoidance : 0)
                 choices(question)
             }
             .contentShape(Rectangle())

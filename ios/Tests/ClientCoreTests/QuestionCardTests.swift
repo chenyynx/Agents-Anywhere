@@ -38,6 +38,7 @@ import Testing
         #expect(QuestionCardMetrics.closeButtonSize == 44)
         #expect(QuestionCardMetrics.closeGlyphSpan == 16)
         #expect(QuestionCardMetrics.closeGlyphStroke == 1.5)
+        #expect(QuestionCardMetrics.questionTrailingAvoidance == 32)
         #expect(QuestionCardMetrics.pagingSpacing == 8)
         #expect(QuestionCardMetrics.pagingLeading == 4)
         #expect(QuestionCardMetrics.arrowGlyphSize == 24)

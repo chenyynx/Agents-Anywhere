@@ -73,6 +73,12 @@ nonisolated enum QuestionCardMetrics {
     /// (pp 2026-11-20).
     static let closeGlyphSpan: CGFloat = 16
     static let closeGlyphStroke: CGFloat = 1.5
+    /// How far the floating X reaches into the content column: the 44 pt
+    /// button sits 12 pt from the card edge, and the content already pads 24
+    /// pt — 44 + 12 − 24 = 32 pt. A single-question card has no paging row,
+    /// so its header/question starts inside the X's band and must wrap before
+    /// the button (official Code card, pp 2026-11-20).
+    static let questionTrailingAvoidance: CGFloat = 32
     /// Card silhouette shadow (same elevation preset as the official
     /// raised card: black@0.08 / r4 / y2).
     static let cardShadowOpacity: Double = 0.08

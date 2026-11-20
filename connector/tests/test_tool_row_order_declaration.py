@@ -48,6 +48,7 @@ from connector.runtimes.claude.sessions.reader import _history_items_from_messag
 from connector.runtimes.claude.timeline.agent_calls import (
     agent_task_overlay_for_event,
 )
+from connector.runtimes.claude.timeline.block_order import MessageBlockOrder
 from connector.runtimes.claude.timeline.messages import (
     ClaudeMessageProjector,
 )
@@ -496,7 +497,13 @@ def test_agent_fold_keeps_the_absolute_content_index() -> None:
         ],
     )
     items = projector.tool_items_for_message(
-        session=session, turn_id="turn-1", message=message, full_content=True
+        session=session,
+        turn_id="turn-1",
+        message=message,
+        block_order=MessageBlockOrder(
+            by_key={("thinking", "sig:s"): 0, ("tool", "call_agent"): 1},
+            first_text_index=None,
+        ),
     )
     agent_item = items[0]
     assert agent_item.source["contentBlockIndex"] == 1

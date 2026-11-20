@@ -92,16 +92,22 @@ from connector.runtimes.claude.timeline.messages import (
     is_interrupted_request_message,
     is_synthetic_control_message,
     is_task_notification_message,
-    message_content_block_count,
+    REASONING_BLOCK_TYPES,
     message_id,
     message_model,
     message_role,
+    message_system_blocks,
     message_text,
-    message_text_content_index,
     message_tool_blocks,
     message_usage,
     receipt_agent_id,
     synthesized_agent_call_content,
+)
+from connector.runtimes.claude.timeline.block_order import (
+    MessageBlockOrder,
+    blob_ledgers,
+    resolve_message_orders,
+    thinking_key,
 )
 
 UNRESOLVED_LIVE_HISTORY_IMPORT_TTL_SECONDS = 120.0
@@ -643,6 +649,50 @@ def _adopt_published_turn_ids(
     ]
 
 
+def _message_block_orders(
+    messages: tuple[Any, ...],
+    raw_scan: RawTranscriptScan | None,
+    raw_lines: tuple[str, ...],
+) -> dict[str, MessageBlockOrder | None]:
+    """Each assistant message's real block order, when its ledger proves one.
+
+    Ledgers come from the raw transcript's ``api-request-blob`` lines (the
+    scan caches them; tests may pass the raw lines directly). A ledger is
+    attributed to a message id through a unique anchor — a tool_use id, or a
+    thinking block's signature / text hash. A message without a provable
+    ledger is absent from the result (the projection declares nothing); a
+    message whose ledgers disagree is present with ``None``.
+
+    Transcripts from CLI builds without the request ledger yield nothing:
+    their rows keep no absolute index and the server orders by RBT — the same
+    behaviour as before the index existed, never a guess (pp 2026-11-20).
+    """
+
+    ledgers = (
+        raw_scan.block_order_ledgers
+        if raw_scan is not None
+        else blob_ledgers(raw_lines)
+    )
+    if not ledgers:
+        return {}
+    anchors: dict[tuple[str, str], str] = {}
+    for message in messages:
+        mid = message_id(message)
+        if not mid:
+            continue
+        for block in message_tool_blocks(message):
+            if block.block_type == "tool_use" and block.tool_use_id:
+                anchors[("tool", block.tool_use_id)] = mid
+        for block in message_system_blocks(message):
+            if block.block_type in REASONING_BLOCK_TYPES:
+                key = thinking_key(
+                    (block.metadata or {}).get("signature"), block.text
+                )
+                if key is not None:
+                    anchors[("thinking", key)] = mid
+    return resolve_message_orders(anchors, ledgers)
+
+
 def _history_items_from_messages(
     session: ClaudeSession,
     messages: tuple[Any, ...],
@@ -714,30 +764,24 @@ def _history_items_from_messages(
     items: list[RuntimeTimelineItem] = []
     matches = client_message_matches or {}
     stopped_turns = set(interrupted_turns or ())
-    # Production lines carry ONE content block per message object while several
-    # lines share the assistant message id (thinking line, tool_use line, text
-    # line). The absolute block index is a per-message-id running counter
-    # across the batch — never the line's own `enumerate` (always 0). A
-    # projection that used the line-local index declared 0 for every sibling,
-    # the server's tie-break kept the old RBT order, and the lone tool row this
-    # fix exists to remove survived (pp 2026-11-19 device screenshot).
-    next_content_block: dict[str, int] = {}
-    content_index_bases: list[int] = []
-    for message in messages:
-        message_native_id = message_id(message)
-        base = 0
-        if message_native_id is not None:
-            base = next_content_block.get(message_native_id, 0)
-            next_content_block[message_native_id] = (
-                base + message_content_block_count(message)
-            )
-        content_index_bases.append(base)
+    # The absolute block index must come from the message's assembled content
+    # array, never from line order: the transcript writes one block per line in
+    # block COMPLETION order, and on the OpenAI-format channel a tool call
+    # completes before the text it follows — deriving the index from that order
+    # inverted every text+tool message and let the repair move the tool rows
+    # above the body (pp 2026-11-20). The assembled arrays live in the CLI's
+    # request ledger; `_message_block_orders` attributes them to message ids by
+    # unique anchors and returns nothing for a message it cannot prove
+    # (宁缺勿假 — the server then falls back to RBT).
+    block_orders = _message_block_orders(messages, raw_scan, raw_lines)
     for index, message in enumerate(messages):
         role = message_role(message)
         text = message_text(message)
         native_id = message_id(message)
-        text_content_index = (
-            message_text_content_index(message) if role == "assistant" else None
+        block_order = (
+            block_orders.get(native_id)
+            if role == "assistant" and native_id is not None
+            else None
         )
         synthetic_control = is_synthetic_control_message(message)
         turn_id = turn_ids.get(_history_turn_key(message))
@@ -760,10 +804,9 @@ def _history_items_from_messages(
                 session=session,
                 turn_id=turn_id,
                 message=message,
-                # History holds the message's blocks across its lines, so every
-                # row can declare its absolute block index (pp 2026-11-19).
-                full_content=True,
-                content_index_base=content_index_bases[index],
+                # The message's real block order from its request ledger —
+                # None when the transcript cannot prove it (pp 2026-11-20).
+                block_order=block_order,
             )
         )
         items.extend(
@@ -772,8 +815,7 @@ def _history_items_from_messages(
                 turn_id=turn_id,
                 message=message,
                 event="claude.history.system",
-                full_content=True,
-                content_index_base=content_index_bases[index],
+                block_order=block_order,
             )
         )
         client_message = matches.get(native_id or "")
@@ -822,11 +864,18 @@ def _history_items_from_messages(
                     # landed, overrides it.
                     usage=message_usage(message) if role == "assistant" else None,
                     usage_model=message_model(message) if role == "assistant" else None,
-                    # The body's absolute block index: the batch's per-message
-                    # counter base plus the block's index inside this line.
+                    # The body's absolute block index: the first text block of
+                    # the message's assembled content array, when its ledger
+                    # proved one (pp 2026-11-20). Otherwise nothing is declared.
                     content_block_index=(
-                        content_index_bases[index] + text_content_index
-                        if text_content_index is not None
+                        block_order.first_text_index
+                        if block_order is not None
+                        else None
+                    ),
+                    content_block_index_source=(
+                        "message"
+                        if block_order is not None
+                        and block_order.first_text_index is not None
                         else None
                     ),
                 )

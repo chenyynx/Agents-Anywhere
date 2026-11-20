@@ -38,6 +38,8 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+
+from connector.runtimes.claude.timeline.block_order import BlobLedger, blob_ledgers
 from pathlib import Path
 from typing import Any, Literal
 
@@ -972,6 +974,14 @@ class RawTranscriptScan:
     #: (2026-10-28): fire rows carried no ``origin`` at all, so the enqueue
     #: content is the only stable discriminator left.
     injected_prompt_rows: Mapping[str, int] = field(default_factory=dict)
+    #: Each assembled assistant message the CLI logged as an ``api-request-blob``
+    #: line, reduced to its block fingerprints in content order. The reader
+    #: attributes these to message ids (via unique tool_use ids / thinking
+    #: signatures) to declare the message's REAL block index — line order is
+    #: block completion order and inverted every text+tool message on the
+    #: OpenAI-format channel (pp 2026-11-20). Empty on transcripts without the
+    #: diagnostics (older CLI builds): nothing is declared then, never guessed.
+    block_order_ledgers: tuple[BlobLedger, ...] = ()
     #: tool_use id -> (dispatch row, its receipt row or ``None``) for every
     #: **verified** dispatch. The SDK message view is the compacted chain, so
     #: after a ``/compact`` the dispatch of a still-open Agent task survives
@@ -1314,6 +1324,7 @@ def scan_raw_transcript(
     }
     return RawTranscriptScan(
         notices=tuple(notices),
+        block_order_ledgers=blob_ledgers(raw_lines),
         receipt_times_ms=receipt_times,
         send_aliases=send_aliases,
         send_resume_times_ms=send_resume_times,

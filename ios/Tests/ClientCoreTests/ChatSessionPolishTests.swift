@@ -515,12 +515,10 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         pending.isSteer = true
         session.stage(pending)
 
-        session.applySteerOutcomes(.object([
-            "steerOutcomes": .array([
-                .object([
-                    "clientMessageId": .string("client_steer"),
-                    "outcome": .string("withdrawn"),
-                ])
+        session.applySteerOutcomes(.array([
+            .object([
+                "clientMessageId": .string("client_steer"),
+                "outcome": .string("withdrawn"),
             ])
         ]))
 
@@ -537,12 +535,10 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
             let pending = V2PendingMessage(id: id, content: id, attachmentIDs: [])
             pending.isSteer = true
             session.stage(pending)
-            session.applySteerOutcomes(.object([
-                "steerOutcomes": .array([
-                    .object([
-                        "clientMessageId": .string(id),
-                        "outcome": .string(outcome),
-                    ])
+            session.applySteerOutcomes(.array([
+                .object([
+                    "clientMessageId": .string(id),
+                    "outcome": .string(outcome),
                 ])
             ]))
         }
@@ -563,12 +559,10 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         pending.isSteer = true
         session.stage(pending)
 
-        session.applySteerOutcomes(.object([
-            "steerOutcomes": .array([
-                .object([
-                    "clientMessageId": .string("client_steer"),
-                    "outcome": .string("withdrawn"),
-                ])
+        session.applySteerOutcomes(.array([
+            .object([
+                "clientMessageId": .string("client_steer"),
+                "outcome": .string("withdrawn"),
             ])
         ]))
 
@@ -582,39 +576,41 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         }
     }
 
-    @Test func aNewRuntimeInstanceDemotesAHeldSteerToUncertain() async throws {
-        let http = TestHTTPTransport(), realtime = TestRealtimeAPI()
-        let repo = repository(transport: http, realtime: realtime)
+    @Test func aNewRuntimeInstanceDemotesAHeldSteerToUncertain() throws {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
         defer { repo.reset() }
         let session = repo.session(id: "session")
-        let connection = Task { await repo.session(id: "session").connect() }
-        defer { connection.cancel() }
-        try await eventually { session.canSend }
 
         let pending = V2PendingMessage(id: "client_steer", content: "held", attachmentIDs: [])
         pending.isSteer = true
         pending.update(.accepted)
         session.stage(pending)
 
-        var state = try fixtureObject("state")["state"] as! [String: Any]
-        state["runtimeId"] = "rti_first"
-        state["status"] = "idle"
-        state["updatedSeq"] = (session.runtime.state?.updatedSeq ?? 0) + 1
-        realtime.yield(try event("runtime.state.updated", seq: 900, id: "state_a",
-                                 payload: ["state": state]))
-        try await eventually { session.runtime.state?.runtimeId == "rti_first" }
+        var data = V2SessionData(snapshot: try decode(try fixtureObject("snapshot")))
+        var stateObject = try fixtureObject("state")["state"] as! [String: Any]
+        stateObject["runtimeId"] = "rti_first"
+        stateObject["status"] = "idle"
+        data.state = try decode(stateObject, as: V2RuntimeState.self)
+        session.update(
+            V2SessionObservation(sessionId: "session", data: data,
+                                 connection: .connected, error: nil),
+            network: V2NetworkStatus(availability: .online))
+        #expect(session.runtime.state?.runtimeId == "rti_first")
 
-        state["runtimeId"] = "rti_second"
-        state["updatedSeq"] = (session.runtime.state?.updatedSeq ?? 0) + 1
-        realtime.yield(try event("runtime.state.updated", seq: 901, id: "state_b",
-                                 payload: ["state": state]))
+        stateObject["runtimeId"] = "rti_second"
+        data.state = try decode(stateObject, as: V2RuntimeState.self)
+        session.update(
+            V2SessionObservation(sessionId: "session", data: data,
+                                 connection: .connected, error: nil),
+            network: V2NetworkStatus(availability: .online))
 
         // A connector restart mints a new runtime instance; the steer queued
         // in the old process is gone, so the record becomes retryable-uncertain
         // instead of waiting for an echo that can never come.
-        try await eventually {
-            if case .uncertain = session.pendingMessages.first?.delivery { return true }
-            return false
+        guard case .uncertain = session.pendingMessages.first?.delivery else {
+            Issue.record("A new runtime instance must demote the held steer to uncertain")
+            return
         }
     }
 }

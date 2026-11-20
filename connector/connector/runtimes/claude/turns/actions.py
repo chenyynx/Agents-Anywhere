@@ -373,6 +373,11 @@ class ClaudeTurnActionHandler:
 
         if not session.pending_steers:
             return []
+        # A stop must stay bounded: the queue holds at most 32 steers, but
+        # waiting the full per-request timeout on each could hold the stop
+        # (and the execution lock) for a minute. One shared budget keeps the
+        # worst case at the normal single-steer cost.
+        deadline = time.monotonic() + 4.0
         # `execution.client` is the response wrapper; the control seam lives on
         # the SDK client behind its connection (the same one `steer()` sends
         # through).
@@ -384,9 +389,12 @@ class ClaudeTurnActionHandler:
         for steer_uuid, (_text, client_message_id) in list(
             session.pending_steers.items()
         ):
+            remaining = deadline - time.monotonic()
             cancelled = (
-                await cancel_async_message_client(client, steer_uuid)
-                if client is not None
+                await cancel_async_message_client(
+                    client, steer_uuid, timeout=min(2.0, remaining)
+                )
+                if client is not None and remaining > 0
                 else None
             )
             if cancelled is True:

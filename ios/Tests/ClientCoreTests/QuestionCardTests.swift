@@ -22,7 +22,8 @@ import Testing
                 ["id": "many", "prompt": "Multiple", "multiple": true,
                  "options": [["id": "a", "label": "A"], ["id": "b", "label": "B"]]],
             ]],
-        ]], ["actionId": "cancel", "label": "Cancel", "style": "secondary"]]
+        ]], ["actionId": "cancel", "label": "Cancel", "style": "secondary",
+              "input": ["required": false]]]
         return try decode(value)
     }
 

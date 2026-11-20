@@ -119,6 +119,14 @@ nonisolated enum ConversationOutlineRowContentMaker {
     /// The official outline keeps month/day for the current year and adds the
     /// year only when it differs from today's. Today keeps the month/day form —
     /// unlike `ChatTimestamp`, which renders only the clock for today.
+    ///
+    /// Formatters are cached by template/locale/calendar/zone: allocating a
+    /// fresh `DateFormatter` and re-resolving the template on every row build
+    /// dominated the 0.4–1.0 ms the outline probe measured per build
+    /// (pp 2026-11-21, `outline.frame` `buildMs/builds`).
+    private static let stampLock = NSLock()
+    private static var stampFormatters: [String: DateFormatter] = [:]
+
     static func stamp(
         _ date: Date?,
         now: Date = Date(),
@@ -128,12 +136,23 @@ nonisolated enum ConversationOutlineRowContentMaker {
         guard let date else { return "" }
         let sameYear = calendar.isDate(date, equalTo: now, toGranularity: .year)
         let template = sameYear ? "MMMd HH:mm" : "yMMMd HH:mm"
+        let key = "\(template)|\(locale.identifier)|\(calendar.identifier)|\(calendar.timeZone.identifier)"
+        stampLock.lock()
+        defer { stampLock.unlock() }
+        if let formatter = stampFormatters[key] {
+            return formatter.string(from: date)
+        }
+        // A reader that keeps switching locale or zone must not grow the table
+        // without bound; eight live styles is far more than one device can
+        // hold at once.
+        if stampFormatters.count >= 8 { stampFormatters.removeAll() }
         let format = DateFormatter.dateFormat(fromTemplate: template, options: 0, locale: locale) ?? "MMM d HH:mm"
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = format
+        stampFormatters[key] = formatter
         return formatter.string(from: date)
     }
 }

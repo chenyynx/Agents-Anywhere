@@ -36,6 +36,11 @@ struct ConversationOutlineSheet: View {
     /// (pp 2026-11-21). A task refreshes this at a calm cadence instead.
     @State private var liveItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
+    /// Row content keyed by entry identity. The list re-evaluates every row on
+    /// each scroll appearance and each reload; an unchanged entry reuses its
+    /// content instead of rebuilding Markdown and the stamp (pp 2026-11-21,
+    /// `outline.frame`: 0.4–1.0 ms per build, up to 101 builds a second).
+    @State private var contentCache = ConversationOutlineRowContentCache()
     /// True while the search field's keyboard is up. A downward drag then
     /// belongs to the keyboard, not the sheet: letting the sheet's own drag
     /// run at the same time put two animations on one finger — the keyboard
@@ -246,9 +251,10 @@ struct ConversationOutlineSheet: View {
     // MARK: - Data
 
     private func loadCachedRows() async {
-        // The loaded window renders first; the disk read only adds history
-        // that is outside it.
-        reload()
+        // The task's first `refreshLiveItems()` already rendered the loaded
+        // window, so no reload happens here: it used to repeat that build
+        // (72 ms, measured by the probe, pp 2026-11-21). The disk read adds
+        // only the history the window does not hold.
         let items = await chat.repository.outlineItems(
             sessionId: chat.session.id,
             limit: ConversationOutlineSource.cacheRowLimit,
@@ -277,6 +283,7 @@ struct ConversationOutlineSheet: View {
                 cached: cachedItems
             )
         )
+        contentCache.retain(ids: Set(entries.map(\.id)))
         OutlineProbe.shared.noteReload(
             ms: (CFAbsoluteTimeGetCurrent() - started) * 1000,
             rows: entries.count,
@@ -296,10 +303,22 @@ struct ConversationOutlineSheet: View {
     /// compiler resolve `ForEach` to its `Binding` overload and refused the
     /// row array (b1406 app build).
     private func rowContent(for row: RowModel) -> ConversationOutlineRowContent {
+        // Search rows carry the query's excerpt and highlight ranges, so they
+        // are rebuilt on demand and stay outside the cache.
+        guard row.hit == nil else { return makeRowContent(entry: row.entry, hit: row.hit) }
+        return contentCache.content(for: row.entry) { entry in
+            makeRowContent(entry: entry, hit: nil)
+        }
+    }
+
+    private func makeRowContent(
+        entry: ConversationOutlineEntry,
+        hit: ConversationOutlineSearchHit?
+    ) -> ConversationOutlineRowContent {
         let started = CFAbsoluteTimeGetCurrent()
         let content = ConversationOutlineRowContentMaker.content(
-            for: row.entry,
-            hit: row.hit,
+            for: entry,
+            hit: hit,
             strings: outlineStrings
         )
         OutlineProbe.shared.noteContentBuild(

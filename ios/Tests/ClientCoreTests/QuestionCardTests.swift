@@ -81,7 +81,7 @@ import Testing
         #expect(QuestionCardMetrics.answeredRowSize == 14)
         #expect(QuestionCardMetrics.answeredRowLineHeight == 19)
         #expect(QuestionCardMetrics.answeredHeaderWeight == 400)
-        #expect(QuestionCardMetrics.answeredRowWeight == 500)
+        #expect(QuestionCardMetrics.answeredRowWeight == 400)
         #expect(QuestionCardMetrics.answeredCornerRadius == 24)
         #expect(QuestionCardMetrics.answeredHorizontalPadding == 16)
         #expect(QuestionCardMetrics.answeredVerticalPadding == 12)

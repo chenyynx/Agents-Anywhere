@@ -130,16 +130,16 @@ nonisolated enum QuestionCardMetrics {
     /// Device calibration on pp's official app (2026-11-20): the answered
     /// card renders one size below the R32 table — header ink 36 px @3x
     /// (= 13 pt, same glyph 「问题」) and rows 42–43 px (= 14 pt), with a
-    /// 19 pt row line height (q→a pitch 27 pt, pair pitch 31 pt). The weights
-    /// are one step below the table too: on the same 「问题」 glyphs our
-    /// 500 drew 0.45 ink coverage / 5.9 px strokes against the official
-    /// 0.33 / 4.1 px, and the 14 pt question line reads ~9 % heavier at 550.
+    /// 19 pt row line height (q→a pitch 27 pt, pair pitch 31 pt). Header and
+    /// question share one ink (#52514E) and one weight — 400 (pp, same-card
+    /// device read 2026-11-21); the table's 500/550 pairing is one step too
+    /// bold.
     static let answeredHeaderSize: CGFloat = 13
     static let answeredHeaderLineHeight: CGFloat = 18.2
     static let answeredHeaderWeight: CGFloat = 400
     static let answeredRowSize: CGFloat = 14
     static let answeredRowLineHeight: CGFloat = 19
-    static let answeredRowWeight: CGFloat = 500
+    static let answeredRowWeight: CGFloat = 400
 
     // MARK: - Colours (E: light / dark sRGB)
 

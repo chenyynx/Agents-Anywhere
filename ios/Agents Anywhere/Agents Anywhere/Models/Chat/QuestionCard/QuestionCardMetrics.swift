@@ -59,6 +59,11 @@ nonisolated enum QuestionCardMetrics {
     static let inputPadding: CGFloat = 12
 
     static let closeButtonSize: CGFloat = 44
+    /// Card silhouette shadow (same elevation preset as the official
+    /// raised card: black@0.08 / r4 / y2).
+    static let cardShadowOpacity: Double = 0.08
+    static let cardShadowRadius: CGFloat = 4
+    static let cardShadowY: CGFloat = 2
     static let closeButtonShadowOpacity: Double = 0.08
     static let closeButtonShadowRadius: CGFloat = 4
     static let closeButtonShadowY: CGFloat = 2

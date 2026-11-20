@@ -85,6 +85,12 @@ struct QuestionCardView: View {
         // keeps the glass shadow from painting around it (same reason as
         // SessionInteractionCard).
         .clipShape(.rect(cornerRadius: QuestionCardMetrics.cornerRadius))
+        // The official card floats on a soft shadow around its edge (pp
+        // 2026-11-20). Clipping the glass first keeps this to one clean
+        // silhouette shadow.
+        .shadow(color: .black.opacity(QuestionCardMetrics.cardShadowOpacity),
+                radius: QuestionCardMetrics.cardShadowRadius,
+                y: QuestionCardMetrics.cardShadowY)
         .onAppear {
             if pageID == nil { pageID = questions.first?.id }
         }

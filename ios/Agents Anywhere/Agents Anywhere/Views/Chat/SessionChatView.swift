@@ -199,8 +199,7 @@ struct SessionChatView: View, Equatable {
             // `safeAreaBar` keeps it over the content while the list
             // scrolls beneath the glass.
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)),
-                                 maximumQuestionHeight: min(560, max(320, geometry.size.height * 0.55)))
+                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
             }
             // [E] chrome-composer.md §4 — Code page background
             // `#F9F9F7` / `#151515`, edge to edge.
@@ -212,16 +211,14 @@ struct SessionChatView: View, Equatable {
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
-    private func composerDockArea(maximumEditorHeight: CGFloat,
-                                  maximumQuestionHeight: CGFloat) -> some View {
+    private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             // The SubAgent entry is no longer a dock row: it moved to the
             // navigation bar as its own circular item (pp 2026-11-18,
             // `SubAgentToolbarButton`), so the composer keeps every point of
             // vertical space the dock used to give the capsule.
             SessionInteractionDock(chat: model,
-                onShowAll: { expandedNoticeID = $0; sheet = .notices },
-                maximumQuestionHeight: maximumQuestionHeight)
+                onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")
             ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,

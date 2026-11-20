@@ -3,9 +3,6 @@ import SwiftUI
 struct SessionInteractionDock: View {
     let chat: SessionChatModel
     let onShowAll: (String) -> Void
-    /// Whole-card cap for the official question card (set from the chat view's
-    /// geometry so the card never crowds out the composer).
-    var maximumQuestionHeight: CGFloat = 480
     @State private var selectedID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var metrics = SessionInteractionMetrics()
@@ -27,8 +24,7 @@ struct SessionInteractionDock: View {
         if !items.isEmpty {
             VStack(spacing: 8) {
                 ForEach(questionItems) { item in
-                    QuestionCardView(item: item, chat: chat,
-                                     maximumHeight: maximumQuestionHeight)
+                    QuestionCardView(item: item, chat: chat)
                         .padding(.horizontal, QuestionCardMetrics.screenMargin)
                         .id(item.id)
                 }

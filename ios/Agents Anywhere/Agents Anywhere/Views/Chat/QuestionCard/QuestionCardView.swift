@@ -22,8 +22,6 @@ import SwiftUI
 struct QuestionCardView: View {
     let item: SessionNoticeModel
     let chat: SessionChatModel
-    /// Whole-card cap; the question body scrolls inside it.
-    var maximumHeight: CGFloat = 480
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -64,22 +62,17 @@ struct QuestionCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             topRow
-            // One vertical scroll owns the whole pager: the horizontal
-            // pager's height is its tallest page, and anything past the card
-            // cap scrolls here. Putting a vertical ScrollView *inside* each
-            // page collapsed the pager to a sliver on device (b1384).
-            ScrollView(.vertical) {
-                pager
-            }
-            .scrollIndicators(.hidden)
-            .scrollBounceBehavior(.basedOnSize)
+            // The official card does not scroll vertically: its
+            // `CappedCardScrollingRow` is the horizontal pager itself. The
+            // card simply sizes to its content, so every question's options
+            // and the custom-answer field stay visible (pp 2026-11-20).
+            pager
             statusLine
             submitRow
         }
         .padding(.horizontal, QuestionCardMetrics.contentPaddingHorizontal)
         .padding(.vertical, QuestionCardMetrics.contentPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(maxHeight: maximumHeight)
         .glassEffect(.regular, in: .rect(cornerRadius: QuestionCardMetrics.cornerRadius))
         // The dock cell clips its bounds; clipping to the card's own shape
         // keeps the glass shadow from painting around it (same reason as

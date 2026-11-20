@@ -1648,20 +1648,30 @@ final class V2SessionRepository {
                 dedupe: false
             )
         }
-        if !isLevelState,
-           event.type == "session.refetch_required"
-               || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
-            if event.type != "session.refetch_required" {
-                ClientDiagnosticsLog.shared.record(
-                    kind: "timeline.event.gap",
-                    sessionID: event.sessionId,
-                    detail: [
-                        "after": String(entry.projection?.sequence ?? 0),
-                        "event": String(event.sequence),
-                        "type": event.type,
-                    ]
-                )
-            }
+        // Only the server's explicit refetch signal asks for a full round.
+        // A forward sequence leap is the normal shape of the socket stream:
+        // the session sequence counts every durable write while the broker
+        // folds a burst into one envelope, and live projections leap by
+        // whatever other writers advanced. Inferring a gap from the leap ran
+        // a recovery round (0.3–0.9 s) on every streaming burst — 79 rounds
+        // in 50 minutes on device, ~4,090 per meta frame — which read as a
+        // re-sync after answering a card (pp 2026-11-21). Web, the contract
+        // reference, recovers on `session.refetch_required` only
+        // (web-next session-detail.tsx). The leap stays in the log as an
+        // info note.
+        if !isLevelState, event.type != "session.refetch_required",
+           event.sequence > (entry.projection?.sequence ?? 0) + 1 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.event.gap",
+                sessionID: event.sessionId,
+                detail: [
+                    "after": String(entry.projection?.sequence ?? 0),
+                    "event": String(event.sequence),
+                    "type": event.type,
+                ]
+            )
+        }
+        if event.type == "session.refetch_required" {
             try await reconcile(entry)
         }
         try requireCurrent(entry)

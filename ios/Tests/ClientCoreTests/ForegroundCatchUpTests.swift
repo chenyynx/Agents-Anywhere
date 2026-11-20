@@ -327,12 +327,13 @@ private func catchUpRepository(
         #expect(model.failure == nil)
     }
 
-    /// A live runtime state is level-triggered: it must neither be turned
-    /// into a gap-recovery nor move the timeline cursor. Treating its forward
-    /// sequence as a gap sent every turn end through a full reconcile before
-    /// the idle state could apply — the copy/share footer and the completion
-    /// cue waited out that round (~1 s, device 2026-11-17). Keeping the
-    /// cursor put lets the next durable event recover the rows it skipped.
+    /// A live runtime state is level-triggered: it must not move the timeline
+    /// cursor. Treating its forward sequence as a gap sent every turn end
+    /// through a full reconcile before the idle state could apply — the
+    /// copy/share footer and the completion cue waited out that round (~1 s,
+    /// device 2026-11-17). Sequence leaps no longer recover on their own
+    /// either (see `aCoalescedSequenceLeapAppliesWithoutForcingARecovery`);
+    /// the cursor stays on the durable stream where it belongs.
     @Test func aLiveStateFrameAppliesWithoutForcingARecovery() async throws {
         let http = TestHTTPTransport()
         let realtime = TestRealtimeAPI()
@@ -356,6 +357,31 @@ private func catchUpRepository(
                 "A live state frame must not trigger a recovery")
         #expect(repo.cached(sessionId: "session")?.cursor == "seq:10",
                 "A state frame must not advance the timeline cursor")
+    }
+
+    /// The broker folds a burst of durable writes into one envelope, so a
+    /// frame's sequence can leap thousands past the cursor without losing a
+    /// row. Inferring a gap from the leap ran a recovery round (0.3–0.9 s) on
+    /// every streaming burst — 79 rounds in 50 minutes on device — and read
+    /// as a re-sync after answering a card (pp 2026-11-21). Web, the
+    /// contract reference, recovers on `session.refetch_required` only.
+    @Test func aCoalescedSequenceLeapAppliesWithoutForcingARecovery() async throws {
+        let http = TestHTTPTransport()
+        let realtime = TestRealtimeAPI()
+        let repo = catchUpRepository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        repo.updateConnectivity(V2NetworkStatus(availability: .online))
+        let model = repo.session(id: "session")
+        let connection = Task { await model.connect() }
+        defer { connection.cancel() }
+        try await eventually { model.connection == .connected }
+        let recoveries = realtime.recoveries.count
+
+        realtime.yield(try event("timeline.item_created", seq: 4090,
+                                 payload: ["item": itemObject(id: "coalesced", order: 9, seq: 4090)]))
+        try await eventually { model.timeline.contains { $0.id == "coalesced" } }
+        #expect(realtime.recoveries.count == recoveries,
+                "A coalesced leap must not trigger a recovery")
     }
 
     /// D5 — the default cache window keeps the recent working set resident.

@@ -41,7 +41,7 @@ import Testing
         #expect(QuestionCardMetrics.selectionBadgeMinSize == 30)
         #expect(QuestionCardMetrics.selectionBadgeStrokeWidth == 1)
         #expect(QuestionCardMetrics.optionRowBadgePadding == 16)
-        #expect(QuestionCardMetrics.optionRowVerticalPadding == 14)
+        #expect(QuestionCardMetrics.optionRowVerticalPadding == 16)
         #expect(QuestionCardMetrics.optionDetailSize == 11)
         #expect(QuestionCardMetrics.optionDetailLineHeight == 17)
         #expect(QuestionCardMetrics.optionRowPlainPadding == 4)

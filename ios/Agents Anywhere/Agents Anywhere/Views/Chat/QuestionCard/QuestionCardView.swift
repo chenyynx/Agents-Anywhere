@@ -90,6 +90,13 @@ struct QuestionCardView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Only drawn subviews hit-test by default, so a drag that started on
+        // a transparent gap inside the card (row spacing, padding, bare
+        // areas next to the buttons) fell through to the collection view
+        // behind and scrolled the transcript with it (pp 2026-11-20). The
+        // whole rounded silhouette belongs to the card.
+        .contentShape(RoundedRectangle(cornerRadius: QuestionCardMetrics.cornerRadius,
+                                       style: .continuous))
         .glassEffect(.regular, in: .rect(cornerRadius: QuestionCardMetrics.cornerRadius))
         // The dock cell clips its bounds; clipping to the card's own shape
         // keeps the glass shadow from painting around it (same reason as

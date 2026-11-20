@@ -151,15 +151,15 @@ struct QuestionCardView: View {
         Button {
             cancel()
         } label: {
-            AppSymbol("xmark", size: 15)
+            CloseXMark()
                 .frame(width: QuestionCardMetrics.closeButtonSize,
                        height: QuestionCardMetrics.closeButtonSize)
                 // Official DismissXButton is a floating Liquid Glass circle
                 // (pp 2026-11-20), same treatment as the other glass chrome.
                 .glassEffect(.regular.interactive(), in: Circle())
-                // Official X is a mid-grey stroke, not the near-black ink of
-                // the text (device, 2026-11-20).
-                .foregroundStyle(secondary)
+                // Official X: ~17 pt ink span with thin near-black strokes
+                // (device crop, 2026-11-20).
+                .foregroundStyle(.primary)
                 .shadow(color: .black.opacity(QuestionCardMetrics.closeButtonShadowOpacity),
                         radius: QuestionCardMetrics.closeButtonShadowRadius,
                         y: QuestionCardMetrics.closeButtonShadowY)
@@ -337,10 +337,11 @@ struct QuestionCardView: View {
                     primaryButton
                 }
             }
-            // Official buttons are two ~110 pt capsules centred in the card,
-            // not a full-width row (measured on device, 2026-11-20).
+            // Official buttons are two ~110 pt capsules pushed to the
+            // trailing side of the content, not centred (device, 2026-11-20).
             .frame(maxWidth: QuestionCardMetrics.submitRowMaxWidth)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, QuestionCardMetrics.submitRowTrailingInset)
         }
     }
 
@@ -485,6 +486,21 @@ struct QuestionCardView: View {
     private func cancel() {
         guard let action = cancelAction else { return }
         Task { await chat.respond(notice: item, action: action) }
+    }
+}
+
+/// The official close glyph: two thin round-capped strokes, ~17 pt across.
+private struct CloseXMark: View {
+    private let span: CGFloat = 17
+    private let stroke: CGFloat = 1.2
+
+    var body: some View {
+        ZStack {
+            Capsule().frame(width: span, height: stroke).rotationEffect(.degrees(45))
+            Capsule().frame(width: span, height: stroke).rotationEffect(.degrees(-45))
+        }
+        .frame(width: span, height: span)
+        .accessibilityHidden(true)
     }
 }
 

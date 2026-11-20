@@ -48,6 +48,7 @@ import Testing
         #expect(QuestionCardMetrics.optionDividerInset == 24)
         #expect(QuestionCardMetrics.submitSpacing == 8)
         #expect(QuestionCardMetrics.submitRowMaxWidth == 232)
+        #expect(QuestionCardMetrics.submitRowTrailingInset == 10)
         #expect(QuestionCardMetrics.inputCornerRadius == 24)
         #expect(QuestionCardMetrics.inputPadding == 12)
         #expect(QuestionCardMetrics.buttonPressedScale == 0.98)

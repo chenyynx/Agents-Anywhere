@@ -50,6 +50,8 @@ nonisolated enum QuestionCardMetrics {
     static let submitSpacing: CGFloat = 8
     /// Two ~110 pt capsules centred in the card (device: 115 / 106 pt).
     static let submitRowMaxWidth: CGFloat = 232
+    /// Official row sits ~10 pt inside the content's trailing edge.
+    static let submitRowTrailingInset: CGFloat = 10
     static let buttonPressedScale: CGFloat = 0.98
     static let buttonDisabledOpacity: Double = 0.75
     /// `ClaudeInlineButtonStyle` stroke = 2 × pixelLength (0.667 pt at 3x).

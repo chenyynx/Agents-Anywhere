@@ -113,7 +113,8 @@ struct QuestionCardView: View {
     private var pagingRow: some View {
         HStack(spacing: QuestionCardMetrics.pagingSpacing) {
             pagingArrow(left: true)
-            Text(verbatim: "\(min(pageIndex + 1, questions.count))/\(questions.count)")
+            // Official copy: 「第1个，共3个」 (device, 2026-11-20).
+            Text(String(localized: "第\(min(pageIndex + 1, questions.count))个，共\(questions.count)个"))
                 .font(QuestionCardTheme.font(size: QuestionCardMetrics.pagingSize,
                                              weight: QuestionCardMetrics.pagingWeight))
                 .lineSpacing(QuestionCardTheme.lineSpacing(
@@ -149,11 +150,13 @@ struct QuestionCardView: View {
         Button {
             cancel()
         } label: {
-            AppSymbol("xmark", size: 13)
+            AppSymbol("xmark", size: 15)
                 .frame(width: QuestionCardMetrics.closeButtonSize,
                        height: QuestionCardMetrics.closeButtonSize)
                 .background(.regularMaterial, in: Circle())
-                .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.closeButtonInk, colorScheme))
+                // Official X is a mid-grey stroke, not the near-black ink of
+                // the text (device, 2026-11-20).
+                .foregroundStyle(secondary)
                 .shadow(color: .black.opacity(QuestionCardMetrics.closeButtonShadowOpacity),
                         radius: QuestionCardMetrics.closeButtonShadowRadius,
                         y: QuestionCardMetrics.closeButtonShadowY)
@@ -196,7 +199,7 @@ struct QuestionCardView: View {
     }
 
     private func page(_ question: NoticeInputQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             if let header = question.header, !header.isEmpty {
                 typography(header,
                            size: QuestionCardMetrics.titleSize,
@@ -241,7 +244,13 @@ struct QuestionCardView: View {
             item.select(option.id, question: question)
         } label: {
             HStack(alignment: .center, spacing: 12) {
-                selectionBadge(selected: selected)
+                // Official unselected rows carry no badge at all
+                // (`QuestionSelectionBadge?`, device 2026-11-20): the filled
+                // blue check appears only on the selected option.
+                if selected {
+                    selectionBadge()
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     typography(option.label,
                                size: QuestionCardMetrics.optionSize,
@@ -257,10 +266,10 @@ struct QuestionCardView: View {
                 }
                 Spacer(minLength: 0)
             }
-            // The card's 24 pt content padding already places the badge on
-            // the official left edge; only the row's vertical padding is
-            // added here.
-            .padding(.vertical, 12)
+            // The card's 24 pt content padding already places the row on the
+            // official left edge; the 16 pt pad is the official row padding
+            // (E) applied vertically.
+            .padding(.vertical, QuestionCardMetrics.optionRowBadgePadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -268,33 +277,22 @@ struct QuestionCardView: View {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
-    private func selectionBadge(selected: Bool) -> some View {
+    private func selectionBadge() -> some View {
         ZStack {
-            if selected {
-                Circle().fill(QuestionCardTheme.color(QuestionCardMetrics.selectedBadge, colorScheme))
-                AnthropiconView(name: "anthropicon.check", size: .medium)
-                    .foregroundStyle(.white)
-            } else {
-                Circle().strokeBorder(
-                    QuestionCardTheme.color(QuestionCardMetrics.unselectedRing, colorScheme),
-                    lineWidth: QuestionCardMetrics.selectionBadgeStrokeWidth)
-            }
+            Circle().fill(QuestionCardTheme.color(QuestionCardMetrics.selectedBadge, colorScheme))
+            AnthropiconView(name: "anthropicon.check", size: .medium)
+                .foregroundStyle(.white)
         }
         .frame(width: QuestionCardMetrics.selectionBadgeMinSize,
                height: QuestionCardMetrics.selectionBadgeMinSize)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: selected)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: true)
     }
 
     private func customInput(_ question: NoticeInputQuestion) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if item.isSkipped(question) {
-                Text(String(localized: "已跳过"))
-                    .font(QuestionCardTheme.font(size: 13, weight: 400))
-                    .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme))
-            }
             if question.allowCustom {
                 NoticeTextInput(value: item.custom[question.id] ?? "",
-                                placeholder: String(localized: "其他回答"),
+                                placeholder: String(localized: "输入您的回答…"),
                                 cornerRadius: QuestionCardMetrics.inputCornerRadius,
                                 textPadding: QuestionCardMetrics.inputPadding,
                                 showsBackground: false,
@@ -307,13 +305,10 @@ struct QuestionCardView: View {
                                     if marked { item.composingFields.insert(editorID) }
                                     else { item.composingFields.remove(editorID) }
                                 })
+                    // The official card draws no visible field chrome: the
+                    // placeholder sits straight on the card surface (device,
+                    // 2026-11-20). Radius/padding stay for the text inset.
                     .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.inputForeground, colorScheme))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: QuestionCardMetrics.inputCornerRadius,
-                                         style: .continuous)
-                            .strokeBorder(QuestionCardTheme.color(QuestionCardMetrics.divider, colorScheme),
-                                          lineWidth: 1 / displayScale)
-                    }
             }
         }
     }
@@ -349,6 +344,7 @@ struct QuestionCardView: View {
                    style: .normal,
                    loading: isSubmitting,
                    disabled: !primaryEnabled,
+                   showsArrow: !isLastPage,
                    action: advance)
     }
 
@@ -356,6 +352,7 @@ struct QuestionCardView: View {
 
     private func cardButton(title: String, style: ButtonStyleRole, loading: Bool,
                             disabled: Bool = false,
+                            showsArrow: Bool = false,
                             action: @escaping () -> Void) -> some View {
         let isSecondary = style == .secondary
         let foreground = isSecondary
@@ -366,13 +363,20 @@ struct QuestionCardView: View {
                 if loading {
                     ProgressView().controlSize(.small).tint(foreground)
                 } else {
-                    Text(title)
-                        .font(QuestionCardTheme.font(size: 15, weight: 500))
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(QuestionCardTheme.font(size: 17, weight: 500))
+                        if showsArrow {
+                            AnthropiconView(name: "anthropicon.caretRight", size: .medium)
+                                .frame(width: 16, height: 16)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             .padding(.horizontal, 16)
+            .frame(minHeight: 54)
             .foregroundStyle(foreground)
             .background {
                 if isSecondary {

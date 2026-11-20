@@ -124,6 +124,30 @@ import Testing
         #expect(item.isVisible)
     }
 
+    @Test func aStaleSnapshotRebuildingTheModelKeepsItCollapsed() throws {
+        let store = SessionNoticeStore()
+        store.update([try inputNotice()], sessionID: "session")
+        let item = try #require(store.notices.first)
+        item.dismissLocally()
+        #expect(!item.isVisible)
+        // A read that predates the submit can drop the model and a later
+        // (older) snapshot rebuild it; the card must stay collapsed.
+        store.update([], sessionID: "session")
+        store.update([try inputNotice()], sessionID: "session")
+        #expect(store.notices.count == 1)
+        #expect(!store.notices[0].isVisible)
+    }
+
+    @Test func aNewerFailedRevisionReopensTheRecreatedCard() throws {
+        let store = SessionNoticeStore()
+        store.update([try inputNotice()], sessionID: "session")
+        store.notices[0].dismissLocally()
+        store.update([], sessionID: "session")
+        store.update([try inputNotice(revision: 2, status: "failed")], sessionID: "session")
+        #expect(store.notices.count == 1)
+        #expect(store.notices[0].isVisible)
+    }
+
     // MARK: - Skip semantics
 
     @Test func theSkipFlagIsReadFromTheUiSchema() throws {

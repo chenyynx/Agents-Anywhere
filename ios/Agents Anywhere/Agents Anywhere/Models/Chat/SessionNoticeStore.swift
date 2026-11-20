@@ -22,6 +22,9 @@ final class SessionNoticeModel: Identifiable {
     /// read as a pause before the collapse (pp 2026-11-20). A failed response
     /// clears it, so the card returns carrying the error.
     private(set) var locallyDismissed = false
+    /// The notice revision the dismissal was made against; the store keeps it
+    /// so a model rebuilt from a stale snapshot stays collapsed.
+    private(set) var dismissedRevision: Int?
     @ObservationIgnored private var submittedRevision = 0
 
     init(_ notice: V2RuntimeNotice) {
@@ -141,7 +144,17 @@ final class SessionNoticeModel: Identifiable {
     /// `begin` because only the surfaces that stand in for the composer (the
     /// question card) hand over the screen; anything that fails to write puts
     /// the card back below.
-    func dismissLocally() { locallyDismissed = true }
+    func dismissLocally() {
+        locallyDismissed = true
+        dismissedRevision = notice.revision
+    }
+
+    /// Re-apply a dismissal recorded by the store to a model rebuilt from a
+    /// snapshot that was taken before (or during) the submit.
+    func restoreDismissal(revision: Int) {
+        locallyDismissed = true
+        dismissedRevision = revision
+    }
     func fail(_ failure: Error) {
         if [.resolved, .closed, .expired, .cancelled].contains(notice.status) { return }
         if [.responding, .responseAccepted, .resolving].contains(notice.status) { submission = .accepted; return }
@@ -166,11 +179,35 @@ final class SessionNoticeStore {
     /// a second copy of the `isVisible` filter.
     var visibleNotices: [SessionNoticeModel] { notices.filter(\.isVisible) }
     var hasDraft: Bool { notices.contains { $0.hasDraft } }
+    /// Notice ids the user collapsed optimistically, with the revision they
+    /// were dismissed at. A list update can drop a model, and a stale read
+    /// that still holds the notice then rebuilds it with no memory — the card
+    /// flashed back for a frame (pp 2026-11-21). The map survives that gap.
+    private var dismissed: [String: Int] = [:]
     func update(_ values: [V2RuntimeNotice], sessionID: String) {
+        for model in notices where model.locallyDismissed {
+            if let revision = model.dismissedRevision { dismissed[model.id] = revision }
+        }
         let existing = Dictionary(uniqueKeysWithValues: notices.map { ($0.id, $0) })
         let updated = values.filter { $0.sessionId == sessionID }.map { value in
             let model = existing[value.id] ?? SessionNoticeModel(value)
+            if let revision = dismissed[value.id],
+               value.status != .failed || value.revision <= revision {
+                if existing[value.id] == nil {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notice.dismiss.restored",
+                        sessionID: sessionID,
+                        detail: [
+                            "notice": value.id,
+                            "revision": String(value.revision),
+                            "status": value.status.rawValue,
+                        ],
+                        dedupe: false)
+                }
+                model.restoreDismissal(revision: revision)
+            }
             model.update(value)
+            if model.isVisible { dismissed[value.id] = nil }
             return model
         }
         if notices.map(\.id) != updated.map(\.id) { notices = updated }

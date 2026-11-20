@@ -26,11 +26,7 @@ struct QuestionCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pageID: String?
     @State private var pageIndex = 0
-    /// Measured height of the tallest page; the horizontal pager must hug it
-    /// (a flexible ScrollView would otherwise claim the whole screen).
-    @State private var pageHeight: CGFloat = 0
 
     // MARK: - Derived state
 
@@ -64,17 +60,32 @@ struct QuestionCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            topRow
+            // Official flow: the paging row (multi-question only) is the
+            // first row; the close button FLOATS at the top-trailing corner
+            // and never consumes flow height (pp 2026-11-20). That is why a
+            // single-question card's question starts at the very top.
+            if questions.count > 1 {
+                pagingRow
+                    .padding(.leading, QuestionCardMetrics.pagingLeading)
+            }
             // The official card does not scroll vertically: its
             // `CappedCardScrollingRow` is the horizontal pager itself. The
             // card simply sizes to its content, so every question's options
-            // and the custom-answer field stay visible (pp 2026-11-20).
+            // and the custom-answer field stay visible.
             pager
             statusLine
             submitRow
         }
         .padding(.horizontal, QuestionCardMetrics.contentPaddingHorizontal)
         .padding(.vertical, QuestionCardMetrics.contentPadding)
+        // The X floats above the card's top-trailing corner (outside the
+        // content padding), like the official floating dismiss button.
+        .overlay(alignment: .topTrailing) {
+            if cancelAction != nil {
+                dismissButton
+                    .padding(QuestionCardMetrics.closeButtonInset)
+            }
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular, in: .rect(cornerRadius: QuestionCardMetrics.cornerRadius))
         // The dock cell clips its bounds; clipping to the card's own shape
@@ -87,33 +98,15 @@ struct QuestionCardView: View {
         .shadow(color: .black.opacity(QuestionCardMetrics.cardShadowOpacity),
                 radius: QuestionCardMetrics.cardShadowRadius,
                 y: QuestionCardMetrics.cardShadowY)
-        .onAppear {
-            if pageID == nil { pageID = questions.first?.id }
-        }
-        .onChange(of: questions.map(\.id)) { _, ids in
-            if let pageID, ids.contains(pageID) { return }
-            pageIndex = 0
-            pageID = ids.first
+        .onChange(of: questions.map(\.id)) { _, _ in
+            pageIndex = min(pageIndex, max(0, questions.count - 1))
         }
     }
 
     // MARK: - Top row (paging + dismiss)
 
-    private var topRow: some View {
-        HStack(spacing: QuestionCardMetrics.pagingSpacing) {
-            if questions.count > 1 {
-                pagingRow
-            }
-            Spacer(minLength: 0)
-            if cancelAction != nil {
-                dismissButton
-            }
-        }
-        .padding(.leading, QuestionCardMetrics.pagingLeading)
-    }
-
     private var pagingRow: some View {
-        HStack(spacing: QuestionCardMetrics.pagingSpacing) {
+        HStack(alignment: .top, spacing: QuestionCardMetrics.pagingSpacing) {
             pagingArrow(left: true)
             // Official copy: 「第1个，共3个」 (device, 2026-11-20).
             Text(String(localized: "第\(min(pageIndex + 1, questions.count))个，共\(questions.count)个"))
@@ -154,15 +147,12 @@ struct QuestionCardView: View {
         Button {
             cancel()
         } label: {
-            CloseXMark()
+            CloseXMark(color: QuestionCardTheme.color(QuestionCardMetrics.closeButtonInk, colorScheme))
                 .frame(width: QuestionCardMetrics.closeButtonSize,
                        height: QuestionCardMetrics.closeButtonSize)
                 // Official DismissXButton is a floating Liquid Glass circle
                 // (pp 2026-11-20), same treatment as the other glass chrome.
                 .glassEffect(.regular.interactive(), in: Circle())
-                // Official X: ~17 pt ink span with thin near-black strokes
-                // (device crop, 2026-11-20).
-                .foregroundStyle(.primary)
                 .shadow(color: .black.opacity(QuestionCardMetrics.closeButtonShadowOpacity),
                         radius: QuestionCardMetrics.closeButtonShadowRadius,
                         y: QuestionCardMetrics.closeButtonShadowY)
@@ -176,65 +166,60 @@ struct QuestionCardView: View {
 
     // MARK: - Pager
 
+    /// One page at a time, sized by its own content: the official card hugs
+    /// its content and top-aligns it. A ScrollView here measured heights
+    /// unreliably and left a big blank band above the question (b1395), so the
+    /// pager is a deterministic ZStack; paging goes through the carets.
     private var pager: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: QuestionCardMetrics.pagingSpacing) {
-                ForEach(questions) { question in
-                    page(question)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .containerRelativeFrame(.horizontal, count: 1,
-                                                spacing: QuestionCardMetrics.pagingSpacing)
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: QuestionCardPageHeightKey.self,
-                                                       value: proxy.size.height)
-                            }
-                        }
-                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            content
-                                .blur(radius: abs(phase.value) * QuestionCardMetrics.pageTransitionBlurRadius,
-                                      opaque: false)
-                                .opacity(1 - min(abs(phase.value), 1))
-                                .scaleEffect(1 - min(abs(phase.value), 1) * (1 - QuestionCardMetrics.pageTransitionScale))
-                        }
-                        .id(question.id)
-                }
+        ZStack(alignment: .topLeading) {
+            if let question = currentQuestion {
+                page(question)
+                    .id(question.id)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .top)))
             }
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $pageID)
-        .scrollIndicators(.hidden)
-        .frame(height: pageHeight > 0 ? pageHeight : nil)
-        .onPreferenceChange(QuestionCardPageHeightKey.self) { height in
-            if height > 0, abs(height - pageHeight) > 0.5 { pageHeight = height }
-        }
-        .onChange(of: pageID) { _, id in
-            guard let id, let index = questions.firstIndex(where: { $0.id == id }) else { return }
-            pageIndex = index
-        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: pageIndex)
     }
 
     private func page(_ question: NoticeInputQuestion) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let header = question.header, !header.isEmpty {
-                typography(header,
-                           size: QuestionCardMetrics.titleSize,
-                           lineHeight: QuestionCardMetrics.titleLineHeight,
-                           weight: QuestionCardMetrics.titleWeight)
-                    // R5: the card title is primary ink, not the secondary
-                    // token used by descriptions and the paging row.
+            // Swipe left/right here to change pages; the custom-answer field
+            // stays outside so the gesture never fights the text editor.
+            VStack(alignment: .leading, spacing: 16) {
+                if let header = question.header, !header.isEmpty {
+                    typography(header,
+                               size: QuestionCardMetrics.titleSize,
+                               lineHeight: QuestionCardMetrics.titleLineHeight,
+                               weight: QuestionCardMetrics.titleWeight)
+                        // R5: the card title is primary ink, not the
+                        // secondary token used by descriptions/paging.
+                        .foregroundStyle(.primary)
+                }
+                typography(question.prompt,
+                           size: QuestionCardMetrics.questionSize,
+                           lineHeight: QuestionCardMetrics.questionLineHeight,
+                           weight: QuestionCardMetrics.questionWeight)
                     .foregroundStyle(.primary)
+                choices(question)
             }
-            typography(question.prompt,
-                       size: QuestionCardMetrics.questionSize,
-                       lineHeight: QuestionCardMetrics.questionLineHeight,
-                       weight: QuestionCardMetrics.questionWeight)
-                .foregroundStyle(.primary)
-            choices(question)
+            .contentShape(Rectangle())
+            .gesture(pagingDrag)
             customInput(question)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Horizontal swipe → previous/next question (replaces the ScrollView the
+    /// official card used for paging).
+    private var pagingDrag: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let dx = value.translation.width
+                let dy = value.translation.height
+                guard abs(dx) > abs(dy), abs(dx) > 40 else { return }
+                step(dx < 0 ? 1 : -1)
+            }
     }
 
     private func choices(_ question: NoticeInputQuestion) -> some View {
@@ -261,7 +246,7 @@ struct QuestionCardView: View {
             item.select(option.id, question: question)
         } label: {
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 5) {
                     typography(option.label,
                                size: QuestionCardMetrics.optionSize,
                                lineHeight: QuestionCardMetrics.optionLineHeight,
@@ -272,7 +257,7 @@ struct QuestionCardView: View {
                                    size: QuestionCardMetrics.optionDetailSize,
                                    lineHeight: QuestionCardMetrics.optionDetailLineHeight,
                                    weight: 400)
-                            .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme))
+                            .foregroundStyle(detailInk)
                     }
                 }
                 Spacer(minLength: 0)
@@ -301,6 +286,7 @@ struct QuestionCardView: View {
             if question.allowCustom {
                 NoticeTextInput(value: item.custom[question.id] ?? "",
                                 placeholder: String(localized: "输入您的回答…"),
+                                placeholderColor: detailInk,
                                 cornerRadius: QuestionCardMetrics.inputCornerRadius,
                                 // The placeholder aligns with the options'
                                 // left edge on device — no inner padding.
@@ -447,16 +433,17 @@ struct QuestionCardView: View {
         QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme)
     }
 
+    /// Option descriptions and the custom-answer placeholder share this ink.
+    private var detailInk: Color {
+        QuestionCardTheme.color(QuestionCardMetrics.optionDetailInk, colorScheme)
+    }
+
     // MARK: - Actions
 
     private func step(_ delta: Int) {
         let next = pageIndex + delta
         guard questions.indices.contains(next) else { return }
-        if reduceMotion {
-            pageID = questions[next].id
-        } else {
-            withAnimation(.smooth(duration: 0.25)) { pageID = questions[next].id }
-        }
+        pageIndex = next
     }
 
     private func advance() {
@@ -479,9 +466,7 @@ struct QuestionCardView: View {
         // its answer, land on the first question that still needs one.
         if !item.hasValidInput(for: action),
            let index = questions.firstIndex(where: { !item.hasAnswer($0) }) {
-            let target = questions[index].id
-            if reduceMotion { pageID = target }
-            else { withAnimation(.smooth(duration: 0.25)) { pageID = target } }
+            pageIndex = index
             return
         }
         Task { await chat.respond(notice: item, action: action) }
@@ -493,22 +478,18 @@ struct QuestionCardView: View {
     }
 }
 
-private struct QuestionCardPageHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-/// The official close glyph: two thin round-capped strokes, ~17 pt across.
+/// The official close glyph: two thin round-capped strokes (~12 pt ink,
+/// near-black). The colour is baked into the shapes — the surrounding glass
+/// vibrancy otherwise washes a foreground style down to light grey.
 private struct CloseXMark: View {
-    private let span: CGFloat = 17
-    private let stroke: CGFloat = 1.2
+    let color: Color
+    private let span: CGFloat = 13
+    private let stroke: CGFloat = 1.1
 
     var body: some View {
         ZStack {
-            Capsule().frame(width: span, height: stroke).rotationEffect(.degrees(45))
-            Capsule().frame(width: span, height: stroke).rotationEffect(.degrees(-45))
+            Capsule().fill(color).frame(width: span, height: stroke).rotationEffect(.degrees(45))
+            Capsule().fill(color).frame(width: span, height: stroke).rotationEffect(.degrees(-45))
         }
         .frame(width: span, height: span)
         .accessibilityHidden(true)

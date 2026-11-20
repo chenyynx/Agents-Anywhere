@@ -435,6 +435,16 @@ nonisolated enum TimelineChatGrouping {
             }
 
             if isReasoning(item) || isToolRow(item) {
+                // An answered AskUserQuestion leaves the step run and draws
+                // the official answered card in its own row (pp 2026-11-20).
+                // Pending questions stay in the run as the 询问 step.
+                if isToolRow(item),
+                   CodeToolCall.wireName(for: item) == "AskUserQuestion",
+                   QuestionAnsweredModel(item: item) != nil {
+                    flushAll()
+                    units.append(.standalone(rowID: item.id))
+                    continue
+                }
                 flushMessage()
                 stepItems.append(item)
                 continue

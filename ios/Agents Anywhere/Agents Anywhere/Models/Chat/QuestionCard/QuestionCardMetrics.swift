@@ -38,7 +38,7 @@ nonisolated enum QuestionCardMetrics {
     /// Row top/bottom padding; the device read of pp's official app shows
     /// a 67 pt row pitch (R6) — 12 pt vertical pad, not the 16 pt all-sides
     /// figure.
-    static let optionRowVerticalPadding: CGFloat = 14
+    static let optionRowVerticalPadding: CGFloat = 16
     static let optionRowPlainPadding: CGFloat = 4
     static let selectionBadgeMinSize: CGFloat = 30
     static let selectionBadgeStrokeWidth: CGFloat = 1
@@ -61,6 +61,8 @@ nonisolated enum QuestionCardMetrics {
     static let inputPadding: CGFloat = 12
 
     static let closeButtonSize: CGFloat = 44
+    /// The floating close button's inset from the card's top-trailing corner.
+    static let closeButtonInset: CGFloat = 12
     /// Card silhouette shadow (same elevation preset as the official
     /// raised card: black@0.08 / r4 / y2).
     static let cardShadowOpacity: Double = 0.08
@@ -145,6 +147,10 @@ nonisolated enum QuestionCardMetrics {
     /// The card's secondary ink (answers-card header/question, paging row).
     static let secondary = Pair(light: RGB(0, 0, 0, 0.6),
                                 dark: RGB(0.765, 0.761, 0.718))
+    /// Option descriptions + the custom-answer placeholder: the device reads
+    /// `sRGB(0.322, 0.318, 0.306)` on pp's app (≈ #52514E), not black@0.6.
+    static let optionDetailInk = Pair(light: RGB(0.322, 0.318, 0.306),
+                                      dark: RGB(0.765, 0.761, 0.718))
     /// The selected option's badge fill.
     static let selectedBadge = Pair(light: RGB(0.165, 0.471, 0.839),
                                     dark: RGB(0.145, 0.490, 0.878))

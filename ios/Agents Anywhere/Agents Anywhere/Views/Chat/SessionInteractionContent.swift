@@ -166,6 +166,7 @@ struct NoticeTextInput: View {
     var cornerRadius: CGFloat = 12
     var textPadding: CGFloat = 10
     var showsBackground = true
+    var placeholderColor: Color? = nil
     var onFocus: () -> Void = {}
     var onEditingEnded: (String) -> Void = { _ in }
     let onChange: (String, Bool, String) -> Void
@@ -175,7 +176,11 @@ struct NoticeTextInput: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if draft.text.isEmpty { Text(placeholder).foregroundStyle(.secondary).allowsHitTesting(false) }
+            if draft.text.isEmpty {
+                Text(placeholder)
+                    .foregroundStyle(placeholderColor ?? Color.secondary)
+                    .allowsHitTesting(false)
+            }
             NativeComposerEditor(draft: draft, controller: editor, maximumHeight: 120,
                 onCommandSend: {}, onTextChange: { text, marked in onChange(text, marked, editorID) })
                 .frame(minHeight: 44)

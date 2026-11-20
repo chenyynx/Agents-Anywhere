@@ -183,7 +183,11 @@ struct NoticeTextInput: View {
             }
             NativeComposerEditor(draft: draft, controller: editor, maximumHeight: 120,
                 onCommandSend: {}, onTextChange: { text, marked in onChange(text, marked, editorID) })
-                .frame(minHeight: 44)
+                // `.frame(minHeight:)` centres its content by default: the
+                // empty editor (one 20.3 pt line) sat 12 pt below the top and
+                // the caret no longer lined up with the placeholder text
+                // (pp 2026-11-20). Pin the editor to the top instead.
+                .frame(minHeight: 44, alignment: .top)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .font(.body)

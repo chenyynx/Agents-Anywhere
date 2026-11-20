@@ -261,6 +261,11 @@ class ClaudeMessageProjector:
         # view drops it; without this a sync would republish a live Read row
         # without its truncation footnote (2026-11-02).
         self._tool_result_metadata = dict(tool_result_metadata or {})
+        # Live answers the connector already knows (AskUserQuestion): the
+        # interaction controller records the structured result when the user
+        # answers, because the SDK's live tool_result frame carries no
+        # ``toolUseResult``. Same shape as the transcript's map.
+        self._live_tool_result_metadata: dict[str, Mapping[str, Any]] = {}
         # L2 subagent progress: live state of every Agent call card this
         # projector has minted, keyed by the card's stable item id. The card
         # carries the wire-projected content and the task-event overlay
@@ -280,6 +285,22 @@ class ClaudeMessageProjector:
         # next frame of the same task takes the hot in-process path again.
         self._task_roots: dict[str, set[str]] = {}
         self._send_to_task: dict[str, str] = {}
+
+    def note_tool_result_metadata(
+        self,
+        tool_use_id: str,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Record a live tool result the SDK frame does not carry.
+
+        Today only AskUserQuestion uses this: the interaction controller knows
+        the structured ``{questions, answers}`` when the user answers, and the
+        completed row (and the answered card it feeds) must not depend on a
+        later history rebuild to get it.
+        """
+
+        if tool_use_id and metadata:
+            self._live_tool_result_metadata[tool_use_id] = dict(metadata)
 
     def message_item(
         self,
@@ -418,8 +439,13 @@ class ClaudeMessageProjector:
                 # The SDK history surface reconstructs SessionMessage without
                 # the transcript's toolUseResult; the raw scan keeps the Read
                 # `file` metadata so a sync rebuild cannot strip the flag the
-                # live row published (2026-11-02).
-                raw_metadata = self._tool_result_metadata.get(block.tool_use_id)
+                # live row published (2026-11-02). Live input requests answer
+                # through the connector, so their structured result is noted
+                # here instead (AskUserQuestion answers, 2026-11-20).
+                raw_metadata = (
+                    self._tool_result_metadata.get(block.tool_use_id)
+                    or self._live_tool_result_metadata.get(block.tool_use_id)
+                )
                 if raw_metadata is not None:
                     block = replace(block, tool_result_metadata=raw_metadata)
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):

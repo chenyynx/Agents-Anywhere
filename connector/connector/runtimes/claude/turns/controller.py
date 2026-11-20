@@ -67,6 +67,7 @@ class ClaudeTurnController:
             notices=self.notices,
             notifications=self.notifications,
             has_active_turn=self.has_active_turn,
+            tool_result_metadata_sink=self.timeline.note_tool_result_metadata,
         )
         self.runner = ClaudeTurnRunner(
             config=self.config,

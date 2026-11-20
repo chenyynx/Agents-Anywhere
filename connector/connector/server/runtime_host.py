@@ -526,6 +526,11 @@ def _timeline_source_payload(item: RuntimeTimelineItem) -> dict[str, Any]:
             # (pp 2026-11-19); this whitelist is the only way it leaves the
             # connector.
             "contentBlockIndex": source.get("contentBlockIndex"),
+            # Where the index came from: only ``message`` (read from the
+            # message's assembled content array) may drive the server's
+            # in-message repair; live/derived declarations carry nothing here
+            # (pp 2026-11-20).
+            "contentBlockIndexSource": source.get("contentBlockIndexSource"),
         }
     )
 

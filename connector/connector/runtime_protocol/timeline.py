@@ -98,6 +98,12 @@ class TimelineSource:
     # block order when every sibling carries this index and falls back to the
     # legacy RBT order otherwise (pp 2026-11-19).
     content_block_index: int | None = None
+    #: Where ``content_block_index`` came from. ``"message"`` means it was read
+    #: from the message's assembled ``content`` array (the CLI's request
+    #: ledger) — the only source the server may reorder stored rows by. Left
+    #: None for live/derived declarations so the server never trusts them
+    #: (pp 2026-11-20).
+    content_block_index_source: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_mapping(self) -> Mapping[str, Any]:
@@ -124,6 +130,8 @@ class TimelineSource:
             payload["blockIndex"] = self.block_index
         if self.content_block_index is not None:
             payload["contentBlockIndex"] = self.content_block_index
+        if self.content_block_index_source is not None:
+            payload["contentBlockIndexSource"] = self.content_block_index_source
         payload.update(self.metadata)
         return payload
 

@@ -544,6 +544,13 @@ class ClaudeAgentCallCard:
     #: server back to RBT — or flip a correctly ordered group back
     #: (pp 2026-11-19). None when the dispatch frame named no absolute index.
     content_block_index: int | None = None
+    #: Where ``content_block_index`` came from: ``"message"`` when the
+    #: dispatch projection read it from the message's assembled content array.
+    #: Carried so every fold republishes the declaration WHOLESALE — carrying
+    #: only the number and dropping the source would hand the server a
+    #: legacy-tagged index and defeat the very ordering the index exists for
+    #: (pp 2026-11-20). None when the frame declared no message-sourced index.
+    content_block_index_source: str | None = None
     #: Wall-clock seconds when this card was first seen (its dispatch frame
     #: landed). The wire frames carry no timestamps, so this is the live path's
     #: only launch time — the input the never-started grace needs when a task

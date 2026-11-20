@@ -86,10 +86,10 @@ import Testing
     }
 
     /// While a panel covers the transcript, the presentation keeps every
-    /// delta but publishes on the legacy batch cadence: a per-delta flush
-    /// re-laid out the covered streaming reply and cost 7–11 hitches a second
-    /// with the outline panel up (pp 2026-11-21, b1408).
-    @Test @MainActor func coveredTranscriptPublishesOnTheBatchCadence() throws {
+    /// delta but publishes at most once a second: even the 0.26 s batch left
+    /// 5–6 hitches a second while the agent thought, with the outline panel
+    /// up (pp 2026-11-21, b1409).
+    @Test @MainActor func coveredTranscriptPublishesOnceASecond() throws {
         let presentation = SessionTimelinePresentation()
         let first = try item("message", status: "running", content: ["text": "a"])
         presentation.stage([first], animate: false)
@@ -100,7 +100,7 @@ import Testing
         let second = try item("message", status: "running", content: ["text": "ab"])
         presentation.stage([second], animate: false)
         presentation.flush(now: 20)
-        #expect(presentation.nextBatchAt > 20)
+        #expect(presentation.nextBatchAt >= 20.9)
 
         presentation.setBackgroundCadence(false)
         let third = try item("message", status: "running", content: ["text": "abc"])

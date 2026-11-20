@@ -100,10 +100,11 @@ struct ConversationOutlineSheet: View {
                     cached: cachedItems.count
                 )
                 // The transcript behind this panel keeps every delta but
-                // publishes on the batch cadence: a per-delta flush re-laid out
-                // the covered streaming reply and cost 7–11 hitches a second
-                // (pp 2026-11-21, b1408). Closing flushes once so the chat is
-                // current in that same turn.
+                // publishes at most once a second: even the 0.26 s batch left
+                // 5–6 hitches a second while the agent thought, because every
+                // publish re-plans the whole window (pp 2026-11-21, b1409).
+                // Closing flushes once so the chat is current in that same
+                // turn.
                 chat.timeline.setBackgroundCadence(true)
                 defer {
                     chat.timeline.setBackgroundCadence(false)

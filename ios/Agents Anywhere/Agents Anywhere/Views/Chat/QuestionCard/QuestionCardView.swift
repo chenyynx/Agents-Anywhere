@@ -28,6 +28,9 @@ struct QuestionCardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pageID: String?
     @State private var pageIndex = 0
+    /// Measured height of the tallest page; the horizontal pager must hug it
+    /// (a flexible ScrollView would otherwise claim the whole screen).
+    @State private var pageHeight: CGFloat = 0
 
     // MARK: - Derived state
 
@@ -175,11 +178,18 @@ struct QuestionCardView: View {
 
     private var pager: some View {
         ScrollView(.horizontal) {
-            LazyHStack(spacing: QuestionCardMetrics.pagingSpacing) {
+            HStack(spacing: QuestionCardMetrics.pagingSpacing) {
                 ForEach(questions) { question in
                     page(question)
+                        .fixedSize(horizontal: false, vertical: true)
                         .containerRelativeFrame(.horizontal, count: 1,
                                                 spacing: QuestionCardMetrics.pagingSpacing)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: QuestionCardPageHeightKey.self,
+                                                       value: proxy.size.height)
+                            }
+                        }
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
                                 .blur(radius: abs(phase.value) * QuestionCardMetrics.pageTransitionBlurRadius,
@@ -195,6 +205,10 @@ struct QuestionCardView: View {
         .scrollTargetBehavior(.paging)
         .scrollPosition(id: $pageID)
         .scrollIndicators(.hidden)
+        .frame(height: pageHeight > 0 ? pageHeight : nil)
+        .onPreferenceChange(QuestionCardPageHeightKey.self) { height in
+            if height > 0, abs(height - pageHeight) > 0.5 { pageHeight = height }
+        }
         .onChange(of: pageID) { _, id in
             guard let id, let index = questions.firstIndex(where: { $0.id == id }) else { return }
             pageIndex = index
@@ -247,13 +261,6 @@ struct QuestionCardView: View {
             item.select(option.id, question: question)
         } label: {
             HStack(alignment: .center, spacing: 12) {
-                // Official unselected rows carry no badge at all
-                // (`QuestionSelectionBadge?`, device 2026-11-20): the filled
-                // blue check appears only on the selected option.
-                if selected {
-                    selectionBadge()
-                        .transition(.scale(scale: 0.6).combined(with: .opacity))
-                }
                 VStack(alignment: .leading, spacing: 2) {
                     typography(option.label,
                                size: QuestionCardMetrics.optionSize,
@@ -269,6 +276,14 @@ struct QuestionCardView: View {
                     }
                 }
                 Spacer(minLength: 0)
+                // Selected: a check on the trailing side (pp 2026-11-20) —
+                // no circle, no leading badge.
+                if selected {
+                    AppSymbol("checkmark", size: 16)
+                        .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.selectedBadge,
+                                                                 colorScheme))
+                        .transition(.opacity)
+                }
             }
             // The card's 24 pt content padding already places the row on the
             // official left edge; the vertical pad matches the official 67 pt
@@ -279,17 +294,6 @@ struct QuestionCardView: View {
         .buttonStyle(.plain)
         .disabled(responding)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-    }
-
-    private func selectionBadge() -> some View {
-        ZStack {
-            Circle().fill(QuestionCardTheme.color(QuestionCardMetrics.selectedBadge, colorScheme))
-            AnthropiconView(name: "anthropicon.check", size: .medium)
-                .foregroundStyle(.white)
-        }
-        .frame(width: QuestionCardMetrics.selectionBadgeMinSize,
-               height: QuestionCardMetrics.selectionBadgeMinSize)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: true)
     }
 
     private func customInput(_ question: NoticeInputQuestion) -> some View {
@@ -486,6 +490,13 @@ struct QuestionCardView: View {
     private func cancel() {
         guard let action = cancelAction else { return }
         Task { await chat.respond(notice: item, action: action) }
+    }
+}
+
+private struct QuestionCardPageHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

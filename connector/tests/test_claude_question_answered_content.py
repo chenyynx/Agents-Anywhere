@@ -91,3 +91,87 @@ def test_skipped_question_is_absent_from_the_answers_map() -> None:
 
     assert mapping["answers"] == {"How should I format the output?": "Summary"}
     assert "Which sections should I include?" not in mapping["answers"]
+
+
+def test_live_projection_carries_the_answers_noted_by_the_interaction() -> None:
+    """The live SDK frame drops ``toolUseResult``; the interaction controller
+    records the structured result instead, and the completed row must use it
+    immediately (no history rebuild needed) so the answered card can draw.
+    """
+
+    from claude_agent_sdk._internal.message_parser import parse_message
+
+    from connector.runtimes.claude.domain.session import ClaudeSession
+    from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
+
+    def frame(payload: dict[str, object]) -> object:
+        message = parse_message(payload)
+        assert message is not None
+        return message
+
+    projector = ClaudeMessageProjector()
+    projector.note_tool_result_metadata(
+        "ask-live",
+        {
+            "questions": QUESTIONS,
+            "answers": {"How should I format the output?": "Summary"},
+        },
+    )
+    session = ClaudeSession(session_id="sess-live", external_session_id="claude-live")
+    projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=frame(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "role": "assistant",
+                    "model": "deepseek-v4.1-flash",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "ask-live",
+                            "name": "AskUserQuestion",
+                            "input": {"questions": QUESTIONS},
+                        }
+                    ],
+                },
+                "parent_tool_use_id": None,
+                "session_id": "claude-live",
+                "uuid": "assistant-ask-live",
+            }
+        ),
+    )
+    rows = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=frame(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "ask-live",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Your questions have been answered: ...",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "parent_tool_use_id": None,
+                "session_id": "claude-live",
+                "uuid": "result-ask-live",
+            }
+        ),
+    )
+
+    assert len(rows) == 1
+    content = dict(rows[0].content)
+    assert content["kind"] == "input_request"
+    assert content["answers"] == {"How should I format the output?": "Summary"}

@@ -36,6 +36,10 @@ class ClaudeInteractionController:
     notices: ClaudeNoticeRegistry
     notifications: ClaudeNotificationProjector
     has_active_turn: Callable[[str], bool]
+    # Live structured results the SDK's tool_result frame does not carry
+    # (AskUserQuestion answers): forwarded to the timeline projector so the
+    # completed row has them without waiting for a history rebuild.
+    tool_result_metadata_sink: Callable[[str, Mapping[str, Any]], None] | None = None
     _interaction_futures: dict[str, asyncio.Future[ClaudeApprovalDecision]] = field(
         default_factory=dict,
         init=False,
@@ -84,6 +88,22 @@ class ClaudeInteractionController:
                     ok=False,
                     code="claude_input_invalid",
                     message=str(exc),
+                )
+            tool_use_id = notice.context.get("toolUseId")
+            if (
+                isinstance(tool_use_id, str)
+                and tool_use_id
+                and self.tool_result_metadata_sink is not None
+            ):
+                # Hand the structured result to the projector now: the SDK's
+                # live result frame drops toolUseResult, so the answered card
+                # would otherwise only appear after a history rebuild.
+                self.tool_result_metadata_sink(
+                    tool_use_id,
+                    {
+                        "questions": updated_input.get("questions"),
+                        "answers": updated_input.get("answers"),
+                    },
                 )
             decision = ClaudeApprovalDecision(
                 allowed=True,

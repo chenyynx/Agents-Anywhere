@@ -169,9 +169,11 @@ struct CodeStepGroupRowView: View {
             return step.liveThinkingLine
                 ?? String(localized: "thinking_status_thinking")
         case let .tool(call):
-            return call.kind == .question
-                ? String(localized: "正在提问")
-                : CodeToolLabels.label(for: [call], cwd: cwd)
+            if call.kind == .question { return String(localized: "正在提问") }
+            // Only the width/offset identity — the styled Text still comes
+            // from `liveText(for:)`; this string never reaches the screen.
+            let label = CodeToolLabels.label(for: [call], cwd: cwd)
+            return [label.verb, label.target].compactMap { $0 }.joined(separator: " ")
         }
     }
 

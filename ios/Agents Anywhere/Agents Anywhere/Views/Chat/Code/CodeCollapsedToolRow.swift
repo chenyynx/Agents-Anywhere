@@ -150,6 +150,10 @@ struct CodeCollapsedStepsRow: View {
     var voiceControlName: String?
     var spokenLabel: String?
     var isRunning: Bool
+    /// What the row is currently showing, for the paced cross-fade below.
+    /// Empty disables it — every row except the chat's live tail (a static
+    /// label must not pay for a per-tick sample).
+    var textIdentity: String = ""
     var action: () -> Void
 
     /// [E] R28 §2.1 — row text unscaled line height 21, relative `.body`.
@@ -163,37 +167,48 @@ struct CodeCollapsedStepsRow: View {
             HStack(alignment: .center) {
                 leadingSlot
 
-                if !isTextHidden {
-                    text
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        // The official row has no minHeight; the line box is
-                        // the 21 pt unscaled line height (V3). With an icon
-                        // or caret the 24 pt slot wins, giving 36 pt.
-                        .frame(minHeight: textLineHeight, alignment: .leading)
-                        .layoutPriority(1)
-                        .modifier(CodeCollapsedRowShimmer(active: isRunning))
+                // The official swaps a row's shown content as one group — the
+                // label, the trailing icon and the chevron — with an opacity
+                // transition and a spring (`CompactTimelineGroup.PacedRow` =
+                // `ZStack{ IDView<ShownView.transition, Shown?> }` paced by a
+                // `ContinuousClock`; EVIDENCE, round29). Keeping them in one
+                // paced group is what makes the chevron animate with the
+                // summary (pp 2026-11-21).
+                HStack(alignment: .center, spacing: 8) {
+                    if !isTextHidden {
+                        text
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            // The official row has no minHeight; the line box
+                            // is the 21 pt unscaled line height (V3). With an
+                            // icon or caret the 24 pt slot wins, giving 36 pt.
+                            .frame(minHeight: textLineHeight, alignment: .leading)
+                            .layoutPriority(1)
+                            .modifier(CodeCollapsedRowShimmer(active: isRunning))
 
-                    if let trailingIcon {
-                        // Small: the official reference row keeps the clock
-                        // under the label's line height (pp 2026-11-16).
-                        AnthropiconView(name: trailingIcon, size: .small)
-                            .foregroundStyle(CodePageTheme.text400Color
-                                .resolved(for: colorScheme))
-                            .accessibilityHidden(true)
+                        if let trailingIcon {
+                            // Small: the official reference row keeps the clock
+                            // under the label's line height (pp 2026-11-16).
+                            AnthropiconView(name: trailingIcon, size: .small)
+                                .foregroundStyle(CodePageTheme.text400Color
+                                    .resolved(for: colorScheme))
+                                .accessibilityHidden(true)
+                        }
+                    }
+
+                    CodeTimelineStatusGlyph(status: status,
+                                            failureExtent: failureExtent)
+
+                    if let diffIndicator, diffIndicator.hasCounts {
+                        CodeDiffIndicator(stat: diffIndicator)
+                    }
+
+                    if hasDetails {
+                        CodeRowCaret()
                     }
                 }
-
-                CodeTimelineStatusGlyph(status: status,
-                                        failureExtent: failureExtent)
-
-                if let diffIndicator, diffIndicator.hasCounts {
-                    CodeDiffIndicator(stat: diffIndicator)
-                }
-
-                if hasDetails {
-                    CodeRowCaret()
-                }
+                .pacedRowContent(identity: textIdentity)
+                .layoutPriority(1)
 
                 // Official body ends in a `Spacer`, so the row's tap target
                 // fills the transcript width while the content stays leading.
@@ -531,6 +546,69 @@ struct CodeCollapsedRowShimmer: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+/// The official swaps a row's shown content with an opacity transition and a
+/// spring: `CompactTimelineGroup.PacedRow` is
+/// `ZStack{ IDView<ShownView.transition, Shown?> }` with a `ContinuousClock`
+/// pacing (EVIDENCE, round29 §1). This reproduces the visible half — at most
+/// one cross-fade per `swapInterval`, so a streaming label flips like the
+/// official row instead of strobing on every token.
+///
+/// The spring values were not recovered (round29 addendum: UNKNOWN); 0.3 s /
+/// no bounce is an inference chosen to match the pacing, not a decoded value.
+private struct CodePacedRowContent: ViewModifier {
+    let identity: String
+
+    private static let swapInterval: TimeInterval = 0.4
+    private static let swapAnimation: Animation = .spring(duration: 0.3, bounce: 0)
+
+    @State private var shown: String?
+    @State private var lastSwap: Date = .distantPast
+
+    private var currentIdentity: String { shown ?? identity }
+
+    func body(content: Content) -> some View {
+        ZStack(alignment: .leading) {
+            content
+                .id(currentIdentity)
+                .transition(.opacity)
+        }
+        .animation(Self.swapAnimation, value: currentIdentity)
+        // Trailing-edge pacing: the newest identity lands at most once per
+        // interval. `.task(id:)` cancels the previous wait when the label
+        // moves again, exactly the "one swap per beat" the official clock
+        // gives.
+        .task(id: identity) {
+            let elapsed = Date().timeIntervalSince(lastSwap)
+            if elapsed >= Self.swapInterval {
+                applySwap(identity)
+                return
+            }
+            try? await Task.sleep(for: .seconds(Self.swapInterval - elapsed))
+            guard !Task.isCancelled else { return }
+            applySwap(identity)
+        }
+    }
+
+    private func applySwap(_ new: String) {
+        guard shown != new else { return }
+        lastSwap = Date()
+        shown = new
+    }
+}
+
+extension View {
+    /// Cross-fades a row's shown content when `identity` changes, paced to one
+    /// swap per 0.4 s. An empty identity is a no-op.
+    @ViewBuilder
+    func pacedRowContent(identity: String) -> some View {
+        if identity.isEmpty {
+            self
+        } else {
+            modifier(CodePacedRowContent(identity: identity))
         }
     }
 }

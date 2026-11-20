@@ -100,6 +100,7 @@ struct CodeStepGroupRowView: View {
                 voiceControlName: nil,
                 spokenLabel: nil,
                 isRunning: true,
+                textIdentity: liveIdentity(for: live),
                 action: onTap)
         } else {
             CodeCollapsedStepsRow(
@@ -159,6 +160,23 @@ struct CodeStepGroupRowView: View {
 
     /// The running question carries the thinking row's clock after its label
     /// (pp 2026-11-16).
+    /// What the live row shows, for the paced cross-fade. A pure label swap
+    /// (no step change) still animates — that is the official's summary flip
+    /// (round29: `PacedRow` transitions `ShownView`).
+    private func liveIdentity(for step: TimelineStep) -> String {
+        switch step {
+        case .thinking:
+            let line = step.liveThinkingLine
+                ?? String(localized: "thinking_status_thinking")
+            return "\(step.id)|\(line)"
+        case let .tool(call):
+            let label = call.kind == .question
+                ? String(localized: "正在提问")
+                : CodeToolLabels.label(for: [call], cwd: cwd)
+            return "\(step.id)|\(label)"
+        }
+    }
+
     private func liveTrailingIcon(for step: TimelineStep) -> String? {
         if case let .tool(call) = step, call.kind == .question {
             return "anthropicon.extendedThinking"

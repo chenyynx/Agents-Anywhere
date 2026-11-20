@@ -649,6 +649,46 @@ def _adopt_published_turn_ids(
     ]
 
 
+#: The last resolution picture this process logged: (ledgers, resolved,
+#: conflicted). The diagnostic below writes only when it changes, so a healthy
+#: session sync costs one line at most and never one per message.
+_BLOCK_ORDER_LOG_STATE: tuple[int, int, int] | None = None
+
+
+def _note_block_order_resolution(
+    ledger_count: int, resolved: int, conflicted: int
+) -> None:
+    """One line per changed resolution picture — never per message.
+
+    The resolver is the only place that knows whether the CLI's request ledger
+    was readable. Without this line an empty ledger (older CLI build, or a
+    format change) and a healthy one look identical in the logs, which is the
+    exact upgrade-compatibility signal the 2026-11-20 incident needed and did
+    not have. Warn only when something is wrong: conflicting ledgers, or
+    ledgers present but nothing attributable.
+    """
+
+    global _BLOCK_ORDER_LOG_STATE
+    state = (ledger_count, resolved, conflicted)
+    if state == _BLOCK_ORDER_LOG_STATE:
+        return
+    _BLOCK_ORDER_LOG_STATE = state
+    if conflicted or (ledger_count and not resolved):
+        logger.warning(
+            "claude block-order unresolved ledgers={} resolved={} conflicted={}",
+            ledger_count,
+            resolved,
+            conflicted,
+        )
+    else:
+        logger.info(
+            "claude block-order resolved ledgers={} resolved={} conflicted={}",
+            ledger_count,
+            resolved,
+            conflicted,
+        )
+
+
 def _message_block_orders(
     messages: tuple[Any, ...],
     raw_scan: RawTranscriptScan | None,
@@ -674,6 +714,7 @@ def _message_block_orders(
         else blob_ledgers(raw_lines)
     )
     if not ledgers:
+        _note_block_order_resolution(0, 0, 0)
         return {}
     anchors: dict[tuple[str, str], str] = {}
     for message in messages:
@@ -690,7 +731,13 @@ def _message_block_orders(
                 )
                 if key is not None:
                     anchors[("thinking", key)] = mid
-    return resolve_message_orders(anchors, ledgers)
+    orders = resolve_message_orders(anchors, ledgers)
+    _note_block_order_resolution(
+        len(ledgers),
+        sum(1 for order in orders.values() if order is not None),
+        sum(1 for order in orders.values() if order is None),
+    )
+    return orders
 
 
 def _history_items_from_messages(

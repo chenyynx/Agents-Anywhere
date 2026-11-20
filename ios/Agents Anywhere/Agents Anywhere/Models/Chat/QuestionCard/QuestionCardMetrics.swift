@@ -68,6 +68,11 @@ nonisolated enum QuestionCardMetrics {
     static let closeButtonSize: CGFloat = 44
     /// The floating close button's inset from the card's top-trailing corner.
     static let closeButtonInset: CGFloat = 12
+    /// The X glyph's ink: 48 px @3x on the official device screenshot = 16 pt,
+    /// strokes ≈1.5 pt (4.5 px). Ours shipped 13 / 1.1 and read small
+    /// (pp 2026-11-20).
+    static let closeGlyphSpan: CGFloat = 16
+    static let closeGlyphStroke: CGFloat = 1.5
     /// Card silhouette shadow (same elevation preset as the official
     /// raised card: black@0.08 / r4 / y2).
     static let cardShadowOpacity: Double = 0.08

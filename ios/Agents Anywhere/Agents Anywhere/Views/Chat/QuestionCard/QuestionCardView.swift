@@ -478,13 +478,14 @@ struct QuestionCardView: View {
     }
 }
 
-/// The official close glyph: two thin round-capped strokes (~12 pt ink,
-/// near-black). The colour is baked into the shapes — the surrounding glass
+/// The official close glyph: two round-capped strokes, 16 pt of ink with a
+/// 1.5 pt stroke (measured on the official screenshot, pp 2026-11-20), in
+/// near-black. The colour is baked into the shapes — the surrounding glass
 /// vibrancy otherwise washes a foreground style down to light grey.
 private struct CloseXMark: View {
     let color: Color
-    private let span: CGFloat = 13
-    private let stroke: CGFloat = 1.1
+    private let span = QuestionCardMetrics.closeGlyphSpan
+    private let stroke = QuestionCardMetrics.closeGlyphStroke
 
     var body: some View {
         ZStack {

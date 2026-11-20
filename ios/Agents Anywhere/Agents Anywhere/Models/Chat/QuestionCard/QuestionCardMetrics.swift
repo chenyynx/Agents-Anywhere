@@ -122,12 +122,20 @@ nonisolated enum QuestionCardMetrics {
     static let answeredCornerRadius: CGFloat = 24
     static let answeredHorizontalPadding: CGFloat = 16
     static let answeredVerticalPadding: CGFloat = 12
+    /// Between question/answer pairs.
     static let answeredSpacing: CGFloat = 12
-    static let answeredHeaderSize: CGFloat = 15
-    static let answeredHeaderLineHeight: CGFloat = 21
+    /// Between a question and its own answer (device: ink gap 13.3 pt vs
+    /// 17.7 pt between pairs).
+    static let answeredPairSpacing: CGFloat = 8
+    /// Device calibration on pp's official app (2026-11-20): the answered
+    /// card renders one size below the R32 table — header ink 36 px @3x
+    /// (= 13 pt, same glyph 「问题」) and rows 42–43 px (= 14 pt), with a
+    /// 19 pt row line height (q→a pitch 27 pt, pair pitch 31 pt).
+    static let answeredHeaderSize: CGFloat = 13
+    static let answeredHeaderLineHeight: CGFloat = 18.2
     static let answeredHeaderWeight: CGFloat = 500
-    static let answeredRowSize: CGFloat = 17
-    static let answeredRowLineHeight: CGFloat = 23.8
+    static let answeredRowSize: CGFloat = 14
+    static let answeredRowLineHeight: CGFloat = 19
     static let answeredRowWeight: CGFloat = 550
 
     // MARK: - Colours (E: light / dark sRGB)
@@ -160,9 +168,14 @@ nonisolated enum QuestionCardMetrics {
     /// bg10 — the filled button's foreground.
     static let bg10 = Pair(light: RGB(0.976, 0.976, 0.969),
                            dark: RGB(0.082, 0.082, 0.082))
-    /// The card's secondary ink (answers-card header/question, paging row).
+    /// The card's secondary ink (paging row, status line).
     static let secondary = Pair(light: RGB(0, 0, 0, 0.6),
                                 dark: RGB(0.765, 0.761, 0.718))
+    /// The answered card's question/header ink. The official device reads
+    /// sRGB(0.322, 0.318, 0.306) (#52514E) — the same ink as option details,
+    /// noticeably darker than `secondary` (pp 2026-11-20).
+    static let answeredSecondaryInk = Pair(light: RGB(0.322, 0.318, 0.306),
+                                           dark: RGB(0.765, 0.761, 0.718))
     /// Option descriptions + the custom-answer placeholder: the device reads
     /// `sRGB(0.322, 0.318, 0.306)` on pp's app (≈ #52514E), not black@0.6.
     static let optionDetailInk = Pair(light: RGB(0.322, 0.318, 0.306),
@@ -190,8 +203,9 @@ nonisolated enum QuestionCardMetrics {
     /// is the only live branch; the pair stays for the answered card).
     static let cardSurface = Pair(light: RGB(1, 1, 1),
                                   dark: RGB(0.125, 0.125, 0.122))
-    /// The answered value's ink.
-    static let answerInk = Pair(light: RGB(0, 0, 0, 0.9),
+    /// The answered value's ink: device reads #0B0B0B (11,11,11) on the
+    /// official app — near-black, not black@0.9 (pp 2026-11-20).
+    static let answerInk = Pair(light: RGB(0.043, 0.043, 0.043),
                                 dark: RGB(1, 1, 1, 0.93))
     /// The floating close button's foreground (`#0B0B0B` / `#F0EFEC`).
     static let closeButtonInk = Pair(light: RGB(0.043, 0.043, 0.043),

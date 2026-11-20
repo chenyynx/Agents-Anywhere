@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// The official `ClaudeCoreUI.QuestionAnsweredCard` (`InlineCardShell` solid
-/// surface, no glass). Values: CANONICAL/25-question-card.md §3 / R9.
+/// surface, no glass). Values live in `QuestionCardMetrics`, re-calibrated
+/// 2026-11-20 against pp's installed official app (smaller than the R32
+/// binary table, like the pending card).
 ///
 /// Rendered inline at the question tool row's own position once the row
 /// carries answers — the row keeps its place in the transcript, so history
@@ -12,8 +14,10 @@ struct QuestionAnsweredCardView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
-    private var secondary: Color {
-        QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme)
+    /// The answered card's header/question ink (#52514E on device) — darker
+    /// than the pending card's `secondary`.
+    private var questionInk: Color {
+        QuestionCardTheme.color(QuestionCardMetrics.answeredSecondaryInk, colorScheme)
     }
 
     var body: some View {
@@ -22,20 +26,24 @@ struct QuestionAnsweredCardView: View {
                        size: QuestionCardMetrics.answeredHeaderSize,
                        lineHeight: QuestionCardMetrics.answeredHeaderLineHeight,
                        weight: QuestionCardMetrics.answeredHeaderWeight)
-                .foregroundStyle(secondary)
+                .foregroundStyle(questionInk)
                 .accessibilityAddTraits(.isHeader)
+            // Each question stays with its answer (8 pt); pairs are 12 pt
+            // apart — the official ink gaps measure 13.3 / 17.7 pt.
             ForEach(pairs) { pair in
-                typography(pair.question,
-                           size: QuestionCardMetrics.answeredRowSize,
-                           lineHeight: QuestionCardMetrics.answeredRowLineHeight,
-                           weight: QuestionCardMetrics.answeredRowWeight)
-                    .foregroundStyle(secondary)
-                if let answer = pair.answer {
-                    typography(answer,
+                VStack(alignment: .leading, spacing: QuestionCardMetrics.answeredPairSpacing) {
+                    typography(pair.question,
                                size: QuestionCardMetrics.answeredRowSize,
                                lineHeight: QuestionCardMetrics.answeredRowLineHeight,
                                weight: QuestionCardMetrics.answeredRowWeight)
-                        .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.answerInk, colorScheme))
+                        .foregroundStyle(questionInk)
+                    if let answer = pair.answer {
+                        typography(answer,
+                                   size: QuestionCardMetrics.answeredRowSize,
+                                   lineHeight: QuestionCardMetrics.answeredRowLineHeight,
+                                   weight: QuestionCardMetrics.answeredRowWeight)
+                            .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.answerInk, colorScheme))
+                    }
                 }
             }
         }

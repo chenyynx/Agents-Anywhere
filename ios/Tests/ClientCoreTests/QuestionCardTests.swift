@@ -75,18 +75,21 @@ import Testing
         #expect(QuestionCardMetrics.pagingSize == 12)
         #expect(QuestionCardMetrics.pagingLineHeight == 17)
 
-        // Answered card (R9-7 更正后的角色).
-        #expect(QuestionCardMetrics.answeredHeaderSize == 15)
-        #expect(QuestionCardMetrics.answeredHeaderLineHeight == 21)
-        #expect(QuestionCardMetrics.answeredRowSize == 17)
-        #expect(QuestionCardMetrics.answeredRowLineHeight == 23.8)
+        // Answered card, device-calibrated on pp's official app (2026-11-20).
+        #expect(QuestionCardMetrics.answeredHeaderSize == 13)
+        #expect(QuestionCardMetrics.answeredHeaderLineHeight == 18.2)
+        #expect(QuestionCardMetrics.answeredRowSize == 14)
+        #expect(QuestionCardMetrics.answeredRowLineHeight == 19)
         #expect(QuestionCardMetrics.answeredRowWeight == 550)
         #expect(QuestionCardMetrics.answeredCornerRadius == 24)
         #expect(QuestionCardMetrics.answeredHorizontalPadding == 16)
         #expect(QuestionCardMetrics.answeredVerticalPadding == 12)
         #expect(QuestionCardMetrics.answeredSpacing == 12)
+        #expect(QuestionCardMetrics.answeredPairSpacing == 8)
 
         // Selected badge / ring / divider (light values).
+        #expect(QuestionCardMetrics.answeredSecondaryInk.light.red == 0.322)
+        #expect(QuestionCardMetrics.answerInk.light.red == 0.043)
         #expect(QuestionCardMetrics.selectedBadge.light.red == 0.165)
         #expect(QuestionCardMetrics.selectedBadge.light.green == 0.471)
         #expect(QuestionCardMetrics.selectedBadge.light.blue == 0.839)

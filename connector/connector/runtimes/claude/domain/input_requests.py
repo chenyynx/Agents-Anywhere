@@ -24,7 +24,11 @@ class ClaudeInputRequest:
         parsed_answers = self.form.parse_answers(input_data)
         answers: dict[str, str | list[str]] = {}
         for question in self.form.questions:
-            parsed = parsed_answers[question.question_id]
+            parsed = parsed_answers.get(question.question_id)
+            if parsed is None:
+                # Skipped question: leave it out of the answers map so the
+                # CLI reports the remaining answers (official "skip").
+                continue
             option_labels = self.option_label_by_id[question.question_id]
             values = [option_labels[option_id] for option_id in parsed.option_ids]
             if parsed.custom_text:
@@ -121,7 +125,10 @@ def input_request_notice(
         blocking={"scope": "session", "targetId": session_id},
         response_required=True,
         actions=(
-            request.form.action(),
+            # Claude's AskUserQuestion result formatter treats a question
+            # missing from `answers` as answered (2.1.316 `!y || y === pdn`),
+            # so the official card may offer "skip = leave this unanswered".
+            request.form.action(allow_skip=True),
             {"actionId": "cancel", "label": "Cancel", "style": "secondary"},
         ),
         source={

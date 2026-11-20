@@ -76,6 +76,7 @@ class InputRequestForm:
         action_id: str = "submit",
         label: str = "Submit",
         style: str = "primary",
+        allow_skip: bool = False,
     ) -> Mapping[str, Any]:
         answer_properties: dict[str, Any] = {}
         for question in self.questions:
@@ -105,11 +106,13 @@ class InputRequestForm:
                     "type": "object",
                     "required": ["answers"],
                     "properties": {
+                        # No per-question `required` list: a question the
+                        # user skips is omitted from `answers` (official
+                        # QuestionCard "skip", 2026-11-20). An answer that IS
+                        # present still has to be non-empty — `parse_answers`
+                        # enforces that below.
                         "answers": {
                             "type": "object",
-                            "required": [
-                                question.question_id for question in self.questions
-                            ],
                             "properties": answer_properties,
                             "additionalProperties": False,
                         }
@@ -119,6 +122,10 @@ class InputRequestForm:
                 "uiSchema": {
                     "component": "inputRequest",
                     "version": 1,
+                    # Only a runtime whose own tool accepts an omitted answer
+                    # advertises the official QuestionCard "skip". A client
+                    # that does not see the flag keeps requiring every answer.
+                    **({"allowSkip": True} if allow_skip else {}),
                     "questions": [question.to_mapping() for question in self.questions],
                 },
             },
@@ -141,10 +148,17 @@ class InputRequestForm:
 
         answers: dict[str, InputRequestAnswer] = {}
         for question in self.questions:
+            # A skipped question is absent from `answers` (official
+            # QuestionCard "skip = leave this question unanswered"); the CLI
+            # treats a missing question as answered and simply formats the
+            # answers it did receive (Claude Code 2.1.316, the
+            # `!y || y === pdn` branch of its result formatter).
+            if question.question_id not in raw_answers:
+                continue
             raw_answer = raw_answers.get(question.question_id)
             if not isinstance(raw_answer, Mapping):
                 raise InputRequestValidationError(
-                    f"answer is required for {question.question_id}"
+                    f"answer must be an object for {question.question_id}"
                 )
             raw_option_ids = raw_answer.get("optionIds", [])
             if not isinstance(raw_option_ids, list) or not all(

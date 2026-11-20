@@ -53,7 +53,11 @@ class CodexInputRequest:
         parsed_answers = self.form.parse_answers(input_data)
         answers: dict[str, Mapping[str, list[str]]] = {}
         for question in self.form.questions:
-            parsed = parsed_answers[question.question_id]
+            parsed = parsed_answers.get(question.question_id)
+            if parsed is None:
+                # Skipped question: absent from `answers` (official
+                # QuestionCard "skip").
+                continue
             option_labels = self.option_label_by_id[question.question_id]
             values = [option_labels[option_id] for option_id in parsed.option_ids]
             if parsed.custom_text:

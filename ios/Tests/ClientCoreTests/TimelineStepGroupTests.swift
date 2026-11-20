@@ -442,11 +442,19 @@ struct TimelineStepGroupSummaryTests {
         let group = TimelineStepGroup(id: "steps:background", steps: steps)
         #expect(group.settlesAsRunningSubagentRow)
         // The main turn is still working on this group: the row keeps the dots.
-        #expect(group.showsRunningPose(isLiveTail: true, allowsRunningPose: true))
+        #expect(group.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                       allowsRunningPose: true))
         // The turn moved past it and the subagent still runs: no second mark.
-        #expect(!group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        #expect(!group.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                        allowsRunningPose: true))
+        // Still the newest row that would draw a mark (body text streams
+        // after it, or newer groups have nothing running): the dots must stay
+        // instead of vanishing (pp 2026-11-21).
+        #expect(group.showsRunningPose(isLiveTail: false, isMarkOwner: true,
+                                       allowsRunningPose: true))
         // Reply over: the group settles either way.
-        #expect(!group.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(!group.showsRunningPose(isLiveTail: false, isMarkOwner: true,
+                                        allowsRunningPose: false))
     }
 
     /// A control call on an existing agent is the main turn's own work, not a
@@ -459,7 +467,8 @@ struct TimelineStepGroupSummaryTests {
             id: "steps:control", steps: steps,
             summary: TimelineStepSummarizer.summary(steps: steps, cwd: nil))
         #expect(!group.settlesAsRunningSubagentRow)
-        #expect(group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
+        #expect(group.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                       allowsRunningPose: true))
     }
 
     @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {
@@ -568,8 +577,10 @@ struct TimelineStepGroupLiveMarkTests {
         // (pp 2026-11-14: the row spun for ~2.4 s after the interrupt while
         // the connector was still publishing the settled rows).
         let running = group([.thinking(id: "r", text: "think", status: .running)])
-        #expect(running.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(!running.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(running.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                         allowsRunningPose: true))
+        #expect(!running.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: false))
     }
 
     @Test func theLiveTailStillDrawsTheBetweenStepsPose() {
@@ -577,10 +588,14 @@ struct TimelineStepGroupLiveMarkTests {
         // `allowsRunningPose` alone cannot animate a group with no running
         // step (the adapter sets the tail while the turn streams).
         let settled = group([.thinking(id: "r", text: "think", status: .done)])
-        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: true))
-        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
-        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(settled.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                         allowsRunningPose: true))
+        #expect(settled.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                         allowsRunningPose: false))
+        #expect(!settled.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: true))
+        #expect(!settled.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: false))
     }
 }
 

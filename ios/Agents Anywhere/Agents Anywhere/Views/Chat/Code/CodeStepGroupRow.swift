@@ -19,6 +19,11 @@ struct CodeStepGroupRowView: View {
     /// this row for the whole live turn — including between steps, before any
     /// body text (pp 2026-10-29 device observation).
     let isLiveTail: Bool
+    /// Whether this group is the one the update draws the working mark on:
+    /// the newest group the base pose rule would draw. A running dispatched
+    /// subagent keeps the dots here instead of settling when a newer owner
+    /// exists, so the turn never loses its working mark (pp 2026-11-21).
+    let isMarkOwner: Bool
     /// Whether a step that still reports `running` may be drawn live. False
     /// once fresh live facts prove the turn stopped (idle, or an accepted
     /// stop's optimistic window); late row snapshots must not keep the row
@@ -76,6 +81,7 @@ struct CodeStepGroupRowView: View {
     /// before the reply body.
     private var showsMark: Bool {
         group.showsRunningPose(isLiveTail: isLiveTail,
+                               isMarkOwner: isMarkOwner,
                                allowsRunningPose: allowsRunningPose)
     }
 

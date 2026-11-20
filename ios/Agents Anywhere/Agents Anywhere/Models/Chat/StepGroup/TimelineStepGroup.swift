@@ -183,9 +183,18 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// the main turn has moved past a group whose dispatched subagent is still
     /// working, the row settles into the subagent form (icon + sweep) — the
     /// three dots must not appear on two rows at once.
-    func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
+    ///
+    /// The rule only applies when a **newer** row owns the mark. If this
+    /// group is still the newest row that would draw one (body text streams
+    /// after it, or the newer groups have nothing running), it keeps the
+    /// dots: the standalone 「正在处理中」 row is suppressed while the turn
+    /// has step groups, so settling it here would leave the screen with no
+    /// working mark at all (pp 2026-11-21: 工作行调用子代理时三个点不能消失).
+    func showsRunningPose(isLiveTail: Bool,
+                          isMarkOwner: Bool,
+                          allowsRunningPose: Bool) -> Bool {
         if isLiveTail { return true }
-        if settlesAsRunningSubagentRow { return false }
+        if settlesAsRunningSubagentRow, !isMarkOwner { return false }
         return isRunning && allowsRunningPose
     }
 

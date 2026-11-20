@@ -428,7 +428,10 @@ struct SubAgentPanelSheet: View {
                 case let .stepGroup(group, _):
                     CodeStepGroupRowView(group: group,
                                          cwd: chat.session.metadata?.cwd,
-                                         isLiveTail: group.id == lastStepGroupID) {
+                                         isLiveTail: group.id == lastStepGroupID,
+                                         // The panel is not the main timeline:
+                                         // keep its old live-pose behaviour.
+                                         isMarkOwner: true) {
                         // Publish once before opening so the sheet never shows
                         // an older map than the tapped snapshot.
                         publishLiveStepGroups(card)

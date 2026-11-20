@@ -63,4 +63,49 @@ struct QuestionAnsweredCardView: View {
             .lineSpacing(QuestionCardTheme.lineSpacing(size: size, lineHeight: lineHeight))
             .fixedSize(horizontal: false, vertical: true)
     }
+
+    /// Exact pre-measure height for the collection layout.
+    ///
+    /// A standalone answered row used to fall back to the generic one-line
+    /// tool estimate (44 pt) while the card draws ~96 pt, so every realised
+    /// card corrected the layout by +52 under the reader: the tool row's card
+    /// overlapped the neighbouring text row, and the content height crept up
+    /// in 52 pt steps (pp 2026-11-21; log contentH 26944 → 27516, +52 each).
+    static func estimatedHeight(pairs: [QuestionAnsweredPair], width: CGFloat) -> CGFloat {
+        let textWidth = max(1, width - 2 * QuestionCardMetrics.answeredHorizontalPadding)
+        // A one-line `Text` occupies the face's own line box; extra token
+        // line height only applies between lines — the same arithmetic
+        // `QuestionCardTheme.lineSpacing` feeds the view.
+        func textHeight(_ text: String, size: CGFloat, weight: CGFloat,
+                        lineHeight: CGFloat) -> CGFloat {
+            let font = MarkdownFontFactory.font(name: CodePageTheme.sansFontName,
+                                                size: size, weight: weight)
+            let bounds = (text as NSString).boundingRect(
+                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font], context: nil)
+            let lines = max(1, Int((bounds.height / font.lineHeight).rounded(.up)))
+            return font.lineHeight + CGFloat(lines - 1) * lineHeight
+        }
+        var height = 2 * QuestionCardMetrics.answeredVerticalPadding
+        height += textHeight(String(localized: "问题"),
+                             size: QuestionCardMetrics.answeredHeaderSize,
+                             weight: QuestionCardMetrics.answeredHeaderWeight,
+                             lineHeight: QuestionCardMetrics.answeredHeaderLineHeight)
+        for pair in pairs {
+            height += QuestionCardMetrics.answeredSpacing
+            height += textHeight(pair.question,
+                                 size: QuestionCardMetrics.answeredRowSize,
+                                 weight: QuestionCardMetrics.answeredRowWeight,
+                                 lineHeight: QuestionCardMetrics.answeredRowLineHeight)
+            if let answer = pair.answer {
+                height += QuestionCardMetrics.answeredPairSpacing
+                height += textHeight(answer,
+                                     size: QuestionCardMetrics.answeredRowSize,
+                                     weight: QuestionCardMetrics.answeredRowWeight,
+                                     lineHeight: QuestionCardMetrics.answeredRowLineHeight)
+            }
+        }
+        return ceil(height)
+    }
 }

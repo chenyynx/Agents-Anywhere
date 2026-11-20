@@ -610,6 +610,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // No row expands in place on this page: every group draws its own
             // rows, so the estimate walks all of them.
             let rows = group.rows
+            // The answered question card stacks a header, a question and an
+            // answer — the generic one-line tool estimate (44 pt) is 52 pt
+            // short of the ~96 pt card, so every realised card corrected the
+            // layout under the reader and overlapped its neighbour (pp
+            // 2026-11-21; log contentH grew in +52 steps). Ask the card for
+            // its own arithmetic instead.
+            if rows.count == 1, let row = rows.first,
+               let answered = QuestionAnsweredModel(item: row.value) {
+                let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+                var hasher = TimelineStableHasher()
+                hasher.combine(contentSignature(for: item).contentRevision)
+                hasher.combine(width)
+                let cacheKey = hasher.revision
+                if let cached = answeredCardEstimateCache[cacheKey] { return .fixed(cached) }
+                let height = QuestionAnsweredCardView.estimatedHeight(
+                    pairs: answered.pairs, width: width)
+                if answeredCardEstimateCache.count > 600 { answeredCardEstimateCache.removeAll() }
+                answeredCardEstimateCache[cacheKey] = height
+                return .fixed(height)
+            }
             let cwd = model.session.metadata?.cwd
             var textRows: [TimelineHeightEstimate.TextRow] = []
             textRows.reserveCapacity(rows.count)
@@ -673,6 +693,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return .fixed(height)
     }
     private var codeEstimateCache: [Int: CGFloat] = [:]
+    /// Answered question cards' exact pre-measure heights, keyed the same way
+    /// as `codeEstimateCache` (content revision + width).
+    private var answeredCardEstimateCache: [Int: CGFloat] = [:]
 
     /// The official `SessionRowHeightEstimator` (`0x10253d650`;
     /// `ClaudeCode/SessionRowHeightEstimator.swift`; formula in

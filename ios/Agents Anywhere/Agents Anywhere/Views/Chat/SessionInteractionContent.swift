@@ -157,9 +157,15 @@ struct SessionInteractionContent: View {
     }
 }
 
-private struct NoticeTextInput: View {
+struct NoticeTextInput: View {
     let value: String
     let placeholder: String
+    /// The question card draws the official `ClaudeTextField`: 24 pt corners,
+    /// 12 pt padding, no fill (only its `border20` hairline is added by the
+    /// caller). The notice sheet keeps the compact 12/10 filled style.
+    var cornerRadius: CGFloat = 12
+    var textPadding: CGFloat = 10
+    var showsBackground = true
     var onFocus: () -> Void = {}
     var onEditingEnded: (String) -> Void = { _ in }
     let onChange: (String, Bool, String) -> Void
@@ -175,7 +181,14 @@ private struct NoticeTextInput: View {
                 .frame(minHeight: 44)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .font(.body).padding(10).background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
+        .font(.body)
+        .padding(textPadding)
+        .background {
+            if showsBackground {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.quaternary.opacity(0.5))
+            }
+        }
         .onChange(of: draft.isFocused) { _, focused in if focused { onFocus() } }
         .onChange(of: value, initial: true) { _, text in
             if !draft.isComposing, draft.text != text { draft.text = text }

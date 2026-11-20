@@ -72,6 +72,11 @@ struct CodeStandaloneRowView: View, Equatable {
     }
 
     @ViewBuilder private func rowView(_ row: ChatTimelineRowModel) -> some View {
+        if let answered = QuestionAnsweredModel(item: row.value) {
+            // The official answered card replaces the skipped question row
+            // (and the generic Code tool row an anchored answer used to draw).
+            QuestionAnsweredCardView(pairs: answered.pairs)
+        } else {
         let value = row.entry(cwd: cwd)
         if case .message = row.value.content {
             // An interaction target can be a message row (an approval anchored
@@ -125,6 +130,7 @@ struct CodeStandaloneRowView: View, Equatable {
                                   failure: row.value.status.isFailure)
                 }
             }
+        }
         }
     }
 

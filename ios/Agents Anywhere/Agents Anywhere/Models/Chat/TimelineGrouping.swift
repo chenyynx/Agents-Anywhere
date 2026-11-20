@@ -264,7 +264,11 @@ enum TimelineGrouping {
             let item = row.value
             if item.type == .message || item.isReasoning { return true }
             guard isToolRow(item) else { return true }
-            return !profile.skippedToolNames.contains(CodeToolCall.wireName(for: item))
+            let name = CodeToolCall.wireName(for: item)
+            guard profile.skippedToolNames.contains(name) else { return true }
+            // An answered AskUserQuestion draws its own card, so its message
+            // group must survive even when the question row is the only one.
+            return name == "AskUserQuestion" && QuestionAnsweredModel(item: item) != nil
         }
     }
 

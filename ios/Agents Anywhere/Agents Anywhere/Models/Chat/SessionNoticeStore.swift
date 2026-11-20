@@ -12,6 +12,9 @@ final class SessionNoticeModel: Identifiable {
     var choices: [String: Set<String>] = [:]
     var custom: [String: String] = [:]
     private(set) var customQuestions: Set<String> = []
+    /// Questions the user explicitly skipped (`QuestionCard` skip). A skipped
+    /// question is left out of the submitted `answers` map.
+    private(set) var skipped: Set<String> = []
     var fields: [String: [String: JSONValue]] = [:]
     var composingFields: Set<String> = []
     @ObservationIgnored private var submittedRevision = 0
@@ -19,7 +22,7 @@ final class SessionNoticeModel: Identifiable {
     init(_ notice: V2RuntimeNotice) {
         id = notice.id; self.notice = notice; form = NoticeInputForm(notice)
     }
-    var hasDraft: Bool { !choices.isEmpty || !custom.isEmpty || !fields.isEmpty }
+    var hasDraft: Bool { !choices.isEmpty || !custom.isEmpty || !skipped.isEmpty || !fields.isEmpty }
     var isVisible: Bool {
         guard submission != .unavailable else { return false }
         if notice.type == "notification" { return notice.status == .open }
@@ -47,7 +50,7 @@ final class SessionNoticeModel: Identifiable {
         // Status revisions keep draft answers; changing the action/schema cannot
         // accidentally submit values collected for an obsolete question set.
         if form != nextForm || notice.actions != next.actions {
-            choices = [:]; custom = [:]; customQuestions = []; fields = [:]; composingFields = []; submission = .idle; error = nil
+            choices = [:]; custom = [:]; customQuestions = []; skipped = []; fields = [:]; composingFields = []; submission = .idle; error = nil
         }
         if next.revision > submittedRevision && next.status == .failed {
             submission = .idle
@@ -58,6 +61,7 @@ final class SessionNoticeModel: Identifiable {
     }
 
     func select(_ optionID: String, question: NoticeInputQuestion) {
+        skipped.remove(question.id)
         var selected = choices[question.id] ?? []
         if question.multiple {
             if !selected.insert(optionID).inserted { selected.remove(optionID) }
@@ -73,11 +77,28 @@ final class SessionNoticeModel: Identifiable {
     func setCustomSelected(_ selected: Bool, question: NoticeInputQuestion) {
         guard question.allowCustom else { return }
         if selected {
+            skipped.remove(question.id)
             customQuestions.insert(question.id)
             if !question.multiple { choices[question.id] = [] }
         } else {
             customQuestions.remove(question.id); custom[question.id] = nil
         }
+    }
+    /// Official QuestionCard "skip": leave this question unanswered. The
+    /// submitted payload omits it (the CLI then reports only what it got).
+    func skip(_ question: NoticeInputQuestion) {
+        skipped.insert(question.id)
+        choices[question.id] = []
+        custom[question.id] = nil
+        customQuestions.remove(question.id)
+    }
+    func isSkipped(_ question: NoticeInputQuestion) -> Bool { skipped.contains(question.id) }
+    /// True once the question is answered (option or custom text) or skipped.
+    func hasAnswer(_ question: NoticeInputQuestion) -> Bool {
+        if skipped.contains(question.id) { return true }
+        if !(choices[question.id] ?? []).isEmpty { return true }
+        return customQuestions.contains(question.id)
+            && !(custom[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     func isSending(_ action: V2RuntimeNoticeAction) -> Bool { submission == .sending(action.id) }
     var responseError: String? {
@@ -86,7 +107,9 @@ final class SessionNoticeModel: Identifiable {
     }
     func payload(for action: V2RuntimeNoticeAction) -> JSONValue? {
         if form?.actionID == action.id {
-            return form?.payload(choices: choices, custom: custom.filter { customQuestions.contains($0.key) })
+            return form?.payload(choices: choices,
+                                 custom: custom.filter { customQuestions.contains($0.key) },
+                                 skipped: skipped)
         }
         if let schema = action.input.schema {
             return NoticeActionForm(schema: schema, uiSchema: action.input.uiSchema)?.payload(fields[action.id] ?? [:])

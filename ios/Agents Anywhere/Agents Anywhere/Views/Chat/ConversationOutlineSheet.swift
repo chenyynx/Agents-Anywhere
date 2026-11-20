@@ -28,6 +28,11 @@ struct ConversationOutlineSheet: View {
     /// Rows the local store holds beyond the loaded window. Read off the main
     /// actor when the panel opens and merged under the live timeline.
     @State private var cachedItems: [V2TimelineItem] = []
+    /// Snapshot of the live window. The sheet must not observe the streaming
+    /// transcript from `body`: a tick that grew an assistant row re-rendered
+    /// every outline row and made the sheet crawl while the agent thought
+    /// (pp 2026-11-21). A task refreshes this at a calm cadence instead.
+    @State private var liveItems: [V2TimelineItem] = []
     @State private var machine = ConversationOutlineJumpMachine()
     /// The capture's count line is a 15 pt token that scales with the reader's
     /// text size (≈12.9 pt at the captured setting), not a fixed 15 pt.
@@ -61,8 +66,17 @@ struct ConversationOutlineSheet: View {
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: Text(String(localized: "消息中的字词"))
             )
-            .task { await loadCachedRows() }
-            .onChange(of: chat.session.timeline.count) { _, _ in reload() }
+            .task {
+                refreshLiveItems()
+                await loadCachedRows()
+                // Keep the outline roughly current without re-rendering on
+                // every streaming tick: one refresh per second while open.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard !Task.isCancelled else { break }
+                    refreshLiveItems()
+                }
+            }
         }
         // The official panel opens as the draggable half sheet used by the
         // step-group and add-to-chat pages, not full height.
@@ -196,10 +210,20 @@ struct ConversationOutlineSheet: View {
         reload()
     }
 
+    /// Refresh the live snapshot only when rows actually appear or leave;
+    /// text growth inside a streaming row never changes the outline and must
+    /// not re-render the sheet.
+    private func refreshLiveItems() {
+        let items = chat.session.timeline.map { $0.value }
+        guard items.map(\.id) != liveItems.map(\.id) else { return }
+        liveItems = items
+        reload()
+    }
+
     private func reload() {
         entries = ConversationOutlineEntryBuilder.entries(
             from: ConversationOutlineSource.merged(
-                live: chat.session.timeline.map { $0.value },
+                live: liveItems,
                 cached: cachedItems
             )
         )

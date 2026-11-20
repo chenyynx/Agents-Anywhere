@@ -45,9 +45,10 @@ struct ConversationOutlineSheet: View {
     /// belongs to the keyboard, not the sheet: letting the sheet's own drag
     /// run at the same time put two animations on one finger — the keyboard
     /// interactive dismissal and the detent drag — and read as a stutter
-    /// (pp 2026-11-21). With the sheet pinned, the list owns the drag and the
-    /// keyboard follows it; once the keyboard is gone the usual drag-dismiss
-    /// comes back.
+    /// (pp 2026-11-21). The pin lifts only once the keyboard is fully gone
+    /// (did-hide): releasing it at will-hide let the detent drag resume while
+    /// the keyboard was still animating, which read as a second collapse
+    /// (b1408: hide heights 329 then 233, ~90 ms apart).
     @State private var keyboardVisible = false
     /// The capture's count line is a 15 pt token that scales with the reader's
     /// text size (≈12.9 pt at the captured setting), not a fixed 15 pt.
@@ -98,7 +99,17 @@ struct ConversationOutlineSheet: View {
                     live: liveItems.count,
                     cached: cachedItems.count
                 )
-                defer { OutlineProbe.shared.end() }
+                // The transcript behind this panel keeps every delta but
+                // publishes on the batch cadence: a per-delta flush re-laid out
+                // the covered streaming reply and cost 7–11 hitches a second
+                // (pp 2026-11-21, b1408). Closing flushes once so the chat is
+                // current in that same turn.
+                chat.timeline.setBackgroundCadence(true)
+                defer {
+                    chat.timeline.setBackgroundCadence(false)
+                    chat.timeline.flush()
+                    OutlineProbe.shared.end()
+                }
                 OutlineProbe.shared.noteStatus(
                     chat.session.runtime.state?.status.rawValue
                 )
@@ -135,11 +146,22 @@ struct ConversationOutlineSheet: View {
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardWillHideNotification)) { note in
-            keyboardVisible = false
+            // Probe only: the pin is released on did-hide, not here. The
+            // hide notification fires at the start of the animation; letting
+            // the sheet's drag resume there put two animations on one finger
+            // again (b1408: hide heights 329 then 233, ~90 ms apart).
             OutlineProbe.shared.noteKeyboard(
                 phase: "hide",
                 height: keyboardHeight(note)
             )
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardVisible = false
+            // Probe: pairs with the will-hide line above, so the log shows the
+            // whole dismissal (and that the pin released) even though the pin
+            // no longer answers the will-hide.
+            OutlineProbe.shared.noteKeyboard(phase: "did_hide", height: 0)
         }
     }
 

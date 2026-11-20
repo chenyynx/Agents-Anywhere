@@ -143,6 +143,21 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var wake: AsyncStream<Void>.Continuation?
     /// When the newest reveal batch ends and the buffer may publish again.
     @ObservationIgnored private(set) var nextBatchAt: TimeInterval = 0
+    /// True while a panel covers the transcript (the conversation outline).
+    /// The presentation keeps ingesting every transport delta but publishes on
+    /// the legacy batch cadence: a per-delta flush re-evaluated the collection
+    /// and re-laid out the streaming reply behind the panel for text the
+    /// reader could not see — 7–11 hitches/s only while the runtime was
+    /// running, with the outline's own rows already cached and static
+    /// (pp 2026-11-21, b1408).
+    @ObservationIgnored private(set) var backgroundCadence = false
+
+    /// Turns the covered cadence on while the outline panel is up. The caller
+    /// clears it and flushes once on close, so the transcript is current in
+    /// that same turn instead of catching up over the following frames.
+    func setBackgroundCadence(_ enabled: Bool) {
+        backgroundCadence = enabled
+    }
 
     func presentOpening(_ items: [V2TimelineItem], pendingMessages: [V2PendingMessage]) {
         stage(items, animate: false)
@@ -189,7 +204,7 @@ final class SessionTimelinePresentation {
                 if !orderChanged, rows[index] !== row { orderChanged = true }
                 updated.append(row)
             }
-            if started { nextBatchAt = now + ReplyPresentation.batchInterval }
+            if started || backgroundCadence { nextBatchAt = now + ReplyPresentation.batchInterval }
             if orderChanged {
                 rows = updated
                 rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })

@@ -85,6 +85,30 @@ import Testing
         #expect(presentation.flushRevision == start + 1)
     }
 
+    /// While a panel covers the transcript, the presentation keeps every
+    /// delta but publishes on the legacy batch cadence: a per-delta flush
+    /// re-laid out the covered streaming reply and cost 7–11 hitches a second
+    /// with the outline panel up (pp 2026-11-21, b1408).
+    @Test @MainActor func coveredTranscriptPublishesOnTheBatchCadence() throws {
+        let presentation = SessionTimelinePresentation()
+        let first = try item("message", status: "running", content: ["text": "a"])
+        presentation.stage([first], animate: false)
+        presentation.flush(now: 10)
+        #expect(presentation.nextBatchAt == 0)
+
+        presentation.setBackgroundCadence(true)
+        let second = try item("message", status: "running", content: ["text": "ab"])
+        presentation.stage([second], animate: false)
+        presentation.flush(now: 20)
+        #expect(presentation.nextBatchAt > 20)
+
+        presentation.setBackgroundCadence(false)
+        let third = try item("message", status: "running", content: ["text": "abc"])
+        presentation.stage([third], animate: false)
+        presentation.flush(now: 40)
+        #expect(presentation.nextBatchAt <= 40)
+    }
+
     @Test func fileArtifactsUseRealChangePayloadAndRelativePaths() throws {
         let value = try item("artifact", content: ["kind": "file_change", "changes": [
             ["filePath": "/work/src/app.swift", "kind": ["type": "add"], "diff": "let value = 1\n"]

@@ -1233,6 +1233,22 @@
           "default": null,
           "title": "Contentblockindex"
         },
+        "contentBlockIndexSource": {
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "legacy"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contentblockindexsource"
+        },
         "derivedKey": {
           "anyOf": [
             {

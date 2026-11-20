@@ -47,6 +47,7 @@ def message_input(
     order_seq: int,
     content_block_index: int | None,
     text: str | None = None,
+    cbi_source: str | None = "message",
 ) -> TimelineItemIn:
     text = text or item_id
     return TimelineItemIn.model_validate(
@@ -61,6 +62,7 @@ def message_input(
                 itemId=MESSAGE_ID,
                 itemType="assistant",
                 contentBlockIndex=content_block_index,
+                contentBlockIndexSource=cbi_source,
             ),
             "orderSeq": order_seq,
             "revision": 1,
@@ -76,6 +78,7 @@ def reasoning_input(
     order_seq: int,
     content_block_index: int | None,
     text: str | None = None,
+    cbi_source: str | None = "message",
 ) -> TimelineItemIn:
     text = text or item_id
     return TimelineItemIn.model_validate(
@@ -90,6 +93,7 @@ def reasoning_input(
                 itemId=MESSAGE_ID,
                 itemType="thinking",
                 contentBlockIndex=content_block_index,
+                contentBlockIndexSource=cbi_source,
             ),
             "orderSeq": order_seq,
             "revision": 1,
@@ -106,6 +110,7 @@ def tool_input(
     tool_block_index: int | None,
     content_block_index: int | None,
     text: str | None = None,
+    cbi_source: str | None = "message",
 ) -> TimelineItemIn:
     text = text or item_id
     return TimelineItemIn.model_validate(
@@ -122,6 +127,7 @@ def tool_input(
                 nativeMessageId=MESSAGE_ID,
                 blockIndex=tool_block_index,
                 contentBlockIndex=content_block_index,
+                contentBlockIndexSource=cbi_source,
             ),
             "orderSeq": order_seq,
             "revision": 1,
@@ -309,6 +315,7 @@ async def test_a_rewrite_without_the_index_keeps_the_stored_one() -> None:
         stored = await store.timeline.read_one(session.id, "t")
         assert stored is not None
         assert stored.source.contentBlockIndex == 1
+        assert stored.source.contentBlockIndexSource == "message"
     finally:
         await store.close()
 
@@ -428,6 +435,7 @@ async def test_a_history_rebuild_backfills_the_index_on_unchanged_content() -> N
         stored = await store.timeline.read_one(session.id, "t")
         assert stored is not None
         assert stored.source.contentBlockIndex == 1
+        assert stored.source.contentBlockIndexSource == "message"
     finally:
         await store.close()
 
@@ -518,5 +526,221 @@ async def test_repair_reorders_a_stored_group_by_the_real_block_order() -> None:
         await store.repair_intra_message_order()
         order_after = await _order_by_id(store, session.id)
         assert order_after["r"] < order_after["t"] < order_after["m"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_legacy_derived_index_never_orders_the_group() -> None:
+    """A derived (legacy) index must not reorder rows; RBT wins instead.
+
+    Production 2026-11-20: the connector counted transcript lines (block
+    completion order) as the absolute index. On the OpenAI-format channel the
+    tool call completes before the text, so every text+tool message was
+    declared as ``[tool(0), text(1)]`` although the assembled message is
+    ``[text(0), tool(1)]`` — and the server moved the tool above the body.
+    Here the rows are declared legacy with that inverted shape; the final
+    order must be RBT (reasoning → body → tool), not the declared one.
+    """
+
+    store, session = await _store_with_session()
+    try:
+        reasoning = _stored(
+            reasoning_input(
+                session.id, "r", order_seq=0, content_block_index=0,
+                cbi_source="legacy",
+            ),
+            order_seq=1,
+            updated_seq=1,
+        )
+        tool = _stored(
+            tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=1, cbi_source="legacy",
+            ),
+            order_seq=2,
+            updated_seq=2,
+        )
+        body = _stored(
+            message_input(
+                session.id, "m", order_seq=2, content_block_index=2,
+                cbi_source="legacy",
+            ),
+            order_seq=3,
+            updated_seq=3,
+        )
+        await store.persist_buffered_timeline_items(
+            session_id=session.id, items=[reasoning, tool, body]
+        )
+        order = await _order_by_id(store, session.id)
+        assert order["r"] < order["m"] < order["t"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_duplicate_message_indexes_fall_back_to_rbt() -> None:
+    """Colliding message-sourced indexes are broken truth: order by RBT.
+
+    The declared shape here is ``[reasoning(0), tool(0), body(1)]`` — with the
+    collision ignored the rows would sort ``r, t, m`` (the order they are
+    seeded in, i.e. the inverted shape); RBT must win instead.
+    """
+
+    store, session = await _store_with_session()
+    try:
+        reasoning = _stored(
+            reasoning_input(session.id, "r", order_seq=0, content_block_index=0),
+            order_seq=1,
+            updated_seq=1,
+        )
+        tool = _stored(
+            tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=0,
+            ),
+            order_seq=2,
+            updated_seq=2,
+        )
+        body = _stored(
+            message_input(session.id, "m", order_seq=2, content_block_index=1),
+            order_seq=3,
+            updated_seq=3,
+        )
+        await store.persist_buffered_timeline_items(
+            session_id=session.id, items=[reasoning, tool, body]
+        )
+        order = await _order_by_id(store, session.id)
+        assert order["r"] < order["m"] < order["t"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_legacy_write_cannot_downgrade_a_message_index() -> None:
+    """A derived rewrite must not erase or downgrade a stored message truth."""
+
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=1, text="same",
+            ),
+        )
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=0, text="same", cbi_source="legacy",
+            ),
+        )
+        stored = await store.timeline.read_one(session.id, "t")
+        assert stored is not None
+        assert stored.source.contentBlockIndex == 1
+        assert stored.source.contentBlockIndexSource == "message"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_message_write_replaces_a_legacy_index() -> None:
+    """The upgrade direction stays open: message truth replaces a legacy value."""
+
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=1, text="same", cbi_source="legacy",
+            ),
+        )
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=2, text="same",
+            ),
+        )
+        stored = await store.timeline.read_one(session.id, "t")
+        assert stored is not None
+        assert stored.source.contentBlockIndex == 2
+        assert stored.source.contentBlockIndexSource == "message"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_a_same_index_rebuild_upgrades_the_source() -> None:
+    """Identical index, but now message-sourced → the row must be rewritten."""
+
+    store, session = await _store_with_session()
+    try:
+        await store.upsert_timeline_item(
+            session_id=session.id,
+            item=tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=1, text="same", cbi_source="legacy",
+            ),
+        )
+        await store.sync_timeline_items(
+            session_id=session.id,
+            items=[
+                tool_input(
+                    session.id, "t", order_seq=1, tool_block_index=0,
+                    content_block_index=1, text="same",
+                )
+            ],
+        )
+        stored = await store.timeline.read_one(session.id, "t")
+        assert stored is not None
+        assert stored.source.contentBlockIndexSource == "message"
+    finally:
+        await store.close()
+
+
+@pytest.mark.anyio
+async def test_repair_sweep_orders_a_legacy_group_by_rbt() -> None:
+    """The startup sweep must never move rows by a derived index."""
+
+    store, session = await _store_with_session()
+    try:
+        await _seed_row(
+            store,
+            session.id,
+            reasoning_input(
+                session.id, "r", order_seq=0, content_block_index=0,
+                cbi_source="legacy",
+            ),
+            order_seq=1,
+            updated_seq=1,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            tool_input(
+                session.id, "t", order_seq=1, tool_block_index=0,
+                content_block_index=1, cbi_source="legacy",
+            ),
+            order_seq=2,
+            updated_seq=2,
+        )
+        await _seed_row(
+            store,
+            session.id,
+            message_input(
+                session.id, "m", order_seq=2, content_block_index=2,
+                cbi_source="legacy",
+            ),
+            order_seq=3,
+            updated_seq=3,
+        )
+        before = await _order_by_id(store, session.id)
+        assert before["r"] < before["t"] < before["m"]
+        await store.repair_intra_message_order()
+        after = await _order_by_id(store, session.id)
+        assert after["r"] < after["m"] < after["t"]
     finally:
         await store.close()

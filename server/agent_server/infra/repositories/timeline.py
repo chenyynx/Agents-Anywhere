@@ -513,6 +513,9 @@ class TimelineRepositoryMixin:
                     content_block_index=_stored_intra_message_content_index(
                         payload_json
                     ),
+                    content_block_index_source=_stored_content_block_index_source(
+                        payload_json
+                    ),
                 )
             )
         broken: list[tuple[str, str]] = []
@@ -2866,6 +2869,9 @@ class TimelineRepositoryMixin:
                     content_block_index=_stored_intra_message_content_index(
                         payload_json
                     ),
+                    content_block_index_source=_stored_content_block_index_source(
+                        payload_json
+                    ),
                 )
             )
         return group
@@ -3199,6 +3205,11 @@ class _IntraMessageGroupRow:
     stored: TimelineItem | None
     block_index: int | None = None
     content_block_index: int | None = None
+    # ``source.contentBlockIndexSource``: ``"message"`` only when the Runtime
+    # read the index from the message's assembled content array. Any other
+    # value (``"legacy"``, None) means the index was derived, and the group
+    # must not be ordered by it (pp 2026-11-20).
+    content_block_index_source: str | None = None
 
 
 # The Runtime protocol's ``SystemContentKind`` reasoning member. Named and
@@ -3286,26 +3297,51 @@ def _stored_intra_message_row(
 
 
 def _preserve_content_block_index(existing: Any, item: Any) -> Any:
-    """Keep a stored absolute content index when a rewrite omits it.
+    """Keep a stored absolute content index when a rewrite omits or downgrades it.
 
     A live frame carries one content block and cannot declare the index; the
     history/turn-end projection can. Writes replace the payload, so without
     this carry a live rewrite after a history sync would erase the truth and
     the group would fall back to RBT for the rest of the session
     (pp 2026-11-19).
+
+    The carry includes the declaration's source. A rewrite that only carries a
+    derived (legacy) index must never replace a stored message-sourced truth —
+    the derivation is the very input that inverted the order on the
+    OpenAI-format channel (pp 2026-11-20). The upgrade direction stays open:
+    a message-sourced write replaces a stored legacy one.
     """
 
     if existing is None or item is None:
         return item
-    if item.source.contentBlockIndex is not None:
-        return item
     stored = existing.source.contentBlockIndex
+    stored_source = existing.source.contentBlockIndexSource
+    if item.source.contentBlockIndex is not None:
+        if (
+            item.source.contentBlockIndexSource != "message"
+            and stored_source == "message"
+            and stored is not None
+        ):
+            return item.model_copy(
+                update={
+                    "source": item.source.model_copy(
+                        update={
+                            "contentBlockIndex": stored,
+                            "contentBlockIndexSource": stored_source,
+                        }
+                    )
+                }
+            )
+        return item
     if stored is None:
         return item
     return item.model_copy(
         update={
             "source": item.source.model_copy(
-                update={"contentBlockIndex": stored}
+                update={
+                    "contentBlockIndex": stored,
+                    "contentBlockIndexSource": stored_source,
+                }
             )
         }
     )
@@ -3330,6 +3366,27 @@ def _stored_intra_message_content_index(payload_json: str) -> int | None:
     if not isinstance(source, dict):
         return None
     return _intra_message_block_index(source.get("contentBlockIndex"))
+
+
+def _stored_content_block_index_source(payload_json: str) -> str | None:
+    """The stored row's ``source.contentBlockIndexSource``, if it is one we know.
+
+    ``"message"`` is the only value the repair trusts; anything else (an
+    unknown string, a missing field from an older payload) is reported as
+    None — the group then falls back to RBT, never to a derived index.
+    """
+
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        return None
+    value = source.get("contentBlockIndexSource")
+    return value if value in {"message", "legacy"} else None
 
 
 def _intra_message_input_group_key(item: TimelineItem | TimelineItemIn) -> str | None:
@@ -3375,6 +3432,11 @@ def _intra_message_input_group_row(
         ),
         content_block_index=_intra_message_block_index(
             item.source.contentBlockIndex
+        ),
+        content_block_index_source=(
+            item.source.contentBlockIndexSource
+            if item.source.contentBlockIndexSource in {"message", "legacy"}
+            else None
         ),
     )
 
@@ -3453,16 +3515,32 @@ def _intra_message_target_order(
     if len(rows) < 2:
         return None  # singleton group: no invariant to enforce
     # Truth first: when every orderable row of the message declares its
-    # absolute content index, keep the message's real block order. RBT below
-    # is the repair for rows that arrived without that truth; it must not
-    # rewrite a group that has it. A message may legitimately emit a tool
-    # call before its trailing text, and moving that tool below the text
-    # split the client's step group into a lone tool row (pp 2026-11-19).
-    if all(row.content_block_index is not None for row in rows):
-        return sorted(
-            rows,
-            key=lambda row: (row.content_block_index, row.order_seq, row.id),
-        )
+    # absolute content index *and the message itself is the source of it*,
+    # keep the message's real block order. RBT below is the repair for rows
+    # that arrived without that truth; it must not rewrite a group that has
+    # it. A message may legitimately emit a tool call before its trailing
+    # text, and moving that tool below the text split the client's step group
+    # into a lone tool row (pp 2026-11-19).
+    #
+    # A derived index is not truth. Older connectors counted transcript lines
+    # (block *completion* order) and declared the result as the absolute
+    # index; on the OpenAI-format model channel that inverted every text+tool
+    # message and the repair then moved the tool rows above the body
+    # (pp 2026-11-20). Only ``contentBlockIndexSource == "message"`` may drive
+    # a reorder; anything else falls through to RBT. Indexes that collide are
+    # treated the same way: a message cannot place two blocks at one index, so
+    # the declaration is broken and the group is ordered by RBT instead.
+    if all(
+        row.content_block_index is not None
+        and row.content_block_index_source == "message"
+        for row in rows
+    ):
+        indexes = [row.content_block_index for row in rows]
+        if len(set(indexes)) == len(indexes):
+            return sorted(
+                rows,
+                key=lambda row: (row.content_block_index, row.order_seq, row.id),
+            )
     reasoning = sorted(
         (row for row in group.values() if row.kind == "reasoning"),
         key=lambda row: (row.order_seq, row.id),

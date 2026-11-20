@@ -38,6 +38,10 @@ struct ConversationOutlineSheet: View {
             ScrollView {
                 content
             }
+            // The keyboard follows the drag instead of dropping in its own
+            // animation the moment the list starts to scroll — the same
+            // interactive dismissal the transcript uses (pp 2026-11-21).
+            .scrollDismissesKeyboard(.interactively)
             .background(ChatPalette.outlineSheetBackground.color.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(ChatPalette.outlineSheetBackground.color, for: .navigationBar)

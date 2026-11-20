@@ -56,6 +56,16 @@ struct ConversationOutlineSheet: View {
             // animation the moment the list starts to scroll — the same
             // interactive dismissal the transcript uses (pp 2026-11-21).
             .scrollDismissesKeyboard(.interactively)
+            // Whether a downward drag actually reaches this list, and whether
+            // the keyboard follows it, is the question two device rounds could
+            // not answer (pp 2026-11-21). Phase changes only: per-frame
+            // scrolling would flood the diagnostics trail.
+            .onScrollPhaseChange { old, new, _ in
+                OutlineProbe.shared.noteScroll(
+                    old: old.outlineDiagnosticName,
+                    new: new.outlineDiagnosticName
+                )
+            }
             .background(ChatPalette.outlineSheetBackground.color.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(ChatPalette.outlineSheetBackground.color, for: .navigationBar)
@@ -76,6 +86,16 @@ struct ConversationOutlineSheet: View {
                 prompt: Text(String(localized: "消息中的字词"))
             )
             .task {
+                OutlineProbe.shared.begin(
+                    sessionID: chat.session.id,
+                    rows: entries.count,
+                    live: liveItems.count,
+                    cached: cachedItems.count
+                )
+                defer { OutlineProbe.shared.end() }
+                OutlineProbe.shared.noteStatus(
+                    chat.session.runtime.state?.status.rawValue
+                )
                 refreshLiveItems()
                 await loadCachedRows()
                 // Keep the outline roughly current without re-rendering on
@@ -83,6 +103,9 @@ struct ConversationOutlineSheet: View {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
                     guard !Task.isCancelled else { break }
+                    OutlineProbe.shared.noteStatus(
+                        chat.session.runtime.state?.status.rawValue
+                    )
                     refreshLiveItems()
                 }
             }
@@ -97,12 +120,20 @@ struct ConversationOutlineSheet: View {
         // at once are what stuttered (pp 2026-11-21).
         .interactiveDismissDisabled(keyboardVisible)
         .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillShowNotification)) { _ in
+            for: UIResponder.keyboardWillShowNotification)) { note in
             keyboardVisible = true
+            OutlineProbe.shared.noteKeyboard(
+                phase: "show",
+                height: keyboardHeight(note)
+            )
         }
         .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillHideNotification)) { _ in
+            for: UIResponder.keyboardWillHideNotification)) { note in
             keyboardVisible = false
+            OutlineProbe.shared.noteKeyboard(
+                phase: "hide",
+                height: keyboardHeight(note)
+            )
         }
     }
 
@@ -163,18 +194,23 @@ struct ConversationOutlineSheet: View {
     private func card(_ rows: [RowModel]) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(rows) { row in
-                    ConversationOutlineRow(
-                        content: ConversationOutlineRowContentMaker.content(
-                            for: row.entry,
-                            hit: row.hit,
-                            strings: outlineStrings
-                        ),
-                        initials: viewerInitials,
-                        avatarSource: appState.accountAvatarSource,
-                        agentAsset: agentMark.asset,
-                        agentTint: agentTint,
-                        action: { choose(row) }
-                    )
+                let started = CFAbsoluteTimeGetCurrent()
+                let rowContent = ConversationOutlineRowContentMaker.content(
+                    for: row.entry,
+                    hit: row.hit,
+                    strings: outlineStrings
+                )
+                _ = OutlineProbe.shared.noteContentBuild(
+                    ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+                )
+                ConversationOutlineRow(
+                    content: rowContent,
+                    initials: viewerInitials,
+                    avatarSource: appState.accountAvatarSource,
+                    agentAsset: agentMark.asset,
+                    agentTint: agentTint,
+                    action: { choose(row) }
+                )
                 if row.id != rows.last?.id {
                     Rectangle()
                         .fill(ChatPalette.outlineDivider.color)
@@ -242,12 +278,25 @@ struct ConversationOutlineSheet: View {
     }
 
     private func reload() {
+        let started = CFAbsoluteTimeGetCurrent()
         entries = ConversationOutlineEntryBuilder.entries(
             from: ConversationOutlineSource.merged(
                 live: liveItems,
                 cached: cachedItems
             )
         )
+        OutlineProbe.shared.noteReload(
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000,
+            rows: entries.count,
+            live: liveItems.count,
+            cached: cachedItems.count
+        )
+    }
+
+    private func keyboardHeight(_ note: Notification) -> Double {
+        let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
+            as? CGRect
+        return frame?.height ?? 0
     }
 
     /// The official count line counts messages, not outline rows: one row can
@@ -268,6 +317,7 @@ struct ConversationOutlineSheet: View {
 
     private func choose(_ row: RowModel) {
         guard !machine.state.isBusy else { return }
+        OutlineProbe.shared.noteJump(searching: row.hit != nil)
         let partID = row.hit?.partID ?? row.entry.parts.first?.id ?? row.entry.id
         let target = ConversationOutlineJumpTarget(entryID: row.entry.id, partID: partID)
         _ = machine.handle(.choose(target))

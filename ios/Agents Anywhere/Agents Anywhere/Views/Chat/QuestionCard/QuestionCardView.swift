@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The official `ClaudeCoreUI.QuestionCard` for a pending `input_request`
 /// notice. Values come from `QuestionCardMetrics` (CANONICAL/25-question-card.md,
@@ -97,6 +98,10 @@ struct QuestionCardView: View {
         // whole rounded silhouette belongs to the card.
         .contentShape(RoundedRectangle(cornerRadius: QuestionCardMetrics.cornerRadius,
                                        style: .continuous))
+        // A downward swipe anywhere on the card drops the keyboard: the card
+        // consumes the drags that used to fall through to the transcript, so
+        // it has to dismiss the keyboard itself (pp 2026-11-20).
+        .gesture(QuestionCardSwipeDownGesture { dismissKeyboard() })
         .glassEffect(.regular, in: .rect(cornerRadius: QuestionCardMetrics.cornerRadius))
         // The dock cell clips its bounds; clipping to the card's own shape
         // keeps the glass shadow from painting around it (same reason as
@@ -228,7 +233,9 @@ struct QuestionCardView: View {
     }
 
     /// Horizontal swipe → previous/next question (replaces the ScrollView the
-    /// official card used for paging).
+    /// official card used for paging). Vertical drags are left to
+    /// `QuestionCardSwipeDownGesture` on the card root, which covers the
+    /// whole card, not just this block.
     private var pagingDrag: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
@@ -463,6 +470,13 @@ struct QuestionCardView: View {
         pageIndex = next
     }
 
+    /// Same dismissal the transcript's empty-space tap uses: resign whichever
+    /// editor owns the responder (the card's custom-answer field).
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     private func advance() {
         if isLastPage {
             submit()
@@ -511,6 +525,55 @@ private struct CloseXMark: View {
         }
         .frame(width: span, height: span)
         .accessibilityHidden(true)
+    }
+}
+
+/// Passive downward-swipe recognizer for the whole card (the K2 composer
+/// gesture's pattern): it observes the finger without cancelling touches, so
+/// taps, option buttons and IME candidates keep working, and it ignores
+/// drags that begin inside the custom-answer editor — those belong to text
+/// selection.
+private struct QuestionCardSwipeDownGesture: UIGestureRecognizerRepresentable {
+    let onSwipeDown: () -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.cancelsTouchesInView = false
+        recognizer.maximumNumberOfTouches = 1
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {}
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer,
+                                         context: Context) {
+        guard recognizer.state == .ended else { return }
+        let translation = context.converter.localTranslation
+            ?? recognizer.translation(in: recognizer.view)
+        guard translation.y > 40, abs(translation.y) > abs(translation.x) else { return }
+        onSwipeDown()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        /// This recognizer is passive; it must never make another recognizer
+        /// (button taps, the IME, the text editor) fail.
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldReceive touch: UITouch) -> Bool {
+            var view: UIView? = touch.view
+            while let candidate = view, candidate !== recognizer.view {
+                if candidate is UITextView { return false }
+                view = candidate.superview
+            }
+            return true
+        }
     }
 }
 

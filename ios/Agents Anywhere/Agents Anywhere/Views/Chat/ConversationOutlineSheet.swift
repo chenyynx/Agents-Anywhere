@@ -1,4 +1,5 @@
 import Combine
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -194,17 +195,8 @@ struct ConversationOutlineSheet: View {
     private func card(_ rows: [RowModel]) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(rows) { row in
-                let started = CFAbsoluteTimeGetCurrent()
-                let rowContent = ConversationOutlineRowContentMaker.content(
-                    for: row.entry,
-                    hit: row.hit,
-                    strings: outlineStrings
-                )
-                _ = OutlineProbe.shared.noteContentBuild(
-                    ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
-                )
                 ConversationOutlineRow(
-                    content: rowContent,
+                    content: rowContent(for: row),
                     initials: viewerInitials,
                     avatarSource: appState.accountAvatarSource,
                     agentAsset: agentMark.asset,
@@ -296,7 +288,24 @@ struct ConversationOutlineSheet: View {
     private func keyboardHeight(_ note: Notification) -> Double {
         let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
             as? CGRect
-        return frame?.height ?? 0
+        return Double(frame?.height ?? 0)
+    }
+
+    /// Builds one row's content and reports its cost. Kept out of the
+    /// `ForEach` closure: statements inside a `ViewBuilder` body made the
+    /// compiler resolve `ForEach` to its `Binding` overload and refused the
+    /// row array (b1406 app build).
+    private func rowContent(for row: RowModel) -> ConversationOutlineRowContent {
+        let started = CFAbsoluteTimeGetCurrent()
+        let content = ConversationOutlineRowContentMaker.content(
+            for: row.entry,
+            hit: row.hit,
+            strings: outlineStrings
+        )
+        OutlineProbe.shared.noteContentBuild(
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
+        return content
     }
 
     /// The official count line counts messages, not outline rows: one row can

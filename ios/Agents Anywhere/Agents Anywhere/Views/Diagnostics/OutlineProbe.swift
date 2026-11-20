@@ -243,7 +243,6 @@ extension ScrollPhase {
         case .interacting: return "interacting"
         case .decelerating: return "decelerating"
         case .animating: return "animating"
-        @unknown default: return "unknown"
         }
     }
 }

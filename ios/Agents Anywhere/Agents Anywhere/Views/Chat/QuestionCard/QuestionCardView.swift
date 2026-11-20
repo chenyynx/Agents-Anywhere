@@ -133,7 +133,9 @@ struct QuestionCardView: View {
         } label: {
             // The official left glyph is `anthropicon.caretLeft`; AA ships only
             // the right artwork, so the same caret is mirrored (see PR body).
-            AnthropiconView(name: "anthropicon.caretRight", size: .large)
+            // Official paging arrows measure ~13 pt of artwork ink on device
+            // (38 px @3x), the `.small` slot — not `.large`.
+            AnthropiconView(name: "anthropicon.caretRight", size: .small)
                 .scaleEffect(x: left ? -1 : 1, y: 1)
                 .frame(width: QuestionCardMetrics.arrowGlyphSize,
                        height: QuestionCardMetrics.arrowGlyphSize)
@@ -153,7 +155,9 @@ struct QuestionCardView: View {
             AppSymbol("xmark", size: 15)
                 .frame(width: QuestionCardMetrics.closeButtonSize,
                        height: QuestionCardMetrics.closeButtonSize)
-                .background(.regularMaterial, in: Circle())
+                // Official DismissXButton is a floating Liquid Glass circle
+                // (pp 2026-11-20), same treatment as the other glass chrome.
+                .glassEffect(.regular.interactive(), in: Circle())
                 // Official X is a mid-grey stroke, not the near-black ink of
                 // the text (device, 2026-11-20).
                 .foregroundStyle(secondary)
@@ -334,6 +338,10 @@ struct QuestionCardView: View {
                     primaryButton
                 }
             }
+            // Official buttons are two ~110 pt capsules centred in the card,
+            // not a full-width row (measured on device, 2026-11-20).
+            .frame(maxWidth: QuestionCardMetrics.submitRowMaxWidth)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -368,10 +376,10 @@ struct QuestionCardView: View {
                 } else {
                     HStack(spacing: 6) {
                         Text(title)
-                            .font(QuestionCardTheme.font(size: 15, weight: 500))
+                            .font(QuestionCardTheme.font(size: 13, weight: 500))
                         if showsArrow {
-                            AnthropiconView(name: "anthropicon.caretRight", size: .medium)
-                                .frame(width: 14, height: 14)
+                            AnthropiconView(name: "anthropicon.caretRight", size: .small)
+                                .frame(width: 13, height: 13)
                         }
                     }
                 }

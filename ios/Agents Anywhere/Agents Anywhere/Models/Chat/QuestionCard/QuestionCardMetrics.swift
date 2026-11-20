@@ -48,6 +48,8 @@ nonisolated enum QuestionCardMetrics {
     static let dividerThicknessPixels: CGFloat = 1
 
     static let submitSpacing: CGFloat = 8
+    /// Two ~110 pt capsules centred in the card (device: 115 / 106 pt).
+    static let submitRowMaxWidth: CGFloat = 232
     static let buttonPressedScale: CGFloat = 0.98
     static let buttonDisabledOpacity: Double = 0.75
     /// `ClaudeInlineButtonStyle` stroke = 2 × pixelLength (0.667 pt at 3x).
@@ -74,20 +76,20 @@ nonisolated enum QuestionCardMetrics {
     static let requesterLineHeight: CGFloat = 21
     static let requesterWeight: CGFloat = 500
 
-    static let questionSize: CGFloat = 17
-    static let questionLineHeight: CGFloat = 24
+    static let questionSize: CGFloat = 16.5
+    static let questionLineHeight: CGFloat = 23.8
     static let questionWeight: CGFloat = 500
 
-    static let optionSize: CGFloat = 13
+    static let optionSize: CGFloat = 12.5
     static let optionLineHeight: CGFloat = 20
     static let optionWeight: CGFloat = 500
 
     /// Option description: 13 / 18 / 400, secondary ink.
-    static let optionDetailSize: CGFloat = 13
-    static let optionDetailLineHeight: CGFloat = 18
+    static let optionDetailSize: CGFloat = 11
+    static let optionDetailLineHeight: CGFloat = 17
 
-    static let pagingSize: CGFloat = 13
-    static let pagingLineHeight: CGFloat = 18.2
+    static let pagingSize: CGFloat = 12
+    static let pagingLineHeight: CGFloat = 17
     static let pagingWeight: CGFloat = 500
 
     // MARK: - Answered card (E)

@@ -649,43 +649,45 @@ def _adopt_published_turn_ids(
     ]
 
 
-#: The last resolution picture this process logged: (ledgers, resolved,
-#: conflicted). The diagnostic below writes only when it changes, so a healthy
-#: session sync costs one line at most and never one per message.
-_BLOCK_ORDER_LOG_STATE: tuple[int, int, int] | None = None
+#: True once this process has logged a healthy resolution. One line per
+#: process is the upgrade-compatibility proof; per-window lines are noise.
+_BLOCK_ORDER_ACTIVE_LOGGED = False
+#: The last conflict picture logged, deduped by its numbers.
+_BLOCK_ORDER_CONFLICT_STATE: tuple[int, int, int] | None = None
 
 
 def _note_block_order_resolution(
     ledger_count: int, resolved: int, conflicted: int
 ) -> None:
-    """One line per changed resolution picture — never per message.
+    """Log conflicts and the first healthy resolution — nothing else.
 
-    The resolver is the only place that knows whether the CLI's request ledger
-    was readable. Without this line an empty ledger (older CLI build, or a
-    format change) and a healthy one look identical in the logs, which is the
-    exact upgrade-compatibility signal the 2026-11-20 incident needed and did
-    not have. Warn only when something is wrong: conflicting ledgers, or
-    ledgers present but nothing attributable.
+    A projection window is often partial: it can carry ledgers (the whole
+    transcript's) while containing no anchor-bearing message, so
+    ``resolved == 0`` is a NORMAL window, not an anomaly (2026-11-20 14:45：
+    70/0 误报，全量离线核对同一会话 28/28 可归属). The only alarming state is
+    a conflicting ledger (two different block orders for one message) — that
+    is broken truth. A healthy resolution is logged once per process as the
+    "resolver is alive" proof; empty/partial windows stay silent.
     """
 
-    global _BLOCK_ORDER_LOG_STATE
-    state = (ledger_count, resolved, conflicted)
-    if state == _BLOCK_ORDER_LOG_STATE:
+    global _BLOCK_ORDER_ACTIVE_LOGGED, _BLOCK_ORDER_CONFLICT_STATE
+    if conflicted:
+        state = (ledger_count, resolved, conflicted)
+        if state != _BLOCK_ORDER_CONFLICT_STATE:
+            _BLOCK_ORDER_CONFLICT_STATE = state
+            logger.warning(
+                "claude block-order unresolved ledgers={} resolved={} conflicted={}",
+                ledger_count,
+                resolved,
+                conflicted,
+            )
         return
-    _BLOCK_ORDER_LOG_STATE = state
-    if conflicted or (ledger_count and not resolved):
-        logger.warning(
-            "claude block-order unresolved ledgers={} resolved={} conflicted={}",
-            ledger_count,
-            resolved,
-            conflicted,
-        )
-    else:
+    if resolved and not _BLOCK_ORDER_ACTIVE_LOGGED:
+        _BLOCK_ORDER_ACTIVE_LOGGED = True
         logger.info(
-            "claude block-order resolved ledgers={} resolved={} conflicted={}",
+            "claude block-order resolver active ledgers={} resolved={}",
             ledger_count,
             resolved,
-            conflicted,
         )
 
 

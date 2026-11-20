@@ -1,27 +1,34 @@
-"""Rows declare the message's real block order (pp 2026-11-19).
+"""Rows declare the message's real block order — from the request ledger only.
 
-One assistant message may emit a tool call before its trailing text
-(``[thinking, tool_use, text]``). The legacy ``blockIndex`` only counts
-``tool_use`` blocks, so the server's in-message invariant (RBT) moved the tool
-row below the body and the client split the step group.
+The transcript writes one content block per assistant line (thinking / tool_use
+/ text lines sharing one message id), in block COMPLETION order. On the
+OpenAI-format model channel a tool call completes before the text it follows,
+so deriving the absolute index from line order inverted every text+tool message
+and the server moved the tool row above the body (pp 2026-11-20).
 
-Each orderable row now declares ``source.contentBlockIndex`` — its absolute
-index in the message's ``content`` array — computed wherever the projection
-holds the full message (history/turn-end). The server keeps that real order
-when every sibling declares it and falls back to RBT otherwise.
+The message's real order only exists in the CLI's request ledger
+(``api-request-blob`` lines, the assembled ``content`` array). These tests pin:
+
+- the index comes from the ledger, even when line order disagrees (T1);
+- the ``[thinking, tool, trailing text]`` shape still declares 0/1/2;
+- a message without a ledger declares NOTHING — no guess (T4);
+- conflicting ledgers declare nothing (T6);
+- the declaration carries ``contentBlockIndexSource = "message"``.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from claude_agent_sdk._internal.message_parser import parse_message
 
 from connector.runtimes.claude.domain.session import ClaudeSession
 from connector.runtimes.claude.sessions.reader import _history_items_from_messages
-from connector.runtimes.claude.timeline.messages import (
-    ClaudeMessageProjector,
-    message_text_content_index,
+from connector.runtimes.claude.timeline.block_order import (
+    MessageBlockOrder,
+    blob_ledgers,
+    resolve_message_orders,
 )
 from connector.server.runtime_host import _timeline_source_payload
 
@@ -38,63 +45,7 @@ def _parse(frame: dict[str, Any]) -> Any:
     return message
 
 
-def _full_message(content: list[dict[str, Any]]) -> Any:
-    """One assistant message whose content holds every block (history shape)."""
-
-    return _parse(
-        {
-            "type": "assistant",
-            "message": {
-                "id": "msg-order-1",
-                "role": "assistant",
-                "model": "deepseek-v4.1-flash",
-                "content": content,
-            },
-            "parent_tool_use_id": None,
-            "session_id": SESSION,
-            "uuid": "assistant-msg-order-1",
-        }
-    )
-
-
-def _rows() -> tuple[Any, tuple[Any, ...], tuple[Any, ...]]:
-    message = _full_message(
-        [
-            {"type": "thinking", "thinking": "think", "signature": "s"},
-            {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {}},
-            {"type": "text", "text": "trailing text"},
-        ]
-    )
-    projector = ClaudeMessageProjector()
-    tools = projector.tool_items_for_message(
-        session=_session(), turn_id="turn-1", message=message, full_content=True
-    )
-    systems = projector.system_items_for_message(
-        session=_session(),
-        turn_id="turn-1",
-        message=message,
-        event="claude.history.system",
-        full_content=True,
-    )
-    return message, tools, systems
-
-
-def test_rows_declare_the_real_content_block_index() -> None:
-    _, tools, systems = _rows()
-    assert len(tools) == 1 and len(systems) == 1
-    assert systems[0].source.get("contentBlockIndex") == 0
-    assert tools[0].source.get("contentBlockIndex") == 1
-    # The legacy tool ordinal is still declared separately: this message has a
-    # single tool_use, so it is 0 — not the absolute index 1.
-    assert tools[0].source.get("blockIndex") == 0
-
-
-def test_message_body_index_is_the_first_text_block() -> None:
-    message, _, _ = _rows()
-    assert message_text_content_index(message) == 2
-
-
-def _single_block_line(block: dict[str, Any], uuid: str) -> Any:
+def _line(block: dict[str, Any], uuid: str) -> Any:
     """One production transcript line: one block, sharing the message id."""
 
     return _parse(
@@ -113,72 +64,195 @@ def _single_block_line(block: dict[str, Any], uuid: str) -> Any:
     )
 
 
-def test_production_single_block_lines_get_a_running_index() -> None:
-    """Three lines share the message id; indices must be 0/1/2, not 0/0/0.
+def _blob_line(content: list[dict[str, Any]]) -> str:
+    """The CLI's request ledger entry for one assembled assistant message."""
 
-    The engine writes one content block per message line. A projection that
-    used the line's own ``enumerate`` declared 0 for every sibling, the server
-    tie-break kept RBT, and the lone tool row survived (pp 2026-11-19 device
-    screenshot: text row 0, tool row 0 while the true order is tool → text).
+    return json.dumps(
+        {
+            "type": "api-request-blob",
+            "sessionId": SESSION,
+            "hash": "h",
+            "message": {"role": "assistant", "content": content},
+        }
+    )
+
+
+def _by_kind(items: tuple[Any, ...]) -> dict[str, Any]:
+    rows: dict[str, Any] = {}
+    for item in items:
+        if item.type == "tool":
+            rows["tool"] = item
+        elif item.type == "system":
+            rows["reasoning"] = item
+        elif item.type == "message" and item.role == "assistant":
+            rows["body"] = item
+    return rows
+
+
+THINKING = {"type": "thinking", "thinking": "think", "signature": "s"}
+TOOL = {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {}}
+TEXT = {"type": "text", "text": "lead-in"}
+
+
+def test_line_completion_order_does_not_decide_the_index() -> None:
+    """T1: tool line completes first, but the message is [text, tool_use].
+
+    The production failure (pp 2026-11-20): lines arrive tool → text, the
+    assembled message is text → tool. The declared indexes must follow the
+    ledger: body 0, tool 1 — never the line order.
     """
 
     messages = (
-        _single_block_line(
-            {"type": "thinking", "thinking": "think", "signature": "s"},
-            "line-thinking",
-        ),
-        _single_block_line(
-            {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {}},
-            "line-tool",
-        ),
-        _single_block_line(
-            {"type": "text", "text": "trailing text"}, "line-text"
-        ),
+        _line(TOOL, "line-tool"),
+        _line(TEXT, "line-text"),
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=(_blob_line([TEXT, TOOL]),),
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    rows = _by_kind(items)
+    assert rows["body"].source.get("contentBlockIndex") == 0
+    assert rows["body"].source.get("contentBlockIndexSource") == "message"
+    assert rows["tool"].source.get("contentBlockIndex") == 1
+    assert rows["tool"].source.get("contentBlockIndexSource") == "message"
+    # The legacy tool ordinal is still declared separately.
+    assert rows["tool"].source.get("blockIndex") == 0
+
+
+def test_thinking_tool_trailing_text_keeps_its_real_order() -> None:
+    """The 2026-11-19 shape: [thinking, tool_use, trailing text] → 0/1/2."""
+
+    messages = (
+        _line(THINKING, "line-thinking"),
+        _line(TOOL, "line-tool"),
+        _line({"type": "text", "text": "trailing text"}, "line-text"),
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=(_blob_line([THINKING, TOOL, {"type": "text", "text": "trailing text"}]),),
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    rows = _by_kind(items)
+    assert rows["reasoning"].source.get("contentBlockIndex") == 0
+    assert rows["tool"].source.get("contentBlockIndex") == 1
+    assert rows["body"].source.get("contentBlockIndex") == 2
+    for row in rows.values():
+        assert row.source.get("contentBlockIndexSource") == "message"
+
+
+def test_the_body_index_is_the_first_text_block() -> None:
+    """A message with two text blocks places its body row at the first one."""
+
+    second_text = {"type": "text", "text": "closing"}
+    messages = (
+        _line(THINKING, "line-thinking"),
+        _line(TEXT, "line-text-1"),
+        _line(TOOL, "line-tool"),
+        _line(second_text, "line-text-2"),
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=(_blob_line([THINKING, TEXT, TOOL, second_text]),),
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    rows = _by_kind(items)
+    assert rows["body"].source.get("contentBlockIndex") == 1
+    assert rows["tool"].source.get("contentBlockIndex") == 2
+
+
+def test_without_a_ledger_nothing_is_declared() -> None:
+    """T4: no request ledger (older CLI builds) → no index, never a guess."""
+
+    messages = (
+        _line(TOOL, "line-tool"),
+        _line(TEXT, "line-text"),
     )
     items = _history_items_from_messages(
         _session(),
         messages,
         turn_ids={"msg-order-1": "turn-1"},
     )
-    by_kind: dict[str, int | None] = {}
-    for item in items:
-        if item.type == "tool":
-            by_kind["tool"] = item.source.get("contentBlockIndex")
-        elif item.type == "system":
-            by_kind["reasoning"] = item.source.get("contentBlockIndex")
-        elif item.type == "message" and item.role == "assistant":
-            by_kind["body"] = item.source.get("contentBlockIndex")
-    assert by_kind == {"reasoning": 0, "tool": 1, "body": 2}
+    rows = _by_kind(items)
+    for row in rows.values():
+        assert row.source.get("contentBlockIndex") is None
+        assert "contentBlockIndexSource" not in row.source
 
 
-def test_the_wire_source_payload_carries_the_field() -> None:
-    _, tools, _ = _rows()
-    payload = _timeline_source_payload(tools[0])
-    assert payload["contentBlockIndex"] == 1
+def test_conflicting_ledgers_declare_nothing() -> None:
+    """T6: two different ledgers for one message are broken truth → no order."""
 
-
-def test_history_projection_orders_tool_before_trailing_text() -> None:
-    """The settled view (history republish) declares the real order."""
-
-    message = _full_message(
-        [
-            {"type": "thinking", "thinking": "think", "signature": "s"},
-            {"type": "tool_use", "id": "call_1", "name": "Bash", "input": {}},
-            {"type": "text", "text": "trailing text"},
-        ]
+    messages = (
+        _line(TOOL, "line-tool"),
+        _line(TEXT, "line-text"),
     )
     items = _history_items_from_messages(
         _session(),
-        (message,),
+        messages,
+        raw_lines=(
+            _blob_line([TEXT, TOOL]),
+            _blob_line([TOOL, TEXT]),
+        ),
         turn_ids={"msg-order-1": "turn-1"},
     )
-    by_kind: dict[str, int | None] = {}
-    for item in items:
-        item_type = item.type
-        if item_type == "tool":
-            by_kind["tool"] = item.source.get("contentBlockIndex")
-        elif item_type == "system":
-            by_kind["reasoning"] = item.source.get("contentBlockIndex")
-        elif item_type == "message" and item.role == "assistant":
-            by_kind["body"] = item.source.get("contentBlockIndex")
-    assert by_kind == {"reasoning": 0, "tool": 1, "body": 2}
+    rows = _by_kind(items)
+    for row in rows.values():
+        assert row.source.get("contentBlockIndex") is None
+
+
+def test_a_ledger_of_another_message_is_not_attributed() -> None:
+    """A ledger whose anchors belong to no projected message declares nothing."""
+
+    other_tool = {"type": "tool_use", "id": "call_other", "name": "Bash", "input": {}}
+    other_text = {"type": "text", "text": "other"}
+    messages = (
+        _line(TOOL, "line-tool"),
+        _line(TEXT, "line-text"),
+    )
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=(_blob_line([other_text, other_tool]),),
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    rows = _by_kind(items)
+    for row in rows.values():
+        assert row.source.get("contentBlockIndex") is None
+
+
+def test_the_wire_source_payload_carries_the_source() -> None:
+    messages = (_line(TOOL, "line-tool"), _line(TEXT, "line-text"))
+    items = _history_items_from_messages(
+        _session(),
+        messages,
+        raw_lines=(_blob_line([TEXT, TOOL]),),
+        turn_ids={"msg-order-1": "turn-1"},
+    )
+    payload = _timeline_source_payload(_by_kind(items)["tool"])
+    assert payload["contentBlockIndex"] == 1
+    assert payload["contentBlockIndexSource"] == "message"
+
+
+def test_blob_ledgers_and_resolution_are_pure() -> None:
+    """The resolver itself: attribution by anchor, conflicts dropped."""
+
+    ledgers = blob_ledgers(
+        (
+            _blob_line([TEXT, TOOL]),
+            _blob_line([{"type": "tool_use", "id": "call_x", "name": "Bash", "input": {}}]),
+        )
+    )
+    assert len(ledgers) == 2
+    orders = resolve_message_orders(
+        {("tool", "call_1"): "msg-a"},
+        ledgers,
+    )
+    order = orders["msg-a"]
+    assert isinstance(order, MessageBlockOrder)
+    assert order.first_text_index == 0
+    assert order.index_for("tool", "call_1") == 1
+    # The second ledger has no anchor of ours: it is not attributed anywhere.
+    assert "msg-b" not in orders

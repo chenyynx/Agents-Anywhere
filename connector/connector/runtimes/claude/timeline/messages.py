@@ -3020,6 +3020,16 @@ def _tool_result_content(
         **({"synthetic": True, "missingResult": True} if block.is_synthetic else {}),
         **({"error": output} if block.is_error else {}),
     }
+    if call is not None and call.tool_name == "AskUserQuestion":
+        # The answered card replays from this row after the notice is gone
+        # (the connector drops terminal notices), so the completed content
+        # keeps the transcript's structured questions/answers. The generic
+        # metadata above only carries text/preview fields; `details` is the
+        # transcript's `toolUseResult` ({questions, answers}).
+        for key in ("questions", "answers"):
+            value = details.get(key)
+            if value is not None:
+                result_metadata[key] = value
     call_content = (
         _tool_call_content(call, parent_item_id=parent_item_id)
         if call is not None

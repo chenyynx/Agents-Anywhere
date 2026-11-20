@@ -4476,6 +4476,11 @@ async def _test_claude_runtime_ask_user_question_round_trips_answers_to_sdk() ->
     assert [action["actionId"] for action in notice.actions] == ["submit", "cancel"]
     form = notice.actions[0]["input"]
     assert form["uiSchema"]["component"] == "inputRequest"
+    # A question the user skips is omitted from `answers`; the schema must not
+    # require every question id, and Claude's form advertises the card's skip
+    # affordance (official QuestionCard skip, 2026-11-20).
+    assert "required" not in form["schema"]["properties"]["answers"]
+    assert form["uiSchema"]["allowSkip"] is True
     assert [question["multiple"] for question in form["uiSchema"]["questions"]] == [
         False,
         True,
@@ -4531,6 +4536,48 @@ async def _test_claude_runtime_ask_user_question_round_trips_answers_to_sdk() ->
     }
     assert await runtime.get_session_notices("sess_questions") == ()
     assert host.session_state_updates[-1]["status"] == "idle"
+
+
+def test_claude_runtime_ask_user_question_skipped_question_is_omitted() -> None:
+    asyncio.run(_test_claude_runtime_ask_user_question_skipped_question_is_omitted())
+
+
+async def _test_claude_runtime_ask_user_question_skipped_question_is_omitted() -> None:
+    host = _RecordingHost()
+    client = _AskUserQuestionClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    result = await runtime.start_turn(
+        "sess_questions",
+        "claude_session_questions",
+        "ask me",
+    )
+    task = runtime._sessions["sess_questions"].active_task
+
+    assert result.ok is True
+    assert task is not None
+    await _wait_until(lambda: bool(host.notice_upserts))
+    notice = host.notice_upserts[0]
+
+    # q_1 is skipped: absent from `answers`, and the submission is valid.
+    response = await runtime.respond_interaction(
+        "sess_questions",
+        notice.notice_id,
+        "submit",
+        input_data={"answers": {"q_0": {"optionIds": ["o_0"]}}},
+    )
+    assert response.ok is True
+    assert response.result["decision"] == "submitted"
+
+    await task
+
+    permission_result = client.permission_results[0]
+    assert isinstance(permission_result, _PermissionResultAllow)
+    assert permission_result.updated_input == {
+        "questions": client.questions,
+        "answers": {"How should I format the output?": "Summary"},
+    }
+    assert await runtime.get_session_notices("sess_questions") == ()
 
 
 def _runtime(

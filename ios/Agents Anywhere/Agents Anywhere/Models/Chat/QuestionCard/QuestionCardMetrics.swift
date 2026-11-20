@@ -90,7 +90,7 @@ nonisolated enum QuestionCardMetrics {
 
     static let pagingSize: CGFloat = 12
     static let pagingLineHeight: CGFloat = 17
-    static let pagingWeight: CGFloat = 500
+    static let pagingWeight: CGFloat = 400
 
     // MARK: - Answered card (E)
 

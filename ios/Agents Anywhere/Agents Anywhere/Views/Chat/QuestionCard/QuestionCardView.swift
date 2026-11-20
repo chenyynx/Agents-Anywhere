@@ -286,12 +286,12 @@ struct QuestionCardView: View {
             if question.allowCustom {
                 NoticeTextInput(value: item.custom[question.id] ?? "",
                                 placeholder: String(localized: "输入您的回答…"),
-                                placeholderColor: detailInk,
                                 cornerRadius: QuestionCardMetrics.inputCornerRadius,
                                 // The placeholder aligns with the options'
                                 // left edge on device — no inner padding.
                                 textPadding: 0,
                                 showsBackground: false,
+                                placeholderColor: detailInk,
                                 onFocus: { item.setCustomSelected(true, question: question) },
                                 onEditingEnded: { item.composingFields.remove($0) },
                                 onChange: { text, marked, editorID in

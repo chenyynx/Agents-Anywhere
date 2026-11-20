@@ -432,22 +432,24 @@ class ClaudeMessageProjector:
                         content_block_index=order_index,
                         content_block_index_source="message",
                     )
-            if (
-                block.block_type == "tool_result"
-                and block.tool_result_metadata is None
-            ):
+            if block.block_type == "tool_result":
                 # The SDK history surface reconstructs SessionMessage without
                 # the transcript's toolUseResult; the raw scan keeps the Read
                 # `file` metadata so a sync rebuild cannot strip the flag the
                 # live row published (2026-11-02). Live input requests answer
                 # through the connector, so their structured result is noted
-                # here instead (AskUserQuestion answers, 2026-11-20).
-                raw_metadata = (
-                    self._tool_result_metadata.get(block.tool_use_id)
-                    or self._live_tool_result_metadata.get(block.tool_use_id)
-                )
-                if raw_metadata is not None:
-                    block = replace(block, tool_result_metadata=raw_metadata)
+                # here too (AskUserQuestion answers, 2026-11-20). Merge into
+                # whatever the frame carried: the live stream may set an
+                # empty/partial `tool_use_result`, which used to skip this.
+                raw_metadata = self._tool_result_metadata.get(block.tool_use_id)
+                live_metadata = self._live_tool_result_metadata.get(block.tool_use_id)
+                if raw_metadata is not None or live_metadata is not None:
+                    merged = dict(block.tool_result_metadata or {})
+                    if raw_metadata is not None:
+                        merged.update(raw_metadata)
+                    if live_metadata is not None:
+                        merged.update(live_metadata)
+                    block = replace(block, tool_result_metadata=merged)
             if block.block_type == "tool_use" and is_hidden_tool_name(block.tool_name):
                 self._hidden_tool_use_ids.add(block.tool_use_id)
                 continue

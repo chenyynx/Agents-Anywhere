@@ -1048,15 +1048,25 @@ def _capture_tool_result_metadata(
     repeats the whole file body.
     """
 
+    captured: dict[str, Any] = {}
     file = tool_use_result.get("file")
-    if not isinstance(file, Mapping):
+    if isinstance(file, Mapping):
+        trimmed = {key: value for key, value in file.items() if key != "content"}
+        if trimmed:
+            captured["file"] = trimmed
+    # AskUserQuestion: the answers card replays from the question row, and a
+    # sync rebuild must not strip what the live interaction wrote.
+    questions = tool_use_result.get("questions")
+    answers = tool_use_result.get("answers")
+    if questions is not None:
+        captured["questions"] = questions
+    if answers is not None:
+        captured["answers"] = answers
+    if not captured:
         return
     message = row.get("message")
     content = message.get("content") if isinstance(message, Mapping) else None
     if not isinstance(content, list | tuple):
-        return
-    trimmed = {key: value for key, value in file.items() if key != "content"}
-    if not trimmed:
         return
     for block in content:
         if not isinstance(block, Mapping):
@@ -1065,7 +1075,7 @@ def _capture_tool_result_metadata(
             continue
         tool_use_id = _string(block.get("tool_use_id"))
         if tool_use_id is not None:
-            metadata_by_tool_use_id.setdefault(tool_use_id, {"file": trimmed})
+            metadata_by_tool_use_id.setdefault(tool_use_id, {}).update(captured)
 
 
 def scan_raw_transcript(

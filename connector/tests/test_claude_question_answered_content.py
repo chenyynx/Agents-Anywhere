@@ -175,3 +175,104 @@ def test_live_projection_carries_the_answers_noted_by_the_interaction() -> None:
     content = dict(rows[0].content)
     assert content["kind"] == "input_request"
     assert content["answers"] == {"How should I format the output?": "Summary"}
+
+
+def test_live_projection_merges_answers_over_partial_frame_metadata() -> None:
+    """The live stream may carry an empty/partial `tool_use_result`; the
+    connector's recorded answers must still land on the completed row."""
+
+    from claude_agent_sdk._internal.message_parser import parse_message
+
+    from connector.runtimes.claude.domain.session import ClaudeSession
+    from connector.runtimes.claude.timeline.messages import ClaudeMessageProjector
+
+    def frame(payload: dict[str, object]) -> object:
+        message = parse_message(payload)
+        assert message is not None
+        return message
+
+    projector = ClaudeMessageProjector()
+    projector.note_tool_result_metadata(
+        "ask-live-2",
+        {"questions": QUESTIONS, "answers": {"Which sections should I include?": "Intro"}},
+    )
+    session = ClaudeSession(session_id="sess-live-2", external_session_id="claude-live-2")
+    projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=frame(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-2",
+                    "role": "assistant",
+                    "model": "deepseek-v4.1-flash",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "ask-live-2",
+                            "name": "AskUserQuestion",
+                            "input": {"questions": QUESTIONS},
+                        }
+                    ],
+                },
+                "parent_tool_use_id": None,
+                "session_id": "claude-live-2",
+                "uuid": "assistant-ask-live-2",
+            }
+        ),
+    )
+    rows = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=frame(
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "ask-live-2", "content": "ok"}
+                    ],
+                },
+                "parent_tool_use_id": None,
+                "session_id": "claude-live-2",
+                "uuid": "result-ask-live-2",
+                "tool_use_result": {"partial": True},
+            }
+        ),
+    )
+
+    assert len(rows) == 1
+    content = dict(rows[0].content)
+    assert content["answers"] == {"Which sections should I include?": "Intro"}
+
+
+def test_raw_transcript_scan_keeps_question_answers() -> None:
+    """History rebuilds read the scan's metadata; AskUserQuestion answers must
+    survive it or a turn-end sync would strip the live row's answers."""
+
+    import json
+
+    from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcript
+
+    row = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "ask-scan",
+                    "content": [{"type": "text", "text": "answered"}],
+                }
+            ],
+        },
+        "toolUseResult": {
+            "questions": QUESTIONS,
+            "answers": {"How should I format the output?": "Summary"},
+        },
+    }
+    scan = scan_raw_transcript((json.dumps(row),))
+    metadata = scan.tool_result_metadata["ask-scan"]
+    assert metadata["answers"] == {"How should I format the output?": "Summary"}
+    assert metadata["questions"] == QUESTIONS

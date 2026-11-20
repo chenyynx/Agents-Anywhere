@@ -64,7 +64,15 @@ struct QuestionCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             topRow
-            pager
+            // One vertical scroll owns the whole pager: the horizontal
+            // pager's height is its tallest page, and anything past the card
+            // cap scrolls here. Putting a vertical ScrollView *inside* each
+            // page collapsed the pager to a sliver on device (b1384).
+            ScrollView(.vertical) {
+                pager
+            }
+            .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
             statusLine
             submitRow
         }
@@ -188,27 +196,25 @@ struct QuestionCardView: View {
     }
 
     private func page(_ question: NoticeInputQuestion) -> some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 12) {
-                if let header = question.header, !header.isEmpty {
-                    typography(header,
-                               size: QuestionCardMetrics.titleSize,
-                               lineHeight: QuestionCardMetrics.titleLineHeight,
-                               weight: QuestionCardMetrics.titleWeight)
-                        .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme))
-                }
-                typography(question.prompt,
-                           size: QuestionCardMetrics.questionSize,
-                           lineHeight: QuestionCardMetrics.questionLineHeight,
-                           weight: QuestionCardMetrics.questionWeight)
+        VStack(alignment: .leading, spacing: 12) {
+            if let header = question.header, !header.isEmpty {
+                typography(header,
+                           size: QuestionCardMetrics.titleSize,
+                           lineHeight: QuestionCardMetrics.titleLineHeight,
+                           weight: QuestionCardMetrics.titleWeight)
+                    // R5: the card title is primary ink, not the secondary
+                    // token used by descriptions and the paging row.
                     .foregroundStyle(.primary)
-                choices(question)
-                customInput(question)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            typography(question.prompt,
+                       size: QuestionCardMetrics.questionSize,
+                       lineHeight: QuestionCardMetrics.questionLineHeight,
+                       weight: QuestionCardMetrics.questionWeight)
+                .foregroundStyle(.primary)
+            choices(question)
+            customInput(question)
         }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func choices(_ question: NoticeInputQuestion) -> some View {

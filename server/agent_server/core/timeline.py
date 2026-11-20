@@ -312,6 +312,18 @@ def timeline_item_state_is_unchanged(
         and incoming.source.contentBlockIndex != existing.source.contentBlockIndex
     ):
         return False
+    # The source is part of the declaration: a row whose stored index was only
+    # derived (legacy, or no source) must be rewritten the moment a rebuild
+    # declares the message-sourced index — even when the number happens to
+    # match — so the repair gate can start trusting it (pp 2026-11-20). The
+    # reverse never forces a rewrite: a derived write cannot improve a stored
+    # message-sourced declaration (``_preserve_content_block_index`` also
+    # refuses to downgrade it).
+    if (
+        incoming.source.contentBlockIndexSource == "message"
+        and existing.source.contentBlockIndexSource != "message"
+    ):
+        return False
     return True
 
 

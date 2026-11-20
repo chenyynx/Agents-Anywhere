@@ -4,11 +4,11 @@ import Foundation
 /// Official QuestionCard / QuestionAnsweredCard tokens.
 ///
 /// Source: `aa-test/claude-ios-re/CANONICAL/25-question-card.md` (R32 closing
-/// table, Claude iOS 1.261109.19). Every value below is an E-grade read from
-/// the target binary or from the 2026-11-19 device screenshots (§7
-/// cross-check); the remaining U items are listed in `QuestionCardTheme` or
-/// the PR body and use the observed behaviour (16 pt host margin, divider
-/// after every option).
+/// table, Claude iOS 1.261109.19), **re-calibrated 2026-11-20 against pp's
+/// installed official app screenshot**: that build renders the card smaller
+/// than the 1.261109.19 table (question ≈17 pt vs 20, option title ≈13 pt vs
+/// 15, 44 pt buttons). Where the two disagree, the device screenshot wins —
+/// the visible reference is pp's own app, not the R32 binary.
 ///
 /// Kept value-only and view-free so `ClientCoreTests` can assert the official
 /// numbers without building the app target (`ios/Package.swift` excludes
@@ -35,6 +35,10 @@ nonisolated enum QuestionCardMetrics {
     static let arrowDisabledOpacity: Double = 0.3
 
     static let optionRowBadgePadding: CGFloat = 16
+    /// Row top/bottom padding; the device read of pp's official app shows
+    /// a 67 pt row pitch (R6) — 12 pt vertical pad, not the 16 pt all-sides
+    /// figure.
+    static let optionRowVerticalPadding: CGFloat = 14
     static let optionRowPlainPadding: CGFloat = 4
     static let selectionBadgeMinSize: CGFloat = 30
     static let selectionBadgeStrokeWidth: CGFloat = 1
@@ -70,16 +74,20 @@ nonisolated enum QuestionCardMetrics {
     static let requesterLineHeight: CGFloat = 21
     static let requesterWeight: CGFloat = 500
 
-    static let questionSize: CGFloat = 20
-    static let questionLineHeight: CGFloat = 28
+    static let questionSize: CGFloat = 17
+    static let questionLineHeight: CGFloat = 24
     static let questionWeight: CGFloat = 500
 
-    static let optionSize: CGFloat = 15
-    static let optionLineHeight: CGFloat = 24
+    static let optionSize: CGFloat = 13
+    static let optionLineHeight: CGFloat = 20
     static let optionWeight: CGFloat = 500
 
-    static let pagingSize: CGFloat = 15
-    static let pagingLineHeight: CGFloat = 21
+    /// Option description: 13 / 18 / 400, secondary ink.
+    static let optionDetailSize: CGFloat = 13
+    static let optionDetailLineHeight: CGFloat = 18
+
+    static let pagingSize: CGFloat = 13
+    static let pagingLineHeight: CGFloat = 18.2
     static let pagingWeight: CGFloat = 500
 
     // MARK: - Answered card (E)

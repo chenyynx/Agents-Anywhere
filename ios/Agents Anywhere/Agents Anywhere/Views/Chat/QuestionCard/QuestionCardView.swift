@@ -62,7 +62,7 @@ struct QuestionCardView: View {
     // MARK: - Body
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             topRow
             // One vertical scroll owns the whole pager: the horizontal
             // pager's height is its tallest page, and anything past the card
@@ -251,25 +251,26 @@ struct QuestionCardView: View {
                     selectionBadge()
                         .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
                     typography(option.label,
                                size: QuestionCardMetrics.optionSize,
                                lineHeight: QuestionCardMetrics.optionLineHeight,
                                weight: QuestionCardMetrics.optionWeight)
                         .foregroundStyle(.primary)
                     if let detail = option.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(QuestionCardTheme.font(size: 13, weight: 400))
+                        typography(detail,
+                                   size: QuestionCardMetrics.optionDetailSize,
+                                   lineHeight: QuestionCardMetrics.optionDetailLineHeight,
+                                   weight: 400)
                             .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.secondary, colorScheme))
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: 0)
             }
             // The card's 24 pt content padding already places the row on the
-            // official left edge; the 16 pt pad is the official row padding
-            // (E) applied vertically.
-            .padding(.vertical, QuestionCardMetrics.optionRowBadgePadding)
+            // official left edge; the vertical pad matches the official 67 pt
+            // row pitch measured on pp's app.
+            .padding(.vertical, QuestionCardMetrics.optionRowVerticalPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -294,7 +295,9 @@ struct QuestionCardView: View {
                 NoticeTextInput(value: item.custom[question.id] ?? "",
                                 placeholder: String(localized: "输入您的回答…"),
                                 cornerRadius: QuestionCardMetrics.inputCornerRadius,
-                                textPadding: QuestionCardMetrics.inputPadding,
+                                // The placeholder aligns with the options'
+                                // left edge on device — no inner padding.
+                                textPadding: 0,
                                 showsBackground: false,
                                 onFocus: { item.setCustomSelected(true, question: question) },
                                 onEditingEnded: { item.composingFields.remove($0) },
@@ -365,10 +368,10 @@ struct QuestionCardView: View {
                 } else {
                     HStack(spacing: 6) {
                         Text(title)
-                            .font(QuestionCardTheme.font(size: 17, weight: 500))
+                            .font(QuestionCardTheme.font(size: 15, weight: 500))
                         if showsArrow {
                             AnthropiconView(name: "anthropicon.caretRight", size: .medium)
-                                .frame(width: 16, height: 16)
+                                .frame(width: 14, height: 14)
                         }
                     }
                 }
@@ -376,7 +379,7 @@ struct QuestionCardView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             .padding(.horizontal, 16)
-            .frame(minHeight: 54)
+            .frame(minHeight: 44)
             .foregroundStyle(foreground)
             .background {
                 if isSecondary {

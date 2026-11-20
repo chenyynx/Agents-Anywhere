@@ -38,6 +38,21 @@ struct CodeFileTile: View {
     /// the official value is 4 pt, not the 8 pt used before.
     private static let previewCornerRadius: CGFloat = 4
 
+    /// Explicit because the private `@ScaledMetric` fields would otherwise
+    /// make the memberwise initializer private; the mixed image+file grid in
+    /// `CodeAttachmentRow` builds file cards from another file.
+    init(file: V2AttachmentContent,
+         size: CGSize,
+         overflow: Int? = nil,
+         state: CodeAttachmentDisplayState = .complete,
+         onOpen: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
+        self.file = file
+        self.size = size
+        self.overflow = overflow
+        self.state = state
+        self.onOpen = onOpen
+    }
+
     var body: some View {
         Button { onOpen(file, nil) } label: {
             card

@@ -79,13 +79,15 @@ nonisolated enum CodeAttachmentLayout {
     // MARK: - Blocks
 
     /// The heights of the attachment blocks one `.attachments` model block
-    /// draws. Images and files are separate grids (CLOSURE.md §4), so a
-    /// message with both pays two block heights and one block gap between
-    /// them. `pixelSize` lets the caller prefer a locally decoded preview size
-    /// over the server's reported dimensions; both are original pixels.
+    /// draws. When a message carries both images and successful files they
+    /// share ONE square grid (`CodeMixedAttachmentTiles`, pp 2026-11-20), so
+    /// the image's large box only applies to an image-only message; the
+    /// failed cards stay their own blocks in draw order. `pixelSize` lets the
+    /// caller prefer a locally decoded preview size over the server's
+    /// reported dimensions; both are original pixels.
     ///
-    /// A failed document is not part of the successful file grid: the
-    /// official row draws it as an `ArtifactPreviewCard` before the tiles
+    /// A failed document is not part of the successful grid: the official row
+    /// draws it as an `ArtifactPreviewCard` before the tiles
     /// (`attachment-file-card.md` §0). The caller supplies both the state and
     /// the card height so the pending estimate and the view agree; a settled
     /// message leaves both defaults and sees only grids.
@@ -102,21 +104,24 @@ nonisolated enum CodeAttachmentLayout {
     ) -> [CGFloat] {
         let images = files.filter { $0.isImage }
         let documents = files.filter { !$0.isImage }
-        var heights: [CGFloat] = []
-        if !images.isEmpty {
-            heights.append(imageGridHeight(pixelSizes: images.map(pixelSize)))
-        }
         // The view's file block stacks failed cards first, then the
-        // successful file grid; each is a child of the same 8 pt VStack.
+        // successful grid; each is a child of the same 8 pt VStack.
         var failedDocuments: [V2AttachmentContent] = []
         var uploadedDocuments: [V2AttachmentContent] = []
         for file in documents {
             if isFailed(file) { failedDocuments.append(file) } else { uploadedDocuments.append(file) }
         }
+        var heights: [CGFloat] = []
+        if !images.isEmpty && !uploadedDocuments.isEmpty {
+            heights.append(gridHeight(count: images.count + uploadedDocuments.count,
+                                      largeHeight: squareSide))
+        } else if !images.isEmpty {
+            heights.append(imageGridHeight(pixelSizes: images.map(pixelSize)))
+        }
         for file in failedDocuments {
             heights.append(failedCardHeight?(file) ?? Self.failedCardHeight())
         }
-        if !uploadedDocuments.isEmpty {
+        if !uploadedDocuments.isEmpty && images.isEmpty {
             heights.append(fileGridHeight(count: uploadedDocuments.count))
         }
         return heights

@@ -155,10 +155,11 @@ enum CodeMessageHeightMeasurer {
     }
 
     /// The attachment blocks one `.attachments` model block draws, in draw
-    /// order: the image grid, then the failed cards, then the successful file
-    /// grid (CLOSURE.md §4 / `attachment-file-card.md` §0). They are siblings
-    /// of the same 8 pt stack, so `CodeRowHeightPlan` puts one block gap
-    /// between them exactly as the row's `VStack` does.
+    /// order: the image grid (shared with files when a message carries both,
+    /// pp 2026-11-20), then the failed cards, then the successful file grid
+    /// for file-only messages (CLOSURE.md §4 / `attachment-file-card.md` §0).
+    /// They are siblings of the same 8 pt stack, so `CodeRowHeightPlan` puts
+    /// one block gap between them exactly as the row's `VStack` does.
     ///
     /// `pixelSize` lets the page prefer the locally decoded preview size over
     /// the server's reported dimensions. The settled row resolves both through

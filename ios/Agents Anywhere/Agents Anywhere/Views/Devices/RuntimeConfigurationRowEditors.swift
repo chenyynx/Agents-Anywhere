@@ -20,7 +20,7 @@ struct RuntimeEnvironmentRowEditor: View {
                         focusedField = nil
                         onRemove()
                     }
-                } label: { AppSymbol("ellipsis").frame(width: 44, height: 44) }
+                } label: { AppSymbol("anthropicon.dotsHorizontal", size: 15).frame(width: 44, height: 44) }
                     .accessibilityLabel(String(localized: "Variable actions"))
             }
         }

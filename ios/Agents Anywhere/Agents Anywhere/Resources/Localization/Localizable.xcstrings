@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "隐藏指令图标": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide the commands key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏指令图标"
+          }
+        }
+      }
+    },
+    "语音输入": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voice input"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语音输入"
+          }
+        }
+      }
+    },
     "": {
       "extractionState": "manual",
       "localizations": {

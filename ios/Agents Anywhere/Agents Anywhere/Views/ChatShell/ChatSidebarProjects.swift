@@ -47,7 +47,10 @@ struct ChatSidebarProjects: View {
                 Button { repository.sidebarPreferences.projectsExpanded.toggle() } label: {
                     HStack(spacing: 6) {
                         Text(String(localized: "项目"))
-                        AppSymbol("chevron.right", size: 12)
+                        // Official caret at its natural ~10 pt height (the
+                        // Lucide chevron it replaced drew 5.7 pt) — pp asked
+                        // for the official glyph (2026-11-20).
+                        AppSymbol("anthropicon.caretRight", size: 10)
                             .rotationEffect(.degrees(repository.sidebarPreferences.projectsExpanded ? 90 : 0))
                     }
                     .font(.system(size: 13, weight: .regular))
@@ -60,19 +63,29 @@ struct ChatSidebarProjects: View {
                         ForEach(V2DeviceSessionFilter.allCases) { Text($0.title).tag($0) }
                     }
                 }
+                // Text link with a caret, matching the official drawer's
+                // "查看全部 ›" — primary text colour, not the grey used by
+                // section titles (pp 2026-11-20).
                 Button { createsProject = true } label: {
-                    Image("aa-IconAdd")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 13, height: 13)
-                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.rect)
+                    HStack(spacing: 3) {
+                        Text(String(localized: "创建项目"))
+                        AppSymbol("anthropicon.caretRight", size: 10)
+                    }
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                    .frame(minHeight: 44)
+                    .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .disabled(!repository.canWrite)
                 .accessibilityLabel(Text(String(localized: "创建项目")))
-            }.padding(.horizontal, 10).padding(.top, 16)
+            }
+            // Same 44pt-row compensation as the Recent header: the collapse
+            // button and the ⋯ menu stretch this row to 44pt, so the paddings
+            // subtract that extra height again. 2/-6 keeps the above gap at
+            // the official ~40pt and the block at the 40pt section rhythm,
+            // without shrinking any tap target (pp 2026-11-20).
+            .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -6)
             if repository.sidebarPreferences.projectsExpanded {
                 projectList(projects.filter { !$0.pinned }, busyProjects: busyProjects)
                 if repository.isLoading && repository.projects.isEmpty { ProgressView().padding(12) }
@@ -126,7 +139,9 @@ struct ChatSidebarProjects: View {
 
     private func projectRow(_ project: V2Project, isBusy: Bool) -> some View {
         // Same row template as the chat list: 20pt icon at x=27, 15pt title,
-        // 48pt row; the trailing action stays a chrome-less 20pt glyph.
+        // 48pt row. No trailing add button — the sidebar had too many plus
+        // signs; starting a session in a project stays in the context menu
+        // (pp 2026-11-20).
         HStack(spacing: 0) {
             Button { toggleProject(project.id) } label: {
                 HStack(spacing: 14) {
@@ -146,15 +161,6 @@ struct ChatSidebarProjects: View {
                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(.rect)
             }
             .accessibilityHint(expanded.contains(project.id) ? String(localized: "收起项目") : String(localized: "展开项目"))
-            Button { onNewSession(project.id) } label: {
-                Image("aa-IconAdd")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 13, height: 13)
-                    .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
-                    .frame(width: 44, height: 44).contentShape(.rect)
-            }
-            .accessibilityLabel(Text(String(localized: "在 \(project.name) 中新建会话")))
         }
         .buttonStyle(.plain)
         .contentShape(.rect)
@@ -165,18 +171,30 @@ struct ChatSidebarProjects: View {
     private func projectMenu(_ project: V2Project, isBusy: Bool) -> some View {
         let deviceName = repository.connectors.first { $0.id == project.connectorId }?.name ?? String(localized: "设备不可用")
         Section(deviceName) {
-            Button(String(localized: "新建会话"), systemImage: "square.and.pencil") { onNewSession(project.id) }
-            Button(String(localized: "编辑项目"), systemImage: "pencil") { editing = project }
-                .disabled(!repository.canWrite || isBusy)
-            Button(project.pinned ? String(localized: "取消置顶") : String(localized: "置顶"), systemImage: "pin") {
+            Button { onNewSession(project.id) } label: {
+                Label(String(localized: "新建会话"), menuSymbol: "anthropicon.add")
+            }
+            Button { editing = project } label: {
+                Label(String(localized: "编辑项目"), menuSymbol: "anthropicon.edit")
+            }
+            .disabled(!repository.canWrite || isBusy)
+            Button {
                 perform(project.id) { try await repository.updateProject(project.id, pinned: !project.pinned) }
-            }.disabled(!repository.canWrite || isBusy)
+            } label: {
+                Label(project.pinned ? String(localized: "取消置顶") : String(localized: "置顶"),
+                      menuSymbol: "anthropicon.pin")
+            }
+            .disabled(!repository.canWrite || isBusy)
         }
         Section {
-            Button(String(localized: "归档项目会话"), systemImage: "archivebox", role: .destructive) { action = .init(project: project, deletes: false) }
-                .disabled(!repository.canWrite || isBusy)
-            Button(String(localized: "删除项目"), systemImage: "trash", role: .destructive) { action = .init(project: project, deletes: true) }
-                .disabled(!repository.canWrite || isBusy)
+            Button(role: .destructive) { action = .init(project: project, deletes: false) } label: {
+                Label(String(localized: "归档项目会话"), menuSymbol: "anthropicon.archive", destructive: true)
+            }
+            .disabled(!repository.canWrite || isBusy)
+            Button(role: .destructive) { action = .init(project: project, deletes: true) } label: {
+                Label(String(localized: "删除项目"), menuSymbol: "anthropicon.trash", destructive: true)
+            }
+            .disabled(!repository.canWrite || isBusy)
         }
     }
 

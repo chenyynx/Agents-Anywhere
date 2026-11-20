@@ -67,18 +67,38 @@ final class AppState {
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
     init() {
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "?"
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "?"
         ClientDiagnosticsLog.shared.record(
             kind: "app.launch",
-            detail: [
-                "build": Bundle.main.object(
-                    forInfoDictionaryKey: "CFBundleVersion"
-                ) as? String ?? "?",
-                "version": Bundle.main.object(
-                    forInfoDictionaryKey: "CFBundleShortVersionString"
-                ) as? String ?? "?",
-            ],
+            detail: ["build": build, "version": version],
             dedupe: false
         )
+        // An overwrite install keeps the diagnostics store, so the day file
+        // continues across builds (pp 2026-11-19 installs builds constantly).
+        // Announce the switch once per process so later lines can be attributed
+        // to the build that wrote them.
+        let previousBuild = UserDefaults.standard.string(
+            forKey: ClientDiagnosticsLog.lastBuildKey
+        )
+        if previousBuild != build {
+            ClientDiagnosticsLog.shared.record(
+                kind: "build.changed",
+                detail: [
+                    "from": previousBuild ?? "-",
+                    "to": build,
+                    "version": version,
+                ],
+                dedupe: false
+            )
+            UserDefaults.standard.set(
+                build, forKey: ClientDiagnosticsLog.lastBuildKey
+            )
+        }
         Task { await restoreSession() }
     }
 

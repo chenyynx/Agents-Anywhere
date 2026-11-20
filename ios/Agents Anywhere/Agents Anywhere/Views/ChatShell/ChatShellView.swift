@@ -213,7 +213,8 @@ struct ChatShellView: View {
                     deviceName: appState.connectors.first { $0.id == connectorID }?.name,
                     fallbackTitle: summary?.title,
                     fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
-                    onMenu: toggleSidebar)
+                    onMenu: toggleSidebar,
+                    onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
                     .equatable()
                     // The model's identity, not the selection's: binding a
                     // local creation renames the session in place, and re-keying

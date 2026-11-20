@@ -30,10 +30,12 @@ nonisolated enum TimelineRenderMode: String, CaseIterable, Identifiable {
 
     /// The glyph the settings menu shows in front of each mode: one step per
     /// row vs the merged groups.
+    /// Official Anthropicon names (pp 2026-11-20): a bulleted list for one
+    /// step per row, the merge glyph for the merged groups.
     var menuSymbol: String {
         switch self {
-        case .steps: return "list.bullet"
-        case .merged: return "arrow.triangle.merge"
+        case .steps: return "anthropicon.listBullet"
+        case .merged: return "anthropicon.gitMerge"
         }
     }
 }

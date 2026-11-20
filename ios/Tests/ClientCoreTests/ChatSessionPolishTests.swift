@@ -279,6 +279,30 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(http.count("messages") == 1)
     }
 
+    @Test func stopReclaimsAnUnconfirmedPendingBackIntoTheDraft() async throws {
+        let http = TestHTTPTransport(), realtime = TestRealtimeAPI(), gate = TestGate()
+        let repo = repository(transport: http, realtime: realtime)
+        defer { repo.reset() }
+        let session = repo.session(id: "session"), connection = Task { await repo.session(id: "session").connect() }
+        defer { connection.cancel() }
+        try await eventually { session.canSend }
+        http.respond = { call in if call.path.hasSuffix("messages") { await gate.wait() }; return try http.defaultResponse(call) }
+        session.draft = "Stuck message"
+        let send = Task { await session.sendDraft() }
+        try await eventually { http.count("messages") == 1 }
+        gate.release(); _ = await send.value
+        let pending = try #require(session.pendingMessages.first)
+        #expect(pending.delivery == .accepted)
+        #expect(session.awaitingReplyID == pending.id)
+        // The stop lands and the interrupted turn never echoes the user row:
+        // without the reclaim the record and the working row would live on
+        // forever (device 2026-11-20).
+        session.reclaimUnconfirmedPendings()
+        #expect(session.pendingMessages.isEmpty)
+        #expect(session.awaitingReplyID == nil)
+        #expect(session.draft == "Stuck message")
+    }
+
     @Test func echoCannotEraseANewDraftEvenWhenItsTextMatchesTheSentMessage() async throws {
         let http = TestHTTPTransport(), realtime = TestRealtimeAPI(), gate = TestGate()
         let repo = repository(transport: http, realtime: realtime)

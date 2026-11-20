@@ -1069,6 +1069,15 @@ class TimelineSource(BaseModel):
     # scales and must not be mixed (pp 2026-11-19). Absent on rows a Runtime
     # does not declare it for.
     contentBlockIndex: int | None = None
+    # Where ``contentBlockIndex`` came from. ``"message"`` means the Runtime
+    # read it from the message's assembled ``content`` array — the only source
+    # the intra-message repair may reorder stored rows by. ``"legacy"`` (and a
+    # missing value) means the index was derived from a side channel — older
+    # connectors counted transcript lines, which is the *completion* order, not
+    # the message order, and inverted every text+tool message on the
+    # OpenAI-format model channel (pp 2026-11-20). A derived index is never
+    # trusted for ordering.
+    contentBlockIndexSource: Literal["message", "legacy"] | None = None
 
 
 class TimelineItemIn(BaseModel):

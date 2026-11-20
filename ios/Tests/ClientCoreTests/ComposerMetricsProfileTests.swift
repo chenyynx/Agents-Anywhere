@@ -25,7 +25,9 @@ import Testing
         #expect(profile.plusStyle == .circle)
         #expect(profile.plusCircleDiameter < profile.touchTarget)
         #expect(profile.plusCircleDiameter == 36)
-        #expect(profile.plusSymbolSize == 23)
+        // The official add glyph is ink-tight: 15.3 pt draws the ink the
+        // 23 pt Lucide plus did (2/3 of its frame).
+        #expect(profile.plusSymbolSize == 15.3)
         // 11 + 22 + 10 + 44 + 8 = 95 pt, the measured expanded height.
         #expect(profile.expandedHeight(editorHeight: 22) == 95)
         #expect(profile.expandAnimation == .spring(response: 0.22, dampingFraction: 0.77))
@@ -47,7 +49,8 @@ import Testing
         #expect(profile.expandedContentInset == 8)
         #expect(profile.collapsedTextGap == 4)
         #expect(profile.plusStyle == .bare)
-        #expect(profile.plusSymbolSize == 24)
+        // Ink-tight official add: 16 pt == the old 24 pt Lucide plus ink.
+        #expect(profile.plusSymbolSize == 16)
         #expect(profile.expandedHeight(editorHeight: 22) == 100)
         #expect(profile.expandAnimation == .smooth(duration: 0.24))
     }

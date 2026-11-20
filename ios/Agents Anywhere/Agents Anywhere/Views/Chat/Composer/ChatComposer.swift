@@ -48,6 +48,9 @@ struct ChatComposer: View {
     /// temporary override.
     @AppStorage(ComposerDeliverySetting.storageKey) private var deliveryRaw =
         ComposerDeliverySetting.defaultValue.rawValue
+    /// Settings → 编写器 → 隐藏指令图标. On, the commands key is hidden for
+    /// every runtime; off keeps the capability-driven default (pp 2026-11-20).
+    @AppStorage(ComposerCommandsSetting.storageKey) private var commandsHidden = false
     private var accent: AppAccent { AppAccent.resolve(accentValue) }
     private var delivery: ComposerDelivery { ComposerDeliverySetting.resolve(deliveryRaw) }
 
@@ -61,7 +64,9 @@ struct ChatComposer: View {
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     HStack(spacing: 8) {
                         Button(action: onOptions) {
-                            AppSymbol("plus", size: controls.profile.plusSymbolSize)
+                            // Official add artwork (pp 2026-11-20); the metric
+                            // now carries the ink-tight point size.
+                            AppSymbol("anthropicon.add", size: controls.profile.plusSymbolSize)
                                 .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
                                 .frame(width: controls.touchTarget, height: controls.touchTarget)
                                 .background {
@@ -109,9 +114,41 @@ struct ChatComposer: View {
                             $0.frame(in: .global)
                         } action: { sendSlotFrame = $0 }
 
-                    if showsCommands {
+                    // Voice-input placeholder (pp 2026-11-20): the official
+                    // empty composer shows a mic inside a 36 pt chrome circle
+                    // left of the accent key. Voice input is not implemented
+                    // yet, so the tap does nothing for now.
+                    Button(action: {}) {
+                        // 19, not 16: the cluster's sizes are tuned against the
+                        // reference device, where @ScaledMetric shrinks glyphs
+                        // ~14% (the plus draws 13 pt ink from a 15.3 config,
+                        // matching the official 13). Official mic ink is
+                        // 14x16 pt; 19 renders 14.6x16.3 there (2026-11-20).
+                        AppSymbol("anthropicon.microphone", size: 19)
+                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                            .frame(width: controls.touchTarget, height: controls.touchTarget)
+                            .background {
+                                Circle()
+                                    .fill(AppTheme.composerControlFill(colorScheme))
+                                    .frame(width: controls.sendDiameter,
+                                           height: controls.sendDiameter)
+                            }
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "语音输入"))
+                    .accessibilityIdentifier("chat.composer.voice")
+
+                    if showsCommands && !commandsHidden {
                         Button(action: onCommands) {
-                            AppSymbol("command", size: 18)
+                            // Official Skills artwork (pp 2026-11-19): the
+                            // rounded sheet with a tag. Both secondary keys
+                            // ride the same ink-tight metric, so skills and
+                            // plus stay the same optical size in every
+                            // profile; the send arrow keeps its own smaller
+                            // official glyph.
+                            AppSymbol("anthropicon.scroll",
+                                      size: controls.profile.plusSymbolSize)
                                 .foregroundStyle(commandsActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                                 .frame(width: controls.touchTarget, height: controls.touchTarget)
                                 .contentShape(Circle())
@@ -146,24 +183,38 @@ struct ChatComposer: View {
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
     }
 
+    /// Idle composer with nothing sendable: the accent key wears the official
+    /// voice-mode look — black 36 pt disk, white waveform — and swaps back to
+    /// the send arrow (animated) as soon as the draft has content
+    /// (pp 2026-11-20).
+    private var showsVoiceKey: Bool {
+        affordance.shape == .send && !draft.hasSendableContent && !isBusy
+    }
+
     /// The send/queue/stop key the bar draws. Display only: the overlay
     /// `sendKeyMenu` above it owns the tap and the long press.
     private var sendKey: some View {
-        AppSymbol(accentSymbol, size: accentSymbolSize)
+        // Voice glyph 21, not 15: same scaled-metric compensation as the mic
+        // — official waveform ink is 18x18 pt (2026-11-20).
+        AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
+                  size: showsVoiceKey ? 21 : accentSymbolSize)
             .contentTransition(.symbolEffect(.replace))
             // Official stop key: neutral chrome (light #F0EFEC / dark white
             // 8%) with a black text100 square — only the send key wears the
-            // accent fill.
-            .foregroundStyle(isStopState
-                ? AnyShapeStyle(AppTheme.composerControlGlyph(colorScheme))
-                : AnyShapeStyle(sendGlyph))
+            // accent fill. The voice key is solid black with white glyph.
+            .foregroundStyle(showsVoiceKey
+                ? AnyShapeStyle(Color.white)
+                : AnyShapeStyle(isStopState
+                    ? AppTheme.composerControlGlyph(colorScheme)
+                    : sendGlyph))
             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-            .background((isStopState
-                ? AppTheme.composerControlFill(colorScheme)
-                : sendFill)
-                .opacity(sendEnabled && !isBusy ? 1 : 0.42), in: Circle())
+            .background((showsVoiceKey
+                ? Color.black
+                : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
+                .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42), in: Circle())
             .frame(width: controls.touchTarget, height: controls.touchTarget)
             .contentShape(Circle())
+            .animation(.snappy(duration: 0.2), value: showsVoiceKey)
     }
 
     /// The native menu the long press opens, anchored back onto the key.
@@ -186,7 +237,7 @@ struct ChatComposer: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        Image(systemName: option.menuSymbol)
+                        MenuArtwork(name: option.menuSymbol)
                     }
                     .tag(option.rawValue)
                 }
@@ -283,6 +334,7 @@ struct ChatComposer: View {
     }
 
     private var accentLabel: String {
+        if showsVoiceKey { return String(localized: "语音输入") }
         switch affordance.shape {
         case .queueSend:
             // VoiceOver must hear what this tap will actually do.

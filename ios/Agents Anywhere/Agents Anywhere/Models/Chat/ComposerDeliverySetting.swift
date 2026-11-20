@@ -23,12 +23,24 @@ enum ComposerDelivery: String, CaseIterable, Identifiable {
     /// The glyph the composer's long-press menu shows in front of each
     /// option: an arrow merging into the running work (steer), a clock for
     /// "after this turn" (queue).
+    /// Official Anthropicon names (pp 2026-11-20): a curved arrow bending into
+    /// the running work (steer), a clock for "after this turn" (queue).
+    /// The steer asset ships as the light tier at 18 pt height: at the menu
+    /// default (weight 4, 18 pt wide) it draws 20 pt tall with a 15 % heavier
+    /// stroke than the clock, and the pair must read equal (pp 2026-11-20).
     var menuSymbol: String {
         switch self {
-        case .steer: "arrow.turn.down.right"
-        case .queue: "clock"
+        case .steer: "anthropicon.arrowBendUpRight"
+        case .queue: "anthropicon.clock"
         }
     }
+}
+
+/// Hides the commands (指令) key in the composer for every runtime. Off by
+/// default: the key shows whenever the runtime offers slash commands.
+/// Settings → 编写器 (pp 2026-11-20).
+enum ComposerCommandsSetting {
+    static let storageKey = "AA.Composer.HideCommandsKey"
 }
 
 enum ComposerDeliverySetting {

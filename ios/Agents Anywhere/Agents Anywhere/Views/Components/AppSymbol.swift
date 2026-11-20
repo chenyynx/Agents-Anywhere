@@ -27,6 +27,11 @@ extension Label where Title == Text, Icon == AppSymbol {
     init(_ title: String, appSymbol: String) {
         self.init { Text(verbatim: title) } icon: { AppSymbol(appSymbol) }
     }
+    /// Menu rows draw the official artwork at the system menu scale — smaller
+    /// than the 20 pt row icons the other initializers keep (pp 2026-11-19).
+    init(_ title: String, appSymbol: String, size: CGFloat) {
+        self.init { Text(verbatim: title) } icon: { AppSymbol(appSymbol, size: size) }
+    }
     init(_ title: LocalizedStringResource, appSymbol: String) {
         self.init { Text(title) } icon: { AppSymbol(appSymbol) }
     }
@@ -58,5 +63,39 @@ enum AppFileSymbol {
         if ["ts", "tsx", "js", "jsx", "json", "py", "rs", "go", "java", "c", "cpp", "h", "css", "html", "vue", "sh", "yaml", "yml", "toml", "swift"].contains(ext) { return "doc.text.magnifyingglass" }
         if ["md", "mdx", "txt", "log", "pdf"].contains(ext) { return "doc.text" }
         return "doc"
+    }
+}
+
+/// Menu-row artwork at its natural size. iOS renders menu labels through its
+/// own image slot: a resizable SwiftUI view is shrunk to that slot whatever
+/// frame it declares (a declared 28 still measured 11 pt of ink on device),
+/// while an image with a declared intrinsic size keeps it
+/// (pp 2026-11-20, experiment A).
+struct MenuArtwork: View {
+    let name: String
+    /// Destructive rows draw a pre-coloured rendition. The menu rasters this
+    /// view into a template image tinted with the action colour's shape: red
+    /// never reaches the icon through the destructive role, and an explicit
+    /// foregroundStyle is dropped as well (b1375 device check: red title,
+    /// black icon). So the red is part of the artwork, rendered as original.
+    var destructive = false
+
+    private static let redArtwork: [String: String] = [
+        "anthropicon.archive": "anthropicon.archive.red",
+        "anthropicon.trash": "anthropicon.trash.red",
+    ]
+
+    var body: some View {
+        if destructive, let red = Self.redArtwork[name] {
+            Image(red).renderingMode(.original)
+        } else {
+            Image(name).renderingMode(.template)
+        }
+    }
+}
+
+extension Label where Title == Text, Icon == MenuArtwork {
+    init(_ title: String, menuSymbol: String, destructive: Bool = false) {
+        self.init { Text(verbatim: title) } icon: { MenuArtwork(name: menuSymbol, destructive: destructive) }
     }
 }

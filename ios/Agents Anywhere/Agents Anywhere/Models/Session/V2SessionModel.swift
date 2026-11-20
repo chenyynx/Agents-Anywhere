@@ -139,6 +139,7 @@ final class V2SessionRuntimeModel {
         let previousStatus = state?.status
         let previousFresh = isFresh
         let previousEnds = authoritativeTurnEnds
+        let previousRuntimeID = state?.runtimeId
         if state != data?.state { state = data?.state }
         if capabilities != data?.capabilities { capabilities = data?.capabilities }
         let notices = data?.notices ?? []
@@ -168,8 +169,10 @@ final class V2SessionRuntimeModel {
         // 2026-11-17). One line per status change / freshness flip / end
         // count — never per streaming flush.
         let appliedStatus = data?.state?.status
+        let appliedRuntimeID = data?.state?.runtimeId
         if previousStatus != appliedStatus || previousFresh != isFresh
-            || previousEnds != authoritativeTurnEnds {
+            || previousEnds != authoritativeTurnEnds
+            || previousRuntimeID != appliedRuntimeID {
             ClientDiagnosticsLog.shared.record(
                 kind: "timeline.state",
                 sessionID: data?.session.id,
@@ -181,6 +184,12 @@ final class V2SessionRuntimeModel {
                     "turnEnds": String(authoritativeTurnEnds),
                     "hasState": data?.state == nil ? "0" : "1",
                     "connection": String(describing: connection),
+                    // A new runtime instance id means the connector restarted
+                    // (every connector restart mints one). Without it a client
+                    // log could not tell a restart apart from a plain
+                    // reconnect (pp 2026-11-19).
+                    "runtime": data?.state?.runtime ?? "-",
+                    "runtimeId": appliedRuntimeID ?? "-",
                 ],
                 dedupe: false)
         }
@@ -313,6 +322,11 @@ final class V2SessionModel: Identifiable {
     /// presentation.
     private(set) var incomingPulse: OrbPulse?
     private(set) var isLoading = false
+    /// One open-time pass of the TakeBack reconciliation: a `.sending` /
+    /// `.accepted` record restored from the local archive has no request behind
+    /// it any more (device 2026-11-20 — the stop-left orphan even survived a
+    /// relaunch through the archive).
+    private var didReconcileRestoredPendings = false
     private(set) var isLoadingHistory = false
     private(set) var isValid = true
     var isPerformingAction = false
@@ -731,6 +745,21 @@ final class V2SessionModel: Identifiable {
         defer { isLoading = false }
         do { _ = try await repository.load(sessionId: id); if isValid { failure = nil } }
         catch { if isValid { failure = V2ClientFailure(error) } }
+        scheduleRestoredPendingReconcile()
+    }
+
+    /// Runs the stop-path reconciliation once per open: archive-restored
+    /// records cannot have a live request, so the same settle + authoritative
+    /// read decides whether they were ever written (pp 2026-11-20).
+    private func scheduleRestoredPendingReconcile() {
+        guard !didReconcileRestoredPendings else { return }
+        didReconcileRestoredPendings = true
+        Task { [weak self] in
+            // The archive is applied as part of `load`; one beat more so the
+            // gate in the reclaim sees the restored records.
+            try? await Task.sleep(for: .milliseconds(300))
+            await self?.reclaimUnconfirmedPendingsAfterStop()
+        }
     }
 
     func refresh() async {
@@ -911,6 +940,64 @@ final class V2SessionModel: Identifiable {
         pendingMessages.removeAll { $0.id == id && $0.delivery != .sending }
         if draftRestoredFromPendingID == id { draftRestoredFromPendingID = nil }
         repository?.localWorkDidChange(sessionID: self.id)
+    }
+
+    /// Reclaims a message the user stopped before the transcript echoed it.
+    ///
+    /// Device 2026-11-20 (`sess_Cc0s3Pq2p50tXw`): send, stop one second later,
+    /// turn ends without the server ever writing the user row. The record stays
+    /// `.accepted` forever, `isAwaitingReply` keeps the working row on screen
+    /// and the optimistic bubble never leaves the timeline. Only `.sending` and
+    /// `.accepted` records can be orphaned this way — a `.confirmed` one owns a
+    /// transcript row — so those two get their payload handed back to the
+    /// editor and their row dropped.
+    ///
+    /// Runs through `reclaimUnconfirmedPendingsAfterStop()` so an echo already
+    /// in flight still resolves the record normally first. Like the official
+    /// `TakeBack { returnsToField: true }`, a reclaimed record counts as never
+    /// sent — an identical resend is deliberately not blocked; a late echo (the
+    /// server did receive it) simply appears as a normal row.
+    func reclaimUnconfirmedPendings() {
+        let reclaimable = pendingMessages.filter {
+            $0.delivery == .sending || $0.delivery == .accepted
+        }
+        guard !reclaimable.isEmpty else { return }
+        // Newest first: only the newest payload can go back into an empty
+        // editor; older ones are dropped with it.
+        for pending in reclaimable.reversed() {
+            if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
+                draft = pending.content
+                composer.attachments = pending.attachments
+                draftAttachmentIDs = pending.attachmentIDs
+            }
+            pendingMessages.removeAll { $0.id == pending.id }
+            if awaitingReplyID == pending.id { awaitingReplyID = nil }
+        }
+        repository?.localWorkDidChange(sessionID: self.id)
+    }
+
+    /// The delayed form used after an acknowledged stop, following the
+    /// official `TakeBack` semantics (CANONICAL/02-transcript-model.md §6,
+    /// `part-s-code-session-store.md` §TakeBack: an already-posting message is
+    /// taken back to the input field through the control request). The echo of
+    /// a delivered message rides the same stream as the turn-end frame, so a
+    /// settled runtime without an echo means the row will never come. Bounded
+    /// so a missing state frame cannot keep the row forever.
+    func reclaimUnconfirmedPendingsAfterStop() async {
+        // Cheap gate first: a normal open has nothing to reconcile and must
+        // not pay the authoritative read below.
+        guard pendingMessages.contains(where: { $0.delivery == .sending || $0.delivery == .accepted }) else { return }
+        let deadline = Date().addingTimeInterval(5)
+        while isValid, Date() < deadline, runtime.state?.status.isTurnInFlight == true {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        guard isValid else { return }
+        // The official take-back resolves against the control request's reply;
+        // the closest client-side equivalent is one authoritative read of the
+        // newest window before declaring the record orphaned.
+        _ = try? await repository?.loadLatest(sessionId: id, authoritative: true)
+        guard isValid else { return }
+        reclaimUnconfirmedPendings()
     }
 
     /// The unresolved record that makes sending this exact draft again unsafe.

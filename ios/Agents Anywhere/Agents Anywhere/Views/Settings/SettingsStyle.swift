@@ -42,9 +42,12 @@ nonisolated enum SettingsStyle {
         AppTheme.secondaryText(scheme)
     }
 
-    /// The small grey section header above each card.
+    /// The small grey section header above each card. Light is the official
+    /// measured #7A7973 (pp 2026-11-20); dark keeps the previous white tint.
     static func header(_ scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color.white.opacity(0.44) : Color.black.opacity(0.38)
+        scheme == .dark
+            ? Color.white.opacity(0.44)
+            : Color(red: 0x7A / 255.0, green: 0x79 / 255.0, blue: 0x73 / 255.0)
     }
 
     static func icon(_ scheme: ColorScheme) -> Color {
@@ -125,7 +128,9 @@ struct SettingsSection<Content: View>: View {
                 Text(header)
                     .font(SettingsStyle.text(14))
                     .foregroundStyle(SettingsStyle.header(colorScheme))
-                    .padding(.leading, 2)
+                    // Official headers sit 36 pt from the screen edge — 20 pt
+                    // further than the card's 16 pt inset (pp 2026-11-20).
+                    .padding(.leading, 20)
             }
             VStack(spacing: 0) {
                 content
@@ -156,7 +161,11 @@ struct SettingsRowLabelContent: View {
 
     var body: some View {
         HStack(spacing: SettingsStyle.iconGap) {
-            AppSymbol(icon, size: 17)
+            // Official settings rows measure 18-20 pt of icon ink; 18 keeps
+            // the rows equal to the official size while the lighter v1
+            // rendition keeps the stroke in the official 1.3-1.6 pt band
+            // (pp 2026-11-20).
+            AppSymbol(icon, size: 18)
                 .frame(width: SettingsStyle.iconFrame)
                 .foregroundStyle(SettingsStyle.icon(colorScheme))
             VStack(alignment: .leading, spacing: 2) {
@@ -312,7 +321,7 @@ struct SettingsMenuRow: View {
                     Label {
                         Text(option.title)
                     } icon: {
-                        Image(systemName: option.symbol)
+                        MenuArtwork(name: option.symbol)
                     }
                     .tag(option.id)
                 }

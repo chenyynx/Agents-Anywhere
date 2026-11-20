@@ -60,7 +60,10 @@ struct AddToChatSheet: View {
                     }
                     card {
                         VStack(spacing: 0) {
-                            row(icon: "anthropicon.agent", title: String(localized: "模型"),
+                            // Lucide boxes, stroked to the row's weight
+                            // (pp 2026-11-19). The other rows keep Anthropicons;
+                            // the stroke override keeps this one in family.
+                            row(icon: "boxes", title: String(localized: "模型"),
                                 // The effort has its own row now; the model row
                                 // shows the model name only.
                                 value: settings.model?.option.title ?? String(localized: "默认模型"),

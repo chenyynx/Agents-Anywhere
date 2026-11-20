@@ -39,8 +39,21 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
 
     static let enabledKey = "diagnostics.log.enabled"
     static let serverKey = "diagnostics.log.server"
+    /// The build the last process logged under. Overwrite installs keep this
+    /// defaults store, so a new build announces itself with one
+    /// `build.changed` line instead of leaving the day looking like one build.
+    static let lastBuildKey = "diagnostics.log.lastBuild"
+    /// One `log.burst` summary per flooded second once a single `kind|session`
+    /// passes this many records. A full re-sync lands as hundreds of ordinary
+    /// row updates (pp 2026-11-19); without the summary they read as unrelated
+    /// singles.
+    static let burstThreshold = 30
     static let retainedDays = 7
-    static let maxBytesPerDay = 5 * 1024 * 1024
+    /// A busy day filled the old 5 MB cap by 21:02 and silently dropped the
+    /// rest of the evening — exactly the window being investigated (pp
+    /// 2026-11-19). 30 MB covers a whole normal day (~6–10 MB here); the
+    /// seven-day window stays bounded at ~210 MB worst case.
+    static let maxBytesPerDay = 30 * 1024 * 1024
     /// The same anomaly in the same session is written once per window.
     static let repeatWindow: TimeInterval = 10 * 60
     static let fileNamePrefix = "Anywhere-"
@@ -58,8 +71,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     static let schemaLegend: [String: String] = [
         "schemaVersion": schemaVersion,
         "about": "Client diagnostics, one JSON object per line. Session ids and row ids only; no message content.",
-        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved|timeline.row.overlap; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement|timeline.mover|timeline.working.row|timeline.rows.frame|timeline.compact.row|timeline.turn.footer|timeline.footer.gate|timeline.haptic|timeline.state|timeline.ws.state; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped",
-        "fields": "ts=local ISO8601; kind; severity=info for actions and the gap note / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild|reconcile|fill|live|batch|history; limit=requested page size; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies; prevId/nextId=nearest held neighbours, prevOrder/nextOrder=their orderSeq, rowsBefore=held rows before the merge, windowMin/windowMax=window bounds before the merge; oldOrder/newOrder=a held row's orderSeq change; overlap/upper/lower/heightChanges=the explicit-return overlap probe (first adjacent rows whose frames intersect, and the height corrections applied during that fly); group=step-group id; liveTail/allowsPose/fresh/stopRequested/predictedIdle=0/1 pose gates; status=runtime status; steps=step count; item=row id, from/to=status before/after, revival=1 when to=running, revision/updatedSeq=row version; from/to=send-queue roster before/after a change; head=head id:state; offsetY/contentH/visibleH/atBottom=viewport numbers at the change; running/streaming/placeholder/statusLine=drawn working gates; workingText=1 when the standalone working row draws its text, 0 while the send is still unacknowledged; liveTail=the group drawing the live tail; posing=groups the pose gate would animate, posingRunning=their running subset; state/title=the compact row's wire state and the divider label it draws; added/removed=item ids a refresh inserted or removed (one line per change); pendingSession/pendingTimeline=the two pending sources' message ids at that refresh; working=the standalone working row is drawn; timeline.state: from/to=runtime status before/after an applied state, seq=the state's updatedSeq, fresh=0/1 live-facts freshness after the apply, turnEnds=the authoritative end count after the apply, hasState/connection=input gate for that apply; timeline.ws.state: phase=recv|waited|barrier|apply for a runtime.state.updated frame, seq=its wire sequence, cursor=wire cursor, projSeq=timeline cursor at that moment, barrierSet=projection barrier already set, stateSeqBefore/After=the applied state's updatedSeq around the merge, status=status after the merge; timeline.footer.gate (all keys ride packed inside one `state=` value): suppress=the latest turn's footer is suppressed (0/1), gate=the footer gate stands open on a user bubble (0/1), pending=an outgoing bubble is awaiting its echo (0/1), echo=its echo row has landed (0/1), running=the runtime reports a turn in flight (0/1), status=runtime status, liveGroup=whether the live turn's group is resolved (set/nil) — the inputs that decide whether a footer can commit.",
+        "kinds": "app.launch|app.foreground|app.background; diagnostics.enabled|diagnostics.disabled; cache.clear; session.open|session.open.ready|session.refresh; timeline.snapshot.fetch|timeline.snapshot.applied|timeline.latest.fetch|timeline.grouping; timeline.row.inserted|timeline.row.moved|timeline.row.overlap; timeline.recovery; timeline.step.pose_after_stop|timeline.tool.after_stop|timeline.queue.handoff|timeline.interrupt.card|timeline.anchor.placement|timeline.mover|timeline.working.row|timeline.rows.frame|timeline.compact.row|timeline.turn.footer|timeline.footer.gate|timeline.haptic|timeline.state|timeline.ws.state; ws.connect|ws.disconnect; timeline.event.gap; timeline.order.duplicate|timeline.order.nonpositive; timeline.user_message.unrendered; timeline.decode.dropped; build.changed; log.burst",
+        "fields": "ts=local ISO8601; kind; severity=info for actions and the gap note / warn for anomalies (derived from kind); session=session id; detail=string map. after/next=event cursor; rows=held row count; minOrder/maxOrder=window bounds; firstId/lastId=window edges; nextSeq=server high watermark; trigger=open|refresh|reconnect|recovery|rebuild|reconcile|fill|live|batch|history; limit=requested page size; status/bytes/deferred on fetches; eventTypes/eventIds on recovery; units/stepGroups/messageUnits/userRows/userUnrendered on grouping; ids/orderSeq/count for anomalies; prevId/nextId=nearest held neighbours, prevOrder/nextOrder=their orderSeq, rowsBefore=held rows before the merge, windowMin/windowMax=window bounds before the merge; oldOrder/newOrder=a held row's orderSeq change; overlap/upper/lower/heightChanges=the explicit-return overlap probe (first adjacent rows whose frames intersect, and the height corrections applied during that fly); group=step-group id; liveTail/allowsPose/fresh/stopRequested/predictedIdle=0/1 pose gates; status=runtime status; steps=step count; item=row id, from/to=status before/after, revival=1 when to=running, revision/updatedSeq=row version; from/to=send-queue roster before/after a change; head=head id:state; offsetY/contentH/visibleH/atBottom=viewport numbers at the change; running/streaming/placeholder/statusLine=drawn working gates; workingText=1 when the standalone working row draws its text, 0 while the send is still unacknowledged; liveTail=the group drawing the live tail; posing=groups the pose gate would animate, posingRunning=their running subset; state/title=the compact row's wire state and the divider label it draws; added/removed=item ids a refresh inserted or removed (one line per change); pendingSession/pendingTimeline=the two pending sources' message ids at that refresh; working=the standalone working row is drawn; timeline.state: from/to=runtime status before/after an applied state, seq=the state's updatedSeq, fresh=0/1 live-facts freshness after the apply, turnEnds=the authoritative end count after the apply, hasState/connection=input gate for that apply; timeline.ws.state: phase=recv|waited|barrier|apply for a runtime.state.updated frame, seq=its wire sequence, cursor=wire cursor, projSeq=timeline cursor at that moment, barrierSet=projection barrier already set, stateSeqBefore/After=the applied state's updatedSeq around the merge, status=status after the merge; timeline.footer.gate (all keys ride packed inside one `state=` value): suppress=the latest turn's footer is suppressed (0/1), gate=the footer gate stands open on a user bubble (0/1), pending=an outgoing bubble is awaiting its echo (0/1), echo=its echo row has landed (0/1), running=the runtime reports a turn in flight (0/1), status=runtime status, liveGroup=whether the live turn's group is resolved (set/nil) — the inputs that decide whether a footer can commit; timeline.state also carries runtimeId=the runtime instance the state came from (a new id means the connector restarted) and runtime=its family; build.changed: from/to=CFBundleVersion before/after an overwrite install; log.burst: hot=top flooded `kind|session=count` entries inside windowMs (a full re-sync shows up here instead of reading as unrelated row moves).",
     ]
 
     /// Kinds recorded at info level: reader actions plus the cursor note
@@ -70,7 +83,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     /// actually missed. Anything not listed here stays `warn`, so a new kind
     /// is never silently downgraded to informational.
     static let infoKinds: Set<String> = [
-        "app.launch", "app.foreground", "app.background",
+        "app.launch", "app.foreground", "app.background", "build.changed",
+        "log.burst",
         "diagnostics.enabled", "diagnostics.disabled",
         "cache.clear",
         "session.open", "session.open.ready", "session.refresh",
@@ -97,6 +111,8 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.agentsanywhere.client-diagnostics")
     private var seen: [String: (at: Date, count: Int)] = [:]
     private var cappedDays: Set<String> = []
+    private var burstWindowStart: Date?
+    private var burstCounts: [String: Int] = [:]
 
     init(
         directory: URL? = nil,
@@ -281,6 +297,45 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
 
     // MARK: - Writing
 
+    /// Counts records per `kind|session` inside the current second. A flooded
+    /// second is summarised by one `log.burst` line so a full re-sync reads as
+    /// one event instead of hundreds of unrelated row moves.
+    private func noteBurst(kind: String, sessionID: String?, at stamp: Date) {
+        let key = sessionID.map { "\(kind)|\($0)" } ?? kind
+        if let start = burstWindowStart,
+           stamp.timeIntervalSince(start) < 1 {
+            burstCounts[key, default: 0] += 1
+            return
+        }
+        flushBurst(at: stamp)
+        burstWindowStart = stamp
+        burstCounts = [key: 1]
+    }
+
+    private func flushBurst(at stamp: Date) {
+        guard let start = burstWindowStart else { return }
+        let hot = burstCounts.filter { $0.value >= Self.burstThreshold }
+        burstCounts.removeAll(keepingCapacity: true)
+        burstWindowStart = nil
+        guard !hot.isEmpty else { return }
+        let summary = hot.sorted { $0.value > $1.value }
+            .prefix(4)
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ";")
+        let day = calendar.startOfDay(for: stamp)
+        ensureDayHeader(at: stamp)
+        let url = fileURL(for: day)
+        guard fileSize(url) < Self.maxBytesPerDay else { return }
+        write(
+            kind: "log.burst", sessionID: nil,
+            detail: [
+                "hot": summary,
+                "windowMs": String(Int(stamp.timeIntervalSince(start) * 1000)),
+            ],
+            severity: "info", at: stamp, to: url
+        )
+    }
+
     private func append(
         kind: String,
         sessionID: String?,
@@ -288,6 +343,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         severity: String,
         at stamp: Date
     ) {
+        noteBurst(kind: kind, sessionID: sessionID, at: stamp)
         let day = calendar.startOfDay(for: stamp)
         ensureDayHeader(at: stamp)
         let url = fileURL(for: day)

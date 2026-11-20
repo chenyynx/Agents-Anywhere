@@ -918,11 +918,18 @@ final class SessionChatModel {
         // its final place. Only the composer's send window waits for the
         // accepted ack.
         session.runtime.beginStopRequest()
-        _ = await perform {
+        let stopped = await perform {
             try await self.repository.interrupt(sessionId: self.session.id,
                                                 preserveBackground: true)
         }
         session.runtime.endStopRequest()
+        if stopped {
+            // A stop the server acknowledged can orphan a send whose echo the
+            // interrupted turn never produced; hand that payload back to the
+            // editor instead of leaving a zombie row and a permanent working
+            // state (pp 2026-11-20).
+            Task { [session] in await session.reclaimUnconfirmedPendingsAfterStop() }
+        }
     }
 
     /// Stops one running SubAgent task (§A3). One tap per task: a second tap

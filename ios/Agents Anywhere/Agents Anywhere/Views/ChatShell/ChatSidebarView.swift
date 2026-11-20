@@ -65,7 +65,7 @@ struct ChatSidebarView: View {
                                 if request.ready { Button(String(localized: "配置 Agent")) { setup.configure(request.id) } }
                                 if request.error != nil { Button(String(localized: "重试")) { setup.retry(request.id) } }
                                 Button(request.ready ? String(localized: "稍后配置") : String(localized: "停止等待")) { setup.finish(request.id) }
-                            } label: { AppSymbol("ellipsis").frame(width: 36, height: 36) }
+                            } label: { AppSymbol("anthropicon.dotsHorizontal", size: 15).frame(width: 36, height: 36) }
                         }.padding(.horizontal, 10).padding(.vertical, 8)
                     }
                 }
@@ -95,7 +95,11 @@ struct ChatSidebarView: View {
                             ChatSidebarListMenu(showsSessionList: $showsSessionList,
                                 onShowArchives: { showsArchives = true }) {}
                         }
-                        .padding(.horizontal, 10).padding(.top, 20).padding(.bottom, 6)
+                        // Matched to the official drawer's ink gaps around
+                        // this header (3x screenshot: 39.7pt above, 32.3pt
+                        // below; we drew 57.7/43.3 because the ⋯ menu's 44pt
+                        // tap target centres the title 13pt low).
+                        .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -5)
                         ChatSidebarSessionSection(
                             title: nil,
                             sessions: recentSessions,
@@ -182,7 +186,9 @@ struct ChatSidebarListMenu<Filters: View>: View {
             }
             filters()
             Divider()
-            Button(String(localized: "归档会话"), systemImage: "archivebox", action: onShowArchives)
+            Button(action: onShowArchives) {
+                Label(String(localized: "归档会话"), menuSymbol: "anthropicon.archive")
+            }
         } label: {
             Image("aa-IconMore")
                 .resizable()
@@ -279,25 +285,35 @@ private struct ChatSidebarDeviceSection: View {
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             if !isLoading && !devices.isEmpty {
-                // Header actions stay chrome-less (official section headers
-                // never wear a filled round button); 44pt stays as the tap
-                // target while the glyph itself is 20pt.
+                // A text link with a caret, like the official drawer's
+                // "查看全部 ›" — a bare plus reads as noise once the sidebar
+                // has several of them. The official link uses the primary
+                // text colour (#131313), darker than the grey section titles
+                // (measured 2026-11-20).
                 Button(action: onPair) {
-                    Image("aa-IconAdd")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 13, height: 13)
-                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.rect)
+                    // No 44pt frame: it inflated the header block and pushed
+                    // this section's rhythm off the pinned section's (pp
+                    // 2026-11-20). The link spans its text, like the section
+                    // labels it sits beside.
+                    HStack(spacing: 3) {
+                        Text(String(localized: "添加设备"))
+                        AppSymbol("anthropicon.caretRight", size: 10)
+                    }
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                    .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(String(localized: "Pair device"))
             }
         }
         .padding(.horizontal, 10)
-        .padding(.top, 20)
-        .padding(.bottom, 0)
+        // 16, not 20: the official drawer keeps ~39.7pt from the previous row
+        // to a section title; 20 drew 44 (pp 2026-11-20).
+        .padding(.top, 16)
+        // Same trailing gap as ChatSidebarSectionLabel (Pinned/Recent): 0
+        // here made the device row sit 6pt further from its header.
+        .padding(.bottom, 6)
     }
 
     private var pairRow: some View {
@@ -312,8 +328,7 @@ private struct ChatSidebarDeviceSection: View {
                     .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .regular))
+                AppSymbol("anthropicon.caretRight", size: 10)
                     .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             }
             .padding(.leading, 11)
@@ -375,7 +390,9 @@ private struct ChatSidebarSectionLabel: View {
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
             .padding(.horizontal, 10)
-            .padding(.top, 20)
+            // Matches the project list's sub-labels and the official drawer's
+            // ~39.7pt row-to-title gap (20 drew 44, pp 2026-11-20).
+            .padding(.top, 16)
             .padding(.bottom, 6)
     }
 }
@@ -421,11 +438,11 @@ private struct ChatSidebarDeviceRow: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button(action: onOpen) {
-                Label(String(localized: "Open"), systemImage: "folder.fill")
+                Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
             }
             Divider()
             Button(action: onCopyId) {
-                Label(String(localized: "Copy device ID"), systemImage: "doc.on.doc")
+                Label(String(localized: "Copy device ID"), menuSymbol: "anthropicon.copy")
             }
         }
     }
@@ -505,26 +522,31 @@ struct ChatSidebarSessionRow: View {
                 }
             }
             Button(action: onOpen) {
-                Label(String(localized: "Open"), systemImage: "folder.fill")
+                Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
             }
             Button(action: beginRename) {
-                Label(String(localized: "Rename"), systemImage: "pencil")
+                Label(String(localized: "Rename"), menuSymbol: "anthropicon.edit")
             }.disabled(session.id.hasPrefix("local:"))
             Button(action: onTogglePinned) {
                 if session.pinned {
-                    Label(String(localized: "Unpin"), systemImage: "pin")
+                    Label(String(localized: "Unpin"), menuSymbol: "anthropicon.pin")
                 } else {
-                    Label(String(localized: "Pin"), systemImage: "pin")
+                    Label(String(localized: "Pin"), menuSymbol: "anthropicon.pin")
                 }
             }
             .disabled(session.id.hasPrefix("local:"))
-            Button(action: onArchive) {
-                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), systemImage: "archivebox")
-            }.disabled(session.id.hasPrefix("local:"))
-            Divider()
             Button(action: onCopyId) {
-                Label(String(localized: "Copy session ID"), systemImage: "doc.on.doc")
+                Label(String(localized: "Copy session ID"), menuSymbol: "anthropicon.copy")
             }
+            Divider()
+            // Archive closes the menu in red, the way the official menu ends on
+            // its destructive row; Restore is not destructive and stays plain
+            // (pp 2026-11-20).
+            Button(role: session.archived ? nil : .destructive, action: onArchive) {
+                Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"),
+                      menuSymbol: "anthropicon.archive",
+                      destructive: !session.archived)
+            }.disabled(session.id.hasPrefix("local:"))
         }
         .alert(String(localized: "Rename session"), isPresented: $isRenaming) {
             TextField(String(localized: "Session title"), text: $titleDraft)
@@ -556,8 +578,13 @@ struct ChatSidebarSessionIndicator: View {
                 .background(.mint.opacity(0.16), in: .capsule)
                 .fixedSize().accessibilityLabel(String(localized: "等待批准"))
         case .running:
-            ProgressView().controlSize(.mini).tint(.primary)
-                .frame(width: 14, height: 14).accessibilityLabel(String(localized: "运行中"))
+            // Official open-ring spinner (pp 2026-11-20); the system mini
+            // ProgressView drew the iOS petal spinner instead. The official
+            // running glyph measures 16 pt of ring (14.7x16.0 on the Code
+            // list screenshot), so the ring draws at 16.
+            AnthropiconSpinner(size: 16)
+                .frame(width: 16, height: 16)
+                .accessibilityLabel(String(localized: "运行中"))
         case .unread:
             Circle().fill(.green).frame(width: 8, height: 8).accessibilityLabel(String(localized: "未读"))
         case .none:

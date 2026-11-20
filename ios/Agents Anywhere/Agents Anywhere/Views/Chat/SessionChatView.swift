@@ -10,6 +10,10 @@ struct SessionChatView: View, Equatable {
     let fallbackTitle: String?
     let fallbackRuntimeName: String?
     let onMenu: () -> Void
+    /// Pin/unpin from the trailing menu (pp 2026-11-19). The current value
+    /// rides `session.metadata.pinned`, refreshed through the dashboard push,
+    /// so the item's title flips without local state.
+    let onTogglePinned: (Bool) -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
 #if AA_TIMELINE_PROBE
@@ -310,7 +314,8 @@ struct SessionChatView: View, Equatable {
 
     init(session: V2SessionModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
-         onMenu: @escaping () -> Void) {
+         onMenu: @escaping () -> Void,
+         onTogglePinned: @escaping (Bool) -> Void) {
         _storage = StateObject(wrappedValue: StableViewModel {
             let chat = SessionChatModel(session: session, repository: services.sessionRepository, attachments: services.attachments,
                 files: services.workspaceFiles)
@@ -327,6 +332,7 @@ struct SessionChatView: View, Equatable {
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
+        self.onTogglePinned = onTogglePinned
     }
     /// The collection engine's composer keeps the official Code measurements
     /// in both rendering modes; the mode only changes the transcript rows.
@@ -588,22 +594,59 @@ struct SessionChatView: View, Equatable {
             .accessibilityValue(contextSlotAccessibilityValue)
             .disabled(!showsContextRing && session.metadata?.cwd?.isEmpty != false)
             Menu {
-                if showsContextRing {
-                    Button(String(localized: "文件管理"), systemImage: "folder") { sheet = .files }
-                        .disabled(session.metadata?.cwd?.isEmpty != false)
+                // Pin sits alone above a rule: it changes the session's place
+                // in the sidebar, while everything below opens a panel or
+                // copies an id (pp 2026-11-19).
+                Button {
+                    onTogglePinned(!(session.metadata?.pinned ?? false))
+                } label: {
+                    Self.menuLabel(
+                        session.metadata?.pinned == true
+                            ? String(localized: "取消置顶")
+                            : String(localized: "置顶"),
+                        icon: "anthropicon.pin")
                 }
-                Button(String(localized: "对话大纲"), systemImage: "list.bullet") { sheet = .outline }
-                Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
-                Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+                Divider()
+                if showsContextRing {
+                    Button { sheet = .files } label: {
+                        Self.menuLabel(String(localized: "文件管理"),
+                                       icon: "anthropicon.folder")
+                    }
+                    .disabled(session.metadata?.cwd?.isEmpty != false)
+                }
+                Button { sheet = .outline } label: {
+                    Self.menuLabel(String(localized: "对话大纲"),
+                                   icon: "anthropicon.listBullet")
+                }
+                Button { sheet = .details } label: {
+                    Self.menuLabel(String(localized: "会话详情与导出"),
+                                   icon: "anthropicon.info")
+                }
+                Button { UIPasteboard.general.string = session.id } label: {
+                    Self.menuLabel(String(localized: "复制会话 ID"),
+                                   icon: "anthropicon.copy")
+                }
 #if AA_TIMELINE_PROBE
                 Divider()
                 Button(String(localized: "诊断浮窗"), systemImage: "waveform.path.ecg") {
                     diagnosticsHUDVisible.toggle()
                 }
 #endif
-            } label: { AppSymbol("ellipsis") }
+            } label: {
+                // Official overflow dots (pp 2026-11-20). The vector is
+                // ink-tight at 9.68x2.18, so 15 pt draws the same 15x3 pt of
+                // ink the 20 pt Lucide ellipsis did.
+                AppSymbol("anthropicon.dotsHorizontal", size: 15)
+            }
             .accessibilityLabel(String(localized: "会话菜单"))
         }
+    }
+
+    /// One overflow-menu row. The official menu draws Anthropicon artwork at
+    /// the system menu scale, smaller than this page's 20 pt row icons; the
+    /// system-image rows keep their own sizing.
+    private static func menuLabel(_ title: String, icon: String) -> some View {
+        Label(title, menuSymbol: icon)
     }
 
     /// Same reason as `trailingToolbar`: this builder block resolves on its

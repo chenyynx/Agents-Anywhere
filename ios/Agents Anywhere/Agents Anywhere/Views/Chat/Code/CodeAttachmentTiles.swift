@@ -221,12 +221,27 @@ struct CodeAttachmentTiles: View {
 
 /// One image tile: the decoded thumbnail cropped to the tile box, the state
 /// overlay, and the `+N` count on the fourth tile when the grid overflows.
-private struct CodeAttachmentImageTile: View {
+struct CodeAttachmentImageTile: View {
     let file: ChatMessageAttachment
     let placement: CodeAttachmentGridPlan.Placement
     let state: CodeAttachmentDisplayState
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let loadThumbnail: (V2AttachmentContent) async throws -> Data?
+
+    /// Explicit because the private `@State` fields would otherwise make the
+    /// memberwise initializer private; the mixed image+file grid in
+    /// `CodeAttachmentRow` builds these tiles from another file.
+    init(file: ChatMessageAttachment,
+         placement: CodeAttachmentGridPlan.Placement,
+         state: CodeAttachmentDisplayState,
+         onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
+         loadThumbnail: @escaping (V2AttachmentContent) async throws -> Data?) {
+        self.file = file
+        self.placement = placement
+        self.state = state
+        self.onAttachment = onAttachment
+        self.loadThumbnail = loadThumbnail
+    }
 
     @State private var image: UIImage?
     @State private var loadFailed = false

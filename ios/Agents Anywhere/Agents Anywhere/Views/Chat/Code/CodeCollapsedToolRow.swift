@@ -150,10 +150,10 @@ struct CodeCollapsedStepsRow: View {
     var voiceControlName: String?
     var spokenLabel: String?
     var isRunning: Bool
-    /// What the row is currently showing, for the paced cross-fade below.
-    /// Empty disables it — every row except the chat's live tail (a static
-    /// label must not pay for a per-tick sample).
-    var textIdentity: String = ""
+    /// The live tail's step id and plain label, for the transition below.
+    /// Both empty disables it — every row except the chat's live tail.
+    var textStepID: String = ""
+    var textContent: String = ""
     var action: () -> Void
 
     /// [E] R28 §2.1 — row text unscaled line height 21, relative `.body`.
@@ -207,7 +207,7 @@ struct CodeCollapsedStepsRow: View {
                         CodeRowCaret()
                     }
                 }
-                .pacedRowContent(identity: textIdentity)
+                .pacedRowContent(stepID: textStepID, content: textContent)
                 .layoutPriority(1)
 
                 // Official body ends in a `Spacer`, so the row's tap target
@@ -552,63 +552,71 @@ struct CodeCollapsedRowShimmer: ViewModifier {
 
 /// The official swaps a row's shown content with an opacity transition and a
 /// spring: `CompactTimelineGroup.PacedRow` is
-/// `ZStack{ IDView<ShownView.transition, Shown?> }` with a `ContinuousClock`
-/// pacing (EVIDENCE, round29 §1). This reproduces the visible half — at most
-/// one cross-fade per `swapInterval`, so a streaming label flips like the
-/// official row instead of strobing on every token.
+/// `ZStack{ IDView<ShownView.transition, Shown?> }` (EVIDENCE, round29 §1).
+/// This reproduces it without slowing the label down:
+///
+/// - the label itself updates on every publish (real time);
+/// - width growth is animated, so the trailing chevron glides with the text
+///   instead of jumping per token (pp 2026-11-21: the official arrow follows
+///   the summary length smoothly);
+/// - only a structural change — a different step, or a label that is neither
+///   an extension nor a prefix of the shown one (a new thinking line, a new
+///   tool) — gets the official opacity cross-fade.
 ///
 /// The spring values were not recovered (round29 addendum: UNKNOWN); 0.3 s /
-/// no bounce is an inference chosen to match the pacing, not a decoded value.
+/// no bounce is an inference, as is the 0.15 s width glide.
 private struct CodePacedRowContent: ViewModifier {
-    let identity: String
+    let stepID: String
+    let content: String
 
-    private static let swapInterval: TimeInterval = 0.4
-    private static let swapAnimation: Animation = .spring(duration: 0.3, bounce: 0)
+    private static let glide: Animation = .linear(duration: 0.15)
+    private static let swap: Animation = .spring(duration: 0.3, bounce: 0)
 
-    @State private var shown: String?
-    @State private var lastSwap: Date = .distantPast
+    @State private var generation = 0
+    @State private var lastStep: String?
+    @State private var lastContent: String?
 
-    private var currentIdentity: String { shown ?? identity }
+    private var key: String { "\(lastStep ?? stepID)#\(generation)" }
 
-    func body(content: Content) -> some View {
+    func body(content view: Content) -> some View {
         ZStack(alignment: .leading) {
-            content
-                .id(currentIdentity)
+            view
+                .id(key)
                 .transition(.opacity)
         }
-        .animation(Self.swapAnimation, value: currentIdentity)
-        // Trailing-edge pacing: the newest identity lands at most once per
-        // interval. `.task(id:)` cancels the previous wait when the label
-        // moves again, exactly the "one swap per beat" the official clock
-        // gives.
-        .task(id: identity) {
-            let elapsed = Date().timeIntervalSince(lastSwap)
-            if elapsed >= Self.swapInterval {
-                applySwap(identity)
-                return
-            }
-            try? await Task.sleep(for: .seconds(Self.swapInterval - elapsed))
-            guard !Task.isCancelled else { return }
-            applySwap(identity)
-        }
+        .animation(Self.glide, value: content)
+        .onChange(of: stepID) { _, _ in applyUpdate() }
+        .onChange(of: content) { _, _ in applyUpdate() }
     }
 
-    private func applySwap(_ new: String) {
-        guard shown != new else { return }
-        lastSwap = Date()
-        shown = new
+    private func applyUpdate() {
+        let oldStep = lastStep ?? stepID
+        let oldContent = lastContent ?? content
+        guard oldStep != stepID || oldContent != content else { return }
+        let grows = content.hasPrefix(oldContent) || oldContent.hasPrefix(content)
+        let structural = oldStep != stepID || !grows
+        if structural {
+            withAnimation(Self.swap) {
+                lastStep = stepID
+                lastContent = content
+                generation &+= 1
+            }
+        } else {
+            lastStep = stepID
+            lastContent = content
+        }
     }
 }
 
 extension View {
-    /// Cross-fades a row's shown content when `identity` changes, paced to one
-    /// swap per 0.4 s. An empty identity is a no-op.
+    /// Real-time label updates with a width glide and a structural cross-fade.
+    /// An empty step id is a no-op.
     @ViewBuilder
-    func pacedRowContent(identity: String) -> some View {
-        if identity.isEmpty {
+    func pacedRowContent(stepID: String, content: String) -> some View {
+        if stepID.isEmpty {
             self
         } else {
-            modifier(CodePacedRowContent(identity: identity))
+            modifier(CodePacedRowContent(stepID: stepID, content: content))
         }
     }
 }

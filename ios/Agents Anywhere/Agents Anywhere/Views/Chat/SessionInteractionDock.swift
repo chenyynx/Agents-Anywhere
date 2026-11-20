@@ -33,6 +33,10 @@ struct SessionInteractionDock: View {
                     compactCarousel
                 }
             }
+            // The question card stands in for the composer, so nothing else
+            // keeps it off the keyboard: without this the card's bottom edge
+            // sat flush on the keyboard's candidate bar (pp 2026-11-20).
+            .padding(.bottom, questionItems.isEmpty ? 0 : QuestionCardMetrics.cardBottomMargin)
         }
     }
 

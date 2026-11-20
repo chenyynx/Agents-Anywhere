@@ -26,6 +26,11 @@ nonisolated enum QuestionCardMetrics {
     /// The host's horizontal margin (device: 16.7 pt running / 16.3 pt
     /// answered; the component itself carries none).
     static let screenMargin: CGFloat = 16
+    /// Gap below the card when it stands alone in the dock (the composer is
+    /// stowed, keyboard up or down). The official card never touches its
+    /// host edge — the Chat variant measures ~8 pt above the tab bar; the
+    /// card was flush against the keyboard before (pp 2026-11-20).
+    static let cardBottomMargin: CGFloat = 12
 
     static let pagingSpacing: CGFloat = 8
     static let pagingLeading: CGFloat = 4

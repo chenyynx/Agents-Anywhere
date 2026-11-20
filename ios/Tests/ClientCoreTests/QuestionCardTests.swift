@@ -34,6 +34,7 @@ import Testing
         #expect(QuestionCardMetrics.contentPadding == 16)
         #expect(QuestionCardMetrics.contentPaddingHorizontal == 24)
         #expect(QuestionCardMetrics.screenMargin == 16)
+        #expect(QuestionCardMetrics.cardBottomMargin == 12)
         #expect(QuestionCardMetrics.pagingSpacing == 8)
         #expect(QuestionCardMetrics.pagingLeading == 4)
         #expect(QuestionCardMetrics.arrowGlyphSize == 24)

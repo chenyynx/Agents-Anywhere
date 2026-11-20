@@ -105,6 +105,21 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// live dots stay on the working row.
     var hasRunningBackgroundAgent: Bool { summary.activeAgentCount > 0 }
 
+    /// Whether the row must settle although a step still reports running:
+    /// the live step is a dispatched subagent the main turn has moved past
+    /// (pp 2026-11-21, rule A).
+    ///
+    /// Such a row is the subagent's row, not the main turn's working row. It
+    /// draws the settled subagent form — its own icon, 「正在运行 N 个智能体」
+    /// and the activity sweep — so the three-dot mark stays on the live tail
+    /// alone. A control call (`send_input` / `wait` / `close`) is the main
+    /// agent's own work and never takes this branch.
+    var settlesAsRunningSubagentRow: Bool {
+        guard let liveStep, liveStep.isRunning,
+              let call = liveStep.toolCall else { return false }
+        return call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item)
+    }
+
     /// Whether the chat profile's live mark may seat on this group while a turn
     /// is active, when the runtime does not report the turn itself
     /// (pp 2026-11-10).
@@ -163,8 +178,15 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// (idle, or an accepted stop's optimistic idle); only a truly streaming
     /// turn may animate it. This is the stop-tap half of the 2026-11-14 fix:
     /// the stop ack proves the turn is over even while row snapshots lag.
+    ///
+    /// Rule A (pp 2026-11-21): the working mark belongs to the live tail. Once
+    /// the main turn has moved past a group whose dispatched subagent is still
+    /// working, the row settles into the subagent form (icon + sweep) — the
+    /// three dots must not appear on two rows at once.
     func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
-        isLiveTail || (isRunning && allowsRunningPose)
+        if isLiveTail { return true }
+        if settlesAsRunningSubagentRow { return false }
+        return isRunning && allowsRunningPose
     }
 
     /// The step the live row shows: the trailing-most running step, else the

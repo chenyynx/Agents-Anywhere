@@ -122,7 +122,9 @@ struct CodeStepGroupRowView: View {
                 // settles; the row's own copy already turns present-tense
                 // (「正在运行 N 个智能体」), so it carries the activity sweep
                 // too (pp 2026-11-19). The icon does not change — only the
-                // text's sweep animation is borrowed.
+                // text's sweep animation is borrowed. Since pp 2026-11-21 this
+                // branch also draws a group the main turn has moved past while
+                // its dispatched subagent still runs (no second working mark).
                 isRunning: group.hasRunningBackgroundAgent && !treatsRunningAsFailed,
                 action: onTap)
         }
@@ -195,6 +197,12 @@ struct CodeStepGroupRowView: View {
     // MARK: - Settled
 
     private var summaryIcon: String {
+        // Rule A (pp 2026-11-21): a row settled because its live step is a
+        // working dispatched subagent reads as the subagent's row, so it
+        // carries the subagent icon even when an earlier tool opened the run.
+        if group.settlesAsRunningSubagentRow {
+            return CodeToolLabels.anthropicon(for: .task)
+        }
         if let call = group.toolCalls.first {
             return CodeToolLabels.anthropicon(for: call)
         }

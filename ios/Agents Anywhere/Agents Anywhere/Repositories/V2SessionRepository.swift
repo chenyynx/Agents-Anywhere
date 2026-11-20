@@ -1127,11 +1127,20 @@ final class V2SessionRepository {
         return response
     }
 
-    func interrupt(sessionId: V2SessionID, preserveBackground: Bool = false) async throws {
+    @discardableResult
+    func interrupt(
+        sessionId: V2SessionID,
+        preserveBackground: Bool = false
+    ) async throws -> V2RuntimeActionResponse? {
         try requireNetwork()
         let entry = entry(for: sessionId)
-        do { _ = try await detail.interrupt(sessionId: sessionId, preserveBackground: preserveBackground) }
-        catch {
+        var response: V2RuntimeActionResponse?
+        do {
+            response = try await detail.interrupt(
+                sessionId: sessionId,
+                preserveBackground: preserveBackground
+            )
+        } catch {
             // The capability gate refuses an interrupt exactly when there is
             // no turn to stop ("session capability is unavailable:
             // session.interrupt" — server/agent_server/services/session_run.py).
@@ -1150,6 +1159,7 @@ final class V2SessionRepository {
         entry.model.runtime.beginPredictedIdle()
         emit(entry)
         launchFollowUpReconcile(entry)
+        return response
     }
 
     /// Stops one SubAgent task (§A3). Deliberately not an interrupt: a

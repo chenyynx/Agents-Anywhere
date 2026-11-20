@@ -75,14 +75,12 @@ struct PendingMessageRow: View {
         switch steerStatus {
         case .sending: return String(localized: "发送中")
         case .waiting: return String(localized: "正在等待 Claude")
-        case .notDelivered: return String(localized: "未送达")
+        case .heldForNextTurn: return String(localized: "已提交，下一轮送达")
         case nil: return nil
         }
     }
 
     private var deliveryIssue: String? {
-        // The turn is over and no echo arrived: the steer never landed.
-        if steerStatus == .notDelivered { return String(localized: "未送达") }
         switch pending.delivery {
         case .uncertain:
             return String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")

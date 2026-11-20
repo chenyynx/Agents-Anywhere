@@ -431,7 +431,10 @@ struct QuestionCardView: View {
             statusText(String(localized: "回应已提交，等待 \(chat.agentName)"))
         } else if let error = item.responseError {
             statusText(error)
-        } else if !chat.session.runtime.isFresh, let reason = chat.responseUnavailableReason {
+        } else if !chat.session.runtime.isFresh, let reason = chat.responseBlockingReason {
+            // Real blockers (offline, unparsable, re-auth) keep their line;
+            // the transient "confirming" refresh after returning from the
+            // background does not (pp 2026-11-20).
             statusText(reason)
         }
     }

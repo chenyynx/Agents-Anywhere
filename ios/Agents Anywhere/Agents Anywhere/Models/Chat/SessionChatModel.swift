@@ -188,14 +188,39 @@ final class SessionChatModel {
         default: return false
         }
     }
-    var responseUnavailableReason: String? {
-        if !session.isValid { return String(localized: "会话已关闭。") }
-        if session.network.availability == .offline || session.connection == .offline { return String(localized: "网络已断开，已填写的内容会保留。") }
-        if session.metadata?.connectorStatus == .offline { return String(localized: "设备已离线，已填写的内容会保留。") }
+    /// Why the interaction surfaces cannot take a response right now.
+    /// `.confirming` is the transient state right after returning from the
+    /// background (live facts still refreshing); the question card ignores it
+    /// — a line there read as noise, the card recovers by itself
+    /// (pp 2026-11-20).
+    enum ResponseBlock: Equatable {
+        case sessionClosed, network, deviceOffline, invalidResponse, authentication, confirming
+    }
+    var responseBlock: ResponseBlock? {
+        if !session.isValid { return .sessionClosed }
+        if session.network.availability == .offline || session.connection == .offline { return .network }
+        if session.metadata?.connectorStatus == .offline { return .deviceOffline }
         if session.runtime.isFresh { return nil }
-        if session.failure?.kind == .invalidResponse { return String(localized: "会话数据暂时无法解析，请刷新状态后回应。已填写的内容会保留。") }
-        if session.failure?.kind == .authentication { return String(localized: "登录状态需要重新验证，已填写的内容会保留。") }
-        return String(localized: "正在确认 Agent 的最新状态，已填写的内容会保留。")
+        if session.failure?.kind == .invalidResponse { return .invalidResponse }
+        if session.failure?.kind == .authentication { return .authentication }
+        return .confirming
+    }
+    var responseUnavailableReason: String? {
+        switch responseBlock {
+        case nil: return nil
+        case .sessionClosed: return String(localized: "会话已关闭。")
+        case .network: return String(localized: "网络已断开，已填写的内容会保留。")
+        case .deviceOffline: return String(localized: "设备已离线，已填写的内容会保留。")
+        case .invalidResponse: return String(localized: "会话数据暂时无法解析，请刷新状态后回应。已填写的内容会保留。")
+        case .authentication: return String(localized: "登录状态需要重新验证，已填写的内容会保留。")
+        case .confirming: return String(localized: "正在确认 Agent 的最新状态，已填写的内容会保留。")
+        }
+    }
+    /// The question card's gate: real blockers keep their line, the transient
+    /// `.confirming` refresh does not.
+    var responseBlockingReason: String? {
+        guard let block = responseBlock, block != .confirming else { return nil }
+        return responseUnavailableReason
     }
     var canAttach: Bool { session.runtime.allows("runtime.attachment") }
     var canChangeTakeover: Bool {

@@ -211,6 +211,32 @@ import Testing
         #expect(http.count("respond") == 1)
     }
 
+    /// Returning from the background leaves live facts briefly stale; the
+    /// generic surfaces still explain that, but the question card must not
+    /// print the "confirming" line (pp 2026-11-20).
+    @Test func theCardIgnoresTheTransientConfirmingState() async throws {
+        let http = TestHTTPTransport(); let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let observation = Task { await session.connect() }; defer { observation.cancel() }
+        try await eventually { session.runtime.isFresh }
+        let item = try #require(session.notices.notices.first)
+        let chat = SessionChatModel(session: session, repository: repo,
+                                    attachments: .init(attachmentAPI: V2AttachmentAPI(transport: http)))
+        #expect(chat.responseBlock == nil)
+        var accepted = false
+        http.respond = { call in
+            if call.path.hasSuffix("/respond") { accepted = true; return try fixtureData("rpc") }
+            if accepted && call.path.hasSuffix("/state") { throw URLError(.timedOut) }
+            return try http.defaultResponse(call)
+        }
+        await chat.respond(notice: item, action: item.notice.actions[0])
+        #expect(!session.runtime.isFresh)
+        #expect(chat.responseBlock == .confirming)
+        #expect(chat.responseUnavailableReason != nil)
+        #expect(chat.responseBlockingReason == nil)
+    }
+
     @Test func waitingApprovalMetadataKeepsLiveConnectionAndApprovalActionUsable() async throws {
         let http = TestHTTPTransport(); let realtime = TestRealtimeAPI()
         let repo = repository(transport: http, realtime: realtime)

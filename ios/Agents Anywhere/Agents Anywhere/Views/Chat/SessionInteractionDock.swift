@@ -26,6 +26,7 @@ struct SessionInteractionDock: View {
                 ForEach(questionItems) { item in
                     QuestionCardView(item: item, chat: chat)
                         .padding(.horizontal, QuestionCardMetrics.screenMargin)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                         .id(item.id)
                 }
                 if !compactItems.isEmpty {

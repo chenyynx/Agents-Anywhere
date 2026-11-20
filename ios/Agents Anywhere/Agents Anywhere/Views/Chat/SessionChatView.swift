@@ -220,7 +220,8 @@ struct SessionChatView: View, Equatable {
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")
-            ChatComposerDock(draft: session.composer, settings: model.settings,
+            if !showsQuestionCard {
+                ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                 canSend: session.canSend, canAttach: model.canAttach,
@@ -240,10 +241,23 @@ struct SessionChatView: View, Equatable {
                 onQueueSend: { await model.enqueueComposer() },
                 onSteerSend: { await model.steerComposer() })
                 .traceChatLayout("composer-dock")
+                // The official question card replaces the composer while it
+                // is up (pp 2026-11-20); the card slides in from below.
+                .transition(.opacity)
+            }
         }
+        .animation(.smooth(duration: 0.32), value: showsQuestionCard)
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
+    }
+
+    /// A blocking questionnaire is on screen: the official card takes the
+    /// composer's place instead of stacking above it.
+    private var showsQuestionCard: Bool {
+        session.notices.notices.contains {
+            $0.blocks(session.id) && $0.form != nil
+        }
     }
 
     /// The sheet bodies live in their own method: the same switch inline in the

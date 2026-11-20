@@ -105,19 +105,22 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// live dots stay on the working row.
     var hasRunningBackgroundAgent: Bool { summary.activeAgentCount > 0 }
 
-    /// Whether the row must settle although a step still reports running:
-    /// the live step is a dispatched subagent the main turn has moved past
+    /// Whether the group's whole running work is dispatched subagents
     /// (pp 2026-11-21, rule A).
     ///
-    /// Such a row is the subagent's row, not the main turn's working row. It
-    /// draws the settled subagent form — its own icon, 「正在运行 N 个智能体」
-    /// and the activity sweep — so the three-dot mark stays on the live tail
-    /// alone. A control call (`send_input` / `wait` / `close`) is the main
-    /// agent's own work and never takes this branch.
+    /// Such a row is the subagent's row, not the main turn's working row: when
+    /// a newer row owns the working mark it settles into the subagent form —
+    /// its own icon, 「正在运行 N 个智能体」 and the activity sweep — so the
+    /// three-dot mark stays on the live tail alone. A control call
+    /// (`send_input` / `wait` / `close`) or a running thinking block is the
+    /// main agent's own work and never takes this branch.
     var settlesAsRunningSubagentRow: Bool {
-        guard let liveStep, liveStep.isRunning,
-              let call = liveStep.toolCall else { return false }
-        return call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item)
+        let running = steps.filter { $0.isRunning }
+        guard !running.isEmpty else { return false }
+        return running.allSatisfy { step in
+            guard let call = step.toolCall else { return false }
+            return call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item)
+        }
     }
 
     /// Whether the chat profile's live mark may seat on this group while a turn
@@ -200,8 +203,18 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
 
     /// The step the live row shows: the trailing-most running step, else the
     /// last one (the official running branch reads `items.last`).
+    ///
+    /// A dispatched subagent stays `running` for its whole lifetime. Once the
+    /// main turn has newer steps, it must not win this rule — otherwise every
+    /// gap between the main agent's own tools falls back to
+    /// 「正在运行智能体 X」 while the subagent works in the background
+    /// (pp 2026-11-21). It still owns the row when it is the trailing step.
     var liveStep: TimelineStep? {
-        steps.last(where: { $0.isRunning }) ?? steps.last
+        steps.last(where: { step in
+            guard step.isRunning else { return false }
+            guard let call = step.toolCall else { return true }
+            return !(call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item))
+        }) ?? steps.last
     }
 
     var toolCalls: [CodeToolCall] { steps.compactMap(\.toolCall) }

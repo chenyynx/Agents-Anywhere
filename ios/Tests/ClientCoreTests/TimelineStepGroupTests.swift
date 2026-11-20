@@ -517,6 +517,38 @@ struct TimelineStepGroupSummaryTests {
         #expect(TimelineStep.thinking(id: "r", text: "\n\n", status: .running)
             .liveThinkingLine == nil)
     }
+
+    /// A dispatched subagent stays `running` for its whole lifetime. Once the
+    /// main turn has newer steps, the live row must show the main agent's own
+    /// step instead of falling back to 「正在运行智能体 X」 in every gap
+    /// (pp 2026-11-21). A dispatch that is still the trailing step keeps the
+    /// label — that is the turn waiting on it.
+    @Test func aBackgroundDispatchDoesNotOwnTheLiveLabelAfterNewerSteps() throws {
+        let movedOn = TimelineStepGroup(id: "steps:moved-on", steps: [
+            .thinking(id: "r1", text: "think", status: .done),
+            try agentStep("a1", status: "running"),
+            try tool("t1", name: "Bash", input: ["command": "swift test"]),
+        ])
+        #expect(movedOn.liveStep?.id == "t1")
+
+        let trailing = TimelineStepGroup(id: "steps:trailing", steps: [
+            .thinking(id: "r2", text: "think", status: .done),
+            try agentStep("a2", status: "running"),
+        ])
+        #expect(trailing.liveStep?.id == "a2")
+    }
+
+    /// A running main-turn tool still wins over an older dispatch.
+    @Test func theRunningMainToolBeatsAnOlderBackgroundDispatch() throws {
+        let steps: [TimelineStep] = [
+            try agentStep("a1", status: "running"),
+            .tool(call: CodeToolCall(item: try toolItem(
+                "t1", order: 2, name: "Bash",
+                input: ["command": "swift test"], status: "running"))),
+        ]
+        let group = TimelineStepGroup(id: "steps:run", steps: steps)
+        #expect(group.liveStep?.id == "t1")
+    }
 }
 
 @Suite("Chat step-group live mark eligibility")

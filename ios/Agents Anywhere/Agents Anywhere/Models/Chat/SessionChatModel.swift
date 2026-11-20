@@ -494,9 +494,17 @@ final class SessionChatModel {
                     // The model-switch flavor: stop the turn, spare the
                     // background agents it dispatched (per-task stop
                     // affordance). Every other stop keeps the all-stop
-                    // semantics.
-                    do { try await repository.interrupt(sessionId: session.id, preserveBackground: true) }
-                    catch {
+                    // semantics. This is a stop like any other: a pending
+                    // steer must be resolved with the same outcomes, or the
+                    // connector withdraws it while the bubble waits forever.
+                    do {
+                        let response = try await repository.interrupt(
+                            sessionId: session.id,
+                            preserveBackground: true
+                        )
+                        session.clearSteerAwaitingReply()
+                        session.applySteerOutcomes(response?.result?["steerOutcomes"])
+                    } catch {
                         // "Switched but not stopped": the selection is in, the
                         // turn keeps running under the old model. The real
                         // failure goes out on the existing error channel and

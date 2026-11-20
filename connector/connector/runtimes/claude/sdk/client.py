@@ -251,7 +251,7 @@ async def cancel_async_message_client(
             timeout=timeout,
         )
         if inspect.isawaitable(response):
-            response = await asyncio.wait_for(response, timeout=timeout + 1.0)
+            response = await asyncio.wait_for(response, timeout=timeout)
     except Exception:  # noqa: BLE001 - unknown outcome must not fail the stop
         logger.warning(
             "Claude steer withdraw failed message_uuid={}", message_uuid

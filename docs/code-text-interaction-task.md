@@ -80,3 +80,24 @@
 - IPA：`AgentsAnywhere-feat-code-profile-beta-b597-520c45c.ipa`（17,122,471 B）。
 - pp 2026-10-27 真机：「我已经下载了 现在可以了」= **链接点击验收通过**。
 - 选中复制 pp 2026-10-27 验：「选中复制没问题」= **单块系统选择/Copy 验收通过**。
+
+## 11. 2026-11-21 表格单元格选中 + 正文跨块选择（feat/text-selection）
+
+**需求（pp）**：表格里的文字要能选中复制；正文要能跨段落/列表项连续选择、一次复制（此前每块各自选择，拖到块尾就停）。
+
+**表格**（`AssistantTableBlockView`）
+- 结构：surface 只画表头填充、行线、外框；每个非空单元格一个 `AssistantMarkdownTextBlockView`（内含 `AssistantMarkdownBlockTextView` + chip overlay），frame 为 `textRect`。列宽/行高仍由 `AssistantMarkdownTextLayout.tableMetrics` 决定，视觉规格未改。
+- 交互：`CodeMarkdownTextLeaf.enableBlockInteractions` 只给表格子树开单块选择；正文块不再各挂交互。
+- 流式：`update(table:)` 在列宽/内边距不变时复用 cell 视图，只替换变化的单元格文字；高度返回走 `AssistantMarkdownTextLayout.height(.table)` 的 roundUp，与行高一致。
+- 与官方差异：官方表格 surface 不参与字符级选择（`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` Q3）；表格可选是 pp 指定的产品决定。
+
+**正文跨块**（`AssistantCompositeSelectionOverlay`）
+- 在 `CodeMarkdownTextStackView` 上盖一层透明 overlay，实现 `UITextInput`，挂单个 `UITextInteraction(.nonEditable)`；所有正文文字视图（段落/标题/列表项/引用）按文档顺序成为参与者。
+- 虚拟文本由 `CompositeSelectionModel` 维护：块间一个换行，范围 ↔（块, 块内 offset）纯函数映射；选区矩形、caret、链接命中都映射回各块；Copy 跨块拼 HTML + 纯文本。
+- 代码块、表格不参与：代码保留复制按钮，表格保留单元格选择；拖动跨过它们时按最近文字块吸附，不复制其内容。
+- 流式：参与者列表在记录变化时刷新；长度/身份变化会清掉当前选区。
+- 单测：`ios/Tests/ClientCoreTests/CompositeSelectionModelTests.swift` 覆盖空块、分隔符、跨块、越界、单块。
+- 门禁：`code-profile` 用 `codeTable` fixture 在 key window 渲染生产同款 `CodeMessageRowView`，断言表格每个 cell 有可交互文字视图、正文是 overlay 参与者且已装系统交互；M3 gate 保留表格 cell 结构断言（其驱动的是旧 `AssistantMarkdownCell`）。
+
+**范围外（后续）**：跨单元格拖选；表格并入正文连续选区；选择时拖到屏幕边缘自动滚动；跨消息选择。
+**验证状态**：单元/门禁以 CI 结果为准；真机验收（表格长按选/复制、跨段落拖选、格内链接、滚动与代码块复制按钮）待 pp 用出包确认。

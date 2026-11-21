@@ -38,7 +38,7 @@ nonisolated enum ChatColorSettings {
     /// Built-in Code-page inks. The defaults are the shipped visuals, so an
     /// untouched install renders exactly as before; their dark values are
     /// hand-tuned and bypass the automatic lift.
-    static let defaultCodeFileReference = Pair(light: "#B1080E", dark: "#ED6E72")
+    static let defaultCodeFileReference = Pair(light: "#1F5C8B", dark: "#6FA8D6")
     static let defaultCodeExternalLink = Pair(light: "#131313", dark: "#F9F9F7")
     static let defaultCodeInlineCode = Pair(light: "#184F95", dark: "#6DA7EC")
 

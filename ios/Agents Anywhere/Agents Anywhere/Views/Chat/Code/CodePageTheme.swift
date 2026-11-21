@@ -511,9 +511,10 @@ nonisolated enum CodePageTheme {
     /// `#6DA7EC` dark (`[E] CANONICAL/06-visuals-assets.md §2.2`).
     static let inlineCodeTextUIColor = codeInkUIColor(.inlineCode)
 
-    /// A file reference reads as ink, not a web link: one colour, no
-    /// underline, and the chip alone carries the tap affordance. The built-in
-    /// pair is the shipped visual; a custom colour gets a lifted dark value.
+    /// A file reference reads as a link: link-blue ink, no underline, and a
+    /// white chip instead of the inline-code grey one (pp 2026-11-22). The
+    /// built-in pair is the shipped visual; a custom colour gets a lifted
+    /// dark value.
     static let fileReferenceTextUIColor = codeInkUIColor(.fileReference)
 
     /// Web links keep the official underline; only their ink is tunable.
@@ -542,6 +543,16 @@ nonisolated enum CodePageTheme {
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.075)
             : UIColor(red: 0.043, green: 0.043, blue: 0.043, alpha: 0.05)
+    }
+
+    /// A file reference sits on a white chip instead of the grey inline-code
+    /// one (pp 2026-11-22), so the two blue inks are told apart by surface.
+    /// Light is solid white; dark brightens the white wash instead of painting
+    /// a solid white block on the dark page.
+    static let fileReferenceChipFillUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.18)
+            : UIColor(red: 1, green: 1, blue: 1, alpha: 1)
     }
 
     /// [E] R19 `typography-inline.md` §3 — chip stroke:

@@ -932,7 +932,9 @@ enum AssistantMarkdownDocumentParser {
             baseFamily: codeStyle.fonts.bodyName,
             italicFamily: codeStyle.fonts.bodyItalicName,
             baseWeight: codeStyle.fonts.bodyWeight,
-            chipStyle: codeStyle.inlineCodeChip) else { return nil }
+            chipStyle: codeStyle.inlineCodeChip,
+            // A table cell strips links and keeps the ordinary code chip.
+            fileChipsUseWhiteFill: false) else { return nil }
         trimBoundaryWhitespace(attributed)
         // Table cells do not expose link interaction. The attribute is dropped
         // at conversion time so a file reference keeps the converter's ink
@@ -1052,7 +1054,8 @@ enum AssistantMarkdownDocumentParser {
                                                baseFamily: String? = nil,
                                                italicFamily: String? = nil,
                                                baseWeight: CGFloat = 400,
-                                               chipStyle: AssistantInlineCodeChipStyle? = nil)
+                                               chipStyle: AssistantInlineCodeChipStyle? = nil,
+                                               fileChipsUseWhiteFill: Bool = true)
         -> NSMutableAttributedString? {
         let roles = typography.codeMarkdownRoles
         // [E] typography-inline.md §3 — the Code page's inline code is the
@@ -1132,6 +1135,9 @@ enum AssistantMarkdownDocumentParser {
             // references keep their chip; only `.system` links drop it.
             let linkedCodeIsWeb = run.link.map {
                 ChatLinkRoute.route($0) == .system
+            } ?? false
+            let isFileReferenceLink = run.link.map {
+                ChatLinkRoute.route($0).isFileReference
             } ?? false
 
             if let inline = run.inlinePresentationIntent {
@@ -1239,7 +1245,10 @@ enum AssistantMarkdownDocumentParser {
                 // `AssistantMarkdownBlockTextView`; none of them participates
                 // in TextKit layout, so render and measurement stay identical.
                 attributes[.assistantInlineCodeChip] = true
-                attributes[.assistantInlineCodeChipFill] = chipStyle.fillColor
+                attributes[.assistantInlineCodeChipFill] =
+                    (fileChipsUseWhiteFill && isFileReferenceLink)
+                    ? CodePageTheme.fileReferenceChipFillUIColor
+                    : chipStyle.fillColor
                 attributes[.assistantInlineCodeChipStroke] = chipStyle.strokeColor
                 attributes[.assistantInlineCodeChipCornerRadius] =
                     NSNumber(value: Double(chipStyle.cornerRadius))

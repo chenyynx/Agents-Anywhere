@@ -3221,12 +3221,12 @@ final class CodeProfileAutoRunModel {
             failures.append("tableReuse: no table block after the first install")
             return
         }
-        // The offscreen stack has never been laid out; give the block its
-        // measured row frame so the fixed card border is computed.
-        table.frame = CGRect(x: 0, y: 0, width: 361,
-                             height: table.debugTableHeight)
-        table.setNeedsLayout()
-        table.layoutIfNeeded()
+        // The offscreen stack has never been laid out; give the block the
+        // row's bounds and lay it out directly so the fixed card border is
+        // computed (layoutIfNeeded is a no-op on a detached view).
+        table.bounds = CGRect(x: 0, y: 0, width: 361,
+                              height: table.debugTableHeight)
+        table.layoutSubviews()
         let identifiers = table.debugCellViewIdentifiers
         let nonEmpty = table.debugNonEmptyCellCount
         // Header + two body rows × two columns.
@@ -3239,10 +3239,13 @@ final class CodeProfileAutoRunModel {
         // content width, not the row width, or the border shows an empty band
         // beside the header fill and row seams.
         check(table.debugTableWidth < table.bounds.width - 1,
-              "tableReuse: fixture is not narrower than the row")
+              "tableReuse: fixture is not narrower than the row"
+              + " (table \(table.debugTableWidth), bounds \(table.bounds.width))")
         let expectedCardWidth = min(table.debugTableWidth, table.bounds.width)
         check(abs(table.debugCardWidth - expectedCardWidth) <= 1,
-              "tableReuse: card width \(table.debugCardWidth), expected \(expectedCardWidth)")
+              "tableReuse: card width \(table.debugCardWidth), expected"
+              + " \(expectedCardWidth) (table \(table.debugTableWidth),"
+              + " bounds \(table.bounds.width))")
 
         stack.install(document: doc2, key: "table-reuse-2", displayScale: 2,
                       generation: 1, cache: cache, typographyRevision: 1,

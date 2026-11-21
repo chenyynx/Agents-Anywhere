@@ -493,6 +493,17 @@ nonisolated enum CodePageTheme {
             : UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1)
     }
 
+    /// Selection tint for transcript text. The system paints the highlight as
+    /// this colour at ~20%; the official transcript's grey reads 210 over the
+    /// 249 page (pp 2026-11-21 screenshots), which is a #363636 tint at that
+    /// alpha — a black tint read 199. Dark mode keeps a light tint so the
+    /// highlight stays visible on the dark page.
+    static let selectionTintUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 1)
+            : UIColor(white: 54.0 / 255.0, alpha: 1)
+    }
+
     /// [E] CANONICAL/06-visuals-assets.md §2.2 — inline-code text
     /// `#184F95` light / `#6DA7EC` dark (`0.094,0.31,0.584` /
     /// `0.427,0.655,0.925`). Links use the body text colour.

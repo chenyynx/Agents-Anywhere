@@ -511,8 +511,8 @@ nonisolated enum CodePageTheme {
     /// `#6DA7EC` dark (`[E] CANONICAL/06-visuals-assets.md §2.2`).
     static let inlineCodeTextUIColor = codeInkUIColor(.inlineCode)
 
-    /// A file reference reads as a link: link-blue ink, no underline, and a
-    /// white chip instead of the inline-code grey one (pp 2026-11-22). The
+    /// A file reference uses the same blue as inline code; the white chip is
+    /// what tells them apart, and there is no underline (pp 2026-11-22). The
     /// built-in pair is the shipped visual; a custom colour gets a lifted
     /// dark value.
     static let fileReferenceTextUIColor = codeInkUIColor(.fileReference)

@@ -2624,6 +2624,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         noteQueueHandoffIfNeeded()
     }
 
+    /// Viewport numbers are logged with `-1` when unmeasured. A NaN can slip
+    /// through a viewport mid-rebuild and must not read as a real size
+    /// (device 2026-11-21: `contentH=nan` on a session switch).
+    private func viewportLogValue(_ value: CGFloat?) -> String {
+        guard let value, value.isFinite else { return "-1" }
+        return String(format: "%.1f", value)
+    }
+
     /// Diagnostic probe for the queued-send handoff (device 2026-11-14).
     ///
     /// The page moved and a settled row looked active exactly when a queued
@@ -2665,9 +2673,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     return String(format: "%.1f", height)
                 }(),
                 "working": lastHasWorkingStatus ? "1" : "0",
-                "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
-                "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
-                "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),
+                "offsetY": viewportLogValue(viewport?.offsetY),
+                "contentH": viewportLogValue(viewport?.contentHeight),
+                "visibleH": viewportLogValue(viewport?.visibleHeight),
                 "atBottom": {
                     guard let viewport, viewport.isMeasured else { return "0" }
                     return viewport.visibleBottom >= viewport.contentHeight - 1 ? "1" : "0"

@@ -544,11 +544,17 @@ final class V2SessionModel: Identifiable {
         return merged
     }
 
+    /// A genuinely late row arrives alone or in a small batch. A bulk load
+    /// (history page, rebuild, cold restore) replays hundreds of historical
+    /// stopped-turn tool rows; logging each first appearance buried the
+    /// tripwire it exists for (device 2026-11-21: 300 lines in one apply).
+    private static let postStopLateAppearanceLimit = 8
+
     /// Tripwire for "a stopped turn's tool row moved after the stop".
     ///
     /// The visible flash was one symptom of this data path; a late `running`
-    /// write, a status bouncing back, or a row arriving after the card all
-    /// land here. Diagnostics only (the reader keeps that file); every status
+    /// write, a status bouncing back, or a single row arriving after the card
+    /// lands here. Diagnostics only (the reader keeps that file); every status
     /// change is recorded with the gates that decide the drawn pose, so a
     /// recurrence can be told from normal convergence.
     private func recordPostStopToolChange(
@@ -1183,12 +1189,13 @@ final class V2SessionModel: Identifiable {
         // Stopped turns whose tool rows may still move under the user's eyes.
         // Read once per apply (the cache is cleared at the end of this method).
         let stoppedTurnIDs = Set(interruptedTurns.compactMap(\.turnID))
+        var postStopChanges: [(item: V2TimelineItem, previous: V2TimelineItemStatus?)] = []
         for (index, item) in items.enumerated() {
             if item.type == .tool, !stoppedTurnIDs.isEmpty,
                let turnID = item.turnId, stoppedTurnIDs.contains(turnID) {
                 let previousStatus = rowsByID[item.id]?.value.status
                 if previousStatus != item.status {
-                    recordPostStopToolChange(item, from: previousStatus)
+                    postStopChanges.append((item, previousStatus))
                 }
             }
             let row: V2TimelineItemModel
@@ -1201,6 +1208,16 @@ final class V2SessionModel: Identifiable {
             }
             if !orderChanged, timeline[index] !== row { orderChanged = true }
             rows.append(row)
+        }
+        // Status changes of rows already on screen are always recorded. A first
+        // appearance is only interesting when it is a genuinely late row, not
+        // the bulk replay of historical tool rows a load produces.
+        let lateAppearanceCount = postStopChanges.reduce(0) {
+            $0 + ($1.previous == nil ? 1 : 0)
+        }
+        let recordLateAppearances = lateAppearanceCount <= Self.postStopLateAppearanceLimit
+        for change in postStopChanges where change.previous != nil || recordLateAppearances {
+            recordPostStopToolChange(change.item, from: change.previous)
         }
         if orderChanged {
             timeline = rows

@@ -779,10 +779,31 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
                 to: NSMaxRange(fragment.range))
             frames.append(contentsOf: localFrames.map { convert($0, from: textView) })
         }
-        return frames.enumerated().map { index, frame in
-            MarkdownTextSelectionRect(rect: frame,
-                                      containsStart: index == 0,
-                                      containsEnd: index == frames.count - 1)
+        frames.sort { $0.minY < $1.minY }
+        // The official transcript reads as one selected block, not one bar per
+        // line/paragraph: fill the line-spacing and block-spacing gaps with
+        // bridge rects. The first and last line keep their own x so the
+        // start/end handles still sit on the characters the reader selected.
+        var rects: [CGRect] = []
+        for (index, frame) in frames.enumerated() {
+            rects.append(frame)
+            guard index + 1 < frames.count else { continue }
+            let next = frames[index + 1]
+            let gap = next.minY - frame.maxY
+            // Line spacing and paragraph/block spacing are small; a code
+            // block or table between two text blocks leaves a much larger
+            // hole and must stay unhighlighted.
+            guard gap > 0.5, gap <= 40 else { continue }
+            let minX = min(frame.minX, next.minX)
+            let maxX = max(frame.maxX, next.maxX)
+            rects.append(CGRect(x: minX, y: frame.maxY,
+                                width: max(0, maxX - minX), height: gap))
+        }
+        return rects.enumerated().map { index, frame in
+            MarkdownTextSelectionRect(
+                rect: frame,
+                containsStart: index == 0,
+                containsEnd: index == rects.count - 1)
         }
     }
 

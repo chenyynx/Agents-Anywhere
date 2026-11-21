@@ -113,3 +113,4 @@
 - **未验证**：把手命中阈值、自动滚动速度、与系统把手拖动共存、深色模式下的 tint，均需真机确认。
 - **高亮形状**：官方选中的是一整块（截图竖向 1248→1964 连续、x 到文字列右缘），我们原来是逐行矩形。`selectionRects` 在相邻行/段之间插入桥接矩形（gap ≤ 40pt），首尾行保持原 x 以保住手柄位置；跨代码块/表格的大洞不桥接。
 - **表格外框固定**：圆角/描边从滚动内容（surface）移到 `AssistantTableBlockView` 的固定 `borderView`，scrollView 设 cornerRadius 裁剪内容；横向滚动只移动表头/行线/文字，卡片边框不再随内容被裁掉。
+- **自动滚动（成熟解法调研）**：`UITextInteraction` 官方不做 auto-scroll。社区成熟做法（Runestone `TextView.swift`、Steve Shepard/Storyist、SO 58276112）：在 `UIGestureRecognizerDelegate.gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` 里按类名捕获系统私有的 `UITextRangeAdjustmentGestureRecognizer`（把手拖动），或在每个选区端点变化时把移动端 `scroll into view`。本实现采用后者：外部 `selectedTextRange` 变化 → 移动端 caret → 最小滚动使其留在可见区（排除 composer 的 `adjustedContentInset`）；现有边缘 band/display link 保留作为按住边缘的补充。

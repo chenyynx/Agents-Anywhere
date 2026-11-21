@@ -808,6 +808,11 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         }
         let offset = moving == .end ? current.end : current.start
         guard let caret = caretWindowRect(for: offset) else { return }
+        // Runestone's proven shape: follow the moved end by the minimum
+        // scroll that keeps it inside the unobscured viewport. The list
+        // starts moving as soon as the selection reaches the visible bottom,
+        // not after the selection has covered everything on screen.
+        scrollMovingCaretIntoView(offset: offset)
         let direction = edgeDirection(for: caret)
         ClientDiagnosticsLog.shared.record(
             kind: "selection.autoscroll",
@@ -830,6 +835,36 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         autoScrollDirection = direction
         autoScrollSpeed = speed(for: caret, direction: direction)
         startAutoScroll()
+    }
+
+    /// Minimum `contentOffset` change that keeps the moved caret inside the
+    /// part of the timeline the reader can actually see (composer excluded).
+    private func scrollMovingCaretIntoView(offset: Int) {
+        guard let scrollView = enclosingScrollView(),
+              let caretWindow = caretWindowRect(for: offset) else { return }
+        let caret = scrollView.convert(caretWindow, from: nil)
+        let unobscured = scrollView.bounds.inset(by: scrollView.adjustedContentInset)
+        let margin: CGFloat = 24
+        var target = scrollView.contentOffset
+        if caret.maxY > unobscured.maxY - margin {
+            target.y += caret.maxY - (unobscured.maxY - margin)
+        } else if caret.minY < unobscured.minY + margin {
+            target.y -= (unobscured.minY + margin) - caret.minY
+        } else {
+            return
+        }
+        let minY = -scrollView.adjustedContentInset.top
+        let maxY = max(minY, scrollView.contentSize.height
+            - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+        target.y = min(max(target.y, minY), maxY)
+        let delta = target.y - scrollView.contentOffset.y
+        guard abs(delta) > 0.5 else { return }
+        scrollView.setContentOffset(target, animated: false)
+        ClientDiagnosticsLog.shared.record(
+            kind: "selection.autoscroll",
+            detail: ["action": "scroll-follow",
+                     "dy": String(Int(delta.rounded()))],
+            dedupe: true)
     }
 
     private func preferredMovingEnd(for offsets: (start: Int, end: Int)) -> MovingEnd {

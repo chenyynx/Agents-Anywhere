@@ -58,6 +58,13 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// user's drag.
     private var isInternalSelectionChange = false
     private var lastExternalSelection: (start: Int, end: Int)?
+    /// Handles the system installs for range selection. They are not in
+    /// `gesturesForFailureRequirements`, but the simultaneous-recognition
+    /// callback hands us each one; Runestone uses the same route. Tracking
+    /// them gives the finger-move cadence, while `selectedTextRange` itself is
+    /// committed only a couple of times per drag.
+    private var rangeAdjustmentRecognizers: Set<UIGestureRecognizer> = []
+    private var previousRangeDuringAdjustment: (start: Int, end: Int)?
 
     private enum MovingEnd {
         case none, start, end
@@ -735,7 +742,60 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
+        if let klass = NSClassFromString("UITextRangeAdjustmentGestureRecognizer"),
+           other.isKind(of: klass),
+           !rangeAdjustmentRecognizers.contains(other) {
+            other.addTarget(self, action: #selector(handleRangeAdjustment(_:)))
+            rangeAdjustmentRecognizers.insert(other)
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "range-gesture-captured"],
+                dedupe: false)
+        }
+        return true
+    }
+
+    /// The system's selection-range handle drag. It fires on finger movement,
+    /// so it is the reliable clock for auto-scroll even when the selection
+    /// setter is only called at sparse commits.
+    @objc private func handleRangeAdjustment(_ gesture: UIGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            previousRangeDuringAdjustment = selectionOffsets
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "range-begin"],
+                dedupe: false)
+        case .changed:
+            guard let previous = previousRangeDuringAdjustment,
+                  let current = selectionOffsets, current.end > current.start else {
+                return
+            }
+            let moving: MovingEnd
+            if current.start != previous.start, current.end == previous.end {
+                moving = .start
+            } else if current.end != previous.end, current.start == previous.start {
+                moving = .end
+            } else if current != previous {
+                moving = preferredMovingEnd(for: current)
+            } else {
+                // The selection has not committed yet; the caret of the last
+                // committed bound is still the best edge to follow.
+                moving = movingEnd == .none ? .end : movingEnd
+            }
+            previousRangeDuringAdjustment = current
+            let offset = moving == .end ? current.end : current.start
+            scrollMovingCaretIntoView(offset: offset)
+        case .ended, .cancelled, .failed:
+            previousRangeDuringAdjustment = nil
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "range-end",
+                         "state": String(describing: gesture.state)],
+                dedupe: false)
+        default:
+            break
+        }
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

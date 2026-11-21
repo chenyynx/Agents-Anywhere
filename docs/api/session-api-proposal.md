@@ -359,11 +359,12 @@ result when the session had queued steering messages at the stop: an array of
   accepts a withdraw only before the interrupt); no timeline row will ever
   appear for it, so the sender may return the text to the composer or re-send
   it as a normal message;
-- `delivered` — the runtime had already taken the steer into the turn; its
-  row follows through the existing echo path;
-- `unknown` — the runtime could not report a verdict (older CLI/SDK or a
-  failed control request); clients keep the conservative “waiting” state and
-  must not treat the turn's end as a failure.
+- `delivered` — reserved for a runtime that can prove the steer was already
+  taken into the turn; the Claude connector does not emit it today (the CLI's
+  `cancelled: false` also covers an unknown uuid, so it reports `unknown`);
+- `unknown` — the runtime could not prove a verdict (withdraw did not apply,
+  older CLI/SDK, or a failed control request); clients keep the conservative
+  “waiting” state and must not treat the turn's end as a failure.
 
 Clients must not infer a steer's fate from the turn ending: a queued steer
 survives an interrupt and is read at the next turn's boundary. A steer with

@@ -251,13 +251,17 @@ async def cancel_async_message_client(
             timeout=timeout,
         )
         if inspect.isawaitable(response):
-            response = await asyncio.wait_for(response, timeout=timeout)
+            # Keep the SDK's own timeout as the inner authority and leave it
+            # margin to clean its pending-control entry: an outer wait_for
+            # that fires first cancels the coroutine with CancelledError,
+            # which the SDK's timeout cleanup does not catch.
+            response = await asyncio.wait_for(response, timeout=timeout + 1.0)
     except Exception:  # noqa: BLE001 - unknown outcome must not fail the stop
         logger.warning(
             "Claude steer withdraw failed message_uuid={}", message_uuid
         )
         return None
-    if isinstance(response, dict):
+    if isinstance(response, Mapping):
         cancelled = response.get("cancelled")
         if isinstance(cancelled, bool):
             return cancelled

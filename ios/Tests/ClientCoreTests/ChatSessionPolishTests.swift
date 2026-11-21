@@ -576,6 +576,26 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         }
     }
 
+    @Test func aLateAcceptedCannotResurrectARejectedSteer() {
+        let http = TestHTTPTransport()
+        let repo = repository(transport: http)
+        defer { repo.reset() }
+        let session = repo.session(id: "session")
+        let pending = V2PendingMessage(id: "client_steer", content: "withdrawn text", attachmentIDs: [])
+        pending.isSteer = true
+        pending.update(.rejected(V2ClientFailure(kind: .unavailable, message: "撤回")))
+        session.stage(pending)
+
+        // The steer's own HTTP response can land after the withdrawal set the
+        // rejected tombstone; it must not flip the record back to accepted.
+        pending.update(.accepted)
+
+        guard case .rejected = pending.delivery else {
+            Issue.record("A rejected steer must stay rejected")
+            return
+        }
+    }
+
     @Test func aNewRuntimeInstanceDemotesAHeldSteerToUncertain() throws {
         let http = TestHTTPTransport()
         let repo = repository(transport: http)

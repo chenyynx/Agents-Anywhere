@@ -255,8 +255,12 @@ final class V2PendingMessage: Identifiable {
     }
 
     func update(_ delivery: Delivery) {
-        // An authoritative echo can arrive before the HTTP request completes or fails.
-        guard self.delivery != .confirmed else { return }
+        // An authoritative echo can arrive before the HTTP request completes
+        // or fails. `.rejected` is sticky too: a withdrawal can land while the
+        // steer's own HTTP response is still in flight, and the late
+        // `.accepted` must not resurrect a record the runtime already dropped.
+        if case .confirmed = self.delivery { return }
+        if case .rejected = self.delivery { return }
         self.delivery = delivery
     }
 }
@@ -1039,11 +1043,16 @@ final class V2SessionModel: Identifiable {
         repository?.localWorkDidChange(sessionID: id)
     }
 
-    /// A connector restart mints a new runtime instance id; a steer still
-    /// waiting in the old CLI queue died with that process. Demote those
-    /// records to the existing uncertain state so the user can remove and
-    /// retry instead of waiting for an echo that will never come.
-    private func demoteHeldSteersAfterRuntimeRestart() {
+    /// A server-side runtime recreation can mint a new instance id; a steer
+    /// still waiting in the old CLI queue would have died with that process.
+    /// Demote those records to the existing uncertain state so the user can
+    /// remove and retry instead of waiting for an echo that will never come.
+    ///
+    /// This is only a defensive trigger: a plain connector restart does NOT
+    /// change `runtimeId` (it is bound once when the device runtime is
+    /// created), so the held row's long-press removal is the real escape
+    /// hatch for that case.
+    private func demoteHeldSteersAfterRuntimeChange() {
         let failure = V2ClientFailure(
             kind: .unavailable,
             message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。")
@@ -1140,12 +1149,19 @@ final class V2SessionModel: Identifiable {
         }
         let previousRuntimeID = runtime.state?.runtimeId
         runtime.update(data, connection: connection)
-        // A new runtime instance id means the connector restarted (every
-        // restart mints one): a steer queued in the old process is gone.
+        // A changed runtime instance id is a runtime recreation, not a plain
+        // reconnect: a steer queued in the old process is gone.
         if let previousRuntimeID,
            let appliedRuntimeID = runtime.state?.runtimeId,
            previousRuntimeID != appliedRuntimeID {
-            demoteHeldSteersAfterRuntimeRestart()
+            demoteHeldSteersAfterRuntimeChange()
+        }
+        // A steer left waiting when its turn ends (naturally or by stop) is
+        // not awaiting a reply from this turn; clear the working-row gate.
+        if runtime.state?.status.isTurnInFlight != true,
+           let waiting = awaitingReplyID,
+           pendingMessages.first(where: { $0.id == waiting })?.isSteer == true {
+            awaitingReplyID = nil
         }
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }

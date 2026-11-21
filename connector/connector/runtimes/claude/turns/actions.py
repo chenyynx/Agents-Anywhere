@@ -202,64 +202,70 @@ class ClaudeTurnActionHandler:
             client = execution.client if execution is not None else None
             turn_id = execution.turn_id if execution is not None else None
             accepts = self._client_accepts_steer(client)
-        if execution is None or client is None or turn_id is None or not accepts:
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_no_active_turn",
-                message="Claude session has no active turn to steer",
-            )
-        steer_uuid = str(uuid4())
-        try:
-            await client.steer(content, steer_uuid)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Claude steer failed session_id={} turn_id={}",
-                session_id,
-                turn_id,
-            )
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_steer_failed",
-                message="Claude rejected the steering message",
-            )
-        session.remember_steer(steer_uuid, content, client_message_id)
-        # Register the steer for history reconciliation as well: a steer can
-        # be read as the NEXT turn instead of a same-turn echo, and then the
-        # transcript sync publishes its user row without a clientMessageId —
-        # the sender's waiting bubble never retires and the message shows as
-        # two bubbles (pp 2026-11-17). The pre-assigned uuid is the native id
-        # the SDK replays, so binding it now lets history attach the client id.
-        try:
-            self.runner.pending_messages.register_live_message(
-                session_id=session.session_id,
-                external_session_id=session.external_session_id,
-                client_message_id=client_message_id,
-                platform_item_id=stable_message_item_id(session, steer_uuid),
-                text=content,
-                attachments=(),
-            )
-            if session.external_session_id is not None:
-                self.runner.pending_messages.bind_live_native_message(
+            if execution is None or client is None or turn_id is None or not accepts:
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="claude_no_active_turn",
+                    message="Claude session has no active turn to steer",
+                )
+            # Submit and register while holding the lock: the stop path takes
+            # the same lock to withdraw every unread steer before interrupting.
+            # A steer that slips between its snapshot and the interrupt would
+            # be left in the CLI queue with no outcome (it becomes the next
+            # turn's message, while the client is told nothing).
+            steer_uuid = str(uuid4())
+            try:
+                await client.steer(content, steer_uuid)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude steer failed session_id={} turn_id={}",
+                    session_id,
+                    turn_id,
+                )
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="claude_steer_failed",
+                    message="Claude rejected the steering message",
+                )
+            session.remember_steer(steer_uuid, content, client_message_id)
+            # Register the steer for history reconciliation as well: a steer
+            # can be read as the NEXT turn instead of a same-turn echo, and
+            # then the transcript sync publishes its user row without a
+            # clientMessageId — the sender's waiting bubble never retires and
+            # the message shows as two bubbles (pp 2026-11-17). The
+            # pre-assigned uuid is the native id the SDK replays, so binding
+            # it now lets history attach the client id.
+            try:
+                self.runner.pending_messages.register_live_message(
                     session_id=session.session_id,
                     external_session_id=session.external_session_id,
                     client_message_id=client_message_id,
-                    native_message_id=steer_uuid,
+                    platform_item_id=stable_message_item_id(session, steer_uuid),
                     text=content,
+                    attachments=(),
                 )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Claude steer identity persistence failed session_id={}",
-                session.session_id,
+                if session.external_session_id is not None:
+                    self.runner.pending_messages.bind_live_native_message(
+                        session_id=session.session_id,
+                        external_session_id=session.external_session_id,
+                        client_message_id=client_message_id,
+                        native_message_id=steer_uuid,
+                        text=content,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude steer identity persistence failed session_id={}",
+                    session.session_id,
+                )
+            return RuntimeOperationResult(
+                ok=True,
+                result={
+                    "steered": True,
+                    "turnId": turn_id,
+                    "steerUuid": steer_uuid,
+                    "externalSessionId": session.external_session_id,
+                },
             )
-        return RuntimeOperationResult(
-            ok=True,
-            result={
-                "steered": True,
-                "turnId": turn_id,
-                "steerUuid": steer_uuid,
-                "externalSessionId": session.external_session_id,
-            },
-        )
 
     @staticmethod
     def _client_accepts_steer(client: Any) -> bool:
@@ -403,7 +409,11 @@ class ClaudeTurnActionHandler:
                 session.take_steer(steer_uuid)
                 outcome = "withdrawn"
             elif cancelled is False:
-                outcome = "delivered"
+                # The CLI also answers false for a uuid it does not know
+                # (verified 2026-11-21: random/empty/missing uuid all false).
+                # So false means "not withdrawn", not "already read": report
+                # unknown and let the echo be the only delivered proof.
+                outcome = "unknown"
             else:
                 outcome = "unknown"
             if client_message_id:

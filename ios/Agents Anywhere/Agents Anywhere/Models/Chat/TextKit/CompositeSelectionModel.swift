@@ -4,9 +4,10 @@ import Foundation
 ///
 /// The Code page draws each paragraph / list item / quote as its own TextKit
 /// view. Cross-block selection needs one coordinate space over all of them:
-/// this model concatenates the block lengths with a one-character separator
-/// (a newline) between blocks, then converts a flattened UTF-16 range into the
-/// per-block local ranges the views can answer geometry for.
+/// this model concatenates the block lengths with a separator string between
+/// blocks (one newline by default; callers pass a blank line between
+/// paragraphs), then converts a flattened UTF-16 range into the per-block
+/// local ranges the views can answer geometry for.
 ///
 /// Pure value logic on purpose: the selection overlay owns gestures and
 /// geometry, this type owns the offset arithmetic and is unit-tested.

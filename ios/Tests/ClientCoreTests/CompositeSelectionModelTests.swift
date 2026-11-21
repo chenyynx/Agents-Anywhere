@@ -84,6 +84,29 @@ struct CompositeSelectionModelTests {
         #expect(model.separatorText(afterBlock: 0, beforeBlock: 2) == "\n\n\n")
     }
 
+    @Test("fragments clamp ranges to the document")
+    func fragmentsClamp() {
+        let model = CompositeSelectionModel(blockLengths: [3, 4])
+        #expect(model.fragments(in: NSRange(location: -2, length: 0)).isEmpty)
+        #expect(model.fragments(in: NSRange(location: 6, length: 99)) == [
+            CompositeSelectionModel.Fragment(
+                blockIndex: 1, range: NSRange(location: 2, length: 2)),
+        ])
+        #expect(model.fragments(in: NSRange(location: 99, length: 5)).isEmpty)
+    }
+
+    @Test("locations clamp across a multi-character separator")
+    func locationWithLongSeparator() {
+        let model = CompositeSelectionModel(blockLengths: [2, 2],
+                                            separators: ["\n\n"])
+        #expect(model.location(at: 2)
+            == CompositeSelectionModel.Location(blockIndex: 0, localOffset: 2))
+        #expect(model.location(at: 3)
+            == CompositeSelectionModel.Location(blockIndex: 0, localOffset: 2))
+        #expect(model.location(at: 4)
+            == CompositeSelectionModel.Location(blockIndex: 1, localOffset: 0))
+    }
+
     @Test("a single block maps one-to-one")
     func singleBlock() {
         let model = CompositeSelectionModel(blockLengths: [7])

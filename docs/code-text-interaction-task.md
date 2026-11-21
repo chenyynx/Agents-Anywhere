@@ -83,6 +83,8 @@
 
 ## 11. 2026-11-21 表格单元格选中 + 正文跨块选择（feat/text-selection）
 
+> 本节取代 M3.4 文档中「表格单 surface、无逐格子视图、表格不参与字符级选择」的结论；代码以本节为准。
+
 **需求（pp）**：表格里的文字要能选中复制；正文要能跨段落/列表项连续选择、一次复制（此前每块各自选择，拖到块尾就停）。
 
 **表格**（`AssistantTableBlockView`）
@@ -90,14 +92,15 @@
 - 交互：`CodeMarkdownTextLeaf.enableBlockInteractions` 只给表格子树开单块选择；正文块不再各挂交互。
 - 流式：`update(table:)` 在列宽/内边距不变时复用 cell 视图，只替换变化的单元格文字；高度返回走 `AssistantMarkdownTextLayout.height(.table)` 的 roundUp，与行高一致。
 - 与官方差异：官方表格 surface 不参与字符级选择（`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` Q3）；表格可选是 pp 指定的产品决定。
+- 链接：表格 cell 的 `.link` 仍在转换时剥掉（2026-11-18 的墨色决定）；格内链接不在本次范围。
 
 **正文跨块**（`AssistantCompositeSelectionOverlay`）
 - 在 `CodeMarkdownTextStackView` 上盖一层透明 overlay，实现 `UITextInput`，挂单个 `UITextInteraction(.nonEditable)`；所有正文文字视图（段落/标题/列表项/引用）按文档顺序成为参与者。
-- 虚拟文本由 `CompositeSelectionModel` 维护：块间一个换行，范围 ↔（块, 块内 offset）纯函数映射；选区矩形、caret、链接命中都映射回各块；Copy 跨块拼 HTML + 纯文本。
+- 虚拟文本由 `CompositeSelectionModel` 维护：块间分隔符按类型取 `\n\n`（段落）或 `\n`（列表/引用），范围 ↔（块, 块内 offset）纯函数映射；选区矩形、caret、链接命中都映射回各块；Copy 跨块拼 HTML + 纯文本。
 - 代码块、表格不参与：代码保留复制按钮，表格保留单元格选择；拖动跨过它们时按最近文字块吸附，不复制其内容。
-- 流式：参与者列表在记录变化时刷新；长度/身份变化会清掉当前选区。
-- 单测：`ios/Tests/ClientCoreTests/CompositeSelectionModelTests.swift` 覆盖空块、分隔符、跨块、越界、单块。
-- 门禁：`code-profile` 用 `codeTable` fixture 在 key window 渲染生产同款 `CodeMessageRowView`，断言表格每个 cell 有可交互文字视图、正文是 overlay 参与者且已装系统交互；M3 gate 保留表格 cell 结构断言（其驱动的是旧 `AssistantMarkdownCell`）。
+- 流式：参与者列表在记录变化时刷新；选中范围内块的长度或 digest 变化才清选区，尾部增长时保留并按块内 offset 重映射。
+- 单测：`ios/Tests/ClientCoreTests/CompositeSelectionModelTests.swift` 覆盖空块、默认/长分隔符、跨块、越界、clamp、单块。
+- 门禁：`code-profile` 用 `codeTable` fixture 在 key window 渲染生产同款 `CodeMessageRowView`，断言表格每个 cell 有可交互文字视图、正文是 overlay 参与者且已装系统交互、overlay 确实覆盖 stack；另有 `tableReuse` 用例对同一个 `CodeMarkdownTextStackView` 连续安装两份表格文案，断言 cell 视图实例复用且仍可选中。M3 gate 保留表格 cell 结构断言（其驱动的是旧 `AssistantMarkdownCell`，不覆盖选择能力）。
 
-**范围外（后续）**：跨单元格拖选；表格并入正文连续选区；选择时拖到屏幕边缘自动滚动；跨消息选择。
-**验证状态**：单元/门禁以 CI 结果为准；真机验收（表格长按选/复制、跨段落拖选、格内链接、滚动与代码块复制按钮）待 pp 用出包确认。
+**范围外（后续）**：跨单元格拖选；表格并入正文连续选区；选择时拖到屏幕边缘自动滚动；跨消息选择；表格 cell 内链接。
+**验证状态**：单元/门禁以 CI 结果为准；真机验收（表格长按选/复制、跨段落与列表项拖选、流式期间选择、滚动与代码块复制按钮）待 pp 用出包确认。

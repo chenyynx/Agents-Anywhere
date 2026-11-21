@@ -1503,17 +1503,30 @@ private final class AssistantTableSurfaceView: UIView {
                       height: table.rowHeights[row])
     }
 
+    /// Cell elements are reused by (row, column): a streaming table replaces
+    /// its `accessibilityElements` on every revision, and fresh objects would
+    /// drop VoiceOver's focus mid-sentence.
+    private var cellElements: [String: AssistantTableCellAccessibilityElement] = [:]
+
     private func makeAccessibilityElements() -> [Any] {
         var elements: [Any] = []
+        var updated: [String: AssistantTableCellAccessibilityElement] = [:]
         for row in table.rows.indices {
             for column in table.rows[row].indices {
                 let text = table.rows[row][column].string
                 guard !text.isEmpty else { continue }
-                elements.append(AssistantTableCellAccessibilityElement(
-                    container: self, row: row, column: column,
-                    label: text, frame: cellBounds(row: row, column: column)))
+                let key = "\(row):\(column)"
+                let frame = cellBounds(row: row, column: column)
+                let element = cellElements[key]
+                    ?? AssistantTableCellAccessibilityElement(
+                        container: self, row: row, column: column,
+                        label: text, frame: frame)
+                element.update(label: text, frame: frame)
+                updated[key] = element
+                elements.append(element)
             }
         }
+        cellElements = updated
         return elements
     }
 
@@ -1580,6 +1593,11 @@ private final class AssistantTableCellAccessibilityElement: UIAccessibilityEleme
         self.row = row
         self.column = column
         super.init(accessibilityContainer: container)
+        update(label: label, frame: frame)
+    }
+
+    /// Refresh in place so a streaming table keeps VoiceOver's focus.
+    func update(label: String, frame: CGRect) {
         accessibilityLabel = label
         accessibilityTraits = .staticText
         accessibilityFrameInContainerSpace = frame

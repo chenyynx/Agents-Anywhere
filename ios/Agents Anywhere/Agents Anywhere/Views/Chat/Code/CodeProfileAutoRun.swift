@@ -3223,7 +3223,8 @@ final class CodeProfileAutoRunModel {
         }
         let identifiers = table.debugCellViewIdentifiers
         let nonEmpty = table.debugNonEmptyCellCount
-        check(nonEmpty == 4, "tableReuse: \(nonEmpty) non-empty cells, expected 4")
+        // Header + two body rows × two columns.
+        check(nonEmpty == 6, "tableReuse: \(nonEmpty) non-empty cells, expected 6")
         check(table.debugSelectableCellCount == nonEmpty,
               "tableReuse: \(table.debugSelectableCellCount) selectable cells for \(nonEmpty) cells")
         check(table.debugCellFrameMismatchCount == 0,
@@ -3304,9 +3305,24 @@ final class CodeProfileAutoRunModel {
                   "textSelection: \(participants) composite participants, expected 1")
             check(stack.debugSelectionHasInteraction,
                   "textSelection: composite selection has no system interaction")
+            // Wiring, not only construction: the overlay must actually be a
+            // subview covering the stack, or no touch can ever reach it.
+            let overlay = stack.debugSelectionOverlay
+            check(overlay.superview === stack,
+                  "textSelection: overlay is not installed in the stack")
+            let bounds = stack.bounds
+            let frame = overlay.frame
+            let covers = abs(frame.minX - bounds.minX) <= 0.5
+                && abs(frame.minY - bounds.minY) <= 0.5
+                && abs(frame.width - bounds.width) <= 0.5
+                && abs(frame.height - bounds.height) <= 0.5
+            check(covers,
+                  "textSelection: overlay frame \(frame) does not cover \(bounds)")
             report["compositeSelection"] = [
                 "participants": participants,
                 "interaction": stack.debugSelectionHasInteraction,
+                "installed": overlay.superview === stack,
+                "coversStack": covers,
             ]
         } else {
             failures.append("textSelection: no text stack in the fixture")

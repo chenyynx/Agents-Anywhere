@@ -20,6 +20,9 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
                                                 UIGestureRecognizerDelegate {
     private(set) var textViews: [AssistantMarkdownBlockTextView] = []
     private var model = CompositeSelectionModel(blockLengths: [])
+    /// Per-block content digests, used only to decide whether a live
+    /// selection still points at the same text.
+    private var signatures: [Int] = []
 
     private var selectionOffsets: (start: Int, end: Int)?
     private weak var textInputDelegateStorage: UITextInputDelegate?
@@ -54,18 +57,23 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// document order. Identical participants are a no-op so a layout pass
     /// does not drop a live selection.
     func setParticipants(_ views: [AssistantMarkdownBlockTextView],
-                         separators: [String]) {
+                         separators: [String],
+                         signatures: [Int]) {
         let lengths = views.map(\.compositeTextLength)
         if views.count == textViews.count,
            views.elementsEqual(textViews, by: { $0 === $1 }),
            lengths == model.blockLengths,
-           separators == model.separators {
+           separators == model.separators,
+           signatures == self.signatures {
             return
         }
-        let remapped = remappedSelection(for: lengths, separators: separators)
+        let remapped = remappedSelection(for: lengths,
+                                         separators: separators,
+                                         signatures: signatures)
         textViews = views
         model = CompositeSelectionModel(blockLengths: lengths,
                                         separators: separators)
+        self.signatures = signatures
         if let remapped {
             selectedTextRange = MarkdownTextOffsetRange(remapped.start,
                                                         remapped.end)
@@ -76,10 +84,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     /// Streaming keeps growing the last block while the reader is selecting
     /// an earlier one. Rebuild the flattened offsets from the selected
-    /// blocks' own offsets; only a length change inside a selected block
-    /// drops the selection, because that text is what the reader pointed at.
+    /// blocks' own offsets; a length or digest change inside the selected
+    /// span drops the selection, because that text is what the reader
+    /// pointed at.
     private func remappedSelection(for lengths: [Int],
-                                   separators: [String]) -> (start: Int, end: Int)? {
+                                   separators: [String],
+                                   signatures: [Int]) -> (start: Int, end: Int)? {
         guard let selectionOffsets,
               let startLocation = model.location(at: selectionOffsets.start),
               let endLocation = model.location(at: selectionOffsets.end) else {
@@ -87,13 +97,19 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         }
         let next = CompositeSelectionModel(blockLengths: lengths,
                                            separators: separators)
-        guard next.segments.indices.contains(startLocation.blockIndex),
-              next.segments.indices.contains(endLocation.blockIndex),
-              next.blockLengths[startLocation.blockIndex]
-                == model.blockLengths[startLocation.blockIndex],
-              next.blockLengths[endLocation.blockIndex]
-                == model.blockLengths[endLocation.blockIndex] else {
+        let first = min(startLocation.blockIndex, endLocation.blockIndex)
+        let last = max(startLocation.blockIndex, endLocation.blockIndex)
+        guard next.segments.indices.contains(first),
+              next.segments.indices.contains(last),
+              signatures.count > last,
+              self.signatures.count > last else {
             return nil
+        }
+        for index in first...last {
+            guard next.blockLengths[index] == model.blockLengths[index],
+                  signatures[index] == self.signatures[index] else {
+                return nil
+            }
         }
         guard let start = next.flattenedOffset(
                   blockIndex: startLocation.blockIndex,
@@ -184,12 +200,21 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             }
         }
         guard let best else { return nil }
-        // Do not snap by the block's midpoint: the finger usually leaves the
-        // text column horizontally (right margin, list indent, screen edge)
-        // while staying on one line. `compositeCharacterIndex` already clamps
-        // to the nearest line on both axes, which answers the end of that line
-        // (or the start of the next) without flipping the selection.
-        let local = best.view.compositeCharacterIndex(at: convert(point, to: best.view)) ?? 0
+        let frame = rect(of: best.view)
+        let local: Int
+        if point.y < frame.minY {
+            // Dragging above the block means its beginning.
+            local = 0
+        } else if point.y > frame.maxY {
+            // Dragging below means its end; clamping by the nearest line here
+            // would collapse the range back to a line start.
+            local = best.view.compositeTextLength
+        } else {
+            // Horizontal leave (right margin, list indent, screen edge): the
+            // nearest line answers its end/start without flipping the range.
+            local = best.view.compositeCharacterIndex(
+                at: convert(point, to: best.view)) ?? 0
+        }
         return (best.view, local)
     }
 

@@ -308,10 +308,11 @@ final class CodeMarkdownTextStackView: UIView {
             bottom,
         ])
 
-        // Link taps belong to the text view's own recognizer, the way the
-        // official leaf does it (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
-        // §Q6). The old ancestor copy here fired on the first tap of a double
-        // tap and opened a link chip before the selection could run.
+        // Link taps inside body text belong to the row-level selection
+        // overlay, the way the official leaf routes them through one
+        // interaction (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6). The
+        // old ancestor copy here fired on the first tap of a double tap and
+        // opened a link chip before the selection could run.
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -508,6 +509,9 @@ final class CodeMarkdownTextStackView: UIView {
         /// List and quote items end with one newline; paragraphs with a
         /// blank line. The overlay uses this to rebuild copied text.
         let inList: Bool
+        /// The owning record's content digest. A changed digest under a live
+        /// selection means the text the reader pointed at was replaced.
+        let signature: Int
     }
 
     /// Collect the body text views in document order and hand them to the
@@ -518,6 +522,7 @@ final class CodeMarkdownTextStackView: UIView {
         for record in records {
             let inList = record.kind == "list" || record.kind == "quote"
             collectSelectionTextViews(in: record.view, insideList: inList,
+                                      signature: record.digest,
                                       into: &participants)
         }
         var separators: [String] = []
@@ -530,23 +535,32 @@ final class CodeMarkdownTextStackView: UIView {
             }
         }
         selectionOverlay.setParticipants(participants.map(\.view),
-                                         separators: separators)
+                                         separators: separators,
+                                         signatures: participants.map(\.signature))
     }
 
     private func collectSelectionTextViews(in view: UIView, insideList: Bool,
+                                           signature: Int,
                                            into result: inout [SelectionParticipant]) {
         if view is AssistantCodeBlockView || view is AssistantTableBlockView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
-            result.append(SelectionParticipant(view: textView, inList: insideList))
+            result.append(SelectionParticipant(view: textView, inList: insideList,
+                                              signature: signature))
             return
         }
         for subview in view.subviews {
             collectSelectionTextViews(in: subview, insideList: insideList,
-                                      into: &result)
+                                      signature: signature, into: &result)
         }
     }
+
+    #if DEBUG
+    var debugSelectionOverlay: AssistantCompositeSelectionOverlay {
+        selectionOverlay
+    }
+    #endif
 
     #if DEBUG
     /// M3 gate: the row-level selection layer, its participants, and whether
@@ -653,9 +667,9 @@ final class CodeMarkdownTextStackView: UIView {
             interactiveText: true,
             key: key, digest: digest,
             typographyRevision: typographyRevision, cache: cache)
-        // Body text (including list/quote paragraphs and table cells) gets
-        // system link/selection interaction. Fenced code owns its copy button
-        // and horizontal scroll, so that subtree stays inert.
+        // Table cells get their own single-block selection; the row's body
+        // text is driven by the selection overlay. Fenced code owns its copy
+        // button and horizontal scroll, so that subtree stays inert.
 #if AA_TIMELINE_PROBE
         let interactionStart = CACurrentMediaTime()
 #endif

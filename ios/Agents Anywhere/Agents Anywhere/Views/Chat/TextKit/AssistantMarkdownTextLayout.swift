@@ -157,8 +157,6 @@ enum AssistantMarkdownTextLayout {
         return size
     }
 
-    /// Height of any block, from the same measurements its view installs as
-    /// explicit constraints.
     /// Rounded height of a table block. The grid is fixed at parse time, so no
     /// width is needed; this mirrors the `.table` case below and gives the
     /// incremental table path the same value the layout stored.
@@ -167,6 +165,8 @@ enum AssistantMarkdownTextLayout {
         roundUp(table.totalHeight, scale: displayScale)
     }
 
+    /// Height of any block, from the same measurements its view installs as
+    /// explicit constraints.
     static func height(of block: AssistantMarkdownBlock,
                        width: CGFloat,
                        displayScale: CGFloat) -> CGFloat {
@@ -483,7 +483,8 @@ final class AssistantMarkdownBlockHeightCache {
 /// `UIView` that self-draws its layout fragments) and
 /// `SelectableMarkdownTextView` (the same self-drawn view plus
 /// `UITextInteraction` and its own `UITextInput`). This view is the second
-/// shape. The third is what the selection layer will need when it comes back.
+/// shape; table cells use it with selection on, and the row's body text is
+/// driven by `AssistantCompositeSelectionOverlay`.
 final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate {
     private let ownStorage: NSTextContentStorage
     private let ownLayoutManager: NSTextLayoutManager

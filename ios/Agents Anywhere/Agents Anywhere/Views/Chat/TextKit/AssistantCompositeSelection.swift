@@ -607,8 +607,14 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     }
 
     @objc private func stepAutoScroll(_ link: CADisplayLink) {
+        // The link retains its target. If the view leaves the scroll view
+        // without a window change (collection-view reuse), a bare return
+        // would spin at 120 Hz and keep the overlay alive.
         guard autoScrollDirection != 0,
-              let scrollView = enclosingScrollView() else { return }
+              let scrollView = enclosingScrollView() else {
+            stopAutoScrollLink()
+            return
+        }
         let delta = max(link.targetTimestamp - link.timestamp, 1.0 / 120.0)
         let step = autoScrollDirection * autoScrollSpeed * CGFloat(delta)
         var offset = scrollView.contentOffset

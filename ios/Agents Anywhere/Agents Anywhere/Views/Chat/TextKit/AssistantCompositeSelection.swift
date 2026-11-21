@@ -50,21 +50,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// A drag that started on body text before the long press had produced a
     /// selection. The first `.changed` after the selection appears binds it.
     private var pendingSelectionDrag = false
-    /// Set while the system selection interaction is running. Handle drags can
-    /// live outside the app's own gesture path, so selection changes are the
-    /// one signal that always reaches us.
-    private var selectionInteractionActive = false
-    /// Guards our own per-frame extension so it is not mistaken for the
-    /// user's drag.
-    private var isInternalSelectionChange = false
-    private var lastExternalSelection: (start: Int, end: Int)?
     /// Handles the system installs for range selection. They are not in
     /// `gesturesForFailureRequirements`, but the simultaneous-recognition
     /// callback hands us each one; Runestone uses the same route. Tracking
     /// them gives the finger-move cadence, while `selectedTextRange` itself is
     /// committed only a couple of times per drag.
     private var rangeAdjustmentRecognizers: Set<UIGestureRecognizer> = []
-    private var previousRangeDuringAdjustment: (start: Int, end: Int)?
     /// The selection that existed when the system's range handle was grabbed.
     /// The moved bound is recomputed from the finger on every gesture change;
     /// this `UITextInteraction` does not write the live range into
@@ -117,10 +108,8 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
                                         separators: separators)
         self.signatures = signatures
         if let remapped {
-            isInternalSelectionChange = true
             selectedTextRange = MarkdownTextOffsetRange(remapped.start,
                                                         remapped.end)
-            isInternalSelectionChange = false
         } else {
             endSelection()
         }
@@ -302,9 +291,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     override func selectAll(_ sender: Any?) {
         guard model.totalLength > 0 else { return }
-        isInternalSelectionChange = true
         selectedTextRange = MarkdownTextOffsetRange(0, model.totalLength)
-        isInternalSelectionChange = false
     }
 
     override func copy(_ sender: Any?) {
@@ -566,7 +553,6 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         selectionAnchor = nil
         movingEnd = .none
         pendingSelectionDrag = false
-        lastExternalSelection = nil
     }
 
     private func updateAutoScroll(_ gesture: UIPanGestureRecognizer) {
@@ -577,26 +563,15 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             return
         }
         let windowPoint = gesture.location(in: nil)
-        let visible = visibleWindowRect(for: scrollView)
-        let band: CGFloat = 90
-        let topEdge = visible.minY + band
-        let bottomEdge = visible.maxY - band
-        var direction: CGFloat = 0
-        var speed: CGFloat = 0
-        if windowPoint.y < topEdge {
-            direction = -1
-            speed = 120 + (topEdge - windowPoint.y) / band * 700
-        } else if windowPoint.y > bottomEdge {
-            direction = 1
-            speed = 120 + (windowPoint.y - bottomEdge) / band * 700
-        }
-        autoScrollDirection = direction
-        autoScrollSpeed = min(820, max(120, speed))
-        guard direction != 0 else {
+        let edge = edgeScroll(forWindowPoint: windowPoint)
+        autoScrollDirection = edge.direction
+        autoScrollSpeed = edge.speed
+        guard edge.direction != 0 else {
             stopAutoScrollLink()
             return
         }
-        let edgeY = direction < 0 ? visible.minY + 12 : visible.maxY - 12
+        let visible = visibleWindowRect(for: scrollView)
+        let edgeY = edge.direction < 0 ? visible.minY + 12 : visible.maxY - 12
         extendSelection(toWindowY: edgeY, windowX: windowPoint.x)
         startAutoScroll()
     }
@@ -612,9 +587,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         let end = max(anchor, position.offset)
         guard end > start else { return }
         if selectionOffsets?.start != start || selectionOffsets?.end != end {
-            isInternalSelectionChange = true
             selectedTextRange = MarkdownTextOffsetRange(start, end)
-            isInternalSelectionChange = false
         }
     }
 
@@ -768,7 +741,6 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         switch gesture.state {
         case .began:
             adjustmentAnchor = selectionOffsets
-            previousRangeDuringAdjustment = selectionOffsets
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",
                 detail: ["action": "range-begin"],
@@ -801,9 +773,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             let end = max(fixed, offset)
             if end > start,
                selectionOffsets?.start != start || selectionOffsets?.end != end {
-                isInternalSelectionChange = true
                 selectedTextRange = MarkdownTextOffsetRange(start, end)
-                isInternalSelectionChange = false
                 ClientDiagnosticsLog.shared.record(
                     kind: "selection.autoscroll",
                     detail: ["action": "range-drive",
@@ -811,11 +781,19 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
                              "range": "\(start)-\(end)"],
                     dedupe: false)
             }
-            previousRangeDuringAdjustment = selectionOffsets
-            scrollMovingCaretIntoView(offset: moving == .end ? end : start)
+            let edge = edgeScroll(forWindowPoint: gesture.location(in: nil))
+            if edge.direction != 0 {
+                selectionAnchor = fixed
+                movingEnd = moving
+                autoScrollDirection = edge.direction
+                autoScrollSpeed = edge.speed
+                startAutoScroll()
+            } else {
+                stopAutoScrollLink()
+            }
         case .ended, .cancelled, .failed:
             adjustmentAnchor = nil
-            previousRangeDuringAdjustment = nil
+            finishSelectionDrag()
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",
                 detail: ["action": "range-end",
@@ -843,7 +821,6 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     func interactionShouldBegin(_ interaction: UITextInteraction,
                                 at point: CGPoint) -> Bool {
-        selectionInteractionActive = true
         ClientDiagnosticsLog.shared.record(
             kind: "selection.autoscroll",
             detail: ["action": "interaction-begin"],
@@ -852,7 +829,6 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     }
 
     func interactionDidEnd(_ interaction: UITextInteraction) {
-        selectionInteractionActive = false
         ClientDiagnosticsLog.shared.record(
             kind: "selection.autoscroll",
             detail: ["action": "interaction-end"],
@@ -860,110 +836,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         finishSelectionDrag()
     }
 
-    // MARK: - Selection-change driven auto-scroll
-
-    /// The system can move a selection handle without ever handing our own
-    /// gesture recognizers a touch (the selection UI is its own interaction).
-    /// The one signal that always arrives is `selectedTextRange`; use the
-    /// moved end's caret to decide whether the reader is pushing at an edge.
-    private func noteExternalSelectionChange(from previous: (start: Int, end: Int)?,
-                                             to current: (start: Int, end: Int)?) {
-        guard selectionInteractionActive else { return }
-        guard let current, current.end > current.start else {
-            if selectionAnchor != nil { finishSelectionDrag() }
-            return
-        }
-        if let previous, previous.start == current.start,
-           previous.end == current.end {
-            return
-        }
-        let old = previous ?? lastExternalSelection
-        lastExternalSelection = current
-        guard enclosingScrollView() != nil else { return }
-        let moving: MovingEnd
-        if let old {
-            let startMoved = old.start != current.start
-            let endMoved = old.end != current.end
-            if startMoved && !endMoved {
-                moving = .start
-            } else if endMoved && !startMoved {
-                moving = .end
-            } else {
-                moving = preferredMovingEnd(for: current)
-            }
-        } else {
-            moving = preferredMovingEnd(for: current)
-        }
-        let offset = moving == .end ? current.end : current.start
-        guard let caret = caretWindowRect(for: offset) else { return }
-        // Runestone's proven shape: follow the moved end by the minimum
-        // scroll that keeps it inside the unobscured viewport. The list
-        // starts moving as soon as the selection reaches the visible bottom,
-        // not after the selection has covered everything on screen.
-        scrollMovingCaretIntoView(offset: offset)
-        let direction = edgeDirection(for: caret)
-        ClientDiagnosticsLog.shared.record(
-            kind: "selection.autoscroll",
-            detail: ["action": "external-edge",
-                     "end": moving == .end ? "end" : "start",
-                     "direction": String(Int(direction)),
-                     "anchor": selectionAnchor == nil ? "new" : "kept"],
-            dedupe: true)
-        guard direction != 0 else {
-            if selectionDragRecognizer?.state != .began,
-               selectionDragRecognizer?.state != .changed {
-                finishSelectionDrag()
-            }
-            return
-        }
-        if selectionAnchor == nil {
-            selectionAnchor = moving == .end ? current.start : current.end
-            movingEnd = moving
-        }
-        autoScrollDirection = direction
-        autoScrollSpeed = speed(for: caret, direction: direction)
-        startAutoScroll()
-    }
-
-    /// Minimum `contentOffset` change that keeps the moved caret inside the
-    /// part of the timeline the reader can actually see (composer excluded).
-    private func scrollMovingCaretIntoView(offset: Int) {
-        guard let scrollView = enclosingScrollView(),
-              let caretWindow = caretWindowRect(for: offset) else { return }
-        let caret = scrollView.convert(caretWindow, from: nil)
-        let unobscured = scrollView.bounds.inset(by: scrollView.adjustedContentInset)
-        let margin: CGFloat = 24
-        var target = scrollView.contentOffset
-        if caret.maxY > unobscured.maxY - margin {
-            target.y += caret.maxY - (unobscured.maxY - margin)
-        } else if caret.minY < unobscured.minY + margin {
-            target.y -= (unobscured.minY + margin) - caret.minY
-        } else {
-            return
-        }
-        let minY = -scrollView.adjustedContentInset.top
-        let maxY = max(minY, scrollView.contentSize.height
-            - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
-        target.y = min(max(target.y, minY), maxY)
-        let delta = target.y - scrollView.contentOffset.y
-        guard abs(delta) > 0.5 else { return }
-        scrollView.setContentOffset(target, animated: false)
-        ClientDiagnosticsLog.shared.record(
-            kind: "selection.autoscroll",
-            detail: ["action": "scroll-follow",
-                     "dy": String(Int(delta.rounded()))],
-            dedupe: true)
-    }
-
-    private func preferredMovingEnd(for offsets: (start: Int, end: Int)) -> MovingEnd {
-        if let startCaret = caretWindowRect(for: offsets.start),
-           let endCaret = caretWindowRect(for: offsets.end),
-           edgeDirection(for: startCaret) < 0,
-           edgeDirection(for: endCaret) == 0 {
-            return .start
-        }
-        return .end
-    }
+    // MARK: - Auto-scroll helpers
 
     private func caretWindowRect(for offset: Int) -> CGRect? {
         let rect = caretRect(for: MarkdownTextOffsetPosition(offset))
@@ -984,23 +857,23 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         return scrollView.convert(rect, to: nil)
     }
 
-    private func edgeDirection(for caret: CGRect) -> CGFloat {
-        guard let scrollView = enclosingScrollView() else { return 0 }
+    /// Direction and points per second for a finger at `point` (window
+    /// space). The display link is the only scroll driver; the selection
+    /// gesture only chooses the direction and extends the range.
+    private func edgeScroll(forWindowPoint point: CGPoint)
+        -> (direction: CGFloat, speed: CGFloat) {
+        guard let scrollView = enclosingScrollView() else { return (0, 0) }
         let visible = visibleWindowRect(for: scrollView)
         let band: CGFloat = 90
-        if caret.maxY > visible.maxY - band { return 1 }
-        if caret.minY < visible.minY + band { return -1 }
-        return 0
-    }
-
-    private func speed(for caret: CGRect, direction: CGFloat) -> CGFloat {
-        guard let scrollView = enclosingScrollView() else { return 120 }
-        let visible = visibleWindowRect(for: scrollView)
-        let band: CGFloat = 90
-        let overshoot = direction > 0
-            ? caret.maxY - (visible.maxY - band)
-            : (visible.minY + band) - caret.minY
-        return min(820, max(120, 120 + max(0, overshoot) / band * 700))
+        if point.y > visible.maxY - band {
+            let ratio = min(1, max(0, (point.y - (visible.maxY - band)) / band))
+            return (1, 120 + ratio * 700)
+        }
+        if point.y < visible.minY + band {
+            let ratio = min(1, max(0, ((visible.minY + band) - point.y) / band))
+            return (-1, 120 + ratio * 700)
+        }
+        return (0, 0)
     }
 
     // MARK: - UITextInput
@@ -1011,14 +884,10 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             return MarkdownTextOffsetRange(selectionOffsets.start, selectionOffsets.end)
         }
         set {
-            let previous = selectionOffsets
             if let range = newValue as? MarkdownTextOffsetRange {
                 selectionOffsets = (range.startOffset, range.endOffset)
             } else if newValue == nil {
                 selectionOffsets = nil
-            }
-            if !isInternalSelectionChange {
-                noteExternalSelectionChange(from: previous, to: selectionOffsets)
             }
             if hasSelection {
                 relaxAncestorClipping()

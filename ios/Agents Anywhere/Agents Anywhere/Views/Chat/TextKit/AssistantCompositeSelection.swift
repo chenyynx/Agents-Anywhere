@@ -407,6 +407,11 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         selectedRects().contains { $0.insetBy(dx: -8, dy: -8).contains(point) }
     }
 
+    /// The row plus a margin for the handles that hang below the last line.
+    private func withinDragRegion(_ point: CGPoint) -> Bool {
+        bounds.insetBy(dx: -40, dy: -48).contains(point)
+    }
+
     private func handleEnd(at point: CGPoint) -> MovingEnd {
         guard let range = selectedTextRange else { return .none }
         let rects = selectionRects(for: range).map(\.rect)
@@ -437,17 +442,19 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         switch gesture.state {
         case .began:
             let point = gesture.location(in: self)
-            if hasSelection, let offsets = selectionOffsets {
-                if bindDrag(at: point, offsets: offsets) {
-                    updateAutoScroll(gesture)
-                } else if textView(at: point) != nil {
-                    // A drag that starts anywhere else on the body text binds
-                    // once it moves; a double-tap selection is often followed
-                    // by a drag from just below the word.
-                    pendingSelectionDrag = true
-                }
-            } else if textView(at: point) != nil {
+            if hasSelection, let offsets = selectionOffsets,
+               bindDrag(at: point, offsets: offsets) {
+                updateAutoScroll(gesture)
+            } else if withinDragRegion(point) || textView(at: point) != nil {
+                // The double-tap selection may land after the drag begins,
+                // and the touch may sit on a handle rather than a text view.
+                // Track it anyway and bind once a selection exists.
                 pendingSelectionDrag = true
+                ClientDiagnosticsLog.shared.record(
+                    kind: "selection.autoscroll",
+                    detail: ["action": "pending-wait",
+                             "hasSelection": hasSelection ? "1" : "0"],
+                    dedupe: true)
             }
         case .changed:
             if pendingSelectionDrag, selectionAnchor == nil,
@@ -687,9 +694,9 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     ) -> Bool {
         guard gestureRecognizer === selectionDragRecognizer else { return true }
         let point = gestureRecognizer.location(in: self)
-        let onText = textView(at: point) != nil
-        let onHandle = handleEnd(at: point) != .none
-        let allowed = onText || onHandle
+        let allowed = withinDragRegion(point)
+            || textView(at: point) != nil
+            || handleEnd(at: point) != .none
         if !allowed {
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",

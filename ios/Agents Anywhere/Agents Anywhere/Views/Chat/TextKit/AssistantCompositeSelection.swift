@@ -65,6 +65,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// committed only a couple of times per drag.
     private var rangeAdjustmentRecognizers: Set<UIGestureRecognizer> = []
     private var previousRangeDuringAdjustment: (start: Int, end: Int)?
+    /// The selection that existed when the system's range handle was grabbed.
+    /// The moved bound is recomputed from the finger on every gesture change;
+    /// this `UITextInteraction` does not write the live range into
+    /// `selectedTextRange` until the drag commits, so waiting for that write
+    /// made the scroll start only after the selection looked finished.
+    private var adjustmentAnchor: (start: Int, end: Int)?
 
     private enum MovingEnd {
         case none, start, end
@@ -761,32 +767,54 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     @objc private func handleRangeAdjustment(_ gesture: UIGestureRecognizer) {
         switch gesture.state {
         case .began:
+            adjustmentAnchor = selectionOffsets
             previousRangeDuringAdjustment = selectionOffsets
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",
                 detail: ["action": "range-begin"],
                 dedupe: false)
         case .changed:
-            guard let previous = previousRangeDuringAdjustment,
-                  let current = selectionOffsets, current.end > current.start else {
-                return
-            }
+            guard let anchor = adjustmentAnchor else { return }
+            let point = gesture.location(in: self)
+            guard let position = closestPosition(to: point)
+                    as? MarkdownTextOffsetPosition else { return }
+            let offset = position.offset
             let moving: MovingEnd
-            if current.start != previous.start, current.end == previous.end {
+            if offset < anchor.start {
                 moving = .start
-            } else if current.end != previous.end, current.start == previous.start {
+            } else if offset > anchor.end {
                 moving = .end
-            } else if current != previous {
-                moving = preferredMovingEnd(for: current)
             } else {
-                // The selection has not committed yet; the caret of the last
-                // committed bound is still the best edge to follow.
-                moving = movingEnd == .none ? .end : movingEnd
+                let rects = selectedRects()
+                if let first = rects.first, let last = rects.last {
+                    let toStart = distance(from: point,
+                                           to: CGPoint(x: first.minX, y: first.minY))
+                    let toEnd = distance(from: point,
+                                         to: CGPoint(x: last.maxX, y: last.maxY))
+                    moving = toStart <= toEnd ? .start : .end
+                } else {
+                    moving = .end
+                }
             }
-            previousRangeDuringAdjustment = current
-            let offset = moving == .end ? current.end : current.start
-            scrollMovingCaretIntoView(offset: offset)
+            let fixed = moving == .end ? anchor.start : anchor.end
+            let start = min(fixed, offset)
+            let end = max(fixed, offset)
+            if end > start,
+               selectionOffsets?.start != start || selectionOffsets?.end != end {
+                isInternalSelectionChange = true
+                selectedTextRange = MarkdownTextOffsetRange(start, end)
+                isInternalSelectionChange = false
+                ClientDiagnosticsLog.shared.record(
+                    kind: "selection.autoscroll",
+                    detail: ["action": "range-drive",
+                             "end": moving == .end ? "end" : "start",
+                             "range": "\(start)-\(end)"],
+                    dedupe: false)
+            }
+            previousRangeDuringAdjustment = selectionOffsets
+            scrollMovingCaretIntoView(offset: moving == .end ? end : start)
         case .ended, .cancelled, .failed:
+            adjustmentAnchor = nil
             previousRangeDuringAdjustment = nil
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",

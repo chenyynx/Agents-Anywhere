@@ -351,6 +351,25 @@ POST  /sessions/{sessionId}/runtime/subagent/stop
 capabilities. Web must use those capabilities for current-session action
 availability instead of deriving availability from local runtime status.
 
+`/sessions/{sessionId}/runtime/interrupt` may carry `steerOutcomes` in its
+result when the session had queued steering messages at the stop: an array of
+`{"clientMessageId", "outcome"}`, where `outcome` is
+
+- `withdrawn` — the runtime withdrew the steer before it was read (the CLI
+  accepts a withdraw only before the interrupt); no timeline row will ever
+  appear for it, so the sender may return the text to the composer or re-send
+  it as a normal message;
+- `delivered` — reserved for a runtime that can prove the steer was already
+  taken into the turn; the Claude connector does not emit it today (the CLI's
+  `cancelled: false` also covers an unknown uuid, so it reports `unknown`);
+- `unknown` — the runtime could not prove a verdict (withdraw did not apply,
+  older CLI/SDK, or a failed control request); clients keep the conservative
+  “waiting” state and must not treat the turn's end as a failure.
+
+Clients must not infer a steer's fate from the turn ending: a queued steer
+survives an interrupt and is read at the next turn's boundary. A steer with
+no outcome is in that conservative state.
+
 `/sessions/{sessionId}/runtime/subagent/stop` stops one background subagent of
 the session, addressed by its runtime task id. The request body is
 `{"taskId": "..."}` (camelCase, like the interrupt body); the response result

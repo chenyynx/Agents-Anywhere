@@ -1128,7 +1128,11 @@ class ClaudeTurnRunner:
                 or connection.pending is not None
                 or connection.task_ids
                 or connection.background.active_ids
+                or session.pending_steers
             ):
+                # A queued steer lives only in this CLI process's input queue.
+                # Closing an "idle" connection would drop it silently; the
+                # client would keep a bubble that can never be echoed.
                 return
             await connection.close()
 
@@ -1142,6 +1146,7 @@ class ClaudeTurnRunner:
                     or self.connections.get(session.session_id) is not connection
                     or connection.closing
                     or session.execution is not None
+                    or session.pending_steers
                     or connection.current is not None
                     or connection.pending is not None
                     or connection.background.active_ids

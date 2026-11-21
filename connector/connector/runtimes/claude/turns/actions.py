@@ -19,7 +19,10 @@ from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSess
 from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
-from connector.runtimes.claude.sdk.client import interrupt_client
+from connector.runtimes.claude.sdk.client import (
+    cancel_async_message_client,
+    interrupt_client,
+)
 from connector.runtimes.claude.sdk.events import (
     interrupted_terminal_event,
     is_result_message,
@@ -199,64 +202,70 @@ class ClaudeTurnActionHandler:
             client = execution.client if execution is not None else None
             turn_id = execution.turn_id if execution is not None else None
             accepts = self._client_accepts_steer(client)
-        if execution is None or client is None or turn_id is None or not accepts:
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_no_active_turn",
-                message="Claude session has no active turn to steer",
-            )
-        steer_uuid = str(uuid4())
-        try:
-            await client.steer(content, steer_uuid)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Claude steer failed session_id={} turn_id={}",
-                session_id,
-                turn_id,
-            )
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_steer_failed",
-                message="Claude rejected the steering message",
-            )
-        session.remember_steer(steer_uuid, content, client_message_id)
-        # Register the steer for history reconciliation as well: a steer can
-        # be read as the NEXT turn instead of a same-turn echo, and then the
-        # transcript sync publishes its user row without a clientMessageId —
-        # the sender's waiting bubble never retires and the message shows as
-        # two bubbles (pp 2026-11-17). The pre-assigned uuid is the native id
-        # the SDK replays, so binding it now lets history attach the client id.
-        try:
-            self.runner.pending_messages.register_live_message(
-                session_id=session.session_id,
-                external_session_id=session.external_session_id,
-                client_message_id=client_message_id,
-                platform_item_id=stable_message_item_id(session, steer_uuid),
-                text=content,
-                attachments=(),
-            )
-            if session.external_session_id is not None:
-                self.runner.pending_messages.bind_live_native_message(
+            if execution is None or client is None or turn_id is None or not accepts:
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="claude_no_active_turn",
+                    message="Claude session has no active turn to steer",
+                )
+            # Submit and register while holding the lock: the stop path takes
+            # the same lock to withdraw every unread steer before interrupting.
+            # A steer that slips between its snapshot and the interrupt would
+            # be left in the CLI queue with no outcome (it becomes the next
+            # turn's message, while the client is told nothing).
+            steer_uuid = str(uuid4())
+            try:
+                await client.steer(content, steer_uuid)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude steer failed session_id={} turn_id={}",
+                    session_id,
+                    turn_id,
+                )
+                return RuntimeOperationResult(
+                    ok=False,
+                    code="claude_steer_failed",
+                    message="Claude rejected the steering message",
+                )
+            session.remember_steer(steer_uuid, content, client_message_id)
+            # Register the steer for history reconciliation as well: a steer
+            # can be read as the NEXT turn instead of a same-turn echo, and
+            # then the transcript sync publishes its user row without a
+            # clientMessageId — the sender's waiting bubble never retires and
+            # the message shows as two bubbles (pp 2026-11-17). The
+            # pre-assigned uuid is the native id the SDK replays, so binding
+            # it now lets history attach the client id.
+            try:
+                self.runner.pending_messages.register_live_message(
                     session_id=session.session_id,
                     external_session_id=session.external_session_id,
                     client_message_id=client_message_id,
-                    native_message_id=steer_uuid,
+                    platform_item_id=stable_message_item_id(session, steer_uuid),
                     text=content,
+                    attachments=(),
                 )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Claude steer identity persistence failed session_id={}",
-                session.session_id,
+                if session.external_session_id is not None:
+                    self.runner.pending_messages.bind_live_native_message(
+                        session_id=session.session_id,
+                        external_session_id=session.external_session_id,
+                        client_message_id=client_message_id,
+                        native_message_id=steer_uuid,
+                        text=content,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Claude steer identity persistence failed session_id={}",
+                    session.session_id,
+                )
+            return RuntimeOperationResult(
+                ok=True,
+                result={
+                    "steered": True,
+                    "turnId": turn_id,
+                    "steerUuid": steer_uuid,
+                    "externalSessionId": session.external_session_id,
+                },
             )
-        return RuntimeOperationResult(
-            ok=True,
-            result={
-                "steered": True,
-                "turnId": turn_id,
-                "steerUuid": steer_uuid,
-                "externalSessionId": session.external_session_id,
-            },
-        )
 
     @staticmethod
     def _client_accepts_steer(client: Any) -> bool:
@@ -316,6 +325,14 @@ class ClaudeTurnActionHandler:
             execution.interrupt_source = "claude.session.interrupt"
             execution.interrupt_reason = reason
             queued = session.queued_execution
+            # Withdraw before interrupting, under the same lock a steer submits
+            # through: the CLI turns a queued steer loose into the NEXT turn
+            # once interrupted, and a later cancel then answers false (probe
+            # 2026-11-21, bundled 2.1.316). The lock keeps a concurrent
+            # steer_turn out until the withdraw pass has run.
+            steer_outcomes = await self._withdraw_pending_steers(
+                session=session, execution=execution
+            )
         if queued is not None:
             # A queued execution is an unstarted user message, not background
             # work: it is always dropped, whichever flavor the caller asked for.
@@ -332,10 +349,81 @@ class ClaudeTurnActionHandler:
             reason=reason,
             preserve_background=preserve_background,
         )
-        return RuntimeOperationResult(
-            ok=True,
-            result={"interrupted": True, "alreadyStopped": False},
-        )
+        result: dict[str, Any] = {
+            "interrupted": True,
+            "alreadyStopped": False,
+        }
+        if steer_outcomes:
+            result["steerOutcomes"] = steer_outcomes
+        return RuntimeOperationResult(ok=True, result=result)
+
+    async def _withdraw_pending_steers(
+        self,
+        *,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+    ) -> list[dict[str, str]]:
+        """Try to take back every steer the stopped turn has not consumed.
+
+        Called before the interrupt. One outcome per steer, keyed by the
+        client message id so the sender can resolve its optimistic bubble:
+
+        - ``withdrawn``  — the CLI confirmed the steer was still queued and
+          dropped it; no row will ever appear, so the client may return the
+          text to the composer or re-send it as the next turn;
+        - ``delivered``  — the runtime already took it into the turn; the
+          existing echo path will publish its row;
+        - ``unknown``    — the SDK/CLI seam is unavailable or the request
+          failed; the client keeps its conservative wait.
+        """
+
+        if not session.pending_steers:
+            return []
+        # A stop must stay bounded: the queue holds at most 32 steers, but
+        # waiting the full per-request timeout on each could hold the stop
+        # (and the execution lock) for a minute. One shared budget keeps the
+        # worst case at the normal single-steer cost.
+        deadline = time.monotonic() + 4.0
+        # `execution.client` is the response wrapper; the control seam lives on
+        # the SDK client behind its connection (the same one `steer()` sends
+        # through).
+        response = execution.client
+        client = getattr(getattr(response, "connection", None), "client", None)
+        if client is None:
+            client = response
+        outcomes: list[dict[str, str]] = []
+        for steer_uuid, (_text, client_message_id) in list(
+            session.pending_steers.items()
+        ):
+            remaining = deadline - time.monotonic()
+            cancelled = (
+                await cancel_async_message_client(
+                    client, steer_uuid, timeout=min(2.0, remaining)
+                )
+                if client is not None and remaining > 0
+                else None
+            )
+            if cancelled is True:
+                # No echo will ever come for it: dropping the record keeps a
+                # late frame from publishing a row for a withdrawn steer.
+                session.take_steer(steer_uuid)
+                outcome = "withdrawn"
+            elif cancelled is False:
+                # The CLI also answers false for a uuid it does not know
+                # (verified 2026-11-21: random/empty/missing uuid all false).
+                # So false means "not withdrawn", not "already read": report
+                # unknown and let the echo be the only delivered proof.
+                outcome = "unknown"
+            else:
+                outcome = "unknown"
+            if client_message_id:
+                outcomes.append(
+                    {
+                        "clientMessageId": client_message_id,
+                        "outcome": outcome,
+                    }
+                )
+        return outcomes
 
     async def stop_subagent(
         self,

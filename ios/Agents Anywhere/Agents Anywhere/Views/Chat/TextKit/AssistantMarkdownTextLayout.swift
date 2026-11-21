@@ -157,6 +157,14 @@ enum AssistantMarkdownTextLayout {
         return size
     }
 
+    /// Rounded height of a table block. The grid is fixed at parse time, so no
+    /// width is needed; this mirrors the `.table` case below and gives the
+    /// incremental table path the same value the layout stored.
+    static func tableHeight(of table: AssistantTableBlock,
+                            displayScale: CGFloat) -> CGFloat {
+        roundUp(table.totalHeight, scale: displayScale)
+    }
+
     /// Height of any block, from the same measurements its view installs as
     /// explicit constraints.
     static func height(of block: AssistantMarkdownBlock,
@@ -475,7 +483,8 @@ final class AssistantMarkdownBlockHeightCache {
 /// `UIView` that self-draws its layout fragments) and
 /// `SelectableMarkdownTextView` (the same self-drawn view plus
 /// `UITextInteraction` and its own `UITextInput`). This view is the second
-/// shape. The third is what the selection layer will need when it comes back.
+/// shape; table cells use it with selection on, and the row's body text is
+/// driven by `AssistantCompositeSelectionOverlay`.
 final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate {
     private let ownStorage: NSTextContentStorage
     private let ownLayoutManager: NSTextLayoutManager
@@ -522,11 +531,17 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// keeps answering what was set — callers diff it against the document to
     /// decide whether a block needs updating.
     private var sourceAttributed: NSAttributedString?
+    /// The assigned text's hash, kept per view so the selection overlay can
+    /// tell whether a block changed without re-hashing every refresh. Lists
+    /// and quotes need a per-item signature: their record digest changes when
+    /// a later item streams in, even though the selected item did not.
+    private(set) var sourceTextSignature: Int = 0
 
     var attributedText: NSAttributedString? {
         get { sourceAttributed }
         set {
             sourceAttributed = newValue
+            sourceTextSignature = newValue?.string.hashValue ?? 0
             selectionOffsets = nil
             ownStorage.attributedString = Self.recolouringLinks(newValue ?? NSAttributedString())
             setNeedsDisplay()
@@ -641,7 +656,9 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     // MARK: - Interaction
 
-    /// Body text: links tap, long press selects, and the edit menu copies.
+    /// Single-block selection: links tap, long press selects, and the edit
+    /// menu copies. Table cell text views use this; the Code row's body text
+    /// is driven by `AssistantCompositeSelectionOverlay` instead.
     ///
     /// `allowsSelection: false` keeps the link taps and skips the selection
     /// layer entirely — no long press, no handles, no edit menu. The thinking
@@ -687,6 +704,12 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     }
 
     private var textSelectionInteraction: UITextInteraction?
+
+    #if DEBUG
+    /// The M3 gate's table check: a cell text view counts as selectable only
+    /// after `enableTextInteraction` installed the system interaction.
+    var debugHasTextInteraction: Bool { textSelectionInteraction != nil }
+    #endif
 
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
@@ -1023,11 +1046,18 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// selected and restored when the selection goes away.
     private var relaxedClippingViews: [UIView] = []
 
+    /// Table cells are inside the table's horizontal `UIScrollView`. Relaxing
+    /// that scroll view's clip while a cell is selected would let the table's
+    /// hidden columns paint outside the card, so those views leave every
+    /// scroll view's clip alone.
+    var keepsScrollViewClipping = false
+
     private func relaxAncestorClipping() {
         guard relaxedClippingViews.isEmpty else { return }
         var current = superview
         while let view = current {
-            if view.clipsToBounds {
+            if view.clipsToBounds,
+               !(keepsScrollViewClipping && view is UIScrollView) {
                 view.clipsToBounds = false
                 relaxedClippingViews.append(view)
             }
@@ -1507,6 +1537,66 @@ final class LinkTapRecognizer: UITapGestureRecognizer {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
         touchDownAt = nil
         super.touchesCancelled(touches, with: event)
+    }
+}
+
+// MARK: - Composite selection support
+
+/// Geometry the row-level `AssistantCompositeSelectionOverlay` needs from one
+/// block. These wrappers keep the block's internal selection state private
+/// while the overlay maps a point or a flattened offset onto it.
+extension AssistantMarkdownBlockTextView {
+    /// UTF-16 length of the block's source string.
+    var compositeTextLength: Int { textLength }
+
+    /// Character offset under a point in the block's own coordinates.
+    func compositeCharacterIndex(at point: CGPoint) -> Int? {
+        characterIndex(at: point)
+    }
+
+    /// Caret rectangle in the block's own coordinates.
+    func compositeCaretFrame(at offset: Int) -> CGRect? {
+        caretFrame(at: offset)
+    }
+
+    /// Word range (local UTF-16 offsets) under a character offset.
+    func compositeWordRange(at offset: Int) -> UITextRange? {
+        wordRange(at: offset)
+    }
+
+    /// Link URL under a point in the block's own coordinates.
+    func compositeLink(at point: CGPoint) -> URL? {
+        guard let index = characterIndex(at: point),
+              let source = sourceAttributed, source.length > 0 else { return nil }
+        let clamped = min(max(index, 0), source.length - 1)
+        return source.attribute(.link, at: clamped, effectiveRange: nil) as? URL
+    }
+
+    /// Raw source text for a local range. Used by the overlay's `text(in:)`,
+    /// where the length must match the UTF-16 offsets exactly (copy output is
+    /// the cleaned form below).
+    func compositeSubstring(for range: NSRange) -> String? {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return nil }
+        return (source.string as NSString).substring(with: range)
+    }
+
+    /// Clipboard plain text for a local range, cleaned exactly like the
+    /// single-block copy path.
+    func compositePlainText(for range: NSRange) -> String {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return "" }
+        return Self.cleanedPlainText(source.attributedSubstring(from: range))
+    }
+
+    /// Clipboard HTML for a local range, using the single-block formatter.
+    func compositeHTML(for range: NSRange) -> String {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return "" }
+        return Self.htmlRepresentation(of: source, range: range)
     }
 }
 

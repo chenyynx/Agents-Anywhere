@@ -934,15 +934,11 @@ enum AssistantMarkdownDocumentParser {
             baseWeight: codeStyle.fonts.bodyWeight,
             chipStyle: codeStyle.inlineCodeChip) else { return nil }
         trimBoundaryWhitespace(attributed)
-        // A cell is painted by `AssistantTableSurfaceView` with TextKit's own
-        // glyph drawing, which renders a `.link` run in the system link colour
-        // and underlines it whatever the string carries — the body's text view
-        // answers `renderingAttributesForLink`, a cell has no such delegate.
-        // Nothing in the table handles a link tap either, so dropping the
-        // attribute costs no interaction and keeps the ink the converter
-        // chose: otherwise the same file reference reads in the body's blue
-        // here and in the system blue inside a table (pp 2026-11-18: 表格里
-        // 两个蓝，亮一点的蓝色不对).
+        // Table cells do not expose link interaction. The attribute is dropped
+        // at conversion time so a file reference keeps the converter's ink
+        // (pp 2026-11-18: 表格里两个蓝，亮一点的蓝色不对). The cell is a
+        // selectable text view now, so restoring links later is a matter of
+        // removing this strip, not of rewriting the table.
         if attributed.length > 0 {
             attributed.removeAttribute(.link,
                 range: NSRange(location: 0, length: attributed.length))

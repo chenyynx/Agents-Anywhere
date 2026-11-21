@@ -69,13 +69,16 @@ jobs:
 
       - name: Sync server dependencies
         working-directory: server
-        run: uv sync
+        # GitHub runners are outside China; the repo's aliyun mirror answers
+        # 403 to them (observed 2026-11-21). The CLI flag outranks the
+        # pyproject index on purpose.
+        run: uv sync --default-index https://pypi.org/simple
 
       - name: Install connector (server tests import it)
         working-directory: server
         run: |
-          uv pip install pytest-xdist
-          uv pip install -e ../connector
+          uv pip install --default-index https://pypi.org/simple pytest-xdist
+          uv pip install --default-index https://pypi.org/simple -e ../connector
 
       - name: Lint (ruff)
         working-directory: server
@@ -116,15 +119,16 @@ jobs:
 
       - name: Sync connector dependencies
         working-directory: connector
-        run: uv sync
+        # Same mirror constraint as the server job above.
+        run: uv sync --default-index https://pypi.org/simple
 
       - name: Build the server environment (cross-suite e2e reads its venv)
         working-directory: server
-        run: uv sync
+        run: uv sync --default-index https://pypi.org/simple
 
       - name: Install test runner
         working-directory: connector
-        run: uv pip install pytest-xdist
+        run: uv pip install --default-index https://pypi.org/simple pytest-xdist
 
       - name: Lint (ruff)
         working-directory: connector

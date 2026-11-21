@@ -247,6 +247,10 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
 /// arithmetic.
 final class CodeMarkdownTextStackView: UIView {
     private let stack = UIStackView()
+    /// Row-level selection across every body text block. Code blocks and
+    /// tables stay out: code keeps its copy button, tables keep per-cell
+    /// selection.
+    private let selectionOverlay = AssistantCompositeSelectionOverlay(frame: .zero)
 
     /// One installed block. `key` is the block's stable identity and `digest`
     /// the content version; together they decide whether the view can be kept.
@@ -263,7 +267,9 @@ final class CodeMarkdownTextStackView: UIView {
     private var records: [Record] = []
     /// Whether body blocks take the system selection layer. Set before the
     /// first document is installed; block views are built with it.
-    var allowsSelection = true
+    var allowsSelection = true {
+        didSet { selectionOverlay.configure(allowsSelection: allowsSelection) }
+    }
     private var document: AssistantMarkdownDocument?
     private var documentKey = ""
     private var displayScale: CGFloat = 2
@@ -284,6 +290,12 @@ final class CodeMarkdownTextStackView: UIView {
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        // Gesture vehicle over the body blocks; it hit-tests to `self` only
+        // where a participating text view lies, so code buttons and the table
+        // scroll view keep their touches.
+        selectionOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(selectionOverlay)
+        selectionOverlay.configure(allowsSelection: allowsSelection)
         let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         // The stack's height is the document measurement; the representable's
         // frame is that number too. Keep the pin below required so a subpixel
@@ -296,10 +308,11 @@ final class CodeMarkdownTextStackView: UIView {
             bottom,
         ])
 
-        // Link taps belong to the text view's own recognizer, the way the
-        // official leaf does it (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md`
-        // §Q6). The old ancestor copy here fired on the first tap of a double
-        // tap and opened a link chip before the selection could run.
+        // Link taps inside body text belong to the row-level selection
+        // overlay, the way the official leaf routes them through one
+        // interaction (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` §Q6). The
+        // old ancestor copy here fired on the first tap of a double tap and
+        // opened a link chip before the selection could run.
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -351,6 +364,8 @@ final class CodeMarkdownTextStackView: UIView {
             }
             pendingBuild = nil
             removeRecords(from: 0)
+            selectionOverlay.endSelection()
+            refreshSelectionOverlay()
             builtKey = ""
             builtWidth = -1
             builtGeneration = -1
@@ -417,6 +432,7 @@ final class CodeMarkdownTextStackView: UIView {
         builtKey = pending.key
         builtGeneration = pending.generation
         updateSpacing(document: pending.document)
+        refreshSelectionOverlay()
         #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteStage(
             "leaf.prebuildLead", seconds: CACurrentMediaTime() - pending.startedAt)
@@ -433,9 +449,11 @@ final class CodeMarkdownTextStackView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        selectionOverlay.frame = bounds
         let width = bounds.width
         guard width > 0 else { return }
         finishPendingBuild()
+        refreshSelectionOverlay()
         let widthChanged = abs(width - builtWidth) > 0.5
         guard widthChanged || documentKey != builtKey else { return }
         builtWidth = width
@@ -457,6 +475,7 @@ final class CodeMarkdownTextStackView: UIView {
             builtKey = documentKey
             applyDocument(width: width, widthChanged: widthChanged)
         }
+        refreshSelectionOverlay()
         var total = records.reduce(0) { $0 + $1.height }
         // `updateSpacing` places inter-block gaps; the document measurement
         // includes them, so the sum must too.
@@ -469,17 +488,101 @@ final class CodeMarkdownTextStackView: UIView {
         return total
     }
 
-    private func enableTextInteraction(in view: UIView) {
+    /// Only the table's cell text views install their own system selection;
+    /// every other text block is driven by the row-level overlay, so its own
+    /// interaction stays off. Code keeps its copy button.
+    private func enableBlockInteractions(in view: UIView,
+                                         insideTable: Bool = false) {
+        if view is AssistantCodeBlockView { return }
+        let inTable = insideTable || view is AssistantTableBlockView
+        if inTable, let textView = view as? AssistantMarkdownBlockTextView {
+            textView.enableTextInteraction(allowsSelection: allowsSelection)
+            return
+        }
+        for subview in view.subviews {
+            enableBlockInteractions(in: subview, insideTable: inTable)
+        }
+    }
+
+    private struct SelectionParticipant {
+        let view: AssistantMarkdownBlockTextView
+        /// List and quote items end with one newline; paragraphs with a
+        /// blank line. The overlay uses this to rebuild copied text.
+        let inList: Bool
+        /// A content signature: the record digest for paragraphs, or the
+        /// view's own text hash for list/quote items (their record digest
+        /// changes when a later item streams in). A changed signature under a
+        /// live selection means the text the reader pointed at was replaced.
+        let signature: Int
+    }
+
+    /// Collect the body text views in document order and hand them to the
+    /// overlay. Code and table subtrees are not participants.
+    private func refreshSelectionOverlay() {
+        var participants: [SelectionParticipant] = []
+        participants.reserveCapacity(records.count)
+        for record in records {
+            let inList = record.kind == "list" || record.kind == "quote"
+            collectSelectionTextViews(in: record.view, insideList: inList,
+                                      recordSignature: record.digest,
+                                      into: &participants)
+        }
+        var separators: [String] = []
+        if participants.count > 1 {
+            separators.reserveCapacity(participants.count - 1)
+            for index in 0..<(participants.count - 1) {
+                let lineBreak = participants[index].inList
+                    || participants[index + 1].inList
+                separators.append(lineBreak ? "\n" : "\n\n")
+            }
+        }
+        selectionOverlay.setParticipants(participants.map(\.view),
+                                         separators: separators,
+                                         signatures: participants.map(\.signature))
+    }
+
+    private func collectSelectionTextViews(in view: UIView, insideList: Bool,
+                                           recordSignature: Int,
+                                           into result: inout [SelectionParticipant]) {
         if view is AssistantCodeBlockView || view is AssistantTableBlockView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
-            textView.enableTextInteraction(allowsSelection: allowsSelection)
+            // A list/quote record gains items while streaming without touching
+            // the earlier items; its record digest changes for every item
+            // then. Sign the view's own text instead, so only the blocks whose
+            // text changed lose the live selection. Paragraph records already
+            // are one view per record, where the record digest is the block.
+            let signature = insideList
+                ? textView.sourceTextSignature
+                : recordSignature
+            result.append(SelectionParticipant(view: textView, inList: insideList,
+                                              signature: signature))
+            return
         }
         for subview in view.subviews {
-            enableTextInteraction(in: subview)
+            collectSelectionTextViews(in: subview, insideList: insideList,
+                                      recordSignature: recordSignature,
+                                      into: &result)
         }
     }
+
+    #if DEBUG
+    var debugSelectionOverlay: AssistantCompositeSelectionOverlay {
+        selectionOverlay
+    }
+    #endif
+
+    #if DEBUG
+    /// M3 gate: the row-level selection layer, its participants, and whether
+    /// the system interaction was installed.
+    var debugSelectionParticipantCount: Int {
+        selectionOverlay.debugParticipantCount
+    }
+    var debugSelectionHasInteraction: Bool {
+        selectionOverlay.debugHasSelectionInteraction
+    }
+    #endif
 
     /// Keep the blocks whose identity survived the batch, update only the
     /// content that changed, and append the new tail. The official cell keeps
@@ -497,6 +600,7 @@ final class CodeMarkdownTextStackView: UIView {
         guard let document else {
             UIView.performWithoutAnimation { removeRecords(from: 0) }
             builtGeneration = generation
+            refreshSelectionOverlay()
             return
         }
         let blocks = document.blocks
@@ -531,12 +635,16 @@ final class CodeMarkdownTextStackView: UIView {
             updateSpacing(document: document)
         }
         builtGeneration = generation
+        refreshSelectionOverlay()
     }
 
     private func rebuild(_ document: AssistantMarkdownDocument, width: CGFloat) {
         #if DEBUG
         CodePageBuildStats.fullRebuilds += 1
         #endif
+        // A rebuild replaces every block view; offsets into the old document
+        // are meaningless against the new one even when the lengths match.
+        selectionOverlay.endSelection()
         UIView.performWithoutAnimation {
             removeRecords(from: 0)
             let keys = document.blockKeys
@@ -557,6 +665,7 @@ final class CodeMarkdownTextStackView: UIView {
             updateSpacing(document: document)
         }
         builtGeneration = generation
+        refreshSelectionOverlay()
     }
 
     /// One view for a block, with its measured height installed as a required
@@ -569,14 +678,13 @@ final class CodeMarkdownTextStackView: UIView {
             interactiveText: true,
             key: key, digest: digest,
             typographyRevision: typographyRevision, cache: cache)
-        // Body text (including list/quote paragraphs) gets system
-        // link/selection interaction. Fenced code owns its copy button and
-        // horizontal scroll; tables keep their own link lift/menu, so
-        // those subtrees stay inert.
+        // Table cells get their own single-block selection; the row's body
+        // text is driven by the selection overlay. Fenced code owns its copy
+        // button and horizontal scroll, so that subtree stays inert.
 #if AA_TIMELINE_PROBE
         let interactionStart = CACurrentMediaTime()
 #endif
-        enableTextInteraction(in: made.view)
+        enableBlockInteractions(in: made.view)
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteStage(
             "block.interaction", seconds: CACurrentMediaTime() - interactionStart)
@@ -628,9 +736,9 @@ final class CodeMarkdownTextStackView: UIView {
         records.removeSubrange(index...)
     }
 
-    /// Update one block whose identity survived. Text and code views update in
-    /// place; containers (list/quote/table/image/math) are replaced until each
-    /// grows its own incremental path.
+    /// Update one block whose identity survived. Text, code and table views
+    /// update in place; the remaining containers (list/quote/image/math) are
+    /// replaced until each grows its own incremental path.
     private func updateRecord(at index: Int, block: AssistantMarkdownBlock,
                               digest: Int, width: CGFloat, widthChanged: Bool) {
         let record = records[index]
@@ -678,9 +786,29 @@ final class CodeMarkdownTextStackView: UIView {
                 record.constraint.constant = updated
                 records[index].height = updated
             }
+        case .table(let table):
+            guard let view = record.view as? AssistantTableBlockView else {
+                replaceRecord(at: index, block: block, key: record.key,
+                              digest: digest, width: width)
+                return
+            }
+            if record.digest != digest || widthChanged {
+                // Reuse the cell text views while the column widths survive;
+                // only changed cells get new text. A streaming table no longer
+                // rebuilds one TextKit view per cell on every delta.
+                let updated = view.update(table: table)
+                // Cells created by this revision have not seen the record-time
+                // walk; enabling again is a no-op for the existing ones.
+                enableBlockInteractions(in: record.view)
+                let structural = height(of: block, key: record.key,
+                                        digest: digest, width: width)
+                let resolved = structural > 0 ? structural : updated
+                record.constraint.constant = resolved
+                records[index].height = resolved
+            }
         case .divider:
             break
-        case .list, .quote, .table, .image, .math:
+        case .list, .quote, .image, .math:
             if record.digest != digest || widthChanged {
                 replaceRecord(at: index, block: block, key: record.key,
                               digest: digest, width: width)

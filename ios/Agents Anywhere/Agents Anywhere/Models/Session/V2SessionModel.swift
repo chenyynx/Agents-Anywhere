@@ -77,6 +77,18 @@ final class V2SessionRuntimeModel {
     private(set) var pendingStopEnd = false
     /// Whether the newest authoritative turn ending came from a user stop.
     private(set) var lastTurnEndWasStop = false
+    /// A turn ending observed while live facts were stale, waiting for a fresh
+    /// confirmation. Carries whether the user's stop caused it.
+    ///
+    /// A recovery snapshot can deliver `running → idle` before live facts
+    /// re-confirm freshness, and dropping that edge leaves the footer gate
+    /// open for the rest of the session — the next userless wake turn then
+    /// takes the finished turn's footer away (pp 2026-11-22,
+    /// `sess_MnWJXS5vTqBc6Q`: fresh=0 idle at 00:07:02, background wake at
+    /// 00:18:29, footer hosts 17→16 and only back at 00:21:18). The count
+    /// stays freshness-gated; the ending is only deferred until fresh facts
+    /// still report idle. A fresh in-flight status voids it.
+    private var deferredTurnEnd: Bool?
 
     func allows(_ id: V2CapabilityID) -> Bool {
         guard isFresh, let capability = capabilities?.capability(id: id) else { return false }
@@ -135,6 +147,16 @@ final class V2SessionRuntimeModel {
         predictedIdle = false
     }
 
+    /// Counts one authoritative turn ending. The only writer of
+    /// `authoritativeTurnEnds`, so the footer gate and the completion cue
+    /// cannot disagree about what a confirmed ending is.
+    private func finishTurnEnd(wasStop: Bool) {
+        lastTurnEndWasStop = wasStop
+        pendingStopEnd = false
+        deferredTurnEnd = nil
+        authoritativeTurnEnds += 1
+    }
+
     func update(_ data: V2SessionData?, connection: V2SessionConnectionState) {
         let previousStatus = state?.status
         let previousFresh = isFresh
@@ -151,16 +173,31 @@ final class V2SessionRuntimeModel {
         }
         let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
-        if fresh, previousStatus?.isTurnInFlight == true, data?.state?.status == .idle {
-            lastTurnEndWasStop = pendingStopEnd
-            pendingStopEnd = false
-            authoritativeTurnEnds += 1
-        } else if data?.state?.status.isTurnInFlight == true,
-                  previousStatus?.isTurnInFlight != true {
-            // A new turn started before the stopped one ever reported idle:
-            // the stop's ending will never arrive, so do not let the flag
-            // mute a later completion.
-            pendingStopEnd = false
+        let appliedStatus = data?.state?.status
+        if appliedStatus?.isTurnInFlight == true {
+            // A turn is in flight: an ending observed while facts were stale
+            // cannot be confirmed by it, and this episode has its own ending.
+            deferredTurnEnd = nil
+            if previousStatus?.isTurnInFlight != true {
+                // A new turn started before the stopped one ever reported idle:
+                // the stop's ending will never arrive, so do not let the flag
+                // mute a later completion.
+                pendingStopEnd = false
+            }
+        } else if appliedStatus == .idle {
+            if previousStatus?.isTurnInFlight == true {
+                if fresh {
+                    finishTurnEnd(wasStop: pendingStopEnd)
+                } else if deferredTurnEnd == nil {
+                    // Seen through a stale observation (a recovery snapshot,
+                    // a projection marked stale on an event gap). Keep it
+                    // instead of dropping it; the next fresh apply that still
+                    // reports idle is the same ending, confirmed.
+                    deferredTurnEnd = pendingStopEnd
+                }
+            } else if let wasStop = deferredTurnEnd, fresh {
+                finishTurnEnd(wasStop: wasStop)
+            }
         }
         // Probe (b1287): the turn-end UI (footer gate, completion cue) keys on
         // this transition, but the device log could not say whether the state
@@ -168,7 +205,6 @@ final class V2SessionRuntimeModel {
         // delays it (~1.3 s between the server's idle event and the footer on
         // 2026-11-17). One line per status change / freshness flip / end
         // count — never per streaming flush.
-        let appliedStatus = data?.state?.status
         let appliedRuntimeID = data?.state?.runtimeId
         if previousStatus != appliedStatus || previousFresh != isFresh
             || previousEnds != authoritativeTurnEnds
@@ -182,6 +218,11 @@ final class V2SessionRuntimeModel {
                     "seq": String(data?.state?.updatedSeq ?? 0),
                     "fresh": isFresh ? "1" : "0",
                     "turnEnds": String(authoritativeTurnEnds),
+                    // 1 while an ending seen through a stale observation is
+                    // waiting for fresh facts to confirm it. Without it a log
+                    // cannot tell "never saw the ending" from "saw it stale"
+                    // (pp 2026-11-22).
+                    "defer": deferredTurnEnd == nil ? "0" : "1",
                     "hasState": data?.state == nil ? "0" : "1",
                     "connection": String(describing: connection),
                     // A new runtime instance id means the connector restarted
@@ -211,8 +252,10 @@ final class V2PendingMessage: Identifiable {
     private(set) var delivery: Delivery = .sending
     /// A steering message: the row is still optimistic. Its real timeline row
     /// is published by the connector only when the runtime reads it, so while
-    /// this record is alive the UI shows 「正在等待 Claude」 (or 未送达 once the
-    /// turn is over without an echo).
+    /// this record is alive the UI shows 「正在等待 Claude」, or
+    /// 「已提交，下一轮送达」 once the turn is over without an echo — never a
+    /// failure verdict: only the interrupt response's `steerOutcomes` can
+    /// declare it withdrawn.
     var isSteer = false
     var didRestoreDraft = false
     /// Unresolved records this bubble replaces: the draft was restored from
@@ -253,8 +296,12 @@ final class V2PendingMessage: Identifiable {
     }
 
     func update(_ delivery: Delivery) {
-        // An authoritative echo can arrive before the HTTP request completes or fails.
-        guard self.delivery != .confirmed else { return }
+        // An authoritative echo can arrive before the HTTP request completes
+        // or fails. `.rejected` is sticky too: a withdrawal can land while the
+        // steer's own HTTP response is still in flight, and the late
+        // `.accepted` must not resurrect a record the runtime already dropped.
+        if case .confirmed = self.delivery { return }
+        if case .rejected = self.delivery { return }
         self.delivery = delivery
     }
 }
@@ -538,11 +585,17 @@ final class V2SessionModel: Identifiable {
         return merged
     }
 
+    /// A genuinely late row arrives alone or in a small batch. A bulk load
+    /// (history page, rebuild, cold restore) replays hundreds of historical
+    /// stopped-turn tool rows; logging each first appearance buried the
+    /// tripwire it exists for (device 2026-11-21: 300 lines in one apply).
+    private static let postStopLateAppearanceLimit = 8
+
     /// Tripwire for "a stopped turn's tool row moved after the stop".
     ///
     /// The visible flash was one symptom of this data path; a late `running`
-    /// write, a status bouncing back, or a row arriving after the card all
-    /// land here. Diagnostics only (the reader keeps that file); every status
+    /// write, a status bouncing back, or a single row arriving after the card
+    /// lands here. Diagnostics only (the reader keeps that file); every status
     /// change is recorded with the gates that decide the drawn pose, so a
     /// recurrence can be told from normal convergence.
     private func recordPostStopToolChange(
@@ -958,8 +1011,15 @@ final class V2SessionModel: Identifiable {
     /// sent — an identical resend is deliberately not blocked; a late echo (the
     /// server did receive it) simply appears as a normal row.
     func reclaimUnconfirmedPendings() {
+        // A steer is not reclaimable: once submitted it can be withdrawn only
+        // by the runtime's own cancel control, and one stopped before it was
+        // read stays queued for the next turn (probe 2026-11-21, CLI 2.1.316).
+        // The interrupt response's `steerOutcomes` is the authority for those;
+        // reclaiming here would restore the text and allow a resend while the
+        // runtime still holds the message, which is exactly the duplicate this
+        // path exists to avoid.
         let reclaimable = pendingMessages.filter {
-            $0.delivery == .sending || $0.delivery == .accepted
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
         }
         guard !reclaimable.isEmpty else { return }
         // Newest first: only the newest payload can go back into an empty
@@ -976,6 +1036,88 @@ final class V2SessionModel: Identifiable {
         repository?.localWorkDidChange(sessionID: self.id)
     }
 
+    /// Resolves steer bubbles from the interrupt response's `steerOutcomes`.
+    ///
+    /// The runtime is the only authority on a steer's fate: a queued steer can
+    /// be withdrawn before the interrupt, may already have been taken into the
+    /// stopped turn, or may have no verdict at all (older CLI). `withdrawn` is
+    /// the official take-back — the text returns to the editor and the record
+    /// leaves, so the user can re-send it without duplicating anything;
+    /// `delivered` and `unknown` keep the record for the existing echo path.
+    /// An outcome for an id this client no longer holds is ignored.
+    func applySteerOutcomes(_ raw: JSONValue?) {
+        guard let items = raw?.arrayValue else { return }
+        var changed = false
+        for item in items {
+            guard let pendingID = item["clientMessageId"]?.stringValue,
+                  let outcome = item["outcome"]?.stringValue,
+                  let pending = pendingMessages.first(where: {
+                      $0.id == pendingID && $0.isSteer
+                  }) else { continue }
+            guard outcome == "withdrawn" else { continue }
+            if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
+                draft = pending.content
+                composer.attachments = pending.attachments
+                draftAttachmentIDs = pending.attachmentIDs
+                pendingMessages.removeAll { $0.id == pendingID }
+            } else {
+                // The editor already holds other work: never drop the
+                // withdrawn text silently. Keep it visible as a rejected
+                // record the user can read or dismiss.
+                pending.update(.rejected(V2ClientFailure(
+                    kind: .unavailable,
+                    message: String(localized: "引导已撤回，未回到输入框：输入框已有内容。")
+                )))
+            }
+            if awaitingReplyID == pendingID { awaitingReplyID = nil }
+            if draftRestoredFromPendingID == pendingID {
+                draftRestoredFromPendingID = nil
+            }
+            changed = true
+        }
+        if changed { repository?.localWorkDidChange(sessionID: id) }
+    }
+
+    /// A stop ends the window a steer was sent into. The steer itself may
+    /// still be pending (withdrawn, delivered, or unknown), but it is no
+    /// longer “awaiting a reply” from this turn — clearing this keeps the
+    /// working row from spinning forever.
+    func clearSteerAwaitingReply() {
+        guard let waiting = awaitingReplyID,
+              pendingMessages.contains(where: { $0.id == waiting && $0.isSteer })
+        else { return }
+        awaitingReplyID = nil
+        repository?.localWorkDidChange(sessionID: id)
+    }
+
+    /// A server-side runtime recreation can mint a new instance id; a steer
+    /// still waiting in the old CLI queue would have died with that process.
+    /// Demote those records to the existing uncertain state so the user can
+    /// remove and retry instead of waiting for an echo that will never come.
+    ///
+    /// This is only a defensive trigger: a plain connector restart does NOT
+    /// change `runtimeId` (it is bound once when the device runtime is
+    /// created), so the held row's long-press removal is the real escape
+    /// hatch for that case.
+    private func demoteHeldSteersAfterRuntimeChange() {
+        let failure = V2ClientFailure(
+            kind: .unavailable,
+            message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。")
+        )
+        var changed = false
+        for pending in pendingMessages where pending.isSteer {
+            switch pending.delivery {
+            case .sending, .accepted:
+                pending.update(.uncertain(failure))
+                if awaitingReplyID == pending.id { awaitingReplyID = nil }
+                changed = true
+            case .confirmed, .uncertain, .rejected:
+                continue
+            }
+        }
+        if changed { repository?.localWorkDidChange(sessionID: id) }
+    }
+
     /// The delayed form used after an acknowledged stop, following the
     /// official `TakeBack` semantics (CANONICAL/02-transcript-model.md §6,
     /// `part-s-code-session-store.md` §TakeBack: an already-posting message is
@@ -985,8 +1127,11 @@ final class V2SessionModel: Identifiable {
     /// so a missing state frame cannot keep the row forever.
     func reclaimUnconfirmedPendingsAfterStop() async {
         // Cheap gate first: a normal open has nothing to reconcile and must
-        // not pay the authoritative read below.
-        guard pendingMessages.contains(where: { $0.delivery == .sending || $0.delivery == .accepted }) else { return }
+        // not pay the authoritative read below. Steers are excluded: only the
+        // runtime's `steerOutcomes` may resolve them (see reclaim below).
+        guard pendingMessages.contains(where: {
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
+        }) else { return }
         let deadline = Date().addingTimeInterval(5)
         while isValid, Date() < deadline, runtime.state?.status.isTurnInFlight == true {
             try? await Task.sleep(for: .milliseconds(200))
@@ -1049,7 +1194,22 @@ final class V2SessionModel: Identifiable {
         if acknowledgedNotifications != observation.acknowledgedNotifications {
             acknowledgedNotifications = observation.acknowledgedNotifications
         }
+        let previousRuntimeID = runtime.state?.runtimeId
         runtime.update(data, connection: connection)
+        // A changed runtime instance id is a runtime recreation, not a plain
+        // reconnect: a steer queued in the old process is gone.
+        if let previousRuntimeID,
+           let appliedRuntimeID = runtime.state?.runtimeId,
+           previousRuntimeID != appliedRuntimeID {
+            demoteHeldSteersAfterRuntimeChange()
+        }
+        // A steer left waiting when its turn ends (naturally or by stop) is
+        // not awaiting a reply from this turn; clear the working-row gate.
+        if runtime.state?.status.isTurnInFlight != true,
+           let waiting = awaitingReplyID,
+           pendingMessages.first(where: { $0.id == waiting })?.isSteer == true {
+            awaitingReplyID = nil
+        }
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if localOlderAvailable != (data?.localOlderAvailable ?? false) {
@@ -1070,12 +1230,13 @@ final class V2SessionModel: Identifiable {
         // Stopped turns whose tool rows may still move under the user's eyes.
         // Read once per apply (the cache is cleared at the end of this method).
         let stoppedTurnIDs = Set(interruptedTurns.compactMap(\.turnID))
+        var postStopChanges: [(item: V2TimelineItem, previous: V2TimelineItemStatus?)] = []
         for (index, item) in items.enumerated() {
             if item.type == .tool, !stoppedTurnIDs.isEmpty,
                let turnID = item.turnId, stoppedTurnIDs.contains(turnID) {
                 let previousStatus = rowsByID[item.id]?.value.status
                 if previousStatus != item.status {
-                    recordPostStopToolChange(item, from: previousStatus)
+                    postStopChanges.append((item, previousStatus))
                 }
             }
             let row: V2TimelineItemModel
@@ -1088,6 +1249,16 @@ final class V2SessionModel: Identifiable {
             }
             if !orderChanged, timeline[index] !== row { orderChanged = true }
             rows.append(row)
+        }
+        // Status changes of rows already on screen are always recorded. A first
+        // appearance is only interesting when it is a genuinely late row, not
+        // the bulk replay of historical tool rows a load produces.
+        let lateAppearanceCount = postStopChanges.reduce(0) {
+            $0 + ($1.previous == nil ? 1 : 0)
+        }
+        let recordLateAppearances = lateAppearanceCount <= Self.postStopLateAppearanceLimit
+        for change in postStopChanges where change.previous != nil || recordLateAppearances {
+            recordPostStopToolChange(change.item, from: change.previous)
         }
         if orderChanged {
             timeline = rows

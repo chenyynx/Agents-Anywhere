@@ -31,6 +31,11 @@ struct CodeAttachmentRow: View {
         let failedFiles = documents.filter { state($0.content) == .failed }
         let uploadedFiles = documents.filter { state($0.content) != .failed }
         let mixed = !images.isEmpty && !uploadedFiles.isEmpty
+        // A SwiftUI stack still claims a child slot when none of its contents
+        // render, and the outer stack pays the 8 pt gap for it. A mixed row
+        // (images + uploaded files, both in one grid) therefore drew 8 pt that
+        // `CodeAttachmentLayout.blockHeights` does not measure.
+        let showsFileBlock = !failedFiles.isEmpty || (!uploadedFiles.isEmpty && !mixed)
 
         HStack(alignment: .bottom, spacing: 8) {
             Spacer(minLength: 0)
@@ -48,7 +53,7 @@ struct CodeAttachmentRow: View {
                                         onAttachment: onAttachment,
                                         loadThumbnail: loadThumbnail)
                 }
-                if !documents.isEmpty {
+                if showsFileBlock {
                     VStack(alignment: .trailing, spacing: CodePageTheme.blockGap) {
                         // Failed uploads first: `SendUserMessageAttachmentRow`'s
                         // `ForEach(uploadFailed)` precedes the successful tiles

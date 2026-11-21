@@ -373,6 +373,179 @@ def test_batch_refreshes_equal_revision_replacement_from_another_publisher():
     asyncio.run(exercise())
 
 
+def test_batch_publish_skips_a_session_whose_fence_times_out() -> None:
+    """One blocked fence must not drop the rest of the connector batch.
+
+    2026-11-21: a Server process killed mid-batch left a 300s-lease lock on an
+    idle session; two connector capability notifications then timed out on that
+    session's fence and every session in the connector lost its live push.
+    """
+
+    async def exercise() -> None:
+        class Repository:
+            async def list_sessions_for_connector(self, connector_id):
+                return [
+                    _session(takeover=True).model_copy(update={"id": f"session-{i}"})
+                    for i in range(3)
+                ]
+
+            @asynccontextmanager
+            async def session_revision_fence(self, session_id):
+                if session_id == "session-1":
+                    raise TimeoutError(
+                        "timed out acquiring distributed lock: "
+                        f"session-revision:{session_id}"
+                    )
+                yield
+
+            async def get_protocol_capabilities_stamp(self, connector_id):
+                return (1, "stamp")
+
+            async def get_protocol_capabilities(self, connector_id, *, user_id=None):
+                return {"revision": 1, "capabilities": []}
+
+            async def get_session_seq(self, session_id):
+                return 5
+
+        class Presence:
+            async def is_online(self, connector_id):
+                return True
+
+        class Publisher:
+            def __init__(self) -> None:
+                self.session_ids: list[str] = []
+
+            async def publish(self, session_id, payload):
+                self.session_ids.append(session_id)
+
+        publisher = Publisher()
+        await publish_connector_session_capabilities(
+            Repository(), Presence(), publisher, "connector-1",
+        )
+        assert publisher.session_ids == ["session-0", "session-2"]
+
+    asyncio.run(exercise())
+
+
+def test_body_timeout_inside_the_fence_is_not_swallowed() -> None:
+    """Only fence acquisition is isolated; a real read timeout still aborts."""
+
+    async def exercise() -> None:
+        class Repository:
+            async def list_sessions_for_connector(self, connector_id):
+                return [_session(takeover=True)]
+
+            @asynccontextmanager
+            async def session_revision_fence(self, session_id):
+                yield
+
+            async def get_protocol_capabilities_stamp(self, connector_id):
+                return (1, "stamp")
+
+            async def get_protocol_capabilities(self, connector_id, *, user_id=None):
+                return {"revision": 1, "capabilities": []}
+
+            async def get_session_seq(self, session_id):
+                raise TimeoutError("database statement timeout")
+
+        class Presence:
+            async def is_online(self, connector_id):
+                return True
+
+        class Publisher:
+            async def publish(self, session_id, payload):
+                raise AssertionError("must not publish after a body timeout")
+
+        with pytest.raises(TimeoutError, match="database statement timeout"):
+            await publish_connector_session_capabilities(
+                Repository(), Presence(), Publisher(), "connector-1",
+            )
+
+    asyncio.run(exercise())
+
+
+def test_stuck_batch_does_not_unregister_a_newer_batch() -> None:
+    """A timed-out batch's cleanup must not pop a newer batch's registry entry.
+
+    Sequence: A blocks on session-0's fence → B completes and clears the shared
+    dict → C starts (new dict) → A resumes and returns → D supersedes C. If A's
+    ``finally`` pops C's dict by key, C never sees D's token and keeps pushing.
+    """
+
+    async def exercise() -> None:
+        a_blocked, a_release = asyncio.Event(), asyncio.Event()
+        c_blocked, c_release = asyncio.Event(), asyncio.Event()
+
+        class Repository:
+            async def list_sessions_for_connector(self, connector_id):
+                return [
+                    _session(takeover=True).model_copy(update={"id": f"session-{i}"})
+                    for i in range(2)
+                ]
+
+            @asynccontextmanager
+            async def session_revision_fence(self, session_id):
+                name = asyncio.current_task().get_name()
+                if name == "A" and session_id == "session-0":
+                    a_blocked.set()
+                    await a_release.wait()
+                if name == "C" and session_id == "session-1":
+                    c_blocked.set()
+                    await c_release.wait()
+                yield
+
+            async def get_protocol_capabilities_stamp(self, connector_id):
+                return (1, "stamp")
+
+            async def get_protocol_capabilities(self, connector_id, *, user_id=None):
+                return {"revision": 1, "capabilities": []}
+
+            async def get_session_seq(self, session_id):
+                return 1
+
+        class Presence:
+            async def is_online(self, connector_id):
+                return True
+
+        class Publisher:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, str]] = []
+
+            async def publish(self, session_id, payload):
+                self.events.append((asyncio.current_task().get_name(), session_id))
+
+        publisher = Publisher()
+
+        def batch(name: str | None = None):
+            return asyncio.create_task(
+                publish_connector_session_capabilities(
+                    Repository(), Presence(), publisher, "connector-1",
+                ),
+                name=name,
+            )
+
+        a = batch("A")
+        await a_blocked.wait()
+        await batch()  # B finishes while A is stuck, then clears the registry
+        c = batch("C")
+        await c_blocked.wait()
+        a_release.set()
+        await a
+        await batch()  # D supersedes C while C still waits on session-1
+        c_release.set()
+        await c
+
+        assert [event for event in publisher.events if event[0] == "C"] == [
+            ("C", "session-0"),
+        ]
+        assert [session_id for name, session_id in publisher.events if name != "C"] == [
+            "session-0", "session-1",  # B
+            "session-0", "session-1",  # D
+        ]
+
+    asyncio.run(exercise())
+
+
 def _session(*, takeover: bool) -> SessionView:
     return SessionView(
         id="session-1",

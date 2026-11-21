@@ -1006,15 +1006,29 @@ final class AssistantCodeBlockView: UIView {
     }
 }
 
-/// The table surface: one view draws the whole table, the shape the official
-/// chat transcript uses (`MarkdownTableView` with a single text surface and no
-/// per-cell UIView). Cells are paragraphs in that surface; here they are drawn
-/// directly, with accessibility elements standing in for the old labels.
+/// The table block: the surface paints the chrome (header fill, row seams and
+/// the outer border), and one selectable text view per non-empty cell paints
+/// the cell's glyphs. The official transcript keeps a single painted surface
+/// with no per-cell views and no character selection
+/// (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md` Q3); selectable table text is a
+/// product decision on top of that shape (pp 2026-11-21), so the glyphs move
+/// into the same `AssistantMarkdownBlockTextView` the body uses.
 final class AssistantTableBlockView: UIView {
-    private let table: AssistantTableBlock
+    /// Identifies one cell's text view across streaming updates. Empty cells
+    /// stay surface-only.
+    private struct CellKey: Hashable {
+        let row: Int
+        let column: Int
+    }
+
+    private var table: AssistantTableBlock
     private let displayScale: CGFloat
     private let scrollView = UIScrollView()
     private let surface: AssistantTableSurfaceView
+    /// The card's rounded frame. It lives outside the scroll view so the
+    /// border stays put while the columns slide underneath (pp 2026-11-21).
+    private let borderView = UIView()
+    private var cellViews: [CellKey: AssistantMarkdownTextBlockView] = [:]
 
     init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
         self.table = table
@@ -1030,24 +1044,196 @@ final class AssistantTableBlockView: UIView {
         scrollView.alwaysBounceVertical = false
         scrollView.bounces = false
         scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.layer.cornerCurve = .continuous
+        scrollView.clipsToBounds = true
         addSubview(scrollView)
         scrollView.addSubview(surface)
+        installCellViews()
+
+        borderView.backgroundColor = .clear
+        borderView.isUserInteractionEnabled = false
+        borderView.layer.cornerCurve = .continuous
+        addSubview(borderView)
+        updateBorderAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        scrollView.frame = bounds
+        // Both the scroll view's rounded clip and the border follow the card,
+        // not the row: a narrow table's header fill would otherwise keep a
+        // square right corner poking through the rounded border.
+        let cardWidth = min(bounds.width, table.totalWidth)
+        scrollView.frame = CGRect(x: bounds.minX, y: bounds.minY,
+                                  width: cardWidth, height: bounds.height)
         surface.frame = CGRect(origin: .zero,
                                size: CGSize(width: table.totalWidth,
                                             height: table.totalHeight))
         scrollView.contentSize = surface.frame.size
+        for (key, view) in cellViews {
+            view.frame = textRect(row: key.row, column: key.column)
+        }
+        updateBorderAppearance()
+    }
+
+    /// The frame follows the card, never the horizontal scroll offset.
+    private func updateBorderAppearance() {
+        let scale = max(traitCollection.displayScale, 1)
+        let line = 1 / scale
+        // A narrow table's card hugs its content; a wide one spans the row and
+        // scrolls inside. The surface (header fill, row seams) is drawn at
+        // `table.totalWidth`, so a full-width border would leave an unpainted
+        // band to the right of a narrow table.
+        let cardWidth = min(bounds.width, table.totalWidth)
+        borderView.frame = CGRect(x: bounds.minX, y: bounds.minY,
+                                  width: cardWidth, height: bounds.height)
+            .insetBy(dx: line / 2, dy: line / 2)
+        borderView.layer.cornerRadius = max(0, table.cornerRadius - line / 2)
+        borderView.layer.borderWidth = line
+        borderView.layer.borderColor = (table.borderColor
+            ?? ChatTextUIColors.tableLine)
+            .resolvedColor(with: traitCollection).cgColor
+        scrollView.layer.cornerRadius = table.cornerRadius
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            updateBorderAppearance()
+        }
+    }
+
+    // MARK: - Cell text views
+
+    /// One selectable text view per non-empty cell, added to the surface so it
+    /// scrolls with the table. The cell text uses the same TextKit stack as
+    /// the body, which is what supplies selection, handles and the copy menu.
+    private func installCellViews() {
+        var views: [CellKey: AssistantMarkdownTextBlockView] = [:]
+        for row in table.rows.indices {
+            for column in table.rows[row].indices {
+                let string = table.rows[row][column]
+                guard string.length > 0 else { continue }
+                let key = CellKey(row: row, column: column)
+                views[key] = makeCellView(for: string, at: key)
+            }
+        }
+        cellViews = views
+        for view in views.values { surface.addSubview(view) }
+    }
+
+    private func makeCellView(for string: NSAttributedString,
+                              at key: CellKey) -> AssistantMarkdownTextBlockView {
+        let view = AssistantMarkdownTextBlockView(interactive: true)
+        // The surface already exposes one accessibility element per cell;
+        // hiding this subtree keeps VoiceOver from reading each cell twice.
+        view.accessibilityElementsHidden = true
+        view.textView.tintColor = CodePageTheme.selectionTintUIColor
+        // The cell sits inside the table's horizontal scroll view; selection
+        // must not relax that clip and paint hidden columns outside the card.
+        view.textView.keepsScrollViewClipping = true
+        view.textView.attributedText = string
+        let rect = textRect(row: key.row, column: key.column)
+        view.textView.prepareLayout(width: rect.width)
+        view.frame = rect
+        return view
+    }
+
+    private func textRect(row: Int, column: Int) -> CGRect {
+        guard table.rowHeights.indices.contains(row),
+              table.columnWidths.indices.contains(column) else { return .zero }
+        let x = table.columnWidths.prefix(column).reduce(0, +)
+        let y = table.rowHeights.prefix(row).reduce(0, +)
+        return CGRect(x: x, y: y,
+                      width: table.columnWidths[column],
+                      height: table.rowHeights[row])
+            .insetBy(dx: table.cellPaddingHorizontal,
+                     dy: table.cellPaddingVertical)
+    }
+
+    /// Apply a streamed table revision. Cell views survive while the column
+    /// widths do; only cells whose text changed get a new attributed string.
+    /// Streaming a table otherwise rebuilt one TextKit view per cell on every
+    /// delta.
+    @discardableResult
+    func update(table newTable: AssistantTableBlock) -> CGFloat {
+        let gridKept = columnMetricsMatch(table, newTable)
+        table = newTable
+        surface.update(table: newTable)
+        updateBorderAppearance()
+        if gridKept {
+            updateCellViews()
+        } else {
+            rebuildCellViews()
+        }
+        setNeedsLayout()
+        // Match the document's stored height (the `.table` case in
+        // `AssistantMarkdownTextLayout.height`, which rounds up).
+        return AssistantMarkdownTextLayout.tableHeight(
+            of: newTable, displayScale: displayScale)
+    }
+
+    private func columnMetricsMatch(_ lhs: AssistantTableBlock,
+                                    _ rhs: AssistantTableBlock) -> Bool {
+        guard lhs.columnWidths.count == rhs.columnWidths.count,
+              lhs.cellPaddingHorizontal == rhs.cellPaddingHorizontal,
+              lhs.cellPaddingVertical == rhs.cellPaddingVertical else {
+            return false
+        }
+        for (old, new) in zip(lhs.columnWidths, rhs.columnWidths)
+        where abs(old - new) > 0.5 {
+            return false
+        }
+        return true
+    }
+
+    private func updateCellViews() {
+        var updated: [CellKey: AssistantMarkdownTextBlockView] = [:]
+        for row in table.rows.indices {
+            for column in table.rows[row].indices {
+                let string = table.rows[row][column]
+                guard string.length > 0 else { continue }
+                let key = CellKey(row: row, column: column)
+                let rect = textRect(row: row, column: column)
+                if let view = cellViews[key] {
+                    if !(view.textView.attributedText?.isEqual(to: string) ?? false) {
+                        view.textView.attributedText = string
+                        view.textView.prepareLayout(width: rect.width)
+                    }
+                    view.frame = rect
+                    updated[key] = view
+                } else {
+                    let view = makeCellView(for: string, at: key)
+                    view.frame = rect
+                    surface.addSubview(view)
+                    updated[key] = view
+                }
+            }
+        }
+        for (key, view) in cellViews where updated[key] == nil {
+            view.removeFromSuperview()
+        }
+        cellViews = updated
+    }
+
+    private func rebuildCellViews() {
+        for view in cellViews.values { view.removeFromSuperview() }
+        cellViews = [:]
+        installCellViews()
+        for (key, view) in cellViews {
+            view.frame = textRect(row: key.row, column: key.column)
+        }
     }
 
     #if DEBUG
     var debugCellElementCount: Int { surface.debugCellElementCount }
     var debugSurfaceSubviewCount: Int { surface.subviews.count }
+    /// The fixed card frame's width and the content width it must hug when
+    /// the table is narrower than the row.
+    var debugCardWidth: CGFloat { borderView.frame.width }
+    var debugTableWidth: CGFloat { table.totalWidth }
+    var debugTableHeight: CGFloat { table.totalHeight }
     var debugCellLabelCount: Int {
         var count = 0
         func walk(_ view: UIView) {
@@ -1056,6 +1242,32 @@ final class AssistantTableBlockView: UIView {
         }
         walk(self)
         return count
+    }
+    /// Cell text views that actually carry the selectable interaction. The M3
+    /// gate asserts this equals the non-empty cell count.
+    var debugSelectableCellCount: Int {
+        cellViews.values.filter { $0.textView.debugHasTextInteraction }.count
+    }
+    /// One entry per non-empty cell; the gate compares the selectable count
+    /// against this instead of the surface's subview count.
+    var debugNonEmptyCellCount: Int { cellViews.count }
+    /// Cell text views in (row, column) order. The streaming gate compares
+    /// this across two revisions to prove the views were reused, not rebuilt.
+    var debugCellViewIdentifiers: [ObjectIdentifier] {
+        cellViews.keys
+            .sorted { ($0.row, $0.column) < ($1.row, $1.column) }
+            .compactMap { key in cellViews[key].map(ObjectIdentifier.init) }
+    }
+    var debugCellFrameMismatchCount: Int {
+        cellViews.reduce(0) { count, entry in
+            let expected = textRect(row: entry.key.row, column: entry.key.column)
+            let actual = entry.value.frame
+            let matches = abs(actual.origin.x - expected.origin.x) <= 0.5
+                && abs(actual.origin.y - expected.origin.y) <= 0.5
+                && abs(actual.size.width - expected.size.width) <= 0.5
+                && abs(actual.size.height - expected.size.height) <= 0.5
+            return count + (matches ? 0 : 1)
+        }
     }
     #endif
 }
@@ -1140,50 +1352,6 @@ enum AssistantInlineCodeChipRenderer {
                     frame: frame.offsetBy(dx: origin.x, dy: origin.y),
                     baseline: baseline + frame.minY, font: font, style: style))
                 return true
-            }
-        }
-        drawPieces(pieces, lineWidth: lineWidth)
-    }
-
-    /// Table path: the caller supplies the one TextKit 1 layout that also
-    /// draws the cell's glyphs, so the chip rectangles and the drawn text share
-    /// the same line fragments. Building a second layout for the chips put
-    /// their baselines a few points below the text once a cell wrapped.
-    static func drawChips(in attributed: NSAttributedString,
-                          layoutManager: NSLayoutManager,
-                          container: NSTextContainer,
-                          origin: CGPoint,
-                          traitCollection: UITraitCollection) {
-        guard attributed.length > 0, container.size.width > 0 else { return }
-        layoutManager.ensureLayout(for: container)
-
-        let scale = traitCollection.displayScale > 0
-            ? traitCollection.displayScale : 1
-        let lineWidth = 1 / max(scale, 1)
-        var pieces: [ChipPiece] = []
-        for range in chipRanges(in: attributed) {
-            guard let font = attributed.attribute(
-                    .font, at: range.location, effectiveRange: nil) as? UIFont else {
-                continue
-            }
-            let style = chipStyle(in: attributed, at: range.location,
-                                  traitCollection: traitCollection)
-            let glyphRange = layoutManager.glyphRange(
-                forCharacterRange: range, actualCharacterRange: nil)
-            // TextKit 1 has no baseline in `enumerateEnclosingRects`; derive it
-            // from the line fragment (`location(forGlyphAt:).y` is the distance
-            // from the fragment's top to the baseline).
-            layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
-                lineRect, _, _, lineGlyphRange, _ in
-                let intersection = NSIntersectionRange(lineGlyphRange, glyphRange)
-                guard intersection.length > 0 else { return }
-                let baseline = lineRect.minY
-                    + layoutManager.location(forGlyphAt: intersection.location).y
-                let frame = layoutManager.boundingRect(forGlyphRange: intersection,
-                                                       in: container)
-                pieces.append(ChipPiece(
-                    frame: frame.offsetBy(dx: origin.x, dy: origin.y),
-                    baseline: baseline + origin.y, font: font, style: style))
             }
         }
         drawPieces(pieces, lineWidth: lineWidth)
@@ -1336,29 +1504,20 @@ enum AssistantInlineCodeChipRenderer {
     }
 }
 
-/// Draws the header fill, row seams, cell text and the outer border in one
-/// pass. Height still comes from `AssistantMarkdownTextLayout.tableMetrics`
-/// (TextKit 2); this view only renders the attributed strings at the geometry
-/// that measurement already fixed.
+/// Draws the header fill, row seams and the outer border in one pass. Height
+/// still comes from `AssistantMarkdownTextLayout.tableMetrics` (TextKit 2);
+/// cell glyphs are painted by the per-cell text views above this surface.
 private final class AssistantTableSurfaceView: UIView {
-    private let table: AssistantTableBlock
+    private var table: AssistantTableBlock
     private let displayScale: CGFloat
-    private let columnOrigins: [CGFloat]
-    private let rowOrigins: [CGFloat]
+    private var columnOrigins: [CGFloat]
+    private var rowOrigins: [CGFloat]
 
     init(table: AssistantTableBlock, displayScale: CGFloat) {
         self.table = table
         self.displayScale = displayScale
-        var x: CGFloat = 0
-        self.columnOrigins = table.columnWidths.map { width in
-            defer { x += width }
-            return x
-        }
-        var y: CGFloat = 0
-        self.rowOrigins = table.rowHeights.map { height in
-            defer { y += height }
-            return y
-        }
+        self.columnOrigins = Self.origins(for: table.columnWidths)
+        self.rowOrigins = Self.origins(for: table.rowHeights)
         super.init(frame: .zero)
         isOpaque = false
         backgroundColor = .clear
@@ -1369,6 +1528,24 @@ private final class AssistantTableSurfaceView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private static func origins(for lengths: [CGFloat]) -> [CGFloat] {
+        var origin: CGFloat = 0
+        return lengths.map { length in
+            defer { origin += length }
+            return origin
+        }
+    }
+
+    /// The chrome follows the table's new geometry; the cell text views
+    /// belong to `AssistantTableBlockView`.
+    func update(table newTable: AssistantTableBlock) {
+        table = newTable
+        columnOrigins = Self.origins(for: newTable.columnWidths)
+        rowOrigins = Self.origins(for: newTable.rowHeights)
+        accessibilityElements = makeAccessibilityElements()
+        setNeedsDisplay()
+    }
+
     private func cellBounds(row: Int, column: Int) -> CGRect {
         guard table.rowHeights.indices.contains(row),
               table.columnWidths.indices.contains(column) else { return .zero }
@@ -1377,23 +1554,30 @@ private final class AssistantTableSurfaceView: UIView {
                       height: table.rowHeights[row])
     }
 
-    private func textRect(row: Int, column: Int) -> CGRect {
-        cellBounds(row: row, column: column)
-            .insetBy(dx: table.cellPaddingHorizontal,
-                     dy: table.cellPaddingVertical)
-    }
+    /// Cell elements are reused by (row, column): a streaming table replaces
+    /// its `accessibilityElements` on every revision, and fresh objects would
+    /// drop VoiceOver's focus mid-sentence.
+    private var cellElements: [String: AssistantTableCellAccessibilityElement] = [:]
 
     private func makeAccessibilityElements() -> [Any] {
         var elements: [Any] = []
+        var updated: [String: AssistantTableCellAccessibilityElement] = [:]
         for row in table.rows.indices {
             for column in table.rows[row].indices {
                 let text = table.rows[row][column].string
                 guard !text.isEmpty else { continue }
-                elements.append(AssistantTableCellAccessibilityElement(
-                    container: self, row: row, column: column,
-                    label: text, frame: cellBounds(row: row, column: column)))
+                let key = "\(row):\(column)"
+                let frame = cellBounds(row: row, column: column)
+                let element = cellElements[key]
+                    ?? AssistantTableCellAccessibilityElement(
+                        container: self, row: row, column: column,
+                        label: text, frame: frame)
+                element.update(label: text, frame: frame)
+                updated[key] = element
+                elements.append(element)
             }
         }
+        cellElements = updated
         return elements
     }
 
@@ -1406,10 +1590,10 @@ private final class AssistantTableSurfaceView: UIView {
         let scale = traitCollection.displayScale > 0
             ? traitCollection.displayScale : displayScale
         let line = 1 / max(scale, 1)
-        let radius = table.cornerRadius
-        let clipPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius)
 
-        clipPath.addClip()
+        // The card's rounded clip and outer border belong to the fixed
+        // `borderView`/scroll view at the block level; this surface scrolls
+        // inside and only paints the header fill and row seams.
 
         // [E] R19 `typography-inline.md` §5 — header fill white / #1A1A19,
         // row seams and the outer border grey 0.043 @10% / white @10%, all
@@ -1433,51 +1617,8 @@ private final class AssistantTableSurfaceView: UIView {
             UIRectFill(CGRect(x: 0, y: y, width: bounds.width, height: line))
         }
 
-        for row in table.rows.indices {
-            for column in table.rows[row].indices {
-                let string = table.rows[row][column]
-                guard string.length > 0 else { continue }
-                let cell = cellBounds(row: row, column: column)
-                guard cell.intersects(rect) else { continue }
-                let text = textRect(row: row, column: column)
-                UIGraphicsGetCurrentContext()?.saveGState()
-                UIRectClip(cell)
-                // Inline-code cells build one TextKit 1 layout for both the
-                // chips and the glyphs. `NSAttributedString.draw` would lay the
-                // text out a second time, and on wrapped cells the two layouts
-                // put the glyph baseline and the chip a few points apart.
-                if AssistantInlineCodeChipRenderer.containsChip(string) {
-                    let storage = NSTextStorage(attributedString: string)
-                    let layoutManager = NSLayoutManager()
-                    storage.addLayoutManager(layoutManager)
-                    let container = NSTextContainer(
-                        size: CGSize(width: text.width,
-                                     height: .greatestFiniteMagnitude))
-                    container.lineFragmentPadding = 0
-                    layoutManager.addTextContainer(container)
-                    layoutManager.ensureLayout(for: container)
-                    AssistantInlineCodeChipRenderer.drawChips(
-                        in: string, layoutManager: layoutManager,
-                        container: container, origin: text.origin,
-                        traitCollection: traitCollection)
-                    layoutManager.drawGlyphs(
-                        forGlyphRange: layoutManager.glyphRange(for: container),
-                        at: text.origin)
-                } else {
-                    string.draw(with: text,
-                                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                context: nil)
-                }
-                UIGraphicsGetCurrentContext()?.restoreGState()
-            }
-        }
-
-        let border = UIBezierPath(
-            roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2),
-            cornerRadius: max(0, radius - line / 2))
-        border.lineWidth = line
-        lineColor.setStroke()
-        border.stroke()
+        // Cell glyphs are painted by the per-cell text views above this
+        // surface; only the header fill and row seams stay in this pass.
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -1496,6 +1637,11 @@ private final class AssistantTableCellAccessibilityElement: UIAccessibilityEleme
         self.row = row
         self.column = column
         super.init(accessibilityContainer: container)
+        update(label: label, frame: frame)
+    }
+
+    /// Refresh in place so a streaming table keeps VoiceOver's focus.
+    func update(label: String, frame: CGRect) {
         accessibilityLabel = label
         accessibilityTraits = .staticText
         accessibilityFrameInContainerSpace = frame

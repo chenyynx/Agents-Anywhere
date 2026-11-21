@@ -509,8 +509,10 @@ final class CodeMarkdownTextStackView: UIView {
         /// List and quote items end with one newline; paragraphs with a
         /// blank line. The overlay uses this to rebuild copied text.
         let inList: Bool
-        /// The owning record's content digest. A changed digest under a live
-        /// selection means the text the reader pointed at was replaced.
+        /// A content signature: the record digest for paragraphs, or the
+        /// view's own text hash for list/quote items (their record digest
+        /// changes when a later item streams in). A changed signature under a
+        /// live selection means the text the reader pointed at was replaced.
         let signature: Int
     }
 

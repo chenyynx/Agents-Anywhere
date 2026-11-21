@@ -1061,7 +1061,12 @@ final class AssistantTableBlockView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        scrollView.frame = bounds
+        // Both the scroll view's rounded clip and the border follow the card,
+        // not the row: a narrow table's header fill would otherwise keep a
+        // square right corner poking through the rounded border.
+        let cardWidth = min(bounds.width, table.totalWidth)
+        scrollView.frame = CGRect(x: bounds.minX, y: bounds.minY,
+                                  width: cardWidth, height: bounds.height)
         surface.frame = CGRect(origin: .zero,
                                size: CGSize(width: table.totalWidth,
                                             height: table.totalHeight))

@@ -462,10 +462,13 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             if hasSelection, let offsets = selectionOffsets,
                bindDrag(at: point, offsets: offsets) {
                 updateAutoScroll(gesture)
-            } else if withinDragRegion(point) || textView(at: point) != nil {
+            } else if !hasSelection,
+                      withinDragRegion(point) || textView(at: point) != nil {
                 // The double-tap selection may land after the drag begins,
                 // and the touch may sit on a handle rather than a text view.
-                // Track it anyway and bind once a selection exists.
+                // Track it anyway and bind once a selection exists. A drag
+                // with a selection already present but outside it stays a
+                // scroll: only handles or the selected text move the range.
                 pendingSelectionDrag = true
                 ClientDiagnosticsLog.shared.record(
                     kind: "selection.autoscroll",
@@ -681,10 +684,24 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             finishSelectionDrag()
             restoreAncestorClipping()
         } else {
+            // A direct window-to-window move leaves recognizers on the old
+            // window; `install*` only guards nil, so detach anything that
+            // belongs to another window first.
+            if let outsideTapRecognizer, outsideTapRecognizer.view !== window {
+                outsideTapRecognizer.view?.removeGestureRecognizer(outsideTapRecognizer)
+                self.outsideTapRecognizer = nil
+            }
+            if let selectionDragRecognizer,
+               selectionDragRecognizer.view !== window {
+                selectionDragRecognizer.view?.removeGestureRecognizer(
+                    selectionDragRecognizer)
+                self.selectionDragRecognizer = nil
+            }
             // Installed before any touch begins: the initial long-press drag
             // can only be followed by a recognizer that was already attached
             // when the touch sequence started.
             installSelectionDragRecognizer()
+            if isFirstResponder { installOutsideTapRecognizer() }
         }
     }
 

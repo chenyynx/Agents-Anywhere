@@ -107,12 +107,12 @@
 
 ### 11.1 选择交互补齐（2026-11-21，pp 真机反馈）
 
-- **自动滚动**：主驱动是捕获到的系统把手拖动（`UITextRangeAdjustmentGestureRecognizer`）：`.began` 锁端点，`.changed` 按手指位置写选区；手指进入时间线可视区上下 90pt 带时，用 `CADisplayLink` 滚动最近的祖先 `UIScrollView`，逐帧把移动端映射到边缘文字；离开边缘、松手、取消或选区清空即停。窗口上另有一个并行 pan（`cancelsTouchesInView = false`）作为双击/无系统把手的补充，起手范围是把手附近、选区内或整行上下约 40–48pt。
+- **自动滚动**：主驱动是捕获到的系统把手拖动（`UITextRangeAdjustmentGestureRecognizer`）：`.began` 锁端点，`.changed` 按手指位置写选区；手指进入时间线可视区上下 90pt 带时，用 `CADisplayLink` 滚动最近的祖先 `UIScrollView`，逐帧把移动端映射到边缘文字；离开边缘、松手、取消或选区清空即停。窗口上另有一个并行 pan（`cancelsTouchesInView = false`）作为双击/无系统把手的补充，起手范围是把手附近、选区内或整行上下约 40–48pt；已有选区时，从选区外起手的拖动保持为滚动，不改选区（终审修正）。
 - **选区颜色**：新增 `CodePageTheme.selectionTintUIColor`（light `#363636`，dark 白）。按截图取样：页面 249，官方高亮 210，原实现 199；系统按 tint 20% 画高亮，`#363636` 得到 210。
 - **菜单**：补 `selectAll`（全选）。官方菜单的朗读/分享、以及去掉翻译/搜索网页属于菜单裁剪，未做。
 - **未验证**：把手命中阈值、自动滚动速度、与系统把手拖动共存、深色模式下的 tint，均需真机确认。
 - **高亮形状**：官方选中的是一整块（截图竖向 1248→1964 连续、x 到文字列右缘），我们原来是逐行矩形。`selectionRects` 在相邻行/段之间插入桥接矩形（gap ≤ 40pt），首尾行保持原 x 以保住手柄位置；跨代码块/表格的大洞不桥接。
-- **表格外框固定**：圆角/描边从滚动内容（surface）移到 `AssistantTableBlockView` 的固定 `borderView`，scrollView 设 cornerRadius 裁剪内容；横向滚动只移动表头/行线/文字，卡片边框不再随内容被裁掉。卡片宽度取 `min(totalWidth, 行宽)`：窄表贴内容，宽表贴行宽并在内部横滚，避免窄表右侧出现只有边框、没有表头填充/行线的空带（终审发现）。
+- **表格外框固定**：圆角/描边从滚动内容（surface）移到 `AssistantTableBlockView` 的固定 `borderView`，scrollView 设 cornerRadius 裁剪内容；横向滚动只移动表头/行线/文字，卡片边框不再随内容被裁掉。卡片宽度取 `min(totalWidth, 行宽)`，scrollView 同宽：窄表贴内容，宽表贴行宽并在内部横滚，避免窄表右侧出现只有边框、没有表头填充/行线的空带，也避免表头白底的直角戳出圆角描边（终审发现）。
 - **自动滚动（成熟解法调研）**：`UITextInteraction` 官方不做 auto-scroll。社区成熟做法（Runestone `TextView.swift`、Steve Shepard/Storyist、SO 58276112）：在 `UIGestureRecognizerDelegate.gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` 里按类名捕获系统私有的 `UITextRangeAdjustmentGestureRecognizer`（把手拖动），或在每个选区端点变化时把移动端 `scroll into view`。本实现采用前者：捕获把手手势后按它的位置自己驱动选区，display link 只负责滚动；系统提交 `selectedTextRange` 稀疏且只在手势结束附近，单靠它做 `scroll into view` 会"选完了才开始滚"（b1442 前的现象）。
 - **把手端点锁定（b1445）**：`UITextRangeAdjustmentGestureRecognizer` 起手（`.began`）时按触点离 start/end 手柄的距离锁定本段拖动的移动端，整段手势固定；锚点缺失时在首个 `.changed` 补绑。真机日志（b1444）里 5/33 组拖动因手指越过锚点被重猜成另一端（如 `6-462` → `0-8`）。锁定后不再重猜；拖过锚点时按系统原生 min/max 语义折到锚点另一侧（`[10,20]` 拖到 5 → `[5,10]`），这一点仍待真机确认是否符合预期。
 - **存量修复（b1447，PR #26）**：图+文件混合附件行的内层文件 `VStack` 在只有混合网格时为空，SwiftUI 仍给外层 `VStack(spacing: blockGap)` 计一次 8pt；`CodeAttachmentRow.showsFileBlock` 只在确有失败卡片或独立文件网格时创建内层栈。`code-profile` 四条 `bubble-attachment` 由 delta 7.667–8.0 归零（0–0.333）。

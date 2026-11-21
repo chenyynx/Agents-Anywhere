@@ -40,11 +40,16 @@ struct V2WorkspaceFilesService {
     }
 
     /// Creates a one-use scoped token and returns the existing Web file-preview route.
+    ///
+    /// `embedded` marks the in-app WebView: the Web preview page may serve a
+    /// compact skin for it (the setting page previews that route). The system
+    /// browser keeps the full Web page, so "open in browser" passes false.
     func previewURL(
         connectorId: V2ConnectorID,
         root: String,
         entry: V2WorkspaceEntry,
-        location: SessionFileReference? = nil
+        location: SessionFileReference? = nil,
+        embedded: Bool = true
     ) async throws -> URL {
         guard entry.isFile else { throw V2BusinessError.workspaceEntryNotPreviewable }
         let token = try await connectorAPI.createWorkspaceFilePreviewToken(
@@ -52,10 +57,13 @@ struct V2WorkspaceFilesService {
             root: ProjectWorkspacePath.requestRoot(root, path: entry.path),
             request: V2WorkspaceFileReadRequest(path: entry.path)
         )
-        return try makePreviewURL(previewToken: token.previewToken, name: entry.name, location: location)
+        return try makePreviewURL(previewToken: token.previewToken, name: entry.name,
+                                  location: location, embedded: embedded)
     }
 
-    private func makePreviewURL(previewToken: String, name: String, location: SessionFileReference?) throws -> URL {
+    private func makePreviewURL(previewToken: String, name: String,
+                                location: SessionFileReference?,
+                                embedded: Bool) throws -> URL {
         let rootURL = URL(string: "/", relativeTo: serverURL)?.absoluteURL ?? serverURL
         guard var components = URLComponents(url: rootURL, resolvingAgainstBaseURL: false) else {
             throw V2BusinessError.invalidWorkspacePreviewURL
@@ -65,6 +73,9 @@ struct V2WorkspaceFilesService {
             URLQueryItem(name: "previewToken", value: previewToken),
             URLQueryItem(name: "name", value: name),
         ]
+        if embedded {
+            fragmentComponents.queryItems?.append(URLQueryItem(name: "embedded", value: "1"))
+        }
         if let line = location?.line { fragmentComponents.queryItems?.append(URLQueryItem(name: "line", value: String(line))) }
         if let column = location?.column { fragmentComponents.queryItems?.append(URLQueryItem(name: "column", value: String(column))) }
         guard let query = fragmentComponents.percentEncodedQuery else {

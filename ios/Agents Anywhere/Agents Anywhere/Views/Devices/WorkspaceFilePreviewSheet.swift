@@ -34,7 +34,13 @@ struct WorkspaceFilePreviewSheet: View {
                         loading = false; error = $0
                     }, onClose: { dismiss() }, onExternal: { openURL($0) },
                         onDownload: { downloadedFile = $0 }, onDownloadFailure: downloadFailed,
-                        onDownloading: { isDownloading = $0 }).id(url)
+                        onDownloading: { isDownloading = $0 })
+                        .id(url)
+                        // The Web preview paints its own page background; letting
+                        // it run under the home indicator removes the sheet-
+                        // coloured strip the reader saw below the content
+                        // (pp 2026-11-22).
+                        .ignoresSafeArea(.container, edges: .bottom)
                 }
                 if let error {
                     ContentUnavailableView {
@@ -92,9 +98,11 @@ struct WorkspaceFilePreviewSheet: View {
             await openInBrowser()
         }
     }
-    private func preparePreviewURL() async throws -> URL {
+    private func preparePreviewURL(embedded: Bool = true) async throws -> URL {
         let entry = V2WorkspaceEntry(name: name, path: path, type: "file", size: nil, modifiedAt: nil)
-        return try await service.previewURL(connectorId: connectorId, root: root, entry: entry, location: location)
+        return try await service.previewURL(connectorId: connectorId, root: root,
+                                            entry: entry, location: location,
+                                            embedded: embedded)
     }
     private func openInBrowser() async {
         defer { isOpeningBrowser = false }
@@ -102,8 +110,9 @@ struct WorkspaceFilePreviewSheet: View {
         toasts.update(source: "browser", failure: nil)
         do {
             // The embedded preview already consumed its token. The browser needs
-            // a fresh entry for the same file and source location.
-            let prepared = try await preparePreviewURL()
+            // a fresh entry for the same file and source location — without the
+            // embedded flag, so Safari keeps the full Web page (pp 2026-11-22).
+            let prepared = try await preparePreviewURL(embedded: false)
             try Task.checkCancellation()
             guard canRead else { return }
             let opened = await UIApplication.shared.open(prepared)

@@ -92,6 +92,11 @@ struct CodeMessageRowView: View {
     /// A tap on an image tile or a successful file tile. The page owns the
     /// viewer/QuickLook routing.
     var onAttachment: (V2AttachmentContent, UIImage?) -> Void
+    /// A link tap inside body text. The Code page draws the body in UIKit
+    /// views whose taps never reach SwiftUI's `openURL`; the page's router
+    /// resolves file references to the workspace preview and leaves web links
+    /// to the system.
+    var onOpenLink: ((URL) -> Bool)?
 
     init(group: ChatTimelineGroup,
          profile: CodeRuntimeProfile,
@@ -120,7 +125,8 @@ struct CodeMessageRowView: View {
          },
          attachmentState: @escaping (V2AttachmentContent) -> CodeAttachmentDisplayState = { _ in .complete },
          loadThumbnail: @escaping (V2AttachmentContent) async throws -> Data? = { _ in nil },
-         onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
+         onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in },
+         onOpenLink: ((URL) -> Bool)? = nil) {
         self.group = group
         self.profile = profile
         self.includesSubAgentChildren = includesSubAgentChildren
@@ -139,6 +145,7 @@ struct CodeMessageRowView: View {
         self.attachmentState = attachmentState
         self.loadThumbnail = loadThumbnail
         self.onAttachment = onAttachment
+        self.onOpenLink = onOpenLink
     }
 
     var body: some View {
@@ -281,7 +288,8 @@ struct CodeMessageRowView: View {
             // has no reveal; the text is always the settled full snapshot.
             CodeMarkdownTextLeaf(text: displayedText(id: id, fallback: text),
                                  typography: typography,
-                                 columnWidth: columnWidth)
+                                 columnWidth: columnWidth,
+                                 onOpenLink: onOpenLink)
 
         case let .toolCalls(segments):
             // D10 (R28 §U 收口二 二-E): the official block is

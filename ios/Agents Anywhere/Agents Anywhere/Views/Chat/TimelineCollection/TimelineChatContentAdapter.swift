@@ -29,6 +29,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     let model: SessionChatModel
     private let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     private let onFile: (String) -> Void
+    /// Body-link routing for the Code rows; false means "let the system open".
+    private let onOpenLink: (URL) -> Bool
     private let onSubAgent: (String) -> Void
 
     weak var controller: TimelineCollectionController?
@@ -426,11 +428,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
+         onOpenLink: @escaping (URL) -> Bool,
          onSubAgent: @escaping (String) -> Void,
          renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.onAttachment = onAttachment
         self.onFile = onFile
+        self.onOpenLink = onOpenLink
         self.onSubAgent = onSubAgent
         self.renderMode = renderMode
         typography = Self.currentTypography()
@@ -1434,7 +1438,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     loadThumbnail: { file in
                         try await chatModel.thumbnail(for: file)
                     },
-                    onAttachment: onAttachment))
+                    onAttachment: onAttachment,
+                    onOpenLink: onOpenLink))
             }
             // A group with no declared message key is one standalone row
             // (compaction divider, marker, artifact, interaction anchor). The
@@ -1446,6 +1451,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 profile: codeProfile,
                 onAttachment: onAttachment,
                 onFile: onFile,
+                onOpenLink: onOpenLink,
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
                 showsInterruptedNotice:
                     chatInterruptedItemIDs.contains(

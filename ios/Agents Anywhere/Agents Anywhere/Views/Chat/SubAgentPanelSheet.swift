@@ -30,6 +30,9 @@ struct SubAgentPanelSheet: View {
     let onFile: (String) -> Void
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
+    /// Body-link routing for the child Code rows; see
+    /// `CodeMessageRowView.onOpenLink`.
+    let onOpenLink: (URL) -> Bool
     /// The card the panel was opened from, and how it was opened: a timeline
     /// card carries its own id (entry B), nil the whole panel (entry A, no
     /// anchor). The capsule still passes the newest active id, but entry A now
@@ -57,12 +60,15 @@ struct SubAgentPanelSheet: View {
 
     init(chat: SessionChatModel, deviceName: String?, fallbackRuntimeName: String?,
          initialCardID: String?, opensFromCapsule: Bool = false,
-         onFile: @escaping (String) -> Void = { _ in }, onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in }) {
+         onFile: @escaping (String) -> Void = { _ in },
+         onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void = { _, _ in },
+         onOpenLink: @escaping (URL) -> Bool = { _ in false }) {
         self.chat = chat
         self.deviceName = deviceName
         self.fallbackRuntimeName = fallbackRuntimeName
         self.onFile = onFile
         self.onAttachment = onAttachment
+        self.onOpenLink = onOpenLink
         self.openingCardID = initialCardID
         self.opensFromCapsule = opensFromCapsule
     }
@@ -449,7 +455,8 @@ struct SubAgentPanelSheet: View {
                             profile: profile,
                             includesSubAgentChildren: true,
                             cwd: chat.session.metadata?.cwd,
-                            onAttachment: onAttachment)
+                            onAttachment: onAttachment,
+                            onOpenLink: onOpenLink)
                     }
                 case let .standalone(rowID):
                     if let row = rowsByID[rowID] {
@@ -462,7 +469,8 @@ struct SubAgentPanelSheet: View {
                             chat: chat,
                             profile: profile,
                             onAttachment: onAttachment,
-                            onFile: onFile)
+                            onFile: onFile,
+                            onOpenLink: onOpenLink)
                     }
                 }
             }

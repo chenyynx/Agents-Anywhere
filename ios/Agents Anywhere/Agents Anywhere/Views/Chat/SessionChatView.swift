@@ -128,6 +128,7 @@ struct SessionChatView: View, Equatable {
         GeometryReader { proxy in
             TimelineChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
+                onOpenLink: openBodyLink,
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 jumpRequest: outlineJump,
                 safeAreaInsets: timelineSafeAreaInsets(proxy),
@@ -394,7 +395,8 @@ struct SessionChatView: View, Equatable {
         case .outline: ConversationOutlineSheet(chat: model, jump: outlineJump)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
-                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
+                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile,
+                onAttachment: openAttachment, onOpenLink: openBodyLink)
         case .files:
             if let meta = session.metadata, let cwd = meta.cwd {
                 WorkspaceFilesSheet(connectorId: meta.connectorId,
@@ -633,11 +635,15 @@ struct SessionChatView: View, Equatable {
         }
 #endif
         .environment(\.openURL, OpenURLAction { url in
-            if let reference = SessionFileReference.reference(from: url) {
+            switch ChatLinkRoute.route(url) {
+            case .file(let reference):
                 if session.isValid { sheet = .preview(reference) }
                 return .handled
+            case .system:
+                return .systemAction
+            case .ignore:
+                return .discarded
             }
-            return ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
@@ -887,6 +893,22 @@ struct SessionChatView: View, Equatable {
     private func openFile(_ path: String) {
         guard session.isValid, !path.isEmpty else { return }
         sheet = .preview(SessionFileReference.parse(path))
+    }
+
+    /// The Code rows draw body text in UIKit views, so their link taps never
+    /// reach the SwiftUI `openURL` action above. Returning false lets the text
+    /// view open the URL through the system — the same meaning as
+    /// `.systemAction` on the SwiftUI path.
+    private func openBodyLink(_ url: URL) -> Bool {
+        switch ChatLinkRoute.route(url) {
+        case .file(let reference):
+            if session.isValid { sheet = .preview(reference) }
+            return true
+        case .system:
+            return false
+        case .ignore:
+            return true
+        }
     }
 
     private func openAttachment(_ file: V2AttachmentContent, thumbnail: UIImage?) {

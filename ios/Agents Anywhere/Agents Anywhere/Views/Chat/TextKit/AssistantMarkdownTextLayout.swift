@@ -1388,8 +1388,14 @@ extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
         at location: NSTextLocation,
         defaultAttributes renderingAttributes: [NSAttributedString.Key: Any] = [:]
     ) -> [NSAttributedString.Key: Any]? {
-        [.foregroundColor: CodePageTheme.markdownTextUIColor,
-         .underlineStyle: NSUnderlineStyle.single.rawValue]
+        // A device file reference is an app chip, not a web link (pp
+        // 2026-11-22): red ink and no underline, so the chip is the surface
+        // that says "tappable". Web links keep the official underline.
+        if let url = link as? URL, ChatLinkRoute.route(url) == .file {
+            return [.foregroundColor: CodePageTheme.fileReferenceTextUIColor]
+        }
+        return [.foregroundColor: CodePageTheme.externalLinkTextUIColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue]
     }
 }
 

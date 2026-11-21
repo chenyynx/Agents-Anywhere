@@ -32,6 +32,14 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     /// handles, edit menu). The thinking detail turns it off: selecting there
     /// squared the iOS 26 sheet's corners (pp 2026-11-15).
     var allowsSelection = true
+    /// The page's router for a link tap inside body text. Returns true when it
+    /// handled the URL; false lets the view open it through the system.
+    /// Nil keeps the old system-only behaviour.
+    var onOpenLink: ((URL) -> Bool)?
+    /// Bumped when a live-preview colour changed. The inks are dynamic
+    /// colours resolved while drawing, so the leaf only needs a redraw — not
+    /// a document rebuild.
+    var inkRevision: Int = 0
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -39,11 +47,14 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     init(text: String, typography: TimelineTypographySnapshot?,
-         columnWidth: CGFloat? = nil, allowsSelection: Bool = true) {
+         columnWidth: CGFloat? = nil, allowsSelection: Bool = true,
+         onOpenLink: ((URL) -> Bool)? = nil, inkRevision: Int = 0) {
         self.text = text
         self.typography = typography
         self.columnWidth = columnWidth
         self.allowsSelection = allowsSelection
+        self.onOpenLink = onOpenLink
+        self.inkRevision = inkRevision
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -203,10 +214,13 @@ struct CodeMarkdownTextLeaf: UIViewRepresentable {
         view.backgroundColor = .clear
         view.isOpaque = false
         view.allowsSelection = allowsSelection
+        view.onOpenLink = onOpenLink
         return view
     }
 
     func updateUIView(_ uiView: CodeMarkdownTextStackView, context: Context) {
+        uiView.onOpenLink = onOpenLink
+        uiView.refreshInk(inkRevision)
         let coordinator = context.coordinator
         let document = document(in: coordinator)
         uiView.install(document: document,
@@ -270,6 +284,23 @@ final class CodeMarkdownTextStackView: UIView {
     var allowsSelection = true {
         didSet { selectionOverlay.configure(allowsSelection: allowsSelection) }
     }
+    /// The page's body-link router; see `CodeMarkdownTextLeaf.onOpenLink`.
+    var onOpenLink: ((URL) -> Bool)?
+    /// A live-preview ink change only needs the glyphs redrawn: the inks are
+    /// dynamic `UIColor`s that resolve again while drawing, so the document
+    /// and its measurements stay untouched.
+    private var appliedInkRevision = 0
+
+    func refreshInk(_ revision: Int) {
+        guard revision != appliedInkRevision else { return }
+        appliedInkRevision = revision
+        redrawSubtree(self)
+    }
+
+    private func redrawSubtree(_ view: UIView) {
+        view.setNeedsDisplay()
+        for subview in view.subviews { redrawSubtree(subview) }
+    }
     private var document: AssistantMarkdownDocument?
     private var documentKey = ""
     private var displayScale: CGFloat = 2
@@ -296,6 +327,15 @@ final class CodeMarkdownTextStackView: UIView {
         selectionOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         addSubview(selectionOverlay)
         selectionOverlay.configure(allowsSelection: allowsSelection)
+        // Body link taps land on the row-level overlay. The page's router gets
+        // every scheme (file references included); only an unhandled URL falls
+        // back to the system, which is the old behaviour for plain web links.
+        selectionOverlay.openLink = { [weak self] url in
+            if self?.onOpenLink?(url) == true { return }
+            guard let scheme = url.scheme?.lowercased(),
+                  ["http", "https", "mailto", "tel"].contains(scheme) else { return }
+            UIApplication.shared.open(url)
+        }
         let bottom = stack.bottomAnchor.constraint(equalTo: bottomAnchor)
         // The stack's height is the document measurement; the representable's
         // frame is that number too. Keep the pin below required so a subpixel

@@ -504,13 +504,36 @@ nonisolated enum CodePageTheme {
             : UIColor(white: 54.0 / 255.0, alpha: 1)
     }
 
-    /// [E] CANONICAL/06-visuals-assets.md §2.2 — inline-code text
-    /// `#184F95` light / `#6DA7EC` dark (`0.094,0.31,0.584` /
-    /// `0.427,0.655,0.925`). Links use the body text colour.
-    static let inlineCodeTextUIColor = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.427, green: 0.655, blue: 0.925, alpha: 1)
-            : UIColor(red: 0.094, green: 0.31, blue: 0.584, alpha: 1)
+    /// The Code page's three link/code inks are user-tunable (pp 2026-11-22).
+    /// Each resolves its stored pair at draw time, so a settings change shows
+    /// up the next time the page draws without rebuilding any document. The
+    /// built-in pairs keep the shipped values — inline code `#184F95` light /
+    /// `#6DA7EC` dark (`[E] CANONICAL/06-visuals-assets.md §2.2`).
+    static let inlineCodeTextUIColor = codeInkUIColor(.inlineCode)
+
+    /// A file reference reads as ink, not a web link: one colour, no
+    /// underline, and the chip alone carries the tap affordance. The built-in
+    /// pair is the shipped visual; a custom colour gets a lifted dark value.
+    static let fileReferenceTextUIColor = codeInkUIColor(.fileReference)
+
+    /// Web links keep the official underline; only their ink is tunable.
+    static let externalLinkTextUIColor = codeInkUIColor(.externalLink)
+
+    private enum CodeInk { case fileReference, externalLink, inlineCode }
+
+    private static func codeInkUIColor(_ ink: CodeInk) -> UIColor {
+        UIColor { traits in
+            let colors: ChatColorSettings.Pair
+            switch ink {
+            case .fileReference: colors = ChatColorSettings.codeFileReference()
+            case .externalLink: colors = ChatColorSettings.codeExternalLink()
+            case .inlineCode: colors = ChatColorSettings.codeInlineCode()
+            }
+            let hex = traits.userInterfaceStyle == .dark ? colors.dark : colors.light
+            guard let (r, g, b) = ChatColorSettings.parse(hex) else { return .label }
+            return UIColor(red: CGFloat(r) / 255, green: CGFloat(g) / 255,
+                           blue: CGFloat(b) / 255, alpha: 1)
+        }
     }
 
     /// [E] R19 `typography-inline.md` §3 — inline-code chip fill: grey

@@ -1187,7 +1187,10 @@ enum AssistantMarkdownDocumentParser {
                 // drawn by the chip instead: the official delegate returns an
                 // empty dictionary for it, so it gets no underline.
                 if roles != nil {
-                    if !isCode { underline = .single }
+                    // File references drop the underline (pp 2026-11-22): the
+                    // chip and its red ink carry the affordance, not a link
+                    // line. Web links keep the official underline.
+                    if !isCode, ChatLinkRoute.route(url) != .file { underline = .single }
                 } else if ChatLink.isWeb(url) {
                     underline = .single
                 }

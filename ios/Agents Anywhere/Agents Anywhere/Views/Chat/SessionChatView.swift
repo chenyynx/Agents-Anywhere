@@ -30,6 +30,11 @@ struct SessionChatView: View, Equatable {
     @State private var windowKeyboardVisible = false
     /// The page's bottom inset last seen with no keyboard on screen.
     @State private var keyboardFreeBottomInset: CGFloat?
+    /// The page's frame in global coordinates — a question card may fill it
+    /// between the navigation safe area and the keyboard.
+    @State private var pageFrame: CGRect?
+    /// The keyboard's top edge in window coordinates (nil while hidden).
+    @State private var keyboardTop: CGFloat?
 #if AA_TIMELINE_PROBE
     @State private var diagnosticsHUDVisible = false
 #endif
@@ -273,15 +278,55 @@ struct SessionChatView: View, Equatable {
             .overlay(alignment: .topLeading) { statusOverlay }
     }
 
-    /// The card's ceiling: the page's height minus the top safe area (the
-    /// navigation bar) and the bottom one (home indicator or keyboard), with
-    /// the dock's own 12 pt bottom margin and a 16 pt gap under the bar. The
-    /// gap is deliberately larger than the visual one: the bar's own clamp
-    /// (device: ~12 pt above the card) must never cut the card again.
+    /// The card's ceiling: from the page's top (the navigation safe area)
+    /// down to the keyboard's top, minus the dock's 12 pt bottom margin.
+    /// `safeAreaInsets` cannot be used here: on device the page frame already
+    /// shrinks with the keyboard *and* the insets still report it, so
+    /// subtracting them shrank the card to its 160 pt floor (pp 2026-11-22:
+    /// 「卡片太小了」). The keyboard frame supplies the bottom edge when the
+    /// page frame itself does not move.
     private func questionCardHeightLimit(_ geometry: GeometryProxy) -> CGFloat {
         let insets = geometry.safeAreaInsets
-        let available = geometry.size.height - insets.top - insets.bottom
-        return max(160, available - 16 - QuestionCardMetrics.cardBottomMargin)
+        let bottom: CGFloat
+        // The top edge is the navigation safe area. Whichever of the page
+        // frame and the reported inset actually carries it, the larger one
+        // is the safe choice (a page frame that already starts below the bar
+        // reports a zero top inset, and a page that bleeds under the bar
+        // still reports the bar).
+        let top: CGFloat
+        if let pageFrame {
+            top = max(pageFrame.minY, insets.top)
+            bottom = min(pageFrame.maxY, keyboardTop ?? .greatestFiniteMagnitude)
+        } else {
+            top = insets.top
+            bottom = geometry.size.height - insets.bottom
+        }
+        return max(160, bottom - top - QuestionCardMetrics.cardBottomMargin)
+    }
+
+    /// One line per keyboard change while a question card is up: the numbers
+    /// separate a wrong page frame from a wrong keyboard frame on device.
+    private func recordQuestionCardDock(_ geometry: GeometryProxy) {
+        guard showsQuestionCard else { return }
+        func number(_ value: CGFloat?) -> String {
+            value.map { String(Int($0.rounded())) } ?? "nil"
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "question.card.dock",
+            sessionID: session.id,
+            detail: [
+                "pageTop": number(pageFrame?.minY),
+                "pageBottom": number(pageFrame?.maxY),
+                "kbTop": number(keyboardTop),
+                "cap": number(questionCardHeightLimit(geometry)),
+                "sizeH": number(geometry.size.height),
+                "insetTop": number(geometry.safeAreaInsets.top),
+                "insetBottom": number(geometry.safeAreaInsets.bottom),
+            ])
+    }
+
+    private static func keyboardTop(in note: Notification) -> CGFloat? {
+        (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY
     }
 
     /// The bottom dock stack, in its own method: the composer's initializer and
@@ -464,6 +509,17 @@ struct SessionChatView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             pageContent(geometry: geometry)
+                // The page's real frame decides how far a question card may
+                // grow: its top is the navigation safe area, its bottom is
+                // the keyboard (SwiftUI may shrink the frame itself or only
+                // report the inset — the keyboard frame fills the second
+                // case).
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    if pageFrame != frame { pageFrame = frame }
+                }
+                .onChange(of: keyboardTop) { _, _ in
+                    recordQuestionCardDock(geometry)
+                }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
@@ -554,12 +610,20 @@ struct SessionChatView: View, Equatable {
         // is only over at did-hide, so the animating frame that still carries
         // the keyboard height cannot be mistaken for the resting bottom.
         .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillShowNotification)) { _ in
+            for: UIResponder.keyboardWillShowNotification)) { note in
             windowKeyboardVisible = true
+            keyboardTop = Self.keyboardTop(in: note)
+        }
+        // The keyboard can change frame without a fresh show (language
+        // switch, candidate bar); the card's cap follows its top edge.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            keyboardTop = Self.keyboardTop(in: note)
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardDidHideNotification)) { _ in
             windowKeyboardVisible = false
+            keyboardTop = nil
             if !isOutlineSheetPresented { outlineKeyboardInsetFreeze = false }
         }
 #if AA_TIMELINE_PROBE

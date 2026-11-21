@@ -9,6 +9,18 @@ from agent_server.infra.redis_coordinator import RedisCoordinator
 
 DEFAULT_REVISION_LEASE_SIZE = 4096
 
+#: Lease for the per-session fence. ``RedisCoordinator.lock`` renews every
+#: ``min(lease / 3, 10s)`` while the section is held and cancels the holder if a
+#: refresh is refused or fails, so the lease is not a retry budget — it only
+#: bounds how long a stalled or killed process can still be believed. Keeping
+#: it short bounds how long a *killed* Server process blocks one session: the
+#: 2026-11-21 deploy left a 300s-lease lock behind, and both connector
+#: capability pushes then timed out on that session's fence (30s acquisition
+#: timeout) and dropped every session in the batch. At 60s a push arriving in
+#: the first minute after a kill still skips that session; it recovers on the
+#: next capability change or a client refetch.
+SESSION_REVISION_LOCK_LEASE_SECONDS = 60.0
+
 
 class SessionRevisionRepairNeeded(RuntimeError):
     """Signal that a newly initialized lease exposed an unpublished gap."""
@@ -72,7 +84,7 @@ class SessionRevisionAllocator:
         async with self._coordinator.lock(
             f"session-revision:{session_id}",
             timeout_seconds=30,
-            lease_seconds=300,
+            lease_seconds=SESSION_REVISION_LOCK_LEASE_SECONDS,
         ):
             yield
 

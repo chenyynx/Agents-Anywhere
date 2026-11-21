@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from typing import Any, Protocol
 from weakref import WeakKeyDictionary
+
+from loguru import logger
 
 from agent_server.core.capabilities import (
     CATALOG_EFFORT,
@@ -140,7 +142,28 @@ async def publish_connector_session_capabilities(
         for session in sessions:
             if active.get(connector_id) is not token:
                 return
-            async with store.session_revision_fence(session.id):
+            async with AsyncExitStack() as fence:
+                try:
+                    await fence.enter_async_context(
+                        store.session_revision_fence(session.id)
+                    )
+                except TimeoutError as exc:
+                    # One blocked fence must not drop the whole connector batch.
+                    # 2026-11-21: a Server process killed mid-batch left a stale
+                    # lease on an idle session, the retry timed out, and every
+                    # session in the connector lost its capability push. Only
+                    # the acquisition is isolated here — a TimeoutError from a
+                    # read or publish *inside* the fence is a real fault and
+                    # must still stop the batch. Durable capability rows are
+                    # written before this loop; a skipped session only misses
+                    # its live push until the next change or a client refetch.
+                    logger.warning(
+                        "session capability publish skipped session_id={} connector_id={} error={}",
+                        session.id,
+                        connector_id,
+                        exc,
+                    )
+                    continue
                 session = await with_effective_session_connector_status(presence, session)
                 # Other server processes can publish newer facts while this
                 # batch waits for a session fence. Check only the small stamp;
@@ -167,7 +190,9 @@ async def publish_connector_session_capabilities(
     finally:
         if active.get(connector_id) is token:
             active.pop(connector_id)
-        if not active:
+        # Only the batch that owns the registered dict may unregister it: a
+        # newer batch can have replaced it while this one was stuck on a fence.
+        if not active and _ACTIVE_PUBLICATIONS.get(publisher) is active:
             _ACTIVE_PUBLICATIONS.pop(publisher, None)
 
 

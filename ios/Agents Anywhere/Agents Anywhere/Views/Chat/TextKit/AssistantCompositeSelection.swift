@@ -581,7 +581,9 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     // MARK: - UIGestureRecognizerDelegate
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(
+        _ gestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
         guard gestureRecognizer === selectionDragRecognizer else { return true }
         guard hasSelection else { return false }
         return handleEnd(at: gestureRecognizer.location(in: self)) != .none

@@ -1126,8 +1126,16 @@ enum AssistantMarkdownDocumentParser {
             var strikethrough: NSUnderlineStyle?
             var baselineOffset: CGFloat?
 
+            // A URL authored inside inline code is still a web link: readers
+            // get the same link treatment as `[text](url)` — body face, ink
+            // and underline — not a code chip (pp 2026-11-22). File
+            // references keep their chip; only `.system` links drop it.
+            let linkedCodeIsWeb = run.link.map {
+                ChatLinkRoute.route($0) == .system
+            } ?? false
+
             if let inline = run.inlinePresentationIntent {
-                if inline.contains(.code) {
+                if inline.contains(.code), !linkedCodeIsWeb {
                     isCode = true
                     // [E] typography-inline.md §3/§8 — the official inline-code
                     // preset is weight 400. Chat keeps AA's optional bold-ink

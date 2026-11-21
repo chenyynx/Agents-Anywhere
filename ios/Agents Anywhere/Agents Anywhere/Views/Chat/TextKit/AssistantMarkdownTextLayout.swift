@@ -1392,7 +1392,11 @@ extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
         // 2026-11-22): red ink and no underline, so the chip is the surface
         // that says "tappable". Web links keep the official underline.
         if let url = link as? URL, ChatLinkRoute.route(url).isFileReference {
-            return [.foregroundColor: CodePageTheme.fileReferenceTextUIColor]
+            // TextKit merges these over the link default, so the underline has
+            // to be switched off explicitly — omitting the key kept the system
+            // underline on every file chip (pp 2026-11-22).
+            return [.foregroundColor: CodePageTheme.fileReferenceTextUIColor,
+                    .underlineStyle: 0]
         }
         return [.foregroundColor: CodePageTheme.externalLinkTextUIColor,
                 .underlineStyle: NSUnderlineStyle.single.rawValue]

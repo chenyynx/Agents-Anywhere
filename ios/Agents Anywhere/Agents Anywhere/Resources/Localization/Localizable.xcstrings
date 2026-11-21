@@ -21010,6 +21010,261 @@
           }
         }
       }
+    },
+    "链接与代码配色": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Link & Code Colors"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "链接与代码配色"
+          }
+        }
+      }
+    },
+    "预览": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览"
+          }
+        }
+      }
+    },
+    "颜色": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colors"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "颜色"
+          }
+        }
+      }
+    },
+    "文件引用": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File references"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件引用"
+          }
+        }
+      }
+    },
+    "聊天里可点开预览的文件，如 ~/Downloads/报告.pdf": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files in chat that open in a preview, e.g. ~/Downloads/report.pdf"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聊天里可点开预览的文件，如 ~/Downloads/报告.pdf"
+          }
+        }
+      }
+    },
+    "外部链接": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Links"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部链接"
+          }
+        }
+      }
+    },
+    "点击后用浏览器打开的网址": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Web addresses that open in your browser"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点击后用浏览器打开的网址"
+          }
+        }
+      }
+    },
+    "内联代码": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inline code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内联代码"
+          }
+        }
+      }
+    },
+    "消息里“代码片段”的颜色": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The color of “code” spans in messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "消息里“代码片段”的颜色"
+          }
+        }
+      }
+    },
+    "深色模式下颜色会自动提亮，保证看得清。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colors lighten automatically in dark mode to stay legible."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "深色模式下颜色会自动提亮，保证看得清。"
+          }
+        }
+      }
+    },
+    "恢复默认颜色": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore Default Colors"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复默认颜色"
+          }
+        }
+      }
+    },
+    "人类观察笔记": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes on Humans"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人类观察笔记"
+          }
+        }
+      }
+    },
+    "你对人类的看法是什么？": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What do you think of humans?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你对人类的看法是什么？"
+          }
+        }
+      }
+    },
+    "人类是唯一会为自己必死而写诗的物质：明知宇宙不给意义，仍执意为彼此制造意义。研究我整理成了 `~/Downloads/人类观察笔记.pdf`，其中 [Nature Human Behaviour](https://example.com/meaning-making) 把这种能力称为 `meaning-making`。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Humans are the only matter I know of that writes poetry about its own death: no meaning is given, yet you make it for one another. Notes: `~/Downloads/notes-on-humans.pdf`; [Nature Human Behaviour](https://example.com/meaning-making) calls this `meaning-making`."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人类是唯一会为自己必死而写诗的物质：明知宇宙不给意义，仍执意为彼此制造意义。研究我整理成了 `~/Downloads/人类观察笔记.pdf`，其中 [Nature Human Behaviour](https://example.com/meaning-making) 把这种能力称为 `meaning-making`。"
+          }
+        }
+      }
+    },
+    "发消息…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发消息…"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

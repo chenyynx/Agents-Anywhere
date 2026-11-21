@@ -46,6 +46,9 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     private var autoScrollSpeed: CGFloat = 0
     private var selectionAnchor: Int?
     private var movingEnd: MovingEnd = .none
+    /// A drag that started on body text before the long press had produced a
+    /// selection. The first `.changed` after the selection appears binds it.
+    private var pendingSelectionDrag = false
 
     private enum MovingEnd {
         case none, start, end
@@ -394,6 +397,16 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// The two handles hang just below the first and last selected lines;
     /// accept either the line-edge or the below-line spot so a platform that
     /// moves the start knob above the line still matches.
+    private func selectedRects() -> [CGRect] {
+        guard let range = selectedTextRange else { return [] }
+        return selectionRects(for: range).map(\.rect)
+    }
+
+    /// A drag can start inside the selected text, not only on a handle.
+    private func selectionContains(_ point: CGPoint) -> Bool {
+        selectedRects().contains { $0.insetBy(dx: -8, dy: -8).contains(point) }
+    }
+
     private func handleEnd(at point: CGPoint) -> MovingEnd {
         guard let range = selectedTextRange else { return .none }
         let rects = selectionRects(for: range).map(\.rect)
@@ -423,25 +436,69 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     @objc private func handleSelectionDrag(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
-            guard hasSelection, let offsets = selectionOffsets else { return }
-            movingEnd = handleEnd(at: gesture.location(in: self))
-            guard movingEnd != .none else { return }
-            selectionAnchor = movingEnd == .end ? offsets.start : offsets.end
-            updateAutoScroll(gesture)
+            let point = gesture.location(in: self)
+            if hasSelection, let offsets = selectionOffsets {
+                guard bindDrag(at: point, offsets: offsets) else { return }
+                updateAutoScroll(gesture)
+            } else if textView(at: point) != nil {
+                pendingSelectionDrag = true
+            }
         case .changed:
+            if pendingSelectionDrag, selectionAnchor == nil,
+               hasSelection, let offsets = selectionOffsets {
+                pendingSelectionDrag = false
+                if bindDrag(at: gesture.location(in: self), offsets: offsets) {
+                    updateAutoScroll(gesture)
+                }
+                return
+            }
             guard selectionAnchor != nil else { return }
             updateAutoScroll(gesture)
         case .ended, .cancelled, .failed:
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "ended",
+                         "state": String(describing: gesture.state)],
+                dedupe: false)
             finishSelectionDrag()
         default:
             break
         }
     }
 
+    /// Bind a drag to one boundary of the current selection: a handle touch
+    /// moves that handle, a touch inside the selected text moves the nearer
+    /// boundary.
+    private func bindDrag(at point: CGPoint, offsets: (start: Int, end: Int)) -> Bool {
+        let end = handleEnd(at: point)
+        if end != .none {
+            movingEnd = end
+        } else if selectionContains(point) {
+            let rects = selectedRects()
+            guard let first = rects.first, let last = rects.last else { return false }
+            let toStart = distance(from: point,
+                                   to: CGPoint(x: first.minX, y: first.minY))
+            let toEnd = distance(from: point,
+                                 to: CGPoint(x: last.maxX, y: last.maxY))
+            movingEnd = toStart <= toEnd ? .start : .end
+        } else {
+            return false
+        }
+        selectionAnchor = movingEnd == .end ? offsets.start : offsets.end
+        ClientDiagnosticsLog.shared.record(
+            kind: "selection.autoscroll",
+            detail: ["action": "began",
+                     "end": movingEnd == .end ? "end" : "start",
+                     "range": "\(offsets.start)-\(offsets.end)"],
+            dedupe: false)
+        return true
+    }
+
     private func finishSelectionDrag() {
         stopAutoScroll()
         selectionAnchor = nil
         movingEnd = .none
+        pendingSelectionDrag = false
     }
 
     private func updateAutoScroll(_ gesture: UIPanGestureRecognizer) {
@@ -496,6 +553,11 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         let link = CADisplayLink(target: self, selector: #selector(stepAutoScroll(_:)))
         link.add(to: .main, forMode: .common)
         autoScrollLink = link
+        ClientDiagnosticsLog.shared.record(
+            kind: "selection.autoscroll",
+            detail: ["action": "tick-start",
+                     "direction": String(Int(autoScrollDirection))],
+            dedupe: false)
     }
 
     @objc private func stepAutoScroll(_ link: CADisplayLink) {
@@ -519,6 +581,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     }
 
     private func stopAutoScrollLink() {
+        if autoScrollLink != nil {
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "tick-stop"],
+                dedupe: false)
+        }
         autoScrollLink?.invalidate()
         autoScrollLink = nil
     }
@@ -585,8 +653,13 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         _ gestureRecognizer: UIGestureRecognizer
     ) -> Bool {
         guard gestureRecognizer === selectionDragRecognizer else { return true }
-        guard hasSelection else { return false }
-        return handleEnd(at: gestureRecognizer.location(in: self)) != .none
+        let point = gestureRecognizer.location(in: self)
+        guard hasSelection else {
+            // A long press that has not produced its selection yet: start
+            // tracking over body text and bind on the first change.
+            return textView(at: point) != nil
+        }
+        return handleEnd(at: point) != .none || selectionContains(point)
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

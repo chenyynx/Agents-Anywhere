@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import QuartzCore
 import UIKit
 
 /// One message body's text selection, spanning every participating text block.
@@ -35,6 +36,21 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     private var outsideTapRecognizer: UITapGestureRecognizer?
     private var relaxedClippingViews: [UIView] = []
 
+    /// Handle-drag follower that auto-scrolls the timeline when the finger
+    /// reaches the visible top/bottom edge. `UITextInteraction` moves the
+    /// selection but never scrolls a custom input's enclosing scroll view, so
+    /// this watches the same drag from the window without cancelling it.
+    private var selectionDragRecognizer: UIPanGestureRecognizer?
+    private var autoScrollLink: CADisplayLink?
+    private var autoScrollDirection: CGFloat = 0
+    private var autoScrollSpeed: CGFloat = 0
+    private var selectionAnchor: Int?
+    private var movingEnd: MovingEnd = .none
+
+    private enum MovingEnd {
+        case none, start, end
+    }
+
     /// Set by the owner when it wants a non-default URL router.
     var openLink: ((URL) -> Void)?
 
@@ -44,6 +60,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         isOpaque = false
         isUserInteractionEnabled = true
         isAccessibilityElement = false
+        tintColor = CodePageTheme.selectionTintUIColor
         // The block text views own the accessibility tree; the overlay is a
         // gesture vehicle only.
         accessibilityElementsHidden = true
@@ -251,7 +268,13 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(copy(_:)) { return hasCopyableSelection }
+        if action == #selector(selectAll(_:)) { return model.totalLength > 0 }
         return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func selectAll(_ sender: Any?) {
+        guard model.totalLength > 0 else { return }
+        selectedTextRange = MarkdownTextOffsetRange(0, model.totalLength)
     }
 
     override func copy(_ sender: Any?) {
@@ -347,6 +370,174 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         outsideTapRecognizer = nil
     }
 
+    // MARK: - Auto-scroll while dragging a selection handle
+
+    private func installSelectionDragRecognizer() {
+        guard selectionDragRecognizer == nil, let window else { return }
+        let pan = UIPanGestureRecognizer(
+            target: self, action: #selector(handleSelectionDrag(_:)))
+        pan.cancelsTouchesInView = false
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = self
+        window.addGestureRecognizer(pan)
+        selectionDragRecognizer = pan
+    }
+
+    private func removeSelectionDragRecognizer() {
+        if let selectionDragRecognizer {
+            selectionDragRecognizer.view?.removeGestureRecognizer(
+                selectionDragRecognizer)
+        }
+        selectionDragRecognizer = nil
+    }
+
+    /// The two handles hang just below the first and last selected lines;
+    /// accept either the line-edge or the below-line spot so a platform that
+    /// moves the start knob above the line still matches.
+    private func handleEnd(at point: CGPoint) -> MovingEnd {
+        guard let range = selectedTextRange else { return .none }
+        let rects = selectionRects(for: range).map(\.rect)
+        guard let first = rects.first, let last = rects.last else { return .none }
+        let startCandidates = [
+            CGPoint(x: first.minX, y: first.maxY + 20),
+            CGPoint(x: first.minX, y: first.minY),
+        ]
+        let endCandidates = [
+            CGPoint(x: last.maxX, y: last.maxY + 20),
+            CGPoint(x: last.maxX, y: last.minY),
+        ]
+        let startDistance = startCandidates.map { distance(from: point, to: $0) }.min() ?? .infinity
+        let endDistance = endCandidates.map { distance(from: point, to: $0) }.min() ?? .infinity
+        let threshold: CGFloat = 64
+        if startDistance <= threshold, startDistance <= endDistance { return .start }
+        if endDistance <= threshold { return .end }
+        return .none
+    }
+
+    private func distance(from a: CGPoint, to b: CGPoint) -> CGFloat {
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
+    @objc private func handleSelectionDrag(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard hasSelection, let offsets = selectionOffsets else { return }
+            movingEnd = handleEnd(at: gesture.location(in: self))
+            guard movingEnd != .none else { return }
+            selectionAnchor = movingEnd == .end ? offsets.start : offsets.end
+            updateAutoScroll(gesture)
+        case .changed:
+            guard selectionAnchor != nil else { return }
+            updateAutoScroll(gesture)
+        case .ended, .cancelled, .failed:
+            finishSelectionDrag()
+        default:
+            break
+        }
+    }
+
+    private func finishSelectionDrag() {
+        stopAutoScroll()
+        selectionAnchor = nil
+        movingEnd = .none
+    }
+
+    private func updateAutoScroll(_ gesture: UIPanGestureRecognizer) {
+        guard selectionAnchor != nil,
+              let scrollView = enclosingScrollView(),
+              window != nil else {
+            stopAutoScroll()
+            return
+        }
+        let windowPoint = gesture.location(in: nil)
+        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let band: CGFloat = 90
+        let topEdge = visible.minY + band
+        let bottomEdge = visible.maxY - band
+        var direction: CGFloat = 0
+        var speed: CGFloat = 0
+        if windowPoint.y < topEdge {
+            direction = -1
+            speed = 120 + (topEdge - windowPoint.y) / band * 700
+        } else if windowPoint.y > bottomEdge {
+            direction = 1
+            speed = 120 + (windowPoint.y - bottomEdge) / band * 700
+        }
+        autoScrollDirection = direction
+        autoScrollSpeed = min(820, max(120, speed))
+        guard direction != 0 else {
+            stopAutoScrollLink()
+            return
+        }
+        let edgeY = direction < 0 ? visible.minY + 12 : visible.maxY - 12
+        extendSelection(toWindowY: edgeY, windowX: windowPoint.x)
+        startAutoScroll()
+    }
+
+    /// Move the dragged end to the character under the edge the finger is
+    /// pushing against. The opposite end stays where the drag started.
+    private func extendSelection(toWindowY y: CGFloat, windowX x: CGFloat) {
+        guard let anchor = selectionAnchor, movingEnd != .none else { return }
+        let point = convert(CGPoint(x: x, y: y), from: nil)
+        guard let position = closestPosition(to: point) as? MarkdownTextOffsetPosition
+        else { return }
+        let start = min(anchor, position.offset)
+        let end = max(anchor, position.offset)
+        guard end > start else { return }
+        if selectionOffsets?.start != start || selectionOffsets?.end != end {
+            selectedTextRange = MarkdownTextOffsetRange(start, end)
+        }
+    }
+
+    private func startAutoScroll() {
+        guard autoScrollLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(stepAutoScroll(_:)))
+        link.add(to: .main, forMode: .common)
+        autoScrollLink = link
+    }
+
+    @objc private func stepAutoScroll(_ link: CADisplayLink) {
+        guard autoScrollDirection != 0,
+              let scrollView = enclosingScrollView() else { return }
+        let delta = max(link.targetTimestamp - link.timestamp, 1.0 / 120.0)
+        let step = autoScrollDirection * autoScrollSpeed * CGFloat(delta)
+        var offset = scrollView.contentOffset
+        let minY = -scrollView.adjustedContentInset.top
+        let maxY = max(minY, scrollView.contentSize.height
+            - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+        offset.y = min(max(offset.y + step, minY), maxY)
+        guard abs(offset.y - scrollView.contentOffset.y) > 0.01 else { return }
+        scrollView.setContentOffset(offset, animated: false)
+        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let edgeY = autoScrollDirection < 0
+            ? visible.minY + 12
+            : visible.maxY - 12
+        let windowX = selectionDragRecognizer?.location(in: nil).x ?? visible.midX
+        extendSelection(toWindowY: edgeY, windowX: windowX)
+    }
+
+    private func stopAutoScrollLink() {
+        autoScrollLink?.invalidate()
+        autoScrollLink = nil
+    }
+
+    private func stopAutoScroll() {
+        stopAutoScrollLink()
+        autoScrollDirection = 0
+        autoScrollSpeed = 0
+    }
+
+    private func enclosingScrollView() -> UIScrollView? {
+        var current = superview
+        while let view = current {
+            if let scrollView = view as? UIScrollView { return scrollView }
+            current = view.superview
+        }
+        return nil
+    }
+
     @objc private func handleOutsideTap(_ recognizer: UITapGestureRecognizer) {
         let point = recognizer.location(in: self)
         guard textView(at: point) == nil else { return }
@@ -357,7 +548,14 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         super.didMoveToWindow()
         if window == nil {
             removeOutsideTapRecognizer()
+            removeSelectionDragRecognizer()
+            finishSelectionDrag()
             restoreAncestorClipping()
+        } else {
+            // Installed before any touch begins: the initial long-press drag
+            // can only be followed by a recognizer that was already attached
+            // when the touch sequence started.
+            installSelectionDragRecognizer()
         }
     }
 
@@ -376,11 +574,18 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         let resigned = super.resignFirstResponder()
         selectionOffsets = nil
         removeOutsideTapRecognizer()
+        finishSelectionDrag()
         restoreAncestorClipping()
         return resigned
     }
 
     // MARK: - UIGestureRecognizerDelegate
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === selectionDragRecognizer else { return true }
+        guard hasSelection else { return false }
+        return handleEnd(at: gestureRecognizer.location(in: self)) != .none
+    }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -416,9 +621,11 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             if hasSelection {
                 relaxAncestorClipping()
                 installOutsideTapRecognizer()
+                installSelectionDragRecognizer()
             } else {
                 restoreAncestorClipping()
                 removeOutsideTapRecognizer()
+                finishSelectionDrag()
             }
             notifySelectionChanged()
         }

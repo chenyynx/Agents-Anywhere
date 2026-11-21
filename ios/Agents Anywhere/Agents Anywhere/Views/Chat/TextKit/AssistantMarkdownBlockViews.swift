@@ -1085,6 +1085,7 @@ final class AssistantTableBlockView: UIView {
         // The surface already exposes one accessibility element per cell;
         // hiding this subtree keeps VoiceOver from reading each cell twice.
         view.accessibilityElementsHidden = true
+        view.textView.tintColor = CodePageTheme.selectionTintUIColor
         // The cell sits inside the table's horizontal scroll view; selection
         // must not relax that clip and paint hidden columns outside the card.
         view.textView.keepsScrollViewClipping = true

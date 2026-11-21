@@ -9,8 +9,7 @@ import UIKit
 /// Every control in it is inert. Each colour well writes through immediately,
 /// so the miniature is the WYSIWYG surface.
 struct CodeLinkColorSettingsView: View {
-    @State private var fileReference: Color
-    @State private var externalLink: Color
+    @State private var link: Color
     @State private var inlineCode: Color
     /// The leaf's inks are dynamic colours resolved while drawing; a colour
     /// write bumps this so the leaf redraws without rebuilding its document.
@@ -22,8 +21,7 @@ struct CodeLinkColorSettingsView: View {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     init() {
-        _fileReference = State(initialValue: Self.color(ChatColorSettings.codeFileReference()))
-        _externalLink = State(initialValue: Self.color(ChatColorSettings.codeExternalLink()))
+        _link = State(initialValue: Self.color(ChatColorSettings.codeLink()))
         _inlineCode = State(initialValue: Self.color(ChatColorSettings.codeInlineCode()))
     }
 
@@ -34,15 +32,10 @@ struct CodeLinkColorSettingsView: View {
             }
             SettingsSection(String(localized: "颜色"),
                             footer: String(localized: "深色模式下颜色会自动提亮，保证看得清。")) {
-                colorRow(title: String(localized: "文件引用"),
-                         subtitle: String(localized: "聊天里可点开预览的文件，如 ~/Downloads/报告.pdf"),
-                         selection: $fileReference,
-                         key: ChatColorSettings.codeFileReferenceKey)
-                SettingsRowDivider()
-                colorRow(title: String(localized: "外部链接"),
-                         subtitle: String(localized: "点击后用浏览器打开的网址"),
-                         selection: $externalLink,
-                         key: ChatColorSettings.codeExternalLinkKey)
+                colorRow(title: String(localized: "链接"),
+                         subtitle: String(localized: "聊天里的文件引用和网址共用这个颜色"),
+                         selection: $link,
+                         key: ChatColorSettings.codeLinkKey)
                 SettingsRowDivider()
                 colorRow(title: String(localized: "内联代码"),
                          subtitle: String(localized: "消息里“代码片段”的颜色"),
@@ -219,8 +212,7 @@ struct CodeLinkColorSettingsView: View {
     private func reset() {
         ChatColorSettings.resetCodeColors()
         // Direct state writes bypass `bound`, so the defaults are not stored.
-        fileReference = Self.color(ChatColorSettings.defaultCodeFileReference)
-        externalLink = Self.color(ChatColorSettings.defaultCodeExternalLink)
+        link = Self.color(ChatColorSettings.defaultCodeLink)
         inlineCode = Self.color(ChatColorSettings.defaultCodeInlineCode)
         revision += 1
     }

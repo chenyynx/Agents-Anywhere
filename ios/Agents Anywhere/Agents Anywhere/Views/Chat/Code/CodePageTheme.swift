@@ -511,23 +511,19 @@ nonisolated enum CodePageTheme {
     /// `#6DA7EC` dark (`[E] CANONICAL/06-visuals-assets.md §2.2`).
     static let inlineCodeTextUIColor = codeInkUIColor(.inlineCode)
 
-    /// A file reference uses the same blue as inline code; the white chip is
-    /// what tells them apart, and there is no underline (pp 2026-11-22). The
-    /// built-in pair is the shipped visual; a custom colour gets a lifted
-    /// dark value.
-    static let fileReferenceTextUIColor = codeInkUIColor(.fileReference)
+    /// Every tappable link — file reference or web address — shares one ink
+    /// and the official underline (pp 2026-11-22): one affordance, one look.
+    /// What a tap opens (in-app preview vs the browser) is the only
+    /// difference.
+    static let linkTextUIColor = codeInkUIColor(.link)
 
-    /// Web links keep the official underline; only their ink is tunable.
-    static let externalLinkTextUIColor = codeInkUIColor(.externalLink)
-
-    private enum CodeInk { case fileReference, externalLink, inlineCode }
+    private enum CodeInk { case link, inlineCode }
 
     private static func codeInkUIColor(_ ink: CodeInk) -> UIColor {
         UIColor { traits in
             let colors: ChatColorSettings.Pair
             switch ink {
-            case .fileReference: colors = ChatColorSettings.codeFileReference()
-            case .externalLink: colors = ChatColorSettings.codeExternalLink()
+            case .link: colors = ChatColorSettings.codeLink()
             case .inlineCode: colors = ChatColorSettings.codeInlineCode()
             }
             let hex = traits.userInterfaceStyle == .dark ? colors.dark : colors.light
@@ -543,16 +539,6 @@ nonisolated enum CodePageTheme {
         traits.userInterfaceStyle == .dark
             ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.075)
             : UIColor(red: 0.043, green: 0.043, blue: 0.043, alpha: 0.05)
-    }
-
-    /// A file reference sits on a white chip instead of the grey inline-code
-    /// one (pp 2026-11-22), so the two blue inks are told apart by surface.
-    /// Light is solid white; dark brightens the white wash instead of painting
-    /// a solid white block on the dark page.
-    static let fileReferenceChipFillUIColor = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 1, green: 1, blue: 1, alpha: 0.18)
-            : UIColor(red: 1, green: 1, blue: 1, alpha: 1)
     }
 
     /// [E] R19 `typography-inline.md` §3 — chip stroke:

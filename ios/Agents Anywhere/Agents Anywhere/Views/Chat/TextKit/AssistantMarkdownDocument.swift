@@ -932,9 +932,7 @@ enum AssistantMarkdownDocumentParser {
             baseFamily: codeStyle.fonts.bodyName,
             italicFamily: codeStyle.fonts.bodyItalicName,
             baseWeight: codeStyle.fonts.bodyWeight,
-            chipStyle: codeStyle.inlineCodeChip,
-            // A table cell strips links and keeps the ordinary code chip.
-            fileChipsUseWhiteFill: false) else { return nil }
+            chipStyle: codeStyle.inlineCodeChip) else { return nil }
         trimBoundaryWhitespace(attributed)
         // Table cells do not expose link interaction. The attribute is dropped
         // at conversion time so a file reference keeps the converter's ink
@@ -1054,8 +1052,7 @@ enum AssistantMarkdownDocumentParser {
                                                baseFamily: String? = nil,
                                                italicFamily: String? = nil,
                                                baseWeight: CGFloat = 400,
-                                               chipStyle: AssistantInlineCodeChipStyle? = nil,
-                                               fileChipsUseWhiteFill: Bool = true)
+                                               chipStyle: AssistantInlineCodeChipStyle? = nil)
         -> NSMutableAttributedString? {
         let roles = typography.codeMarkdownRoles
         // [E] typography-inline.md §3 — the Code page's inline code is the
@@ -1129,19 +1126,14 @@ enum AssistantMarkdownDocumentParser {
             var strikethrough: NSUnderlineStyle?
             var baselineOffset: CGFloat?
 
-            // A URL authored inside inline code is still a web link: readers
-            // get the same link treatment as `[text](url)` — body face, ink
-            // and underline — not a code chip (pp 2026-11-22). File
-            // references keep their chip; only `.system` links drop it.
-            let linkedCodeIsWeb = run.link.map {
-                ChatLinkRoute.route($0) == .system
-            } ?? false
-            let isFileReferenceLink = run.link.map {
-                ChatLinkRoute.route($0).isFileReference
-            } ?? false
+            // Inline code that carries a link — a URL or a file reference —
+            // draws as a link, not a code chip (pp 2026-11-22): every
+            // tappable thing shares one look. Only link-less code keeps the
+            // chip.
+            let linkedCodeIsLink = run.link != nil
 
             if let inline = run.inlinePresentationIntent {
-                if inline.contains(.code), !linkedCodeIsWeb {
+                if inline.contains(.code), !linkedCodeIsLink {
                     isCode = true
                     // [E] typography-inline.md §3/§8 — the official inline-code
                     // preset is weight 400. Chat keeps AA's optional bold-ink
@@ -1201,10 +1193,10 @@ enum AssistantMarkdownDocumentParser {
                 // drawn by the chip instead: the official delegate returns an
                 // empty dictionary for it, so it gets no underline.
                 if roles != nil {
-                    // File references drop the underline (pp 2026-11-22): the
-                    // chip and its red ink carry the affordance, not a link
-                    // line. Web links keep the official underline.
-                    if !isCode, !ChatLinkRoute.route(url).isFileReference { underline = .single }
+                    // Every link in the Code page keeps the official
+                    // underline (pp 2026-11-22); the tap destination is the
+                    // only difference between a file reference and a URL.
+                    if !isCode { underline = .single }
                 } else if ChatLink.isWeb(url) {
                     underline = .single
                 }
@@ -1245,10 +1237,7 @@ enum AssistantMarkdownDocumentParser {
                 // `AssistantMarkdownBlockTextView`; none of them participates
                 // in TextKit layout, so render and measurement stay identical.
                 attributes[.assistantInlineCodeChip] = true
-                attributes[.assistantInlineCodeChipFill] =
-                    (fileChipsUseWhiteFill && isFileReferenceLink)
-                    ? CodePageTheme.fileReferenceChipFillUIColor
-                    : chipStyle.fillColor
+                attributes[.assistantInlineCodeChipFill] = chipStyle.fillColor
                 attributes[.assistantInlineCodeChipStroke] = chipStyle.strokeColor
                 attributes[.assistantInlineCodeChipCornerRadius] =
                     NSNumber(value: Double(chipStyle.cornerRadius))

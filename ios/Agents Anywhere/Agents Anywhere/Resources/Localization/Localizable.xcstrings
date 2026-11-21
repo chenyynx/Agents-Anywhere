@@ -21062,74 +21062,6 @@
         }
       }
     },
-    "文件引用": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "File references"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文件引用"
-          }
-        }
-      }
-    },
-    "聊天里可点开预览的文件，如 ~/Downloads/报告.pdf": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Files in chat that open in a preview, e.g. ~/Downloads/report.pdf"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "聊天里可点开预览的文件，如 ~/Downloads/报告.pdf"
-          }
-        }
-      }
-    },
-    "外部链接": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Links"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "外部链接"
-          }
-        }
-      }
-    },
-    "点击后用浏览器打开的网址": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Web addresses that open in your browser"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "点击后用浏览器打开的网址"
-          }
-        }
-      }
-    },
     "内联代码": {
       "extractionState": "manual",
       "localizations": {
@@ -21262,6 +21194,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "发消息…"
+          }
+        }
+      }
+    },
+    "链接": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Links"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "链接"
+          }
+        }
+      }
+    },
+    "聊天里的文件引用和网址共用这个颜色": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File references and web addresses share this color."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聊天里的文件引用和网址共用这个颜色"
           }
         }
       }

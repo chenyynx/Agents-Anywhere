@@ -4,20 +4,21 @@ import Foundation
 /// palette: plain `#RRGGBB` strings in `UserDefaults`.
 ///
 /// The legacy pair is the retired Chat page's body template and link. The
-/// Code page adds three independent inks — file reference, external link and
-/// inline code — each edited as one colour: light mode uses it verbatim and
-/// dark mode resolves the shipped dark value (defaults) or a contrast-lifted
-/// variant (custom). Every default is the value the visuals shipped with, so
-/// an untouched install looks identical to the reference.
+/// Code page adds two inks — link (file references and web addresses share
+/// it) and inline code — each edited as one colour: light mode uses it
+/// verbatim and dark mode resolves the shipped dark value (defaults) or a
+/// contrast-lifted variant (custom). Every default is the value the visuals
+/// shipped with, so an untouched install looks identical to the reference.
 nonisolated enum ChatColorSettings {
     static let bodyTemplateKey = "agentsAnywhere.chat.bodyTemplateHex"
     static let linkKey = "agentsAnywhere.chat.linkHex"
-    /// The Code page's three inks (pp 2026-11-22). One stored `#RRGGBB` per
+    /// The Code page's two inks (pp 2026-11-22). One stored `#RRGGBB` per
     /// item: the settings page edits a single colour, light mode uses it
     /// verbatim, and dark mode resolves the shipped dark value (a default) or
     /// a lifted variant (a custom colour) — see `codeInk(_:fallback:)`.
-    static let codeFileReferenceKey = "agentsAnywhere.code.fileReferenceHex"
-    static let codeExternalLinkKey = "agentsAnywhere.code.externalLinkHex"
+    /// Every tappable link — file reference or web address — shares the link
+    /// colour, so one affordance has one look.
+    static let codeLinkKey = "agentsAnywhere.code.linkHex"
     static let codeInlineCodeKey = "agentsAnywhere.code.inlineCodeHex"
     /// Inline code weight. Off is the regular the chat has shipped with; on is
     /// semibold, the same weight `**` already gives a bolded run, so a turned-on
@@ -37,11 +38,9 @@ nonisolated enum ChatColorSettings {
 
     /// Built-in Code-page inks. The defaults are the shipped visuals, so an
     /// untouched install renders exactly as before; their dark values are
-    /// hand-tuned and bypass the automatic lift.
-    /// Same blue as inline code: the white chip is what tells a file
-    /// reference apart (pp 2026-11-22).
-    static let defaultCodeFileReference = Pair(light: "#184F95", dark: "#6DA7EC")
-    static let defaultCodeExternalLink = Pair(light: "#131313", dark: "#F9F9F7")
+    /// hand-tuned and bypass the automatic lift. The link ink is the body ink
+    /// with the official underline; inline code keeps its chip blue.
+    static let defaultCodeLink = Pair(light: "#131313", dark: "#F9F9F7")
     static let defaultCodeInlineCode = Pair(light: "#184F95", dark: "#6DA7EC")
 
     /// Whether inline code renders semibold. Absent key reads as off, so an
@@ -52,14 +51,9 @@ nonisolated enum ChatColorSettings {
 
     // MARK: - Code-page inks
 
-    static func codeFileReference(in defaults: UserDefaults = .standard) -> Pair {
-        codeInk(defaults.string(forKey: codeFileReferenceKey),
-                fallback: defaultCodeFileReference)
-    }
-
-    static func codeExternalLink(in defaults: UserDefaults = .standard) -> Pair {
-        codeInk(defaults.string(forKey: codeExternalLinkKey),
-                fallback: defaultCodeExternalLink)
+    static func codeLink(in defaults: UserDefaults = .standard) -> Pair {
+        codeInk(defaults.string(forKey: codeLinkKey),
+                fallback: defaultCodeLink)
     }
 
     static func codeInlineCode(in defaults: UserDefaults = .standard) -> Pair {
@@ -86,7 +80,7 @@ nonisolated enum ChatColorSettings {
     }
 
     static func resetCodeColors(in defaults: UserDefaults = .standard) {
-        for key in [codeFileReferenceKey, codeExternalLinkKey, codeInlineCodeKey] {
+        for key in [codeLinkKey, codeInlineCodeKey] {
             defaults.removeObject(forKey: key)
         }
     }

@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// The Code page's three tunable inks: one stored colour each, the shipped
-/// pair when untouched, and a contrast-lifted dark variant for anything a
-/// reader picks.
+/// The Code page's two tunable inks: one stored colour each, the shipped pair
+/// when untouched, and a contrast-lifted dark variant for anything a reader
+/// picks. File references and web addresses share the link ink.
 @Suite("Code page inks")
 struct CodeInkColorSettingsTests {
     private func defaults() -> UserDefaults {
@@ -14,10 +14,8 @@ struct CodeInkColorSettingsTests {
     @Test("an untouched install keeps the built-in pairs")
     func untouchedInstallKeepsTheBuiltInPairs() {
         let store = defaults()
-        #expect(ChatColorSettings.codeFileReference(in: store)
-            == ChatColorSettings.defaultCodeFileReference)
-        #expect(ChatColorSettings.codeExternalLink(in: store)
-            == ChatColorSettings.defaultCodeExternalLink)
+        #expect(ChatColorSettings.codeLink(in: store)
+            == ChatColorSettings.defaultCodeLink)
         #expect(ChatColorSettings.codeInlineCode(in: store)
             == ChatColorSettings.defaultCodeInlineCode)
     }
@@ -26,9 +24,9 @@ struct CodeInkColorSettingsTests {
     func customInkKeepsItsLightValueAndLiftsForDark() throws {
         let store = defaults()
         #expect(ChatColorSettings.setCodeColor("#131313",
-            for: ChatColorSettings.codeExternalLinkKey, in: store))
+            for: ChatColorSettings.codeLinkKey, in: store))
 
-        let pair = ChatColorSettings.codeExternalLink(in: store)
+        let pair = ChatColorSettings.codeLink(in: store)
         #expect(pair.light == "#131313")
         #expect(pair.dark != pair.light)
 
@@ -54,18 +52,14 @@ struct CodeInkColorSettingsTests {
     func resetRestoresBuiltInPairs() {
         let store = defaults()
         ChatColorSettings.setCodeColor("#123456",
-            for: ChatColorSettings.codeFileReferenceKey, in: store)
-        ChatColorSettings.setCodeColor("#654321",
-            for: ChatColorSettings.codeExternalLinkKey, in: store)
+            for: ChatColorSettings.codeLinkKey, in: store)
         ChatColorSettings.setCodeColor("#ABCDEF",
             for: ChatColorSettings.codeInlineCodeKey, in: store)
 
         ChatColorSettings.resetCodeColors(in: store)
 
-        #expect(ChatColorSettings.codeFileReference(in: store)
-            == ChatColorSettings.defaultCodeFileReference)
-        #expect(ChatColorSettings.codeExternalLink(in: store)
-            == ChatColorSettings.defaultCodeExternalLink)
+        #expect(ChatColorSettings.codeLink(in: store)
+            == ChatColorSettings.defaultCodeLink)
         #expect(ChatColorSettings.codeInlineCode(in: store)
             == ChatColorSettings.defaultCodeInlineCode)
     }

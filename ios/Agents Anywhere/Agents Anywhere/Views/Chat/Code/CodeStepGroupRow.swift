@@ -19,6 +19,11 @@ struct CodeStepGroupRowView: View {
     /// this row for the whole live turn — including between steps, before any
     /// body text (pp 2026-10-29 device observation).
     let isLiveTail: Bool
+    /// Whether this group is the one the update draws the working mark on:
+    /// the newest group the base pose rule would draw. A running dispatched
+    /// subagent keeps the dots here instead of settling when a newer owner
+    /// exists, so the turn never loses its working mark (pp 2026-11-21).
+    let isMarkOwner: Bool
     /// Whether a step that still reports `running` may be drawn live. False
     /// once fresh live facts prove the turn stopped (idle, or an accepted
     /// stop's optimistic window); late row snapshots must not keep the row
@@ -76,6 +81,7 @@ struct CodeStepGroupRowView: View {
     /// before the reply body.
     private var showsMark: Bool {
         group.showsRunningPose(isLiveTail: isLiveTail,
+                               isMarkOwner: isMarkOwner,
                                allowsRunningPose: allowsRunningPose)
     }
 
@@ -100,6 +106,8 @@ struct CodeStepGroupRowView: View {
                 voiceControlName: nil,
                 spokenLabel: nil,
                 isRunning: true,
+                textStepID: live.id,
+                textContent: liveLabelContent(for: live),
                 action: onTap)
         } else {
             CodeCollapsedStepsRow(
@@ -120,7 +128,9 @@ struct CodeStepGroupRowView: View {
                 // settles; the row's own copy already turns present-tense
                 // (「正在运行 N 个智能体」), so it carries the activity sweep
                 // too (pp 2026-11-19). The icon does not change — only the
-                // text's sweep animation is borrowed.
+                // text's sweep animation is borrowed. Since pp 2026-11-21 this
+                // branch also draws a group the main turn has moved past while
+                // its dispatched subagent still runs (no second working mark).
                 isRunning: group.hasRunningBackgroundAgent && !treatsRunningAsFailed,
                 action: onTap)
         }
@@ -159,6 +169,23 @@ struct CodeStepGroupRowView: View {
 
     /// The running question carries the thinking row's clock after its label
     /// (pp 2026-11-16).
+    /// The plain label the live row shows, for the width glide and the
+    /// structural cross-fade (round29: `PacedRow` transitions `ShownView`).
+    private func liveLabelContent(for step: TimelineStep) -> String {
+        switch step {
+        case .thinking:
+            return step.liveThinkingLine
+                ?? String(localized: "thinking_status_thinking")
+        case let .tool(call):
+            if call.kind == .question { return String(localized: "正在提问") }
+            // Only the width/offset identity — the styled Text still comes
+            // from `liveText(for:)`; this string never reaches the screen.
+            let label = CodeToolLabels.label(for: [call], cwd: cwd)
+            return [label.verb, label.target].compactMap { $0 }.joined(separator: " ")
+        }
+    }
+
+
     private func liveTrailingIcon(for step: TimelineStep) -> String? {
         if case let .tool(call) = step, call.kind == .question {
             return "anthropicon.extendedThinking"
@@ -176,6 +203,12 @@ struct CodeStepGroupRowView: View {
     // MARK: - Settled
 
     private var summaryIcon: String {
+        // Rule A (pp 2026-11-21): a row settled because its live step is a
+        // working dispatched subagent reads as the subagent's row, so it
+        // carries the subagent icon even when an earlier tool opened the run.
+        if group.settlesAsRunningSubagentRow {
+            return CodeToolLabels.anthropicon(for: .task)
+        }
         if let call = group.toolCalls.first {
             return CodeToolLabels.anthropicon(for: call)
         }

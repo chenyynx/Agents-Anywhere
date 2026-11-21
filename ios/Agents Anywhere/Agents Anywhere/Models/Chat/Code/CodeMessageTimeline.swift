@@ -289,11 +289,21 @@ nonisolated enum CodeMessageBuilder {
             if !includeSubAgentChildren, isChild { continue }
 
             if isToolRow(item) {
-                // `ExitPlanMode` and an answered `AskUserQuestion` are pulled
-                // out of the tool block: they neither render nor break the
-                // span (round27 C A2). A *transient* question reaches this
+                // `ExitPlanMode` and an *unanswered* `AskUserQuestion` are
+                // pulled out of the tool block: they neither render nor break
+                // the span (round27 C A2). A *transient* question reaches this
                 // planner only as an interaction target and was handled above.
+                // An answered question keeps its own transcript card at the
+                // row's position (`QuestionAnsweredCard`), replayable from
+                // history because the connector completes the row with the
+                // transcript's answers.
                 if profile.skippedToolNames.contains(CodeToolCall.wireName(for: item)) {
+                    if CodeToolCall.wireName(for: item) == "AskUserQuestion",
+                       QuestionAnsweredModel(item: item) != nil {
+                        flushPending()
+                        breakRun()
+                        units.append(.standalone(item: item))
+                    }
                     continue
                 }
                 guard let key = groupKey(for: item) else {

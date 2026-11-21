@@ -143,6 +143,25 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var wake: AsyncStream<Void>.Continuation?
     /// When the newest reveal batch ends and the buffer may publish again.
     @ObservationIgnored private(set) var nextBatchAt: TimeInterval = 0
+    /// While a panel covers the transcript (the conversation outline) the
+    /// presentation keeps ingesting every transport delta but publishes at
+    /// most once a second. Even at the legacy 0.26 s batch, every publish
+    /// re-planned the whole window (`TimelineChatContentAdapter` documents
+    /// 20–30 ms per refresh on a 354-row window) and the panel still hitched
+    /// 5–6 times a second while the agent was thinking (pp 2026-11-21, b1409).
+    /// Closing flushes once, so the chat is current in that same turn.
+    @ObservationIgnored private(set) var backgroundCadence = false
+
+    /// Covered publishes: one per second. The chat behind the panel still
+    /// updates; it just does so in visible steps while it is covered.
+    nonisolated static let backgroundInterval: TimeInterval = 1
+
+    /// Turns the covered cadence on while the outline panel is up. The caller
+    /// clears it and flushes once on close, so the transcript is current in
+    /// that same turn instead of catching up over the following frames.
+    func setBackgroundCadence(_ enabled: Bool) {
+        backgroundCadence = enabled
+    }
 
     func presentOpening(_ items: [V2TimelineItem], pendingMessages: [V2PendingMessage]) {
         stage(items, animate: false)
@@ -189,7 +208,11 @@ final class SessionTimelinePresentation {
                 if !orderChanged, rows[index] !== row { orderChanged = true }
                 updated.append(row)
             }
-            if started { nextBatchAt = now + ReplyPresentation.batchInterval }
+            if started || backgroundCadence {
+                nextBatchAt = now + (backgroundCadence
+                    ? Self.backgroundInterval
+                    : ReplyPresentation.batchInterval)
+            }
             if orderChanged {
                 rows = updated
                 rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })

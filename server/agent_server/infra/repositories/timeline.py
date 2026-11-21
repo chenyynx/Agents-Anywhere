@@ -19,6 +19,7 @@ from agent_server.core.protocol import PROTOCOL_MAX_REVISION
 from agent_server.core.timeline import (
     TimelineBatchWriteResult,
     TimelineItemWriteResult,
+    chain_publication_order,
     chain_reorder_plan_with_diagnostics,
     latest_timeline_items_by_id,
     native_item_id_from_payload,
@@ -1076,6 +1077,7 @@ class TimelineRepositoryMixin:
             reorder: dict[str, int] = {}
             order_changed: set[str] = set()
             moved_existing_ids: list[str] = []
+            stored_order: dict[str, int] | None = None
             plan = None
             if reorder_from_batch:
                 # Doomed twins take no part in the plan: they are deleted in
@@ -1124,6 +1126,12 @@ class TimelineRepositoryMixin:
                     for item_id in order_changed
                     if item_id not in incoming_by_id
                 ]
+                # The publication order is computed below, after the
+                # intra-message corrector has settled every final position:
+                # publishing a row into a slot a not-yet-moved stored row still
+                # holds redraws the client's grouping around a duplicate
+                # orderSeq (device 2026-11-20 18:37: step groups flashed
+                # 50→59→50 in 250 ms).
             changed_inputs = [
                 item
                 for item_id, item in incoming_by_id.items()
@@ -1208,13 +1216,8 @@ class TimelineRepositoryMixin:
                         conn, session_id, converged_deletions
                     )
                 max_order_seq = await self._max_timeline_order_seq(conn, session_id)
-                first_updated_seq = await self._reserve_session_revisions(
-                    conn,
-                    session_id,
-                    count=len(changed_inputs) + len(moved_rows),
-                    mark_read=mark_read_on_change,
-                )
-                for index, item in enumerate(changed_inputs):
+                normalized_by_id: dict[str, TimelineItem] = {}
+                for item in changed_inputs:
                     existing = current_by_id.get(item.id)
                     planned_order = reorder.get(item.id)
                     if planned_order is not None:
@@ -1228,7 +1231,10 @@ class TimelineRepositoryMixin:
                     max_order_seq = max(max_order_seq, order_seq)
                     normalized = timeline_item_from_runtime_input(
                         item,
-                        updated_seq=first_updated_seq + index,
+                        # Provisional; one reservation below assigns the whole
+                        # trail so every row lands in a slot a previous row
+                        # vacated.
+                        updated_seq=0,
                         now=now,
                         existing=existing,
                         order_seq=order_seq,
@@ -1242,30 +1248,27 @@ class TimelineRepositoryMixin:
                             existing.updatedAt if existing is not None else None
                         ),
                     )
-                    changed_items.append(normalized)
+                    normalized_by_id[item.id] = normalized
                 # Uncovered rows a chain rebuild pushes forward keep their
-                # payload and gain only a new position and revision — a client
-                # that streams changes must learn the new order too.
-                for offset, row in enumerate(moved_rows):
-                    changed_items.append(
-                        row.model_copy(
-                            update={
-                                "orderSeq": reorder[row.id],
-                                "updatedSeq": first_updated_seq
-                                + len(changed_inputs)
-                                + offset,
-                            }
-                        )
+                # payload and gain only a new position (and a revision below);
+                # a client that streams changes must learn the new order too.
+                for row in moved_rows:
+                    normalized_by_id[row.id] = row.model_copy(
+                        update={"orderSeq": reorder[row.id]}
                     )
                 # A message's reasoning rows and its body row can arrive in one
                 # batch; enforce the intra-message order across the batch after
                 # every order_seq is known. In-batch rows are corrected in
                 # place; corrected on-disk siblings come back for this write.
+                # This runs before the publication trail is fixed because the
+                # correction may change an in-batch row's final position.
+                provisional = list(normalized_by_id.values())
                 sibling_movers = await self._apply_intra_message_order_batch(
                     conn,
                     session_id,
-                    changed_items,
+                    provisional,
                 )
+                sibling_ids: set[str] = set()
                 if sibling_movers:
                     # The intra-message corrector can move an on-disk sibling
                     # the batch itself does not name. That is a separate
@@ -1277,24 +1280,71 @@ class TimelineRepositoryMixin:
                         session_id,
                         len(sibling_movers),
                     )
-                    # Fresh updated_seq per moved sibling (see the single-row
-                    # writer's call site): a move invisible to list_since
-                    # leaves online clients rendering the broken order.
-                    first_mover_seq = await self._reserve_session_revisions(
-                        conn,
-                        session_id,
-                        count=len(sibling_movers),
-                        mark_read=False,
-                        touch_updated_at=False,
+                    sibling_ids = {item.id for item in sibling_movers}
+                positioned = [
+                    item for item in provisional if item.id not in sibling_ids
+                ]
+                # One dependency graph over every row this write publishes.
+                # The corrector's siblings are displaced just like the plan's
+                # movers; ordering them only among themselves still lets a
+                # batch row take a slot a sibling has not vacated yet
+                # (red-team reproduction: body@10, reasoning@11..12 + a new
+                # reasoning row landed on 12 before row 12 moved). Publish so
+                # every row lands in a slot the previous row vacated; rows
+                # whose position is unchanged trail and cannot collide.
+                ordered_pool = [*positioned, *sibling_movers]
+                # A non-reorder batch has no plan, so its positions were not
+                # loaded above. The corrector can still move rows in place; on
+                # the rare batch that does, read the chain once so the graph
+                # sees who currently occupies each target. Healthy streaming
+                # batches never take this read.
+                if stored_order is None and (
+                    sibling_movers
+                    or any(
+                        (current := current_by_id.get(item.id)) is not None
+                        and current.orderSeq != item.orderSeq
+                        for item in positioned
                     )
-                    for index, mover in enumerate(sibling_movers):
-                        sibling_movers[index] = mover.model_copy(
-                            update={"updatedSeq": first_mover_seq + index}
+                ):
+                    stored_order = dict(
+                        await self.timeline.order_entries(session_id)
+                    )
+                publication_order = (
+                    chain_publication_order(
+                        stored_order=list(stored_order.items()),
+                        planned_order={
+                            item.id: item.orderSeq for item in ordered_pool
+                        },
+                        published_ids=[item.id for item in ordered_pool],
+                    )
+                    if stored_order is not None
+                    else []
+                )
+                by_id = {item.id: item for item in ordered_pool}
+                ordered_ids = [
+                    item_id
+                    for item_id in publication_order
+                    if item_id in by_id
+                ]
+                ordered = set(ordered_ids)
+                ordered_ids.extend(
+                    item.id for item in ordered_pool if item.id not in ordered
+                )
+                # One reservation for the whole trail: the publisher emits
+                # one frame per item ordered by updatedSeq, so this range is
+                # what makes the publication order real on the wire.
+                first_updated_seq = await self._reserve_session_revisions(
+                    conn,
+                    session_id,
+                    count=len(ordered_ids),
+                    mark_read=mark_read_on_change,
+                )
+                for offset, item_id in enumerate(ordered_ids):
+                    changed_items.append(
+                        by_id[item_id].model_copy(
+                            update={"updatedSeq": first_updated_seq + offset}
                         )
-                    mover_ids = {item.id for item in sibling_movers}
-                    changed_items = [
-                        item for item in changed_items if item.id not in mover_ids
-                    ] + sibling_movers
+                    )
                 await self.timeline.upsert_many(conn, changed_items)
                 if converged_deletions:
                     # A removal always advances the session revision so the
@@ -2757,9 +2807,34 @@ class TimelineRepositoryMixin:
             new_order_seq = corrected.get(item.id)
             if new_order_seq is not None and new_order_seq != item.orderSeq:
                 items[index] = item.model_copy(update={"orderSeq": new_order_seq})
-        return self._intra_message_movers(
+        movers = self._intra_message_movers(
             corrected, groups, skip_ids=batch_ids
         )
+        if len(movers) < 2:
+            return movers
+        # The same duplicate-slot rule as the chain insert: publish the
+        # corrected siblings so each move lands in a slot the previous one
+        # vacated. Otherwise a client rendering each event draws the repaired
+        # group split around a duplicate orderSeq for one frame per row.
+        stored_order = [
+            (row.id, row.order_seq)
+            for group in groups
+            for row in group.values()
+        ]
+        publication_order = chain_publication_order(
+            stored_order=stored_order,
+            planned_order=corrected,
+            published_ids=[mover.id for mover in movers],
+        )
+        by_id = {mover.id: mover for mover in movers}
+        ordered = [
+            by_id[item_id]
+            for item_id in publication_order
+            if item_id in by_id
+        ]
+        ordered_ids = {mover.id for mover in ordered}
+        ordered.extend(mover for mover in movers if mover.id not in ordered_ids)
+        return ordered
 
     async def _apply_intra_message_order_to_snapshot(
         self,

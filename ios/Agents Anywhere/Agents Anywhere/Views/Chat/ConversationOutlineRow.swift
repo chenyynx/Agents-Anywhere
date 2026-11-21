@@ -54,8 +54,10 @@ struct ConversationOutlineRow: View {
                         .lineSpacing(lineGap)
                         .multilineTextAlignment(.leading)
                         // A rounded background needs bounds per matched
-                        // slice; AttributedString's background is square.
-                        .textRenderer(ConversationOutlineSearchHighlightRenderer(
+                        // slice; AttributedString's background is square. The
+                        // plain outline has no ranges and must not pay for the
+                        // custom drawing path (pp 2026-11-21, scroll jank).
+                        .modifier(ConversationOutlineHighlightModifier(
                             ranges: content.highlightRanges,
                             color: ChatPalette.outlineSearchHighlight.color))
                     Text(content.detail)
@@ -149,6 +151,26 @@ struct ConversationOutlineRow: View {
         }
         .frame(width: avatarSide, height: avatarSide)
         .accessibilityHidden(true)
+    }
+}
+
+/// Attaches the highlight renderer only when a search actually produced
+/// ranges. Mounting a `TextRenderer` on every row forces SwiftUI's custom
+/// text-drawing path for the plain outline as well, where it only redraws
+/// each line unchanged — measured as part of the scrolling cost
+/// (pp 2026-11-21, `outline.frame`).
+private struct ConversationOutlineHighlightModifier: ViewModifier {
+    let ranges: [Range<Int>]
+    let color: Color
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if ranges.isEmpty {
+            content
+        } else {
+            content.textRenderer(ConversationOutlineSearchHighlightRenderer(
+                ranges: ranges, color: color))
+        }
     }
 }
 

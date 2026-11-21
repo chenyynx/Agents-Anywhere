@@ -75,11 +75,15 @@ import Testing
             #expect(SteerPendingStatusResolver.resolve(
                 delivery: .accepted, runtimeStatus: status) == .waiting)
         }
+        // A turn that ended without an echo is not a failure: the steer stays
+        // queued for the next turn until the runtime's `steerOutcomes` says
+        // otherwise (probe 2026-11-21). Claiming 未送达 here caused a resend
+        // that duplicated the message.
         for status in [
             V2RuntimeStatus.idle, .error, .disconnected, .unknown,
         ] {
             #expect(SteerPendingStatusResolver.resolve(
-                delivery: .accepted, runtimeStatus: status) == .notDelivered)
+                delivery: .accepted, runtimeStatus: status) == .heldForNextTurn)
         }
         #expect(SteerPendingStatusResolver.resolve(
             delivery: .accepted, runtimeStatus: nil) == .waiting)

@@ -159,6 +159,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// working mark seats on this row (pp 2026-10-29: the dots always lead the
     /// last group, never a separate row below it).
     private var chatLiveTailGroupID: String?
+    /// The one group this update draws the working mark on: the newest group
+    /// the base pose rule would draw (the live tail, or the newest group with
+    /// a running step). A running dispatched-subagent row settles only when a
+    /// newer owner exists — otherwise it keeps the dots, because the
+    /// standalone 「正在处理中」 row is suppressed while the turn has step
+    /// groups and settling it would leave no working mark on screen
+    /// (pp 2026-11-21).
+    private var chatMarkOwnerGroupID: String?
     /// Last queue roster the handoff probe saw (diagnostics only).
     private var lastQueueProbeRoster: String?
     /// The groups of the actively streaming turn. Only these may animate a
@@ -610,6 +618,26 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // No row expands in place on this page: every group draws its own
             // rows, so the estimate walks all of them.
             let rows = group.rows
+            // The answered question card stacks a header, a question and an
+            // answer — the generic one-line tool estimate (44 pt) is 52 pt
+            // short of the ~96 pt card, so every realised card corrected the
+            // layout under the reader and overlapped its neighbour (pp
+            // 2026-11-21; log contentH grew in +52 steps). Ask the card for
+            // its own arithmetic instead.
+            if rows.count == 1, let row = rows.first,
+               let answered = QuestionAnsweredModel(item: row.value) {
+                let width = TimelineHeightKey.quantize(lastWidth > 0 ? lastWidth : 361)
+                var hasher = TimelineStableHasher()
+                hasher.combine(contentSignature(for: item).contentRevision)
+                hasher.combine(width)
+                let cacheKey = hasher.revision
+                if let cached = answeredCardEstimateCache[cacheKey] { return .fixed(cached) }
+                let height = QuestionAnsweredCardView.estimatedHeight(
+                    pairs: answered.pairs, width: width)
+                if answeredCardEstimateCache.count > 600 { answeredCardEstimateCache.removeAll() }
+                answeredCardEstimateCache[cacheKey] = height
+                return .fixed(height)
+            }
             let cwd = model.session.metadata?.cwd
             var textRows: [TimelineHeightEstimate.TextRow] = []
             textRows.reserveCapacity(rows.count)
@@ -673,6 +701,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return .fixed(height)
     }
     private var codeEstimateCache: [Int: CGFloat] = [:]
+    /// Answered question cards' exact pre-measure heights, keyed the same way
+    /// as `codeEstimateCache` (content revision + width).
+    private var answeredCardEstimateCache: [Int: CGFloat] = [:]
 
     /// The official `SessionRowHeightEstimator` (`0x10253d650`;
     /// `ClaudeCode/SessionRowHeightEstimator.swift`; formula in
@@ -1317,8 +1348,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // line per group per window when the pose is drawn while the
                 // turn is not streaming — the reader has that file only.
                 if !model.isTranscriptStreaming,
-                   stepGroup.showsRunningPose(isLiveTail: isLiveTail,
-                                              allowsRunningPose: allowsPose) {
+                   stepGroup.showsRunningPose(
+                        isLiveTail: isLiveTail,
+                        isMarkOwner: id == chatMarkOwnerGroupID,
+                        allowsRunningPose: allowsPose) {
                     ClientDiagnosticsLog.shared.record(
                         kind: "timeline.step.pose_after_stop",
                         sessionID: model.session.id,
@@ -1339,6 +1372,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // (pp 2026-11-10).
                 return AnyView(CodeStepGroupRowView(group: stepGroup, cwd: cwd,
                                                     isLiveTail: isLiveTail,
+                                                    isMarkOwner: id == chatMarkOwnerGroupID,
                                                     allowsRunningPose: allowsPose,
                                                     treatsRunningAsFailed: model.treatsRunningStepsAsFailed,
                                                     showsInterruptedNotice:
@@ -2179,8 +2213,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 .canCarryLiveMark(turnIsRunning: turnActive) ?? false
             chatLiveTailGroupID = (turnActive && lastUnitIsStepGroup && canCarryLiveMark)
                 ? lastStepGroupID : nil
+            // The newest group the base pose rule draws on. Rule A only lets a
+            // running dispatched-subagent row settle when this owner is newer,
+            // so the turn never loses its working mark (pp 2026-11-21).
+            var markOwner: String?
+            for unit in chatUnits {
+                guard case let .stepGroup(markGroup, _) = unit else { continue }
+                if markGroup.id == chatLiveTailGroupID
+                    || (markGroup.isRunning
+                        && chatRunningPoseGroupIDs.contains(markGroup.id)) {
+                    markOwner = markGroup.id
+                }
+            }
+            chatMarkOwnerGroupID = markOwner
         } else {
             chatLiveTailGroupID = nil
+            chatMarkOwnerGroupID = nil
             groups.reserveCapacity(codeGroups.count)
             for group in codeGroups {
                 guard let explicitID = group.explicitID else {
@@ -2593,6 +2641,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let posing = stepGroupsByID.values.filter {
             $0.showsRunningPose(
                 isLiveTail: $0.id == chatLiveTailGroupID,
+                isMarkOwner: $0.id == chatMarkOwnerGroupID,
                 allowsRunningPose: chatRunningPoseGroupIDs.contains($0.id))
         }
         ClientDiagnosticsLog.shared.record(
@@ -2939,6 +2988,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let isLiveTail = group.id == chatLiveTailGroupID
         let showsLivePose = group.showsRunningPose(
             isLiveTail: isLiveTail,
+            isMarkOwner: group.id == chatMarkOwnerGroupID,
             allowsRunningPose: chatRunningPoseGroupIDs.contains(group.id))
         if let live = group.liveStep, showsLivePose {
             var hasher = TimelineStableHasher()

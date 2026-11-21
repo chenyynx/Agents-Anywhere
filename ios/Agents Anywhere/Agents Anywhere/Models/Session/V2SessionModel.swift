@@ -211,8 +211,10 @@ final class V2PendingMessage: Identifiable {
     private(set) var delivery: Delivery = .sending
     /// A steering message: the row is still optimistic. Its real timeline row
     /// is published by the connector only when the runtime reads it, so while
-    /// this record is alive the UI shows 「正在等待 Claude」 (or 未送达 once the
-    /// turn is over without an echo).
+    /// this record is alive the UI shows 「正在等待 Claude」, or
+    /// 「已提交，下一轮送达」 once the turn is over without an echo — never a
+    /// failure verdict: only the interrupt response's `steerOutcomes` can
+    /// declare it withdrawn.
     var isSteer = false
     var didRestoreDraft = false
     /// Unresolved records this bubble replaces: the draft was restored from
@@ -253,8 +255,12 @@ final class V2PendingMessage: Identifiable {
     }
 
     func update(_ delivery: Delivery) {
-        // An authoritative echo can arrive before the HTTP request completes or fails.
-        guard self.delivery != .confirmed else { return }
+        // An authoritative echo can arrive before the HTTP request completes
+        // or fails. `.rejected` is sticky too: a withdrawal can land while the
+        // steer's own HTTP response is still in flight, and the late
+        // `.accepted` must not resurrect a record the runtime already dropped.
+        if case .confirmed = self.delivery { return }
+        if case .rejected = self.delivery { return }
         self.delivery = delivery
     }
 }
@@ -958,8 +964,15 @@ final class V2SessionModel: Identifiable {
     /// sent — an identical resend is deliberately not blocked; a late echo (the
     /// server did receive it) simply appears as a normal row.
     func reclaimUnconfirmedPendings() {
+        // A steer is not reclaimable: once submitted it can be withdrawn only
+        // by the runtime's own cancel control, and one stopped before it was
+        // read stays queued for the next turn (probe 2026-11-21, CLI 2.1.316).
+        // The interrupt response's `steerOutcomes` is the authority for those;
+        // reclaiming here would restore the text and allow a resend while the
+        // runtime still holds the message, which is exactly the duplicate this
+        // path exists to avoid.
         let reclaimable = pendingMessages.filter {
-            $0.delivery == .sending || $0.delivery == .accepted
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
         }
         guard !reclaimable.isEmpty else { return }
         // Newest first: only the newest payload can go back into an empty
@@ -976,6 +989,88 @@ final class V2SessionModel: Identifiable {
         repository?.localWorkDidChange(sessionID: self.id)
     }
 
+    /// Resolves steer bubbles from the interrupt response's `steerOutcomes`.
+    ///
+    /// The runtime is the only authority on a steer's fate: a queued steer can
+    /// be withdrawn before the interrupt, may already have been taken into the
+    /// stopped turn, or may have no verdict at all (older CLI). `withdrawn` is
+    /// the official take-back — the text returns to the editor and the record
+    /// leaves, so the user can re-send it without duplicating anything;
+    /// `delivered` and `unknown` keep the record for the existing echo path.
+    /// An outcome for an id this client no longer holds is ignored.
+    func applySteerOutcomes(_ raw: JSONValue?) {
+        guard let items = raw?.arrayValue else { return }
+        var changed = false
+        for item in items {
+            guard let pendingID = item["clientMessageId"]?.stringValue,
+                  let outcome = item["outcome"]?.stringValue,
+                  let pending = pendingMessages.first(where: {
+                      $0.id == pendingID && $0.isSteer
+                  }) else { continue }
+            guard outcome == "withdrawn" else { continue }
+            if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
+                draft = pending.content
+                composer.attachments = pending.attachments
+                draftAttachmentIDs = pending.attachmentIDs
+                pendingMessages.removeAll { $0.id == pendingID }
+            } else {
+                // The editor already holds other work: never drop the
+                // withdrawn text silently. Keep it visible as a rejected
+                // record the user can read or dismiss.
+                pending.update(.rejected(V2ClientFailure(
+                    kind: .unavailable,
+                    message: String(localized: "引导已撤回，未回到输入框：输入框已有内容。")
+                )))
+            }
+            if awaitingReplyID == pendingID { awaitingReplyID = nil }
+            if draftRestoredFromPendingID == pendingID {
+                draftRestoredFromPendingID = nil
+            }
+            changed = true
+        }
+        if changed { repository?.localWorkDidChange(sessionID: id) }
+    }
+
+    /// A stop ends the window a steer was sent into. The steer itself may
+    /// still be pending (withdrawn, delivered, or unknown), but it is no
+    /// longer “awaiting a reply” from this turn — clearing this keeps the
+    /// working row from spinning forever.
+    func clearSteerAwaitingReply() {
+        guard let waiting = awaitingReplyID,
+              pendingMessages.contains(where: { $0.id == waiting && $0.isSteer })
+        else { return }
+        awaitingReplyID = nil
+        repository?.localWorkDidChange(sessionID: id)
+    }
+
+    /// A server-side runtime recreation can mint a new instance id; a steer
+    /// still waiting in the old CLI queue would have died with that process.
+    /// Demote those records to the existing uncertain state so the user can
+    /// remove and retry instead of waiting for an echo that will never come.
+    ///
+    /// This is only a defensive trigger: a plain connector restart does NOT
+    /// change `runtimeId` (it is bound once when the device runtime is
+    /// created), so the held row's long-press removal is the real escape
+    /// hatch for that case.
+    private func demoteHeldSteersAfterRuntimeChange() {
+        let failure = V2ClientFailure(
+            kind: .unavailable,
+            message: String(localized: "上次发送的结果尚未确认，正在同步记录。请确认后再重试。")
+        )
+        var changed = false
+        for pending in pendingMessages where pending.isSteer {
+            switch pending.delivery {
+            case .sending, .accepted:
+                pending.update(.uncertain(failure))
+                if awaitingReplyID == pending.id { awaitingReplyID = nil }
+                changed = true
+            case .confirmed, .uncertain, .rejected:
+                continue
+            }
+        }
+        if changed { repository?.localWorkDidChange(sessionID: id) }
+    }
+
     /// The delayed form used after an acknowledged stop, following the
     /// official `TakeBack` semantics (CANONICAL/02-transcript-model.md §6,
     /// `part-s-code-session-store.md` §TakeBack: an already-posting message is
@@ -985,8 +1080,11 @@ final class V2SessionModel: Identifiable {
     /// so a missing state frame cannot keep the row forever.
     func reclaimUnconfirmedPendingsAfterStop() async {
         // Cheap gate first: a normal open has nothing to reconcile and must
-        // not pay the authoritative read below.
-        guard pendingMessages.contains(where: { $0.delivery == .sending || $0.delivery == .accepted }) else { return }
+        // not pay the authoritative read below. Steers are excluded: only the
+        // runtime's `steerOutcomes` may resolve them (see reclaim below).
+        guard pendingMessages.contains(where: {
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
+        }) else { return }
         let deadline = Date().addingTimeInterval(5)
         while isValid, Date() < deadline, runtime.state?.status.isTurnInFlight == true {
             try? await Task.sleep(for: .milliseconds(200))
@@ -1049,7 +1147,22 @@ final class V2SessionModel: Identifiable {
         if acknowledgedNotifications != observation.acknowledgedNotifications {
             acknowledgedNotifications = observation.acknowledgedNotifications
         }
+        let previousRuntimeID = runtime.state?.runtimeId
         runtime.update(data, connection: connection)
+        // A changed runtime instance id is a runtime recreation, not a plain
+        // reconnect: a steer queued in the old process is gone.
+        if let previousRuntimeID,
+           let appliedRuntimeID = runtime.state?.runtimeId,
+           previousRuntimeID != appliedRuntimeID {
+            demoteHeldSteersAfterRuntimeChange()
+        }
+        // A steer left waiting when its turn ends (naturally or by stop) is
+        // not awaiting a reply from this turn; clear the working-row gate.
+        if runtime.state?.status.isTurnInFlight != true,
+           let waiting = awaitingReplyID,
+           pendingMessages.first(where: { $0.id == waiting })?.isSteer == true {
+            awaitingReplyID = nil
+        }
         notices.update(runtime.notices, sessionID: id)
         if hasOlderItems != (data?.hasOlderItems ?? false) { hasOlderItems = data?.hasOlderItems ?? false }
         if localOlderAvailable != (data?.localOlderAvailable ?? false) {

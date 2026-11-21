@@ -150,6 +150,10 @@ struct CodeCollapsedStepsRow: View {
     var voiceControlName: String?
     var spokenLabel: String?
     var isRunning: Bool
+    /// The live tail's step id and plain label, for the transition below.
+    /// Both empty disables it — every row except the chat's live tail.
+    var textStepID: String = ""
+    var textContent: String = ""
     var action: () -> Void
 
     /// [E] R28 §2.1 — row text unscaled line height 21, relative `.body`.
@@ -163,37 +167,48 @@ struct CodeCollapsedStepsRow: View {
             HStack(alignment: .center) {
                 leadingSlot
 
-                if !isTextHidden {
-                    text
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        // The official row has no minHeight; the line box is
-                        // the 21 pt unscaled line height (V3). With an icon
-                        // or caret the 24 pt slot wins, giving 36 pt.
-                        .frame(minHeight: textLineHeight, alignment: .leading)
-                        .layoutPriority(1)
-                        .modifier(CodeCollapsedRowShimmer(active: isRunning))
+                // The official swaps a row's shown content as one group — the
+                // label, the trailing icon and the chevron — with an opacity
+                // transition and a spring (`CompactTimelineGroup.PacedRow` =
+                // `ZStack{ IDView<ShownView.transition, Shown?> }` paced by a
+                // `ContinuousClock`; EVIDENCE, round29). Keeping them in one
+                // paced group is what makes the chevron animate with the
+                // summary (pp 2026-11-21).
+                HStack(alignment: .center, spacing: 8) {
+                    if !isTextHidden {
+                        text
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            // The official row has no minHeight; the line box
+                            // is the 21 pt unscaled line height (V3). With an
+                            // icon or caret the 24 pt slot wins, giving 36 pt.
+                            .frame(minHeight: textLineHeight, alignment: .leading)
+                            .layoutPriority(1)
+                            .modifier(CodeCollapsedRowShimmer(active: isRunning))
 
-                    if let trailingIcon {
-                        // Small: the official reference row keeps the clock
-                        // under the label's line height (pp 2026-11-16).
-                        AnthropiconView(name: trailingIcon, size: .small)
-                            .foregroundStyle(CodePageTheme.text400Color
-                                .resolved(for: colorScheme))
-                            .accessibilityHidden(true)
+                        if let trailingIcon {
+                            // Small: the official reference row keeps the clock
+                            // under the label's line height (pp 2026-11-16).
+                            AnthropiconView(name: trailingIcon, size: .small)
+                                .foregroundStyle(CodePageTheme.text400Color
+                                    .resolved(for: colorScheme))
+                                .accessibilityHidden(true)
+                        }
+                    }
+
+                    CodeTimelineStatusGlyph(status: status,
+                                            failureExtent: failureExtent)
+
+                    if let diffIndicator, diffIndicator.hasCounts {
+                        CodeDiffIndicator(stat: diffIndicator)
+                    }
+
+                    if hasDetails {
+                        CodeRowCaret()
                     }
                 }
-
-                CodeTimelineStatusGlyph(status: status,
-                                        failureExtent: failureExtent)
-
-                if let diffIndicator, diffIndicator.hasCounts {
-                    CodeDiffIndicator(stat: diffIndicator)
-                }
-
-                if hasDetails {
-                    CodeRowCaret()
-                }
+                .pacedRowContent(stepID: textStepID, content: textContent)
+                .layoutPriority(1)
 
                 // Official body ends in a `Spacer`, so the row's tap target
                 // fills the transcript width while the content stays leading.
@@ -531,6 +546,77 @@ struct CodeCollapsedRowShimmer: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+/// The official swaps a row's shown content with an opacity transition and a
+/// spring: `CompactTimelineGroup.PacedRow` is
+/// `ZStack{ IDView<ShownView.transition, Shown?> }` (EVIDENCE, round29 §1).
+/// This reproduces it without slowing the label down:
+///
+/// - the label itself updates on every publish (real time);
+/// - width growth is animated, so the trailing chevron glides with the text
+///   instead of jumping per token (pp 2026-11-21: the official arrow follows
+///   the summary length smoothly);
+/// - only a structural change — a different step, or a label that is neither
+///   an extension nor a prefix of the shown one (a new thinking line, a new
+///   tool) — gets the official opacity cross-fade.
+///
+/// The spring values were not recovered (round29 addendum: UNKNOWN); 0.3 s /
+/// no bounce is an inference, as is the 0.15 s width glide.
+private struct CodePacedRowContent: ViewModifier {
+    let stepID: String
+    let content: String
+
+    private static let glide: Animation = .linear(duration: 0.15)
+    private static let swap: Animation = .spring(duration: 0.3, bounce: 0)
+
+    @State private var generation = 0
+    @State private var lastStep: String?
+    @State private var lastContent: String?
+
+    private var key: String { "\(lastStep ?? stepID)#\(generation)" }
+
+    func body(content view: Content) -> some View {
+        ZStack(alignment: .leading) {
+            view
+                .id(key)
+                .transition(.opacity)
+        }
+        .animation(Self.glide, value: content)
+        .onChange(of: stepID) { _, _ in applyUpdate() }
+        .onChange(of: content) { _, _ in applyUpdate() }
+    }
+
+    private func applyUpdate() {
+        let oldStep = lastStep ?? stepID
+        let oldContent = lastContent ?? content
+        guard oldStep != stepID || oldContent != content else { return }
+        let grows = content.hasPrefix(oldContent) || oldContent.hasPrefix(content)
+        let structural = oldStep != stepID || !grows
+        if structural {
+            withAnimation(Self.swap) {
+                lastStep = stepID
+                lastContent = content
+                generation &+= 1
+            }
+        } else {
+            lastStep = stepID
+            lastContent = content
+        }
+    }
+}
+
+extension View {
+    /// Real-time label updates with a width glide and a structural cross-fade.
+    /// An empty step id is a no-op.
+    @ViewBuilder
+    func pacedRowContent(stepID: String, content: String) -> some View {
+        if stepID.isEmpty {
+            self
+        } else {
+            modifier(CodePacedRowContent(stepID: stepID, content: content))
         }
     }
 }

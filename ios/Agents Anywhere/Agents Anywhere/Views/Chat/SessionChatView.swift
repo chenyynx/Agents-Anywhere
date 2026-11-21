@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import QuickLook
 import UIKit
@@ -16,6 +17,19 @@ struct SessionChatView: View, Equatable {
     let onTogglePinned: (Bool) -> Void
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
+    /// Whether the transcript must ignore keyboard-driven bottom insets. The
+    /// outline panel's search field raises the window keyboard, which reaches
+    /// this page's safe area too; an at-bottom transcript then followed it,
+    /// moving contentInset and offset together by the keyboard height inside
+    /// the keyboard's animation transaction (pp 2026-11-21: "我在大纲页弹键盘，
+    /// 只要聊天页在底部，聊天页就跟着弹起来"; b1407 `timeline.mover` inset
+    /// 60 ↔ 355 on every show/hide). The keyboard belongs to the sheet.
+    @State private var outlineKeyboardInsetFreeze = false
+    /// True from a keyboard's will-show until its did-hide: a hide still
+    /// animating must never be recorded as a keyboard-free bottom.
+    @State private var windowKeyboardVisible = false
+    /// The page's bottom inset last seen with no keyboard on screen.
+    @State private var keyboardFreeBottomInset: CGFloat?
 #if AA_TIMELINE_PROBE
     @State private var diagnosticsHUDVisible = false
 #endif
@@ -111,7 +125,7 @@ struct SessionChatView: View, Equatable {
                 onAttachment: openAttachment, onFile: openFile,
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 jumpRequest: outlineJump,
-                safeAreaInsets: proxy.safeAreaInsets,
+                safeAreaInsets: timelineSafeAreaInsets(proxy),
                 renderMode: renderMode)
                 // The command card floats over the page, not inside the
                 // composer's overlay: an overlay drawn outside its base frame
@@ -145,7 +159,51 @@ struct SessionChatView: View, Equatable {
                     guard open else { return }
                     recordCommandPanelGeometry(proxy: proxy)
                 }
+                .onAppear {
+                    // Seed the freeze base on the first keyboard-free pass.
+                    if keyboardFreeBottomInset == nil {
+                        keyboardFreeBottomInset = proxy.safeAreaInsets.bottom
+                    }
+                }
+                .onChange(of: proxy.safeAreaInsets.bottom) { _, bottom in
+                    // Only a genuinely keyboard-free bottom seeds the base.
+                    if !windowKeyboardVisible && !outlineKeyboardInsetFreeze {
+                        keyboardFreeBottomInset = bottom
+                    }
+                }
+                .onChange(of: isOutlineSheetPresented) { _, presented in
+                    // The outline owns the keyboard for as long as it is up;
+                    // the freeze outlives the sheet when it closes with the
+                    // keyboard still on screen, and lifts on the keyboard's
+                    // did-hide above.
+                    if presented {
+                        if !windowKeyboardVisible {
+                            keyboardFreeBottomInset = proxy.safeAreaInsets.bottom
+                        }
+                        outlineKeyboardInsetFreeze = true
+                    } else if !windowKeyboardVisible {
+                        outlineKeyboardInsetFreeze = false
+                    }
+                }
         }
+    }
+
+    /// The outline panel is the one sheet whose keyboard must not reach the
+    /// transcript behind it.
+    private var isOutlineSheetPresented: Bool {
+        if case .outline? = sheet { return true }
+        return false
+    }
+
+    /// The safe area handed to the transcript. While the outline drives the
+    /// keyboard, the bottom stays on the last keyboard-free value so the
+    /// at-bottom transcript does not follow a keyboard that is not its own.
+    private func timelineSafeAreaInsets(_ proxy: GeometryProxy) -> EdgeInsets {
+        var insets = proxy.safeAreaInsets
+        if outlineKeyboardInsetFreeze, let frozen = keyboardFreeBottomInset {
+            insets.bottom = frozen
+        }
+        return insets
     }
 
     private func commandPanelAnchor(proxy: GeometryProxy) -> CommandPanelAnchoring {
@@ -220,7 +278,8 @@ struct SessionChatView: View, Equatable {
             SessionInteractionDock(chat: model,
                 onShowAll: { expandedNoticeID = $0; sheet = .notices })
                 .traceChatLayout("interaction-dock")
-            ChatComposerDock(draft: session.composer, settings: model.settings,
+            if !showsQuestionCard {
+                ChatComposerDock(draft: session.composer, settings: model.settings,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                 canSend: session.canSend, canAttach: model.canAttach,
@@ -240,10 +299,23 @@ struct SessionChatView: View, Equatable {
                 onQueueSend: { await model.enqueueComposer() },
                 onSteerSend: { await model.steerComposer() })
                 .traceChatLayout("composer-dock")
+                // The official question card replaces the composer while it
+                // is up (pp 2026-11-20); the card slides in from below.
+                .transition(.opacity)
+            }
         }
+        .animation(.smooth(duration: 0.32), value: showsQuestionCard)
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
         // Native safe-area layout owns both the visible scroll
         // region and the dock's space; do not add a second margin.
+    }
+
+    /// A blocking questionnaire is on screen: the official card takes the
+    /// composer's place instead of stacking above it.
+    private var showsQuestionCard: Bool {
+        session.notices.notices.contains {
+            $0.blocks(session.id) && $0.form != nil
+        }
     }
 
     /// The sheet bodies live in their own method: the same switch inline in the
@@ -457,6 +529,18 @@ struct SessionChatView: View, Equatable {
         }
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)
+        }
+        // Window-wide keyboard state, tracked for the outline freeze: a hide
+        // is only over at did-hide, so the animating frame that still carries
+        // the keyboard height cannot be mistaken for the resting bottom.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillShowNotification)) { _ in
+            windowKeyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardDidHideNotification)) { _ in
+            windowKeyboardVisible = false
+            if !isOutlineSheetPresented { outlineKeyboardInsetFreeze = false }
         }
 #if AA_TIMELINE_PROBE
         .overlay {

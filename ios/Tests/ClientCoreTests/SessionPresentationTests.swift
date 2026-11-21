@@ -85,6 +85,30 @@ import Testing
         #expect(presentation.flushRevision == start + 1)
     }
 
+    /// While a panel covers the transcript, the presentation keeps every
+    /// delta but publishes at most once a second: even the 0.26 s batch left
+    /// 5–6 hitches a second while the agent thought, with the outline panel
+    /// up (pp 2026-11-21, b1409).
+    @Test @MainActor func coveredTranscriptPublishesOnceASecond() throws {
+        let presentation = SessionTimelinePresentation()
+        let first = try item("message", status: "running", content: ["text": "a"])
+        presentation.stage([first], animate: false)
+        presentation.flush(now: 10)
+        #expect(presentation.nextBatchAt == 0)
+
+        presentation.setBackgroundCadence(true)
+        let second = try item("message", status: "running", content: ["text": "ab"])
+        presentation.stage([second], animate: false)
+        presentation.flush(now: 20)
+        #expect(presentation.nextBatchAt >= 20.9)
+
+        presentation.setBackgroundCadence(false)
+        let third = try item("message", status: "running", content: ["text": "abc"])
+        presentation.stage([third], animate: false)
+        presentation.flush(now: 40)
+        #expect(presentation.nextBatchAt <= 40)
+    }
+
     @Test func fileArtifactsUseRealChangePayloadAndRelativePaths() throws {
         let value = try item("artifact", content: ["kind": "file_change", "changes": [
             ["filePath": "/work/src/app.swift", "kind": ["type": "add"], "diff": "let value = 1\n"]

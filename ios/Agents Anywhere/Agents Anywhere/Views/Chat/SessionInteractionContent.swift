@@ -157,9 +157,16 @@ struct SessionInteractionContent: View {
     }
 }
 
-private struct NoticeTextInput: View {
+struct NoticeTextInput: View {
     let value: String
     let placeholder: String
+    /// The question card draws the official `ClaudeTextField`: 24 pt corners,
+    /// 12 pt padding, no fill (only its `border20` hairline is added by the
+    /// caller). The notice sheet keeps the compact 12/10 filled style.
+    var cornerRadius: CGFloat = 12
+    var textPadding: CGFloat = 10
+    var showsBackground = true
+    var placeholderColor: Color? = nil
     var onFocus: () -> Void = {}
     var onEditingEnded: (String) -> Void = { _ in }
     let onChange: (String, Bool, String) -> Void
@@ -169,13 +176,28 @@ private struct NoticeTextInput: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if draft.text.isEmpty { Text(placeholder).foregroundStyle(.secondary).allowsHitTesting(false) }
+            if draft.text.isEmpty {
+                Text(placeholder)
+                    .foregroundStyle(placeholderColor ?? Color.secondary)
+                    .allowsHitTesting(false)
+            }
             NativeComposerEditor(draft: draft, controller: editor, maximumHeight: 120,
                 onCommandSend: {}, onTextChange: { text, marked in onChange(text, marked, editorID) })
-                .frame(minHeight: 44)
+                // `.frame(minHeight:)` centres its content by default: the
+                // empty editor (one 20.3 pt line) sat 12 pt below the top and
+                // the caret no longer lined up with the placeholder text
+                // (pp 2026-11-20). Pin the editor to the top instead.
+                .frame(minHeight: 44, alignment: .top)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .font(.body).padding(10).background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
+        .font(.body)
+        .padding(textPadding)
+        .background {
+            if showsBackground {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.quaternary.opacity(0.5))
+            }
+        }
         .onChange(of: draft.isFocused) { _, focused in if focused { onFocus() } }
         .onChange(of: value, initial: true) { _, text in
             if !draft.isComposing, draft.text != text { draft.text = text }

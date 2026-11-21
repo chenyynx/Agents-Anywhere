@@ -24,9 +24,11 @@ struct PendingMessageRow: View {
         row
             .accessibilityValue(steerStatusText ?? "")
             .accessibilityHint(
-                steerStatus == nil
-                    ? ""
-                    : String(localized: "显示此等待中消息的操作。"))
+                steerStatus == .heldForNextTurn
+                    ? String(localized: "已提交，将在下一轮送达。长按可移除。")
+                    : (steerStatus == nil
+                        ? ""
+                        : String(localized: "显示此等待中消息的操作。")))
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             if let onRetry, !chat.session.isLocalCreation {
                 Button(String(localized: "重新发送")) { onRetry() }
@@ -42,7 +44,26 @@ struct PendingMessageRow: View {
         }
     }
 
-    private var row: some View {
+    /// The held steer has no echo yet and may never get one (the runtime can
+    /// restart with the message still in its CLI queue). It must stay neutral
+    /// — a red failure mark here would repeat the 2026-11-21 false alarm — but
+    /// it needs an escape hatch, so a long press offers an explicit removal
+    /// with the duplicate warning.
+    @ViewBuilder private var row: some View {
+        if steerStatus == .heldForNextTurn {
+            baseRow.contextMenu {
+                Button(role: .destructive) {
+                    onDismiss()
+                } label: {
+                    Text(String(localized: "移除此等待中的引导（若已送达，重发可能重复）"))
+                }
+            }
+        } else {
+            baseRow
+        }
+    }
+
+    private var baseRow: some View {
         CodeUserMessageRow(
             text: pending.content,
             attachments: chat.session.attachmentPreviews.resolve(
@@ -75,14 +96,12 @@ struct PendingMessageRow: View {
         switch steerStatus {
         case .sending: return String(localized: "发送中")
         case .waiting: return String(localized: "正在等待 Claude")
-        case .notDelivered: return String(localized: "未送达")
+        case .heldForNextTurn: return String(localized: "已提交，下一轮送达")
         case nil: return nil
         }
     }
 
     private var deliveryIssue: String? {
-        // The turn is over and no echo arrived: the steer never landed.
-        if steerStatus == .notDelivered { return String(localized: "未送达") }
         switch pending.delivery {
         case .uncertain:
             return String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")

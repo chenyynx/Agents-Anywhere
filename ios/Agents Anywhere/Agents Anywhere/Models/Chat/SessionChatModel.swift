@@ -178,8 +178,11 @@ final class SessionChatModel {
     /// explain it ("等待 X 回应…") belonged to the retired Chat page; the Code
     /// page draws `CodeWorkingStatusRow` instead (pp 2026-11-17).
     var isAwaitingReply: Bool {
+        // A held steer waits for the next turn's boundary, not for this
+        // turn's reply: it must not keep the working row on screen after a
+        // stop. While the turn runs, `runtime.state.status` already covers it.
         let submitting = session.pendingMessages.contains {
-            $0.delivery == .sending || $0.delivery == .accepted
+            ($0.delivery == .sending || $0.delivery == .accepted) && !$0.isSteer
         }
         if submitting || session.awaitingReplyID != nil { return true }
         guard session.runtime.isFresh, let status = session.runtime.state?.status else { return false }
@@ -188,14 +191,39 @@ final class SessionChatModel {
         default: return false
         }
     }
-    var responseUnavailableReason: String? {
-        if !session.isValid { return String(localized: "会话已关闭。") }
-        if session.network.availability == .offline || session.connection == .offline { return String(localized: "网络已断开，已填写的内容会保留。") }
-        if session.metadata?.connectorStatus == .offline { return String(localized: "设备已离线，已填写的内容会保留。") }
+    /// Why the interaction surfaces cannot take a response right now.
+    /// `.confirming` is the transient state right after returning from the
+    /// background (live facts still refreshing); the question card ignores it
+    /// — a line there read as noise, the card recovers by itself
+    /// (pp 2026-11-20).
+    enum ResponseBlock: Equatable {
+        case sessionClosed, network, deviceOffline, invalidResponse, authentication, confirming
+    }
+    var responseBlock: ResponseBlock? {
+        if !session.isValid { return .sessionClosed }
+        if session.network.availability == .offline || session.connection == .offline { return .network }
+        if session.metadata?.connectorStatus == .offline { return .deviceOffline }
         if session.runtime.isFresh { return nil }
-        if session.failure?.kind == .invalidResponse { return String(localized: "会话数据暂时无法解析，请刷新状态后回应。已填写的内容会保留。") }
-        if session.failure?.kind == .authentication { return String(localized: "登录状态需要重新验证，已填写的内容会保留。") }
-        return String(localized: "正在确认 Agent 的最新状态，已填写的内容会保留。")
+        if session.failure?.kind == .invalidResponse { return .invalidResponse }
+        if session.failure?.kind == .authentication { return .authentication }
+        return .confirming
+    }
+    var responseUnavailableReason: String? {
+        switch responseBlock {
+        case nil: return nil
+        case .sessionClosed: return String(localized: "会话已关闭。")
+        case .network: return String(localized: "网络已断开，已填写的内容会保留。")
+        case .deviceOffline: return String(localized: "设备已离线，已填写的内容会保留。")
+        case .invalidResponse: return String(localized: "会话数据暂时无法解析，请刷新状态后回应。已填写的内容会保留。")
+        case .authentication: return String(localized: "登录状态需要重新验证，已填写的内容会保留。")
+        case .confirming: return String(localized: "正在确认 Agent 的最新状态，已填写的内容会保留。")
+        }
+    }
+    /// The question card's gate: real blockers keep their line, the transient
+    /// `.confirming` refresh does not.
+    var responseBlockingReason: String? {
+        guard let block = responseBlock, block != .confirming else { return nil }
+        return responseUnavailableReason
     }
     var canAttach: Bool { session.runtime.allows("runtime.attachment") }
     var canChangeTakeover: Bool {
@@ -466,9 +494,17 @@ final class SessionChatModel {
                     // The model-switch flavor: stop the turn, spare the
                     // background agents it dispatched (per-task stop
                     // affordance). Every other stop keeps the all-stop
-                    // semantics.
-                    do { try await repository.interrupt(sessionId: session.id, preserveBackground: true) }
-                    catch {
+                    // semantics. This is a stop like any other: a pending
+                    // steer must be resolved with the same outcomes, or the
+                    // connector withdraws it while the bubble waits forever.
+                    do {
+                        let response = try await repository.interrupt(
+                            sessionId: session.id,
+                            preserveBackground: true
+                        )
+                        session.clearSteerAwaitingReply()
+                        session.applySteerOutcomes(response?.result?["steerOutcomes"])
+                    } catch {
                         // "Switched but not stopped": the selection is in, the
                         // turn keeps running under the old model. The real
                         // failure goes out on the existing error channel and
@@ -918,12 +954,20 @@ final class SessionChatModel {
         // its final place. Only the composer's send window waits for the
         // accepted ack.
         session.runtime.beginStopRequest()
+        var steerOutcomes: JSONValue?
         let stopped = await perform {
-            try await self.repository.interrupt(sessionId: self.session.id,
-                                                preserveBackground: true)
+            let response = try await self.repository.interrupt(
+                sessionId: self.session.id,
+                preserveBackground: true
+            )
+            steerOutcomes = response?.result?["steerOutcomes"]
         }
         session.runtime.endStopRequest()
         if stopped {
+            // The stop ended this turn's reply window for any steer it held;
+            // the runtime's own verdict then resolves each bubble.
+            session.clearSteerAwaitingReply()
+            session.applySteerOutcomes(steerOutcomes)
             // A stop the server acknowledged can orphan a send whose echo the
             // interrupted turn never produced; hand that payload back to the
             // editor instead of leaving a zombie row and a permanent working
@@ -958,11 +1002,18 @@ final class SessionChatModel {
         stoppingSubagentTaskIDs.remove(taskID)
     }
 
-    func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction) async {
+    /// - Parameter dismissOnSend: the question card stands in for the
+    ///   composer, so it hands the screen back at tap time instead of waiting
+    ///   for the write's reconcile round and the server's notice event — that
+    ///   wait read as a pause before the collapse (pp 2026-11-20). A failed
+    ///   write puts the card back.
+    func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction,
+                 dismissOnSend: Bool = false) async {
         guard !isWorking, notice.canRespond(fresh: session.runtime.isFresh),
               notice.notice.actions.contains(action), notice.hasValidInput(for: action) else { return }
         let input = notice.payload(for: action)
         notice.begin(actionID: action.id)
+        if dismissOnSend { notice.dismissLocally() }
         isWorking = true
         defer { isWorking = false }
         do {

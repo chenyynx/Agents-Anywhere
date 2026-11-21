@@ -33,6 +33,23 @@ from test_claude_runtime import _RecordingHost, _runtime
 STEER = "STEER: say BANANA-42"
 
 
+class _CancelQuery:
+    """Scripted control seam for the pre-interrupt steer withdraw."""
+
+    def __init__(self, *, cancelled: bool | None = True) -> None:
+        self.cancelled = cancelled
+        self.requests: list[dict] = []
+        self.calls: list[str] | None = None
+
+    async def _send_control_request(self, request, *_args, **_kwargs):
+        self.requests.append(request)
+        if self.calls is not None:
+            self.calls.append(f"cancel:{request.get('message_uuid')}")
+        if request.get("subtype") == "cancel_async_message":
+            return {"cancelled": self.cancelled}
+        return {}
+
+
 class _SteerClaudeClient:
     """Scripted SDK client: tool frame -> wait for steer -> steer reply."""
 
@@ -51,12 +68,18 @@ class _SteerClaudeClient:
         self.prompt_uuid: str | None = None
         self.prompt_text: str | None = None
         self.echo_prompt = echo_prompt
+        self.calls: list[str] = []
+        self.steer_gate: asyncio.Event | None = None
+        self._query: _CancelQuery | None = None
 
     async def connect(self) -> None:
         self.connected = True
 
     async def disconnect(self) -> None:
         self.disconnected = True
+
+    async def interrupt(self) -> None:
+        self.calls.append("interrupt")
 
     async def query(self, prompt) -> None:
         if isinstance(prompt, str):
@@ -72,6 +95,10 @@ class _SteerClaudeClient:
         if priority == "next":
             self.steer_uuid = first.get("uuid")
             self.steer_text = content
+            if self.steer_gate is not None:
+                # Hold the submission inside the runtime's execution lock so a
+                # stop racing it has to wait, then withdraw it.
+                await self.steer_gate.wait()
             self.steer_received.set()
         else:
             self.prompt_uuid = first.get("uuid")
@@ -562,3 +589,191 @@ async def _test_claude_steer_rejects_attachments() -> None:
     client.steer_received.set()
     client.steer_echo_allowed.set()
     await asyncio.wait_for(task, 10)
+
+
+def test_interrupt_withdraws_a_queued_steer_before_interrupting() -> None:
+    asyncio.run(_test_interrupt_withdraws_a_queued_steer_before_interrupting())
+
+
+async def _test_interrupt_withdraws_a_queued_steer_before_interrupting() -> None:
+    """The stop path cancels first: the CLI only accepts it before interrupt.
+
+    Probe 2026-11-21 (bundled CLI 2.1.316): `cancel_async_message` answers
+    `cancelled: true` while the steer is still queued, but after an interrupt
+    the CLI has already put the message back for the next turn and the same
+    request answers false. So the context must withdraw BEFORE interrupting,
+    report the outcome per client message id, and drop the withdrawn record.
+    """
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    query = _CancelQuery(cancelled=True)
+    query.calls = client.calls
+    client._query = query  # type: ignore[assignment]
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_stop", "claude_session_0", "hello",
+        client_message_id="client_msg_stop",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_stop"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    steered = await runtime.steer_turn(
+        "sess_stop", "claude_session_0", "never read",
+        client_message_id="client_steer_stop",
+    )
+    assert steered.ok is True
+    assert session.pending_steers
+
+    result = await runtime.interrupt_session("sess_stop", reason="manual")
+    assert result.result["steerOutcomes"] == [
+        {"clientMessageId": "client_steer_stop", "outcome": "withdrawn"}
+    ]
+    # Withdraw strictly before the interrupt: the CLI rejects it afterwards.
+    assert client.calls[0].startswith("cancel:")
+    assert client.calls[1] == "interrupt"
+    assert session.pending_steers == {}
+    try:
+        await asyncio.wait_for(task, 8)
+    except asyncio.CancelledError:
+        pass
+
+    assert not [
+        item for item in host.timeline_item_upserts
+        if item.source.get("itemType") == "steeringUserMessage"
+    ]
+
+
+def test_interrupt_reports_unknown_when_the_withdraw_does_not_apply() -> None:
+    asyncio.run(_test_interrupt_reports_unknown_when_the_withdraw_does_not_apply())
+
+
+async def _test_interrupt_reports_unknown_when_the_withdraw_does_not_apply() -> None:
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    # false also covers "the CLI does not know this uuid" (verified), so it
+    # must not be reported as delivered.
+    client._query = _CancelQuery(cancelled=False)  # type: ignore[assignment]
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_read", "claude_session_0", "hello",
+        client_message_id="client_msg_read",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_read"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+    steered = await runtime.steer_turn(
+        "sess_read", "claude_session_0", "already read",
+        client_message_id="client_steer_read",
+    )
+    assert steered.ok is True
+
+    result = await runtime.interrupt_session("sess_read", reason="manual")
+    assert result.result["steerOutcomes"] == [
+        {"clientMessageId": "client_steer_read", "outcome": "unknown"}
+    ]
+    # Not withdrawn: the pending record stays for the echo, which is the only
+    # publisher (and the only proof of delivery).
+    assert session.pending_steers
+    try:
+        await asyncio.wait_for(task, 8)
+    except asyncio.CancelledError:
+        pass
+
+
+def test_interrupt_reports_unknown_without_the_cancel_seam() -> None:
+    asyncio.run(_test_interrupt_reports_unknown_without_the_cancel_seam())
+
+
+async def _test_interrupt_reports_unknown_without_the_cancel_seam() -> None:
+    host = _RecordingHost()
+    client = _SteerClaudeClient()  # no _query seam
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_unknown", "claude_session_0", "hello",
+        client_message_id="client_msg_unknown",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_unknown"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+    steered = await runtime.steer_turn(
+        "sess_unknown", "claude_session_0", "unknown fate",
+        client_message_id="client_steer_unknown",
+    )
+    assert steered.ok is True
+
+    result = await runtime.interrupt_session("sess_unknown", reason="manual")
+    assert result.result["steerOutcomes"] == [
+        {"clientMessageId": "client_steer_unknown", "outcome": "unknown"}
+    ]
+    try:
+        await asyncio.wait_for(task, 8)
+    except asyncio.CancelledError:
+        pass
+
+
+def test_interrupt_waits_for_an_inflight_steer_and_then_withdraws_it() -> None:
+    asyncio.run(_test_interrupt_waits_for_an_inflight_steer_and_then_withdraws_it())
+
+
+async def _test_interrupt_waits_for_an_inflight_steer_and_then_withdraws_it() -> None:
+    """A submit racing the stop must not fall between snapshot and interrupt.
+
+    `steer_turn` submits and registers under `execution_lock`; the stop takes
+    the same lock before withdrawing. The steer that was in flight therefore
+    lands in `pending_steers` first and is withdrawn, instead of being left in
+    the CLI queue with no outcome (red-team reproduction, 2026-11-21).
+    """
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    query = _CancelQuery(cancelled=True)
+    query.calls = client.calls
+    client._query = query  # type: ignore[assignment]
+    client.steer_gate = asyncio.Event()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_race", "claude_session_0", "hello",
+        client_message_id="client_msg_race",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_race"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    steer_task = asyncio.create_task(runtime.steer_turn(
+        "sess_race", "claude_session_0", "race",
+        client_message_id="client_steer_race",
+    ))
+    await asyncio.sleep(0.05)  # steer holds the lock, parked in client.query
+    interrupt_task = asyncio.create_task(
+        runtime.interrupt_session("sess_race", reason="manual")
+    )
+    await asyncio.sleep(0.05)
+    client.steer_gate.set()
+
+    steered = await asyncio.wait_for(steer_task, 8)
+    assert steered.ok is True
+    result = await asyncio.wait_for(interrupt_task, 8)
+    assert result.result["steerOutcomes"] == [
+        {"clientMessageId": "client_steer_race", "outcome": "withdrawn"}
+    ]
+    assert session.pending_steers == {}
+    assert client.calls[0].startswith("cancel:")
+    assert "interrupt" in client.calls
+    try:
+        await asyncio.wait_for(task, 8)
+    except asyncio.CancelledError:
+        pass

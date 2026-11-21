@@ -92,12 +92,19 @@ enum MidTurnDeliveryAction: Equatable {
 enum SteerPendingStatus: Equatable {
     case sending
     case waiting
-    case notDelivered
+    /// The turn is over and the runtime has not echoed the steer yet. It is
+    /// NOT “not delivered”: a queued steer survives an interrupt and is read
+    /// at the next turn's boundary (probe 2026-11-21, CLI 2.1.316). Only the
+    /// interrupt response's `steerOutcomes` may declare it withdrawn.
+    case heldForNextTurn
 }
 
 enum SteerPendingStatusResolver {
-    /// Official copy follows these states: 发送中 / 正在等待 Claude / 未送达.
-    /// `nil` means the record has its own failure UI (`uncertain`/`rejected`).
+    /// Copy follows 发送中 / 正在等待 Claude / 已提交，下一轮送达. The last
+    /// one replaces the official “未送达”: AA cannot tell a lost steer from a
+    /// queued one on its own, and claiming failure there caused a duplicate
+    /// send (2026-11-21). `nil` means the record has its own failure UI
+    /// (`uncertain`/`rejected`).
     static func resolve(
         delivery: V2PendingMessage.Delivery,
         runtimeStatus: V2RuntimeStatus?
@@ -107,7 +114,7 @@ enum SteerPendingStatusResolver {
             return .sending
         case .accepted, .confirmed:
             guard let runtimeStatus else { return .waiting }
-            return runtimeStatus.isTurnInFlight ? .waiting : .notDelivered
+            return runtimeStatus.isTurnInFlight ? .waiting : .heldForNextTurn
         case .uncertain, .rejected:
             return nil
         }

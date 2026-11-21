@@ -13,6 +13,11 @@ struct NoticeInputQuestion: Identifiable, Hashable {
 struct NoticeInputForm: Hashable {
     let actionID: String
     let questions: [NoticeInputQuestion]
+    /// The runtime's tool tolerates a question omitted from `answers`
+    /// (Claude's AskUserQuestion does); the official card then offers
+    /// "skip = leave this question unanswered". Absent flag → every
+    /// question stays required.
+    let allowSkip: Bool
 
     init?(_ notice: V2RuntimeNotice) {
         guard notice.interactionType == "input_request",
@@ -37,11 +42,18 @@ struct NoticeInputForm: Hashable {
         }
         guard Set(questions.map(\.id)).count == questions.count else { return nil }
         self.actionID = action.id; self.questions = questions
+        self.allowSkip = action.input.uiSchema?["allowSkip"]?.boolValue == true
     }
 
-    func payload(choices: [String: Set<String>], custom: [String: String]) -> JSONValue? {
+    /// `skipped` holds the questions the user explicitly skipped (official
+    /// QuestionCard "skip"). A skipped question is omitted from `answers`
+    /// entirely — the CLI treats a missing question as answered and reports
+    /// the remaining answers (Claude Code 2.1.316 result formatter).
+    func payload(choices: [String: Set<String>], custom: [String: String],
+                 skipped: Set<String> = []) -> JSONValue? {
         var answers: [String: JSONValue] = [:]
         for question in questions {
+            if skipped.contains(question.id) { continue }
             let selected = choices[question.id] ?? []
             guard selected.isSubset(of: Set(question.options.map(\.id))), question.multiple || selected.count <= 1 else { return nil }
             let text = question.allowCustom ? (custom[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""

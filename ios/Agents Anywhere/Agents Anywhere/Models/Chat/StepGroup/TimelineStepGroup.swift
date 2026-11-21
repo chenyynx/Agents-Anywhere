@@ -105,6 +105,24 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// live dots stay on the working row.
     var hasRunningBackgroundAgent: Bool { summary.activeAgentCount > 0 }
 
+    /// Whether the group's whole running work is dispatched subagents
+    /// (pp 2026-11-21, rule A).
+    ///
+    /// Such a row is the subagent's row, not the main turn's working row: when
+    /// a newer row owns the working mark it settles into the subagent form —
+    /// its own icon, 「正在运行 N 个智能体」 and the activity sweep — so the
+    /// three-dot mark stays on the live tail alone. A control call
+    /// (`send_input` / `wait` / `close`) or a running thinking block is the
+    /// main agent's own work and never takes this branch.
+    var settlesAsRunningSubagentRow: Bool {
+        let running = steps.filter { $0.isRunning }
+        guard !running.isEmpty else { return false }
+        return running.allSatisfy { step in
+            guard let call = step.toolCall else { return false }
+            return call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item)
+        }
+    }
+
     /// Whether the chat profile's live mark may seat on this group while a turn
     /// is active, when the runtime does not report the turn itself
     /// (pp 2026-11-10).
@@ -163,14 +181,40 @@ nonisolated struct TimelineStepGroup: Identifiable, Hashable {
     /// (idle, or an accepted stop's optimistic idle); only a truly streaming
     /// turn may animate it. This is the stop-tap half of the 2026-11-14 fix:
     /// the stop ack proves the turn is over even while row snapshots lag.
-    func showsRunningPose(isLiveTail: Bool, allowsRunningPose: Bool) -> Bool {
-        isLiveTail || (isRunning && allowsRunningPose)
+    ///
+    /// Rule A (pp 2026-11-21): the working mark belongs to the live tail. Once
+    /// the main turn has moved past a group whose dispatched subagent is still
+    /// working, the row settles into the subagent form (icon + sweep) — the
+    /// three dots must not appear on two rows at once.
+    ///
+    /// The rule only applies when a **newer** row owns the mark. If this
+    /// group is still the newest row that would draw one (body text streams
+    /// after it, or the newer groups have nothing running), it keeps the
+    /// dots: the standalone 「正在处理中」 row is suppressed while the turn
+    /// has step groups, so settling it here would leave the screen with no
+    /// working mark at all (pp 2026-11-21: 工作行调用子代理时三个点不能消失).
+    func showsRunningPose(isLiveTail: Bool,
+                          isMarkOwner: Bool,
+                          allowsRunningPose: Bool) -> Bool {
+        if isLiveTail { return true }
+        if settlesAsRunningSubagentRow, !isMarkOwner { return false }
+        return isRunning && allowsRunningPose
     }
 
     /// The step the live row shows: the trailing-most running step, else the
     /// last one (the official running branch reads `items.last`).
+    ///
+    /// A dispatched subagent stays `running` for its whole lifetime. Once the
+    /// main turn has newer steps, it must not win this rule — otherwise every
+    /// gap between the main agent's own tools falls back to
+    /// 「正在运行智能体 X」 while the subagent works in the background
+    /// (pp 2026-11-21). It still owns the row when it is the trailing step.
     var liveStep: TimelineStep? {
-        steps.last(where: { $0.isRunning }) ?? steps.last
+        steps.last(where: { step in
+            guard step.isRunning else { return false }
+            guard let call = step.toolCall else { return true }
+            return !(call.kind == .task && TimelineTurnActions.isDispatchAgentCall(call.item))
+        }) ?? steps.last
     }
 
     var toolCalls: [CodeToolCall] { steps.compactMap(\.toolCall) }
@@ -435,6 +479,16 @@ nonisolated enum TimelineChatGrouping {
             }
 
             if isReasoning(item) || isToolRow(item) {
+                // An answered AskUserQuestion leaves the step run and draws
+                // the official answered card in its own row (pp 2026-11-20).
+                // Pending questions stay in the run as the 询问 step.
+                if isToolRow(item),
+                   CodeToolCall.wireName(for: item) == "AskUserQuestion",
+                   QuestionAnsweredModel(item: item) != nil {
+                    flushAll()
+                    units.append(.standalone(rowID: item.id))
+                    continue
+                }
                 flushMessage()
                 stepItems.append(item)
                 continue

@@ -34,11 +34,29 @@ nonisolated enum ChatTimestamp {
         completedAt.flatMap(parse) ?? createdAt.flatMap(parse)
     }
 
+    /// Shared parsers, not a fresh `ISO8601DateFormatter` per call: building
+    /// one costs far more than parsing with it, and the outline builder parses
+    /// a timestamp for every message each time it rebuilds its rows
+    /// (`outline.reload` measured 69–86 ms over ~264 parts, pp 2026-11-21).
+    /// Formatters are mutable classes, so the shared instances are only ever
+    /// touched under the lock.
+    private static let parseLock = NSLock()
+    private static let fractionalParser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let plainParser = ISO8601DateFormatter()
+
     static func parse(_ raw: String) -> Date? {
-        let withFraction = ISO8601DateFormatter()
-        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFraction.date(from: raw) { return date }
-        return ISO8601DateFormatter().date(from: raw)
+        // An absent timestamp reaches this as "" (several wire rows carry no
+        // createdAt); no formatter can parse it and the old code paid two
+        // allocations to find that out.
+        guard !raw.isEmpty else { return nil }
+        parseLock.lock()
+        defer { parseLock.unlock() }
+        if let date = fractionalParser.date(from: raw) { return date }
+        return plainParser.date(from: raw)
     }
 
     private static func formatter(_ format: String, locale: Locale, calendar: Calendar) -> DateFormatter {

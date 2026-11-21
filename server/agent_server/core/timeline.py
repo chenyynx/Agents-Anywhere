@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from heapq import heapify, heappop, heappush
 from typing import Any
 
 from agent_server.core.models import TimelineItem, TimelineItemIn
@@ -280,6 +281,86 @@ def _free_run_between(
             return slots
         start -= 1
     return None
+
+
+def chain_publication_order(
+    *,
+    stored_order: Sequence[tuple[str, int]],
+    planned_order: Mapping[str, int],
+    published_ids: Sequence[str],
+) -> list[str]:
+    """Order a chain plan's published rows so no row lands on a held slot.
+
+    A client renders each published row event in arrival order (see the
+    2026-11-20 18:37 device log: 4 new rows arrived before the 10 stored rows
+    they displaced, every intermediate grouping recomputed, and the step
+    groups flashed 50→59→50). Publishing a row into a slot another not-yet-
+    moved row still holds recreates that duplicate for one frame per event.
+
+    ``published_ids`` is every row this write will publish whose position the
+    plan sets — batch rows that already exist (a rebased batch names the rows
+    it moves) plus rows the batch adds. A stored row can move up or down:
+    ``_bounded_insert`` fills a block from ``floor + 1`` upward, so its lower
+    rows may move down when space below is free. Highest-first is therefore
+    not generally safe; the safe order is the one where every row waits for
+    whoever currently occupies its target. This returns those rows in that
+    dependency order, highest target first among equals for a deterministic
+    trail. Rows whose planned position equals their stored position are not
+    ordered here (they hold their own slot and cannot collide).
+
+    A cycle (a permutation with no free slot, e.g. two rows swapping) has no
+    duplicate-free order; the remaining rows are emitted highest-first and
+    the caller must accept the transient duplicate.
+    """
+
+    stored = dict(stored_order)
+    published = [
+        item_id
+        for item_id in dict.fromkeys(published_ids)
+        if item_id in planned_order
+        and (item_id not in stored or stored[item_id] != planned_order[item_id])
+    ]
+    if not published:
+        return []
+    planned = {item_id: planned_order[item_id] for item_id in published}
+    occupant = {order: item_id for item_id, order in stored.items()}
+    waiting_on: dict[str, str | None] = {}
+    dependents: dict[str, list[str]] = {}
+    for item_id in published:
+        owner = occupant.get(planned[item_id])
+        blocker = (
+            owner
+            if owner is not None and owner != item_id and owner in planned
+            else None
+        )
+        waiting_on[item_id] = blocker
+        if blocker is not None:
+            dependents.setdefault(blocker, []).append(item_id)
+    ready = [
+        (-planned[item_id], item_id)
+        for item_id, blocker in waiting_on.items()
+        if blocker is None
+    ]
+    heapify(ready)
+    emitted: list[str] = []
+    emitted_set: set[str] = set()
+    while ready:
+        _, item_id = heappop(ready)
+        emitted.append(item_id)
+        emitted_set.add(item_id)
+        for dependent in dependents.pop(item_id, ()):
+            waiting_on[dependent] = None
+            heappush(ready, (-planned[dependent], dependent))
+    if len(emitted) < len(planned):
+        # A cycle: no order avoids a transient duplicate, so keep the trail
+        # deterministic instead of pretending otherwise.
+        emitted.extend(
+            sorted(
+                (item_id for item_id in planned if item_id not in emitted_set),
+                key=lambda item_id: (-planned[item_id], item_id),
+            )
+        )
+    return emitted
 
 
 def timeline_item_state_is_unchanged(

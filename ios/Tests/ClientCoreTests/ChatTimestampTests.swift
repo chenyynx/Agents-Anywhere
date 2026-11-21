@@ -68,4 +68,9 @@ struct ChatTimestampTests {
     func fractionalSeconds() {
         #expect(ChatTimestamp.parse("2026-10-17T14:13:00.123Z") != nil)
     }
+
+    @Test("an absent timestamp parses to nil")
+    func absentTimestamp() {
+        #expect(ChatTimestamp.parse("") == nil)
+    }
 }

@@ -422,12 +422,14 @@ struct TimelineStepGroupSummaryTests {
         #expect(!control.hasRunningBackgroundAgent)
     }
 
-    /// The turn's working row keeps its mark while the turn streams, even when
-    /// the only running step is a **background** dispatch (pp 2026-11-19:
-    /// 「我还在调工具，那还是保持三个点」). Pins the rule against re-adding a
-    /// per-hand-off live-pose guard — with such a guard this expectation goes
-    /// red, because the dispatch reports `runInBackground`.
-    @Test func aRunningBackgroundDispatchKeepsTheTurnMark() throws {
+    /// Rule A (pp 2026-11-21): only the live tail keeps the working mark.
+    /// The turn's working row still draws the dots while the main agent works
+    /// on it, but once the main turn has moved past a group whose dispatched
+    /// subagent is still running, that row settles into the subagent form
+    /// (icon + 「正在运行 N 个智能体」 + sweep) instead of a second working
+    /// mark. Pins both halves — a regression to the old "every current-turn
+    /// group may draw the mark" rule turns the second expectation red.
+    @Test func aRunningBackgroundDispatchKeepsOnlyTheTailMark() throws {
         var value = try itemObject(id: "a1", text: "")
         value["type"] = "tool"; value["role"] = "assistant"; value["status"] = "running"
         value["content"] = ["kind": "agent_call", "action": "invoke",
@@ -438,10 +440,35 @@ struct TimelineStepGroupSummaryTests {
             .tool(call: CodeToolCall(item: try decode(value))),
         ]
         let group = TimelineStepGroup(id: "steps:background", steps: steps)
-        #expect(group.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        // The turn-membership gate still decides: without the current turn's
-        // allowance the group must settle (reply over, agent still running).
-        #expect(!group.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(group.settlesAsRunningSubagentRow)
+        // The main turn is still working on this group: the row keeps the dots.
+        #expect(group.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                       allowsRunningPose: true))
+        // The turn moved past it and the subagent still runs: no second mark.
+        #expect(!group.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                        allowsRunningPose: true))
+        // Still the newest row that would draw a mark (body text streams
+        // after it, or newer groups have nothing running): the dots must stay
+        // instead of vanishing (pp 2026-11-21).
+        #expect(group.showsRunningPose(isLiveTail: false, isMarkOwner: true,
+                                       allowsRunningPose: true))
+        // Reply over: the group settles either way.
+        #expect(!group.showsRunningPose(isLiveTail: false, isMarkOwner: true,
+                                        allowsRunningPose: false))
+    }
+
+    /// A control call on an existing agent is the main turn's own work, not a
+    /// subagent row: it keeps the ordinary live rule even off the tail.
+    @Test func aRunningControlCallIsNotASubagentRow() throws {
+        let steps: [TimelineStep] = [
+            try agentStep("a1", status: "running", action: "wait"),
+        ]
+        let group = TimelineStepGroup(
+            id: "steps:control", steps: steps,
+            summary: TimelineStepSummarizer.summary(steps: steps, cwd: nil))
+        #expect(!group.settlesAsRunningSubagentRow)
+        #expect(group.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                       allowsRunningPose: true))
     }
 
     @Test func mixedSubagentStatesCountOnlyTheRunningOnes() throws {
@@ -489,6 +516,38 @@ struct TimelineStepGroupSummaryTests {
         #expect(step.liveThinkingLine == "second line")
         #expect(TimelineStep.thinking(id: "r", text: "\n\n", status: .running)
             .liveThinkingLine == nil)
+    }
+
+    /// A dispatched subagent stays `running` for its whole lifetime. Once the
+    /// main turn has newer steps, the live row must show the main agent's own
+    /// step instead of falling back to 「正在运行智能体 X」 in every gap
+    /// (pp 2026-11-21). A dispatch that is still the trailing step keeps the
+    /// label — that is the turn waiting on it.
+    @Test func aBackgroundDispatchDoesNotOwnTheLiveLabelAfterNewerSteps() throws {
+        let movedOn = TimelineStepGroup(id: "steps:moved-on", steps: [
+            .thinking(id: "r1", text: "think", status: .done),
+            try agentStep("a1", status: "running"),
+            try tool("t1", name: "Bash", input: ["command": "swift test"]),
+        ])
+        #expect(movedOn.liveStep?.id == "t1")
+
+        let trailing = TimelineStepGroup(id: "steps:trailing", steps: [
+            .thinking(id: "r2", text: "think", status: .done),
+            try agentStep("a2", status: "running"),
+        ])
+        #expect(trailing.liveStep?.id == "a2")
+    }
+
+    /// A running main-turn tool still wins over an older dispatch.
+    @Test func theRunningMainToolBeatsAnOlderBackgroundDispatch() throws {
+        let steps: [TimelineStep] = [
+            try agentStep("a1", status: "running"),
+            .tool(call: CodeToolCall(item: try toolItem(
+                "t1", order: 2, name: "Bash",
+                input: ["command": "swift test"], status: "running"))),
+        ]
+        let group = TimelineStepGroup(id: "steps:run", steps: steps)
+        #expect(group.liveStep?.id == "t1")
     }
 }
 
@@ -550,8 +609,10 @@ struct TimelineStepGroupLiveMarkTests {
         // (pp 2026-11-14: the row spun for ~2.4 s after the interrupt while
         // the connector was still publishing the settled rows).
         let running = group([.thinking(id: "r", text: "think", status: .running)])
-        #expect(running.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(!running.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(running.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                         allowsRunningPose: true))
+        #expect(!running.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: false))
     }
 
     @Test func theLiveTailStillDrawsTheBetweenStepsPose() {
@@ -559,10 +620,14 @@ struct TimelineStepGroupLiveMarkTests {
         // `allowsRunningPose` alone cannot animate a group with no running
         // step (the adapter sets the tail while the turn streams).
         let settled = group([.thinking(id: "r", text: "think", status: .done)])
-        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: true))
-        #expect(settled.showsRunningPose(isLiveTail: true, allowsRunningPose: false))
-        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: true))
-        #expect(!settled.showsRunningPose(isLiveTail: false, allowsRunningPose: false))
+        #expect(settled.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                         allowsRunningPose: true))
+        #expect(settled.showsRunningPose(isLiveTail: true, isMarkOwner: true,
+                                         allowsRunningPose: false))
+        #expect(!settled.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: true))
+        #expect(!settled.showsRunningPose(isLiveTail: false, isMarkOwner: false,
+                                          allowsRunningPose: false))
     }
 }
 

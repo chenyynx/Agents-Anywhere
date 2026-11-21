@@ -28,7 +28,7 @@ struct CompositeSelectionModelTests {
             CompositeSelectionModel.Fragment(
                 blockIndex: 0, range: NSRange(location: 2, length: 1)),
             CompositeSelectionModel.Fragment(
-                blockIndex: 1, range: NSRange(location: 0, length: 2)),
+                blockIndex: 1, range: NSRange(location: 0, length: 3)),
         ])
     }
 

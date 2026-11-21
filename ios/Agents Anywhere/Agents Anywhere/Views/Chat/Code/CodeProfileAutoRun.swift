@@ -1713,7 +1713,9 @@ final class CodeProfileAutoRunModel {
                 // row itself is laid out below the status bar in the timeline.
                 // The parity gate hit the same 68 pt inset in the M1 spike.
                 .ignoresSafeArea())
-        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.frame = CGRect(x: 0, y: 0,
+                                 width: window.bounds.width,
+                                 height: window.bounds.height)
         host.view.backgroundColor = .clear
         window.addSubview(host.view)
         host.view.layoutIfNeeded()
@@ -3201,7 +3203,9 @@ final class CodeProfileAutoRunModel {
                                typography: typography)
                 .padding(.horizontal, CodePageTheme.rowMarginLeading)
                 .ignoresSafeArea())
-        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.frame = CGRect(x: 0, y: 0,
+                                 width: window.bounds.width,
+                                 height: window.bounds.height)
         host.view.backgroundColor = .clear
         window.addSubview(host.view)
         host.view.layoutIfNeeded()

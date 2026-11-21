@@ -564,7 +564,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             return
         }
         let windowPoint = gesture.location(in: nil)
-        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let visible = visibleWindowRect(for: scrollView)
         let band: CGFloat = 90
         let topEdge = visible.minY + band
         let bottomEdge = visible.maxY - band
@@ -629,7 +629,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         offset.y = min(max(offset.y + step, minY), maxY)
         guard abs(offset.y - scrollView.contentOffset.y) > 0.01 else { return }
         scrollView.setContentOffset(offset, animated: false)
-        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let visible = visibleWindowRect(for: scrollView)
         let edgeY = autoScrollDirection < 0
             ? visible.minY + 12
             : visible.maxY - 12
@@ -848,9 +848,22 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         return convert(rect, to: nil)
     }
 
+    /// The part of the timeline the reader can actually see: the scroll view
+    /// is full-bleed behind the composer, so the raw bounds put the bottom
+    /// edge under the input bar and the auto-scroll band could not be reached
+    /// until the selection had already covered the whole visible text.
+    private func visibleWindowRect(for scrollView: UIScrollView) -> CGRect {
+        var rect = scrollView.bounds.inset(by: scrollView.adjustedContentInset)
+        if rect.height < 44 || rect.width < 44 {
+            rect = scrollView.bounds.insetBy(
+                dx: 0, dy: min(40, max(0, scrollView.bounds.height / 4)))
+        }
+        return scrollView.convert(rect, to: nil)
+    }
+
     private func edgeDirection(for caret: CGRect) -> CGFloat {
         guard let scrollView = enclosingScrollView() else { return 0 }
-        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let visible = visibleWindowRect(for: scrollView)
         let band: CGFloat = 90
         if caret.maxY > visible.maxY - band { return 1 }
         if caret.minY < visible.minY + band { return -1 }
@@ -859,7 +872,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     private func speed(for caret: CGRect, direction: CGFloat) -> CGFloat {
         guard let scrollView = enclosingScrollView() else { return 120 }
-        let visible = scrollView.convert(scrollView.bounds, to: nil)
+        let visible = visibleWindowRect(for: scrollView)
         let band: CGFloat = 90
         let overshoot = direction > 0
             ? caret.maxY - (visible.maxY - band)

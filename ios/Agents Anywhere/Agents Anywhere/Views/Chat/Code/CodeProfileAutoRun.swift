@@ -1271,6 +1271,7 @@ final class CodeProfileAutoRunModel {
 
     private func captureViews() async {
         prepareViews()
+        await verifyTextSelectionWiring()
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
@@ -3177,6 +3178,73 @@ final class CodeProfileAutoRunModel {
     }
 
     // MARK: - Report
+
+    /// Selection wiring on the live Code row, fed the gate's table fixture:
+    /// the cells must carry their own interaction and the body text must be
+    /// participants of the row-level overlay.
+    private func verifyTextSelectionWiring() async {
+        guard let window = keyWindow,
+              let items = Self.decodeItems(RendererMeasureFixtureJSON.codeTable) else {
+            failures.append("textSelection: fixture unavailable")
+            return
+        }
+        let group = ChatTimelineGroup(kind: .single,
+            rows: items.map { ChatTimelineRowModel($0) },
+            explicitID: "gate-selection-wiring")
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
+        let host = UIHostingController(rootView:
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               typography: typography)
+                .padding(.horizontal, CodePageTheme.rowMarginLeading)
+                .ignoresSafeArea())
+        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.backgroundColor = .clear
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        await wait(800)
+        host.view.layoutIfNeeded()
+
+        if let table = Self.findTableBlock(in: host.view) {
+            let selectable = table.debugSelectableCellCount
+            let cells = table.debugSurfaceSubviewCount
+            check(selectable > 0, "textSelection: table has no selectable cells")
+            check(selectable == cells,
+                  "textSelection: \(selectable) selectable cells for \(cells) cell views")
+            report["tableSelection"] = [
+                "selectable": selectable,
+                "cells": cells,
+            ]
+        } else {
+            failures.append("textSelection: no table block in the fixture")
+        }
+
+        if let stack = Self.findTextStack(in: host.view) {
+            let participants = stack.debugSelectionParticipantCount
+            check(participants >= 1,
+                  "textSelection: composite selection has \(participants) participants")
+            check(stack.debugSelectionHasInteraction,
+                  "textSelection: composite selection has no system interaction")
+            report["compositeSelection"] = [
+                "participants": participants,
+                "interaction": stack.debugSelectionHasInteraction,
+            ]
+        } else {
+            failures.append("textSelection: no text stack in the fixture")
+        }
+        host.view.removeFromSuperview()
+    }
+
+    private static func findTableBlock(in view: UIView) -> AssistantTableBlockView? {
+        if let table = view as? AssistantTableBlockView { return table }
+        for subview in view.subviews {
+            if let found = findTableBlock(in: subview) { return found }
+        }
+        return nil
+    }
 
     /// The Code row's text stack, if this view tree carries one.
     private static func findTextStack(in view: UIView) -> CodeMarkdownTextStackView? {

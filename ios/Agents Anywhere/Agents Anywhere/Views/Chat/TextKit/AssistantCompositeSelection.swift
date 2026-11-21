@@ -422,17 +422,42 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     var hasText: Bool { model.totalLength > 0 }
 
     func text(in range: UITextRange) -> String? {
-        guard let range = range as? MarkdownTextOffsetRange,
-              range.startOffset >= 0,
-              range.endOffset <= model.totalLength else { return nil }
-        guard range.endOffset > range.startOffset else { return "" }
-        let fragments = model.fragments(in: NSRange(
-            location: range.startOffset,
-            length: range.endOffset - range.startOffset))
-        return joinedText(fragments) { fragment in
-            guard textViews.indices.contains(fragment.blockIndex) else { return nil }
-            return textViews[fragment.blockIndex].compositeSubstring(for: fragment.range)
+        guard let range = range as? MarkdownTextOffsetRange else { return nil }
+        return flattenedSubstring(from: range.startOffset, to: range.endOffset)
+    }
+
+    /// Exactly the virtual text in `[start, end)`. A multi-character
+    /// separator contributes only the part the range covers, so the returned
+    /// UTF-16 length always equals `end - start`; the system tokenizer relies
+    /// on that contract.
+    private func flattenedSubstring(from start: Int, to end: Int) -> String? {
+        guard start >= 0, end >= start, end <= model.totalLength else { return nil }
+        var text = ""
+        for (index, segment) in model.segments.enumerated() {
+            let segmentStart = segment.range.location
+            let segmentEnd = NSMaxRange(segment.range)
+            if index > 0, let separator = model.separator(afterBlock: index - 1) {
+                let nsSeparator = separator as NSString
+                let separatorStart = segmentStart - nsSeparator.length
+                let from = max(start, separatorStart)
+                let to = min(end, segmentStart)
+                if to > from {
+                    text += nsSeparator.substring(
+                        with: NSRange(location: from - separatorStart,
+                                      length: to - from))
+                }
+            }
+            let from = max(start, segmentStart)
+            let to = min(end, segmentEnd)
+            if to > from, textViews.indices.contains(index),
+               let piece = textViews[index].compositeSubstring(
+                    for: NSRange(location: from - segmentStart,
+                                 length: to - from)) {
+                text += piece
+            }
+            if segmentEnd >= end { break }
         }
+        return text
     }
 
     // Read-only: the body never accepts edits, but the protocol requires the

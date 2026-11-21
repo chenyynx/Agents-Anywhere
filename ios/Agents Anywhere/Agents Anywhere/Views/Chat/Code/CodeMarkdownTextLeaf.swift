@@ -363,6 +363,8 @@ final class CodeMarkdownTextStackView: UIView {
             }
             pendingBuild = nil
             removeRecords(from: 0)
+            selectionOverlay.endSelection()
+            refreshSelectionOverlay()
             builtKey = ""
             builtWidth = -1
             builtGeneration = -1
@@ -615,6 +617,9 @@ final class CodeMarkdownTextStackView: UIView {
         #if DEBUG
         CodePageBuildStats.fullRebuilds += 1
         #endif
+        // A rebuild replaces every block view; offsets into the old document
+        // are meaningless against the new one even when the lengths match.
+        selectionOverlay.endSelection()
         UIView.performWithoutAnimation {
             removeRecords(from: 0)
             let keys = document.blockKeys

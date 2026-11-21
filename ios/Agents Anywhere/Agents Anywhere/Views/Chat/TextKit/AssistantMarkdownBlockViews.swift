@@ -1122,7 +1122,10 @@ final class AssistantTableBlockView: UIView {
             rebuildCellViews()
         }
         setNeedsLayout()
-        return newTable.totalHeight
+        // Match the document's stored height (the `.table` case in
+        // `AssistantMarkdownTextLayout.height`, which rounds up).
+        return AssistantMarkdownTextLayout.tableHeight(
+            of: newTable, displayScale: displayScale)
     }
 
     private func columnMetricsMatch(_ lhs: AssistantTableBlock,
@@ -1197,6 +1200,13 @@ final class AssistantTableBlockView: UIView {
     /// One entry per non-empty cell; the gate compares the selectable count
     /// against this instead of the surface's subview count.
     var debugNonEmptyCellCount: Int { cellViews.count }
+    /// Cell text views in (row, column) order. The streaming gate compares
+    /// this across two revisions to prove the views were reused, not rebuilt.
+    var debugCellViewIdentifiers: [ObjectIdentifier] {
+        cellViews.keys
+            .sorted { ($0.row, $0.column) < ($1.row, $1.column) }
+            .compactMap { key in cellViews[key].map(ObjectIdentifier.init) }
+    }
     var debugCellFrameMismatchCount: Int {
         cellViews.reduce(0) { count, entry in
             let expected = textRect(row: entry.key.row, column: entry.key.column)

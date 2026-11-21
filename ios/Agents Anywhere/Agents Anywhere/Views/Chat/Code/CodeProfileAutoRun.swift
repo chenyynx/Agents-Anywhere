@@ -1271,6 +1271,7 @@ final class CodeProfileAutoRunModel {
 
     private func captureViews() async {
         prepareViews()
+        verifyTableIncrementalReuse()
         await verifyTextSelectionWiring()
         await verifyMessageRowHeight()
         await verifyRowHeights()
@@ -3180,6 +3181,74 @@ final class CodeProfileAutoRunModel {
     }
 
     // MARK: - Report
+
+    /// Streaming table revision on the real stack: same grid, one cell text
+    /// changed. The cell views must survive (reuse), stay selectable, and keep
+    /// their text rects; this is the path plain rendering gates never reach.
+    private func verifyTableIncrementalReuse() {
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
+        let first = """
+        Intro paragraph.
+
+        | Case | Height |
+        | --- | --- |
+        | short | 56 |
+        | long | 610 |
+        """
+        let second = first.replacingOccurrences(of: "| short | 56 |",
+                                                with: "| short | 57 |")
+        guard let doc1 = AssistantMarkdownDocumentParser.make(
+                  text: first, resolvesFileReferences: false,
+                  typography: typography),
+              let doc2 = AssistantMarkdownDocumentParser.make(
+                  text: second, resolvesFileReferences: false,
+                  typography: typography) else {
+            failures.append("tableReuse: fixture did not parse")
+            return
+        }
+        let cache = AssistantMarkdownBlockHeightCache()
+        let stack = CodeMarkdownTextStackView()
+        stack.allowsSelection = true
+        stack.install(document: doc1, key: "table-reuse-1", displayScale: 2,
+                      generation: 1, cache: cache, typographyRevision: 1,
+                      width: 361)
+        _ = stack.prepareAndMeasure(width: 361)
+        guard let table = Self.findTableBlock(in: stack) else {
+            failures.append("tableReuse: no table block after the first install")
+            return
+        }
+        let identifiers = table.debugCellViewIdentifiers
+        let nonEmpty = table.debugNonEmptyCellCount
+        check(nonEmpty == 4, "tableReuse: \(nonEmpty) non-empty cells, expected 4")
+        check(table.debugSelectableCellCount == nonEmpty,
+              "tableReuse: \(table.debugSelectableCellCount) selectable cells for \(nonEmpty) cells")
+        check(table.debugCellFrameMismatchCount == 0,
+              "tableReuse: cells off their text rect")
+
+        stack.install(document: doc2, key: "table-reuse-2", displayScale: 2,
+                      generation: 1, cache: cache, typographyRevision: 1,
+                      width: 361)
+        _ = stack.prepareAndMeasure(width: 361)
+        guard let updated = Self.findTableBlock(in: stack) else {
+            failures.append("tableReuse: no table block after the second install")
+            return
+        }
+        let reused = updated.debugCellViewIdentifiers == identifiers
+        check(reused, "tableReuse: cell views were rebuilt on a same-grid revision")
+        check(updated.debugSelectableCellCount == updated.debugNonEmptyCellCount,
+              "tableReuse: a reused table lost its cell interaction")
+        check(updated.debugCellFrameMismatchCount == 0,
+              "tableReuse: cells off their text rect after the update")
+        report["tableReuse"] = [
+            "cells": updated.debugNonEmptyCellCount,
+            "selectable": updated.debugSelectableCellCount,
+            "reused": reused,
+        ]
+    }
 
     /// Selection wiring on the live Code row, fed the gate's table fixture:
     /// the cells must carry their own interaction and the body text must be

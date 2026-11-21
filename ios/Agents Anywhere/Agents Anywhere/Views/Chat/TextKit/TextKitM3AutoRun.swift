@@ -287,8 +287,12 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
 
         // The assistant body's fixture table is 3 rows × 2 columns. The
         // surface exposes six accessibility elements; the glyphs live in six
-        // selectable cell text views (pp 2026-11-21), so the surface carries
-        // six subviews while VoiceOver still reads one element per cell.
+        // cell text views (pp 2026-11-21), so the surface carries six
+        // subviews while VoiceOver still reads one element per cell.
+        //
+        // This gate drives the legacy `AssistantMarkdownCell`, which applies
+        // no selection interaction; selectability of these cells is asserted
+        // on the live `CodeMessageRowView` in `code-profile`.
         var tableSurfaceCells = -1
         var tableSurfaceSubviews = -1
         var tableSurfaceLabels = -1

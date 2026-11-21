@@ -632,8 +632,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 hasher.combine(width)
                 let cacheKey = hasher.revision
                 if let cached = answeredCardEstimateCache[cacheKey] { return .fixed(cached) }
+                // The card's group is self-margined: the view draws the Code
+                // page's 5 pt top and bottom margins itself, so the cell has
+                // to carry them too (pp 2026-11-22).
                 let height = QuestionAnsweredCardView.estimatedHeight(
                     pairs: answered.pairs, width: width)
+                    + 2 * CodePageTheme.rowMarginTop
                 if answeredCardEstimateCache.count > 600 { answeredCardEstimateCache.removeAll() }
                 answeredCardEstimateCache[cacheKey] = height
                 return .fixed(height)

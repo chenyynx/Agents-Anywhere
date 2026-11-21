@@ -93,4 +93,32 @@ import Testing
                                       rows: [try compactMarker(), try compactMarker(order: 3)])
         #expect(!group.isStandaloneCompactDivider)
     }
+
+    /// A settled `AskUserQuestion` row draws the answered card in place of a
+    /// Code row and its group must own the 5 pt margins like an interaction
+    /// anchor. Paying the list's 20 pt gap instead left the card 5 pt under
+    /// the text above and ~25 pt above the row below (pp 2026-11-22:
+    /// 「完成答题态间距有问题」).
+    private func questionRow(answered: Bool, order: Int = 2) throws -> ChatTimelineRowModel {
+        var content: [String: Any] = [
+            "kind": "AskUserQuestion",
+            "questions": [["question": "Q1"]],
+        ]
+        if answered { content["answers"] = ["Q1": "A"] }
+        return try row("q1", type: "tool", role: "tool", order: order, content: content)
+    }
+
+    @Test func anAnsweredQuestionCardGroupIsSelfMargined() throws {
+        let group = ChatTimelineGroup(kind: .single, rows: [try questionRow(answered: true)])
+        #expect(group.isAnsweredQuestionCard)
+        #expect(group.isSelfMargined)
+        #expect(group.listSpacing == 0)
+    }
+
+    @Test func anUnansweredQuestionKeepsTheListGap() throws {
+        let group = ChatTimelineGroup(kind: .single, rows: [try questionRow(answered: false)])
+        #expect(!group.isAnsweredQuestionCard)
+        #expect(group.isSelfMargined == false)
+        #expect(group.listSpacing == TimelineListMetrics.itemSpacing)
+    }
 }

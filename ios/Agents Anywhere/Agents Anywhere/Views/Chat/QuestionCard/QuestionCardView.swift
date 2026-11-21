@@ -23,11 +23,26 @@ import UIKit
 struct QuestionCardView: View {
     let item: SessionNoticeModel
     let chat: SessionChatModel
+    /// The tallest the card may draw: the host's space above the keyboard.
+    /// The card hugs its content while it fits and turns into a vertical
+    /// scroller at this cap (pp 2026-11-22: with the keyboard up the custom
+    /// answer field and the buttons sat behind it).
+    var maximumHeight: CGFloat = .infinity
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pageIndex = 0
+    /// The card content's raw height, measured inside the scroll view. The
+    /// card draws at `min(contentHeight, maximumHeight)`.
+    @State private var contentHeight: CGFloat = 0
+    /// The question whose custom-answer field owns the keyboard, if any.
+    /// Scrolling follows it so what you type stays above the keyboard.
+    @State private var focusedQuestionID: String?
+
+    /// Scroll anchors for the card's own scroll view.
+    private static let topAnchorID = "question-card.top"
+    private static let bottomAnchorID = "question-card.bottom"
 
     // MARK: - Derived state
 
@@ -63,27 +78,55 @@ struct QuestionCardView: View {
     // MARK: - Body
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Official flow: the paging row (multi-question only) is the
-            // first row; the close button FLOATS at the top-trailing corner
-            // and never consumes flow height (pp 2026-11-20). That is why a
-            // single-question card's question starts at the very top.
-            if questions.count > 1 {
-                pagingRow
-                    .padding(.leading, QuestionCardMetrics.pagingLeading)
+        // Always one ScrollView, sized to the content up to the host's cap.
+        // A `ViewThatFits` switch would rebuild the custom-answer editor the
+        // moment the keyboard narrows the cap, dropping its focus and the
+        // keyboard with it — the scroller is the stable identity instead.
+        ScrollViewReader { scroller in
+            ScrollView(.vertical) {
+                cardContent
+                    // The card hugs its content: measure the raw height, then
+                    // let the scroll view take it up to the cap. A zero-width
+                    // pass would report a bogus wrapped height — wait for the
+                    // real width.
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.width > 0 ? proxy.size.height : 0
+                    } action: { height in
+                        guard height > 0, abs(height - contentHeight) > 0.5 else { return }
+                        contentHeight = height
+                    }
+                    .id(Self.topAnchorID)
             }
-            // The official card does not scroll vertically: its
-            // `CappedCardScrollingRow` is the horizontal pager itself. The
-            // card simply sizes to its content, so every question's options
-            // and the custom-answer field stay visible.
-            pager
-            statusLine
-            submitRow
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+            .frame(height: cardHeight)
+            .onChange(of: focusedQuestionID) { _, focused in
+                guard focused != nil else { return }
+                scrollCardToBottom(scroller)
+            }
+            .onChange(of: maximumHeight) { _, _ in
+                guard focusedQuestionID != nil else { return }
+                scrollCardToBottom(scroller)
+            }
+            .onChange(of: contentHeight) { _, _ in
+                // The editor grows a line per keystroke; keep its caret and
+                // the submit row in view while it owns the keyboard.
+                guard focusedQuestionID != nil else { return }
+                scrollCardToBottom(scroller)
+            }
+            .onChange(of: pageIndex) { _, _ in
+                // A new page starts at the paging row, not at the previous
+                // page's scroll offset.
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    scroller.scrollTo(Self.topAnchorID, anchor: .top)
+                }
+            }
         }
-        .padding(.horizontal, QuestionCardMetrics.contentPaddingHorizontal)
-        .padding(.vertical, QuestionCardMetrics.contentPadding)
         // The X floats above the card's top-trailing corner (outside the
-        // content padding), like the official floating dismiss button.
+        // content padding), like the official floating dismiss button. It
+        // stays put while the card scrolls.
         .overlay(alignment: .topTrailing) {
             if cancelAction != nil {
                 dismissButton
@@ -100,8 +143,11 @@ struct QuestionCardView: View {
                                        style: .continuous))
         // A downward swipe anywhere on the card drops the keyboard: the card
         // consumes the drags that used to fall through to the transcript, so
-        // it has to dismiss the keyboard itself (pp 2026-11-20).
-        .gesture(QuestionCardSwipeDownGesture { dismissKeyboard() })
+        // it has to dismiss the keyboard itself (pp 2026-11-20). A capped
+        // card that actually scrolls keeps those drags for its scroller.
+        .gesture(QuestionCardSwipeDownGesture(isScrollable: isCardScrollable) {
+            dismissKeyboard()
+        })
         .glassEffect(.regular, in: .rect(cornerRadius: QuestionCardMetrics.cornerRadius))
         // The dock cell clips its bounds; clipping to the card's own shape
         // keeps the glass shadow from painting around it (same reason as
@@ -116,12 +162,82 @@ struct QuestionCardView: View {
         .onChange(of: questions.map(\.id)) { _, _ in
             pageIndex = min(pageIndex, max(0, questions.count - 1))
         }
+        // Low-frequency evidence for the device: whether the card had to
+        // scroll and whether its field owns the keyboard. The cap changes on
+        // every frame of a keyboard animation, so it is only sampled here.
+        .onChange(of: isCardScrollable) { _, scrollable in
+            recordCardGeometry(scrollable ? "scrollable" : "hugs")
+        }
+        .onChange(of: focusedQuestionID) { _, focused in
+            recordCardGeometry(focused == nil ? "blurred" : "focused")
+        }
+    }
+
+    private func recordCardGeometry(_ event: String) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "question.card.geometry",
+            sessionID: chat.session.id,
+            detail: [
+                "event": event,
+                "content": String(Int(contentHeight.rounded())),
+                "cap": maximumHeight.isFinite ? String(Int(maximumHeight.rounded())) : "inf",
+                "card": String(Int(cardHeight.rounded())),
+            ])
+    }
+
+    /// The visible card height: the content's own height while it fits the
+    /// space above the keyboard, the cap from there on. The first layout
+    /// measures the content inside the zero-height scroll view before
+    /// anything is drawn, so no zero-height frame reaches the screen.
+    private var cardHeight: CGFloat {
+        guard contentHeight > 0 else { return 0 }
+        return min(contentHeight, maximumHeight)
+    }
+
+    private var isCardScrollable: Bool {
+        contentHeight > maximumHeight + 0.5
+    }
+
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Official flow: the paging row (multi-question only) is the
+            // first row; the close button FLOATS at the top-trailing corner
+            // and never consumes flow height (pp 2026-11-20). That is why a
+            // single-question card's question starts at the very top.
+            if questions.count > 1 {
+                pagingRow
+                    .padding(.leading, QuestionCardMetrics.pagingLeading)
+            }
+            // The official card's pager is the horizontal pager itself; the
+            // page sizes to its content so every option and the
+            // custom-answer field stay visible together.
+            pager
+            statusLine
+            submitRow
+                .id(Self.bottomAnchorID)
+        }
+        .padding(.horizontal, QuestionCardMetrics.contentPaddingHorizontal)
+        .padding(.vertical, QuestionCardMetrics.contentPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The keyboard's own animation moves the card; the card's scroll must
+    /// not add a spring on top of it.
+    private func scrollCardToBottom(_ scroller: ScrollViewProxy) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            scroller.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+        }
     }
 
     // MARK: - Top row (paging + dismiss)
 
     private var pagingRow: some View {
-        HStack(alignment: .top, spacing: QuestionCardMetrics.pagingSpacing) {
+        // Centre, not top: each caret carries a 44 pt tap target, so a
+        // top-aligned HStack parked the 12 pt page label ~13 pt above the
+        // glyph the eye reads (pp 2026-11-22: 「文字没和箭头在一排」).
+        HStack(alignment: .center, spacing: QuestionCardMetrics.pagingSpacing) {
             pagingArrow(left: true)
             // Official copy: 「第1个，共3个」 (device, 2026-11-20).
             Text(String(localized: "第\(min(pageIndex + 1, questions.count))个，共\(questions.count)个"))
@@ -226,7 +342,11 @@ struct QuestionCardView: View {
                 choices(question)
             }
             .contentShape(Rectangle())
-            .gesture(pagingDrag)
+            // Simultaneous, not exclusive: the card is its own vertical
+            // scroller now, and an exclusive DragGesture would take the
+            // vertical pans away from it. This handler only acts on
+            // horizontal drags anyway.
+            .simultaneousGesture(pagingDrag)
             customInput(question)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -316,7 +436,13 @@ struct QuestionCardView: View {
                                 textPadding: 0,
                                 showsBackground: false,
                                 placeholderColor: detailInk,
-                                onFocus: { item.setCustomSelected(true, question: question) },
+                                onFocus: {
+                                    item.setCustomSelected(true, question: question)
+                                    // The capped card parks its bottom so
+                                    // the focused field stays above the
+                                    // keyboard.
+                                    focusedQuestionID = question.id
+                                },
                                 onEditingEnded: { item.composingFields.remove($0) },
                                 onChange: { text, marked, editorID in
                                     if text != (item.custom[question.id] ?? "") {
@@ -541,9 +667,14 @@ private struct CloseXMark: View {
 /// drags that begin inside the custom-answer editor — those belong to text
 /// selection.
 private struct QuestionCardSwipeDownGesture: UIGestureRecognizerRepresentable {
+    /// The capped card's scroller owns vertical drags; a card that fits keeps
+    /// the swipe-to-dismiss-keyboard behaviour.
+    let isScrollable: Bool
     let onSwipeDown: () -> Void
 
-    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator(isScrollable: isScrollable)
+    }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let recognizer = UIPanGestureRecognizer()
@@ -553,7 +684,9 @@ private struct QuestionCardSwipeDownGesture: UIGestureRecognizerRepresentable {
         return recognizer
     }
 
-    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {}
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.isScrollable = isScrollable
+    }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer,
                                          context: Context) {
@@ -565,6 +698,12 @@ private struct QuestionCardSwipeDownGesture: UIGestureRecognizerRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var isScrollable: Bool
+
+        init(isScrollable: Bool) {
+            self.isScrollable = isScrollable
+        }
+
         /// This recognizer is passive; it must never make another recognizer
         /// (button taps, the IME, the text editor) fail.
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
@@ -576,7 +715,11 @@ private struct QuestionCardSwipeDownGesture: UIGestureRecognizerRepresentable {
                                shouldReceive touch: UITouch) -> Bool {
             var view: UIView? = touch.view
             while let candidate = view, candidate !== recognizer.view {
+                // The text editor owns its selection drags; a card that has
+                // to scroll owns its vertical drags too (otherwise every
+                // attempt to reach the input dismissed the keyboard).
                 if candidate is UITextView { return false }
+                if candidate is UIScrollView, isScrollable { return false }
                 view = candidate.superview
             }
             return true

@@ -3,6 +3,9 @@ import SwiftUI
 struct SessionInteractionDock: View {
     let chat: SessionChatModel
     let onShowAll: (String) -> Void
+    /// The space the host leaves above the keyboard; the question card hugs
+    /// its content under this cap and scrolls beyond it.
+    var maximumCardHeight: CGFloat = .infinity
     @State private var selectedID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var metrics = SessionInteractionMetrics()
@@ -19,12 +22,19 @@ struct SessionInteractionDock: View {
     private var pageHeight: CGFloat {
         metrics.compactHeight
     }
+    /// The question card's own ceiling: the host's space minus the compact
+    /// carousel when both are up (the stack draws the carousel below it).
+    private var questionCardLimit: CGFloat {
+        guard !compactItems.isEmpty else { return maximumCardHeight }
+        return max(160, maximumCardHeight - (pageHeight + peek * 2 + 8))
+    }
 
     var body: some View {
         if !items.isEmpty {
             VStack(spacing: 8) {
                 ForEach(questionItems) { item in
-                    QuestionCardView(item: item, chat: chat)
+                    QuestionCardView(item: item, chat: chat,
+                                     maximumHeight: questionCardLimit)
                         .padding(.horizontal, QuestionCardMetrics.screenMargin)
                         // Slide in from below, but leave by fading: a tall
                         // card sliding down while the bar shrinks and the

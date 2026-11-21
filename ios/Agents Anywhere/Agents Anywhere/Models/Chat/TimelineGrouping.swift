@@ -65,6 +65,16 @@ extension ChatTimelineGroup {
             && TimelineEntryPresentation.isCompactItem(rows[0].value)
     }
 
+    /// A settled `AskUserQuestion` row renders as the answered card in place
+    /// of a Code row (`CodeStandaloneRowView`). Like an interaction anchor it
+    /// draws its own 5 pt margins, so it must not also pay the list's 20 pt
+    /// gap — otherwise the card sits ~5 pt from the text above and ~25 pt
+    /// above the row below (pp 2026-11-22: 「完成答题态间距有问题」).
+    var isAnsweredQuestionCard: Bool {
+        explicitID == nil && rows.count == 1
+            && QuestionAnsweredModel(item: rows[0].value) != nil
+    }
+
     /// Whether the row supplies its own vertical breathing room. Code/chat
     /// message and step rows carry 5 pt row margins; the compaction divider
     /// carries 16 pt padding. The list must not add its 20 pt gap after
@@ -72,6 +82,7 @@ extension ChatTimelineGroup {
     /// more space below the divider than above it (device 2026-11-15).
     var isSelfMargined: Bool {
         explicitID != nil || isStandaloneCompactDivider || isInteractionAnchor
+            || isAnsweredQuestionCard
     }
 
     /// The vertical gap the collection list adds after this group.

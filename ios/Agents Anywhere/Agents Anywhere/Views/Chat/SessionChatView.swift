@@ -257,7 +257,14 @@ struct SessionChatView: View, Equatable {
             // `safeAreaBar` keeps it over the content while the list
             // scrolls beneath the glass.
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
+                composerDockArea(
+                    maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)),
+                    // The bar sits on the keyboard; the card may only use the
+                    // room between the navigation bar and the keyboard. The
+                    // card scrolls beyond this cap instead of running behind
+                    // the keyboard (pp 2026-11-22).
+                    maximumCardHeight: questionCardHeightLimit(geometry)
+                )
             }
             // [E] chrome-composer.md §4 — Code page background
             // `#F9F9F7` / `#151515`, edge to edge.
@@ -266,17 +273,30 @@ struct SessionChatView: View, Equatable {
             .overlay(alignment: .topLeading) { statusOverlay }
     }
 
+    /// The card's ceiling: the page's height minus the top safe area (the
+    /// navigation bar) and the bottom one (home indicator or keyboard), with
+    /// the dock's own 12 pt bottom margin and a 16 pt gap under the bar. The
+    /// gap is deliberately larger than the visual one: the bar's own clamp
+    /// (device: ~12 pt above the card) must never cut the card again.
+    private func questionCardHeightLimit(_ geometry: GeometryProxy) -> CGFloat {
+        let insets = geometry.safeAreaInsets
+        let available = geometry.size.height - insets.top - insets.bottom
+        return max(160, available - 16 - QuestionCardMetrics.cardBottomMargin)
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
-    private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
+    private func composerDockArea(maximumEditorHeight: CGFloat,
+                                  maximumCardHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             // The SubAgent entry is no longer a dock row: it moved to the
             // navigation bar as its own circular item (pp 2026-11-18,
             // `SubAgentToolbarButton`), so the composer keeps every point of
             // vertical space the dock used to give the capsule.
             SessionInteractionDock(chat: model,
-                onShowAll: { expandedNoticeID = $0; sheet = .notices })
+                onShowAll: { expandedNoticeID = $0; sheet = .notices },
+                maximumCardHeight: maximumCardHeight)
                 .traceChatLayout("interaction-dock")
             if !showsQuestionCard {
                 ChatComposerDock(draft: session.composer, settings: model.settings,

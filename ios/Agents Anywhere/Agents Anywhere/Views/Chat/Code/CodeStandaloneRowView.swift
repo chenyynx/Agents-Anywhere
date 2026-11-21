@@ -75,7 +75,12 @@ struct CodeStandaloneRowView: View, Equatable {
         if let answered = QuestionAnsweredModel(item: row.value) {
             // The official answered card replaces the skipped question row
             // (and the generic Code tool row an anchored answer used to draw).
+            // Its group is self-margined (no list gap), so the card draws the
+            // Code page's 5 pt row margins itself: 5 pt above and below keeps
+            // it 10 pt from both neighbours instead of 5 above / 25 below
+            // (pp 2026-11-22).
             QuestionAnsweredCardView(pairs: answered.pairs)
+                .padding(.vertical, CodePageTheme.rowMarginTop)
         } else {
         let value = row.entry(cwd: cwd)
         if case .message = row.value.content {

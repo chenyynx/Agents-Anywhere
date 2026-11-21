@@ -114,3 +114,5 @@
 - **高亮形状**：官方选中的是一整块（截图竖向 1248→1964 连续、x 到文字列右缘），我们原来是逐行矩形。`selectionRects` 在相邻行/段之间插入桥接矩形（gap ≤ 40pt），首尾行保持原 x 以保住手柄位置；跨代码块/表格的大洞不桥接。
 - **表格外框固定**：圆角/描边从滚动内容（surface）移到 `AssistantTableBlockView` 的固定 `borderView`，scrollView 设 cornerRadius 裁剪内容；横向滚动只移动表头/行线/文字，卡片边框不再随内容被裁掉。
 - **自动滚动（成熟解法调研）**：`UITextInteraction` 官方不做 auto-scroll。社区成熟做法（Runestone `TextView.swift`、Steve Shepard/Storyist、SO 58276112）：在 `UIGestureRecognizerDelegate.gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` 里按类名捕获系统私有的 `UITextRangeAdjustmentGestureRecognizer`（把手拖动），或在每个选区端点变化时把移动端 `scroll into view`。本实现采用后者：外部 `selectedTextRange` 变化 → 移动端 caret → 最小滚动使其留在可见区（排除 composer 的 `adjustedContentInset`）；现有边缘 band/display link 保留作为按住边缘的补充。
+- **把手端点锁定（b1445）**：`UITextRangeAdjustmentGestureRecognizer` 起手（`.began`）时按触点离 start/end 手柄的距离锁定本段拖动的移动端，整段手势固定；锚点缺失时在首个 `.changed` 补绑。真机日志（b1444）里 5/33 组拖动因手指越过锚点被重猜成另一端（如 `6-462` → `0-8`），锁定后只收缩/扩展、不翻面。
+- **存量修复（b1447，PR #26）**：图+文件混合附件行的内层文件 `VStack` 在只有混合网格时为空，SwiftUI 仍给外层 `VStack(spacing: blockGap)` 计一次 8pt；`CodeAttachmentRow.showsFileBlock` 只在确有失败卡片或独立文件网格时创建内层栈。`code-profile` 四条 `bubble-attachment` 由 delta 7.667–8.0 归零（0–0.333）。

@@ -44,9 +44,6 @@ struct QuestionCardView: View {
     /// The question whose custom-answer field owns the keyboard, if any.
     /// Scrolling follows it so what you type stays above the keyboard.
     @State private var focusedQuestionID: String?
-    /// The question whose field must take the keyboard as soon as it mounts
-    /// (set when paging while the keyboard is up).
-    @State private var focusAfterPageChange: String?
 
     /// Scroll anchors for the card's own scroll view.
     private static let topAnchorID = "question-card.top"
@@ -475,17 +472,12 @@ struct QuestionCardView: View {
                                 textPadding: 0,
                                 showsBackground: false,
                                 placeholderColor: detailInk,
-                                // Paging swaps the whole page (and its
-                                // editor); carry the keyboard to the new
-                                // question's field when it owned the screen.
-                                startsFocused: focusAfterPageChange == question.id,
                                 onFocus: {
                                     item.setCustomSelected(true, question: question)
                                     // The capped card parks its bottom so
                                     // the focused field stays above the
                                     // keyboard.
                                     focusedQuestionID = question.id
-                                    focusAfterPageChange = nil
                                 },
                                 onBlur: {
                                     if focusedQuestionID == question.id { focusedQuestionID = nil }
@@ -643,13 +635,8 @@ struct QuestionCardView: View {
     private func step(_ delta: Int) {
         let next = pageIndex + delta
         guard questions.indices.contains(next) else { return }
-        // A visible keyboard belongs to the card: hand it to the next
-        // question's answer field instead of letting the page swap dismiss it
-        // (pp 2026-11-22). Set before the index changes so the new page
-        // mounts already asking for focus.
-        if focusedQuestionID != nil, questions[next].allowCustom {
-            focusAfterPageChange = questions[next].id
-        }
+        // Paging dismisses the keyboard: the official card does (pp
+        // 2026-11-22), and the page swap resigns the editor naturally.
         pageIndex = next
     }
 

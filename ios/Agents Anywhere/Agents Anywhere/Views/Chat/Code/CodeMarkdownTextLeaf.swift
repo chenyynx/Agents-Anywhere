@@ -250,7 +250,7 @@ final class CodeMarkdownTextStackView: UIView {
     /// Row-level selection across every body text block. Code blocks and
     /// tables stay out: code keeps its copy button, tables keep per-cell
     /// selection.
-    private let selectionOverlay = AssistantCompositeSelectionOverlay()
+    private let selectionOverlay = AssistantCompositeSelectionOverlay(frame: .zero)
 
     /// One installed block. `key` is the block's stable identity and `digest`
     /// the content version; together they decide whether the view can be kept.
@@ -501,28 +501,48 @@ final class CodeMarkdownTextStackView: UIView {
         }
     }
 
+    private struct SelectionParticipant {
+        let view: AssistantMarkdownBlockTextView
+        /// List and quote items end with one newline; paragraphs with a
+        /// blank line. The overlay uses this to rebuild copied text.
+        let inList: Bool
+    }
+
     /// Collect the body text views in document order and hand them to the
     /// overlay. Code and table subtrees are not participants.
     private func refreshSelectionOverlay() {
-        var views: [AssistantMarkdownBlockTextView] = []
-        views.reserveCapacity(records.count)
+        var participants: [SelectionParticipant] = []
+        participants.reserveCapacity(records.count)
         for record in records {
-            collectSelectionTextViews(in: record.view, into: &views)
+            let inList = record.kind == "list" || record.kind == "quote"
+            collectSelectionTextViews(in: record.view, insideList: inList,
+                                      into: &participants)
         }
-        selectionOverlay.setParticipants(views)
+        var separators: [String] = []
+        if participants.count > 1 {
+            separators.reserveCapacity(participants.count - 1)
+            for index in 0..<(participants.count - 1) {
+                let lineBreak = participants[index].inList
+                    || participants[index + 1].inList
+                separators.append(lineBreak ? "\n" : "\n\n")
+            }
+        }
+        selectionOverlay.setParticipants(participants.map(\.view),
+                                         separators: separators)
     }
 
-    private func collectSelectionTextViews(in view: UIView,
-                                           into result: inout [AssistantMarkdownBlockTextView]) {
+    private func collectSelectionTextViews(in view: UIView, insideList: Bool,
+                                           into result: inout [SelectionParticipant]) {
         if view is AssistantCodeBlockView || view is AssistantTableBlockView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
-            result.append(textView)
+            result.append(SelectionParticipant(view: textView, inList: insideList))
             return
         }
         for subview in view.subviews {
-            collectSelectionTextViews(in: subview, into: &result)
+            collectSelectionTextViews(in: subview, insideList: insideList,
+                                      into: &result)
         }
     }
 

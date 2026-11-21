@@ -641,7 +641,9 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     // MARK: - Interaction
 
-    /// Body text: links tap, long press selects, and the edit menu copies.
+    /// Single-block selection: links tap, long press selects, and the edit
+    /// menu copies. Table cell text views use this; the Code row's body text
+    /// is driven by `AssistantCompositeSelectionOverlay` instead.
     ///
     /// `allowsSelection: false` keeps the link taps and skips the selection
     /// layer entirely — no long press, no handles, no edit menu. The thinking
@@ -1029,11 +1031,18 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// selected and restored when the selection goes away.
     private var relaxedClippingViews: [UIView] = []
 
+    /// Table cells are inside the table's horizontal `UIScrollView`. Relaxing
+    /// that scroll view's clip while a cell is selected would let the table's
+    /// hidden columns paint outside the card, so those views leave every
+    /// scroll view's clip alone.
+    var keepsScrollViewClipping = false
+
     private func relaxAncestorClipping() {
         guard relaxedClippingViews.isEmpty else { return }
         var current = superview
         while let view = current {
-            if view.clipsToBounds {
+            if view.clipsToBounds,
+               !(keepsScrollViewClipping && view is UIScrollView) {
                 view.clipsToBounds = false
                 relaxedClippingViews.append(view)
             }

@@ -53,16 +53,57 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// Install the blocks that take part in the composite selection, in
     /// document order. Identical participants are a no-op so a layout pass
     /// does not drop a live selection.
-    func setParticipants(_ views: [AssistantMarkdownBlockTextView]) {
+    func setParticipants(_ views: [AssistantMarkdownBlockTextView],
+                         separators: [String]) {
         let lengths = views.map(\.compositeTextLength)
         if views.count == textViews.count,
            views.elementsEqual(textViews, by: { $0 === $1 }),
-           lengths == model.blockLengths {
+           lengths == model.blockLengths,
+           separators == model.separators {
             return
         }
+        let remapped = remappedSelection(for: lengths, separators: separators)
         textViews = views
-        model = CompositeSelectionModel(blockLengths: lengths)
-        endSelection()
+        model = CompositeSelectionModel(blockLengths: lengths,
+                                        separators: separators)
+        if let remapped {
+            selectedTextRange = MarkdownTextOffsetRange(remapped.start,
+                                                        remapped.end)
+        } else {
+            endSelection()
+        }
+    }
+
+    /// Streaming keeps growing the last block while the reader is selecting
+    /// an earlier one. Rebuild the flattened offsets from the selected
+    /// blocks' own offsets; only a length change inside a selected block
+    /// drops the selection, because that text is what the reader pointed at.
+    private func remappedSelection(for lengths: [Int],
+                                   separators: [String]) -> (start: Int, end: Int)? {
+        guard let selectionOffsets,
+              let startLocation = model.location(at: selectionOffsets.start),
+              let endLocation = model.location(at: selectionOffsets.end) else {
+            return nil
+        }
+        let next = CompositeSelectionModel(blockLengths: lengths,
+                                           separators: separators)
+        guard next.segments.indices.contains(startLocation.blockIndex),
+              next.segments.indices.contains(endLocation.blockIndex),
+              next.blockLengths[startLocation.blockIndex]
+                == model.blockLengths[startLocation.blockIndex],
+              next.blockLengths[endLocation.blockIndex]
+                == model.blockLengths[endLocation.blockIndex] else {
+            return nil
+        }
+        guard let start = next.flattenedOffset(
+                  blockIndex: startLocation.blockIndex,
+                  localOffset: startLocation.localOffset),
+              let end = next.flattenedOffset(
+                  blockIndex: endLocation.blockIndex,
+                  localOffset: endLocation.localOffset) else {
+            return nil
+        }
+        return (min(start, end), max(start, end))
     }
 
     /// Attach the system selection layer and/or the link tap recognizer.
@@ -143,8 +184,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             }
         }
         guard let best else { return nil }
-        let frame = rect(of: best.view)
-        let local = point.y < frame.midY ? 0 : best.view.compositeTextLength
+        // Do not snap by the block's midpoint: the finger usually leaves the
+        // text column horizontally (right margin, list indent, screen edge)
+        // while staying on one line. `compositeCharacterIndex` already clamps
+        // to the nearest line on both axes, which answers the end of that line
+        // (or the start of the next) without flipping the selection.
+        let local = best.view.compositeCharacterIndex(at: convert(point, to: best.view)) ?? 0
         return (best.view, local)
     }
 
@@ -168,22 +213,28 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     // MARK: - Clipboard
 
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(copy(_:)) {
-            guard let selectionOffsets else { return false }
-            return selectionOffsets.end > selectionOffsets.start
+    /// A selection that only covers a separator has no visible content, so
+    /// Copy must stay disabled instead of writing an empty pasteboard item.
+    private var hasCopyableSelection: Bool {
+        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start else {
+            return false
         }
+        let range = NSRange(location: selectionOffsets.start,
+                            length: selectionOffsets.end - selectionOffsets.start)
+        return !model.fragments(in: range).isEmpty
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) { return hasCopyableSelection }
         return super.canPerformAction(action, withSender: sender)
     }
 
     override func copy(_ sender: Any?) {
-        guard let selectionOffsets, selectionOffsets.end > selectionOffsets.start else {
-            return
-        }
+        guard hasCopyableSelection, let selectionOffsets else { return }
         let range = NSRange(location: selectionOffsets.start,
                             length: selectionOffsets.end - selectionOffsets.start)
         let fragments = model.fragments(in: range)
-        let plainPieces = fragments.compactMap { fragment -> String? in
+        let plain = joinedText(fragments) { fragment in
             guard textViews.indices.contains(fragment.blockIndex) else { return nil }
             return textViews[fragment.blockIndex].compositePlainText(for: fragment.range)
         }
@@ -194,9 +245,27 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         UIPasteboard.general.items = [[
             "public.html": "<meta charset=\"utf-8\">"
                 + htmlPieces.joined(separator: ""),
-            "public.utf8-plain-text": plainPieces.joined(separator: "\n"),
+            "public.utf8-plain-text": plain,
         ]]
         endSelection()
+    }
+
+    /// Join per-block pieces with the separators the model carries for the
+    /// boundaries the selection crosses: a paragraph break stays a blank
+    /// line, a list item break stays one newline.
+    private func joinedText(_ fragments: [CompositeSelectionModel.Fragment],
+                            body: (CompositeSelectionModel.Fragment) -> String?) -> String {
+        var text = ""
+        var previousBlock: Int?
+        for fragment in fragments {
+            if let previousBlock {
+                text += model.separatorText(afterBlock: previousBlock,
+                                            beforeBlock: fragment.blockIndex)
+            }
+            if let piece = body(fragment) { text += piece }
+            previousBlock = fragment.blockIndex
+        }
+        return text
     }
 
     // MARK: - Selection lifecycle
@@ -255,7 +324,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
 
     @objc private func handleOutsideTap(_ recognizer: UITapGestureRecognizer) {
         let point = recognizer.location(in: self)
-        guard !bounds.contains(point) else { return }
+        guard textView(at: point) == nil else { return }
         endSelection()
     }
 
@@ -296,7 +365,12 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
         if gestureRecognizer === outsideTapRecognizer {
-            return !bounds.contains(touch.location(in: self))
+            // Dismiss on any touch that is not on a participating text view:
+            // the row's margins, block gaps, code blocks and tables. Those
+            // areas are outside the overlay's hit test, so the interaction
+            // never sees them; without this the highlight stayed up after
+            // tapping the code copy button.
+            return textView(at: touch.location(in: self)) == nil
         }
         return true
     }
@@ -355,11 +429,10 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         let fragments = model.fragments(in: NSRange(
             location: range.startOffset,
             length: range.endOffset - range.startOffset))
-        let pieces = fragments.compactMap { fragment -> String? in
+        return joinedText(fragments) { fragment in
             guard textViews.indices.contains(fragment.blockIndex) else { return nil }
             return textViews[fragment.blockIndex].compositeSubstring(for: fragment.range)
         }
-        return pieces.joined(separator: "\n")
     }
 
     // Read-only: the body never accepts edits, but the protocol requires the

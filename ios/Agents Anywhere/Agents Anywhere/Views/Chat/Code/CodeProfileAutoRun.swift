@@ -3214,10 +3214,10 @@ final class CodeProfileAutoRunModel {
 
         if let table = Self.findTableBlock(in: host.view) {
             let selectable = table.debugSelectableCellCount
-            let cells = table.debugSurfaceSubviewCount
+            let cells = table.debugNonEmptyCellCount
             check(selectable > 0, "textSelection: table has no selectable cells")
             check(selectable == cells,
-                  "textSelection: \(selectable) selectable cells for \(cells) cell views")
+                  "textSelection: \(selectable) selectable cells for \(cells) non-empty cells")
             report["tableSelection"] = [
                 "selectable": selectable,
                 "cells": cells,
@@ -3228,8 +3228,11 @@ final class CodeProfileAutoRunModel {
 
         if let stack = Self.findTextStack(in: host.view) {
             let participants = stack.debugSelectionParticipantCount
-            check(participants >= 1,
-                  "textSelection: composite selection has \(participants) participants")
+            // The fixture has exactly one body text block (paragraph), one
+            // code block and one table. A different count means the code or
+            // table subtree leaked into the participant list.
+            check(participants == 1,
+                  "textSelection: \(participants) composite participants, expected 1")
             check(stack.debugSelectionHasInteraction,
                   "textSelection: composite selection has no system interaction")
             report["compositeSelection"] = [

@@ -1085,6 +1085,9 @@ final class AssistantTableBlockView: UIView {
         // The surface already exposes one accessibility element per cell;
         // hiding this subtree keeps VoiceOver from reading each cell twice.
         view.accessibilityElementsHidden = true
+        // The cell sits inside the table's horizontal scroll view; selection
+        // must not relax that clip and paint hidden columns outside the card.
+        view.textView.keepsScrollViewClipping = true
         view.textView.attributedText = string
         let rect = textRect(row: key.row, column: key.column)
         view.textView.prepareLayout(width: rect.width)
@@ -1191,6 +1194,9 @@ final class AssistantTableBlockView: UIView {
     var debugSelectableCellCount: Int {
         cellViews.values.filter { $0.textView.debugHasTextInteraction }.count
     }
+    /// One entry per non-empty cell; the gate compares the selectable count
+    /// against this instead of the surface's subview count.
+    var debugNonEmptyCellCount: Int { cellViews.count }
     var debugCellFrameMismatchCount: Int {
         cellViews.reduce(0) { count, entry in
             let expected = textRect(row: entry.key.row, column: entry.key.column)

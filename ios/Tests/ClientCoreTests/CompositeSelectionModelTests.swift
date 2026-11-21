@@ -59,6 +59,31 @@ struct CompositeSelectionModelTests {
         ])
     }
 
+    @Test("custom separators shift later blocks and are reported per boundary")
+    func customSeparators() {
+        let model = CompositeSelectionModel(blockLengths: [3, 4],
+                                            separators: ["\n\n"])
+        #expect(model.totalLength == 9)
+        #expect(model.segments[1].range == NSRange(location: 5, length: 4))
+        #expect(model.separator(afterBlock: 0) == "\n\n")
+        #expect(model.separator(afterBlock: 1) == nil)
+        #expect(model.separatorText(afterBlock: 0, beforeBlock: 1) == "\n\n")
+        #expect(model.separatorText(afterBlock: 1, beforeBlock: 1) == "")
+    }
+
+    @Test("mixed paragraph and list separators keep their own length")
+    func mixedSeparators() {
+        let model = CompositeSelectionModel(blockLengths: [2, 2, 2],
+                                            separators: ["\n\n", "\n"])
+        #expect(model.totalLength == 9)
+        #expect(model.segments.map(\.range) == [
+            NSRange(location: 0, length: 2),
+            NSRange(location: 4, length: 2),
+            NSRange(location: 7, length: 2),
+        ])
+        #expect(model.separatorText(afterBlock: 0, beforeBlock: 2) == "\n\n\n")
+    }
+
     @Test("a single block maps one-to-one")
     func singleBlock() {
         let model = CompositeSelectionModel(blockLengths: [7])

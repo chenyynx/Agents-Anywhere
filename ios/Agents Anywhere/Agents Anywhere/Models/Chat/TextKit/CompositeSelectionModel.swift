@@ -28,18 +28,31 @@ struct CompositeSelectionModel: Equatable {
         let localOffset: Int
     }
 
-    /// One newline joins each pair of blocks in the flattened text.
-    static let separatorLength = 1
+    /// Default separator between two blocks: one newline. Callers that know
+    /// the block kinds pass their own (a paragraph break is a blank line, a
+    /// list item break is one newline).
+    static let lineSeparator = "\n"
 
     let segments: [Segment]
+    /// `separators[i]` sits between block i and block i+1.
+    let separators: [String]
     let totalLength: Int
 
-    init(blockLengths: [Int]) {
+    init(blockLengths: [Int], separators: [String]? = nil) {
+        let expected = max(0, blockLengths.count - 1)
+        let separatorValues: [String]
+        if let separators, separators.count == expected {
+            separatorValues = separators
+        } else {
+            separatorValues = Array(repeating: Self.lineSeparator, count: expected)
+        }
         var segments: [Segment] = []
         segments.reserveCapacity(blockLengths.count)
         var offset = 0
         for (index, length) in blockLengths.enumerated() {
-            if index > 0 { offset += Self.separatorLength }
+            if index > 0 {
+                offset += (separatorValues[index - 1] as NSString).length
+            }
             let clamped = max(0, length)
             segments.append(Segment(
                 blockIndex: index,
@@ -47,10 +60,30 @@ struct CompositeSelectionModel: Equatable {
             offset += clamped
         }
         self.segments = segments
+        self.separators = separatorValues
         self.totalLength = offset
     }
 
     var blockLengths: [Int] { segments.map(\.range.length) }
+
+    /// Separator between the end of `blockIndex` and the start of the next
+    /// block. `nil` after the last block.
+    func separator(afterBlock index: Int) -> String? {
+        guard separators.indices.contains(index) else { return nil }
+        return separators[index]
+    }
+
+    /// Everything between two block indices, in document order. Adjacent
+    /// blocks return their one separator; empty when the order is not
+    /// forward.
+    func separatorText(afterBlock index: Int, beforeBlock next: Int) -> String {
+        guard next > index, segments.indices.contains(index) else { return "" }
+        var text = ""
+        for boundary in index..<next {
+            text += separator(afterBlock: boundary) ?? Self.lineSeparator
+        }
+        return text
+    }
 
     /// Flattened offset for a local offset inside one block.
     func flattenedOffset(blockIndex: Int, localOffset: Int) -> Int? {

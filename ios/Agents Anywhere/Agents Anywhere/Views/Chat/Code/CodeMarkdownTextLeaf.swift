@@ -522,7 +522,7 @@ final class CodeMarkdownTextStackView: UIView {
         for record in records {
             let inList = record.kind == "list" || record.kind == "quote"
             collectSelectionTextViews(in: record.view, insideList: inList,
-                                      signature: record.digest,
+                                      recordSignature: record.digest,
                                       into: &participants)
         }
         var separators: [String] = []
@@ -540,19 +540,28 @@ final class CodeMarkdownTextStackView: UIView {
     }
 
     private func collectSelectionTextViews(in view: UIView, insideList: Bool,
-                                           signature: Int,
+                                           recordSignature: Int,
                                            into result: inout [SelectionParticipant]) {
         if view is AssistantCodeBlockView || view is AssistantTableBlockView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
+            // A list/quote record gains items while streaming without touching
+            // the earlier items; its record digest changes for every item
+            // then. Sign the view's own text instead, so only the blocks whose
+            // text changed lose the live selection. Paragraph records already
+            // are one view per record, where the record digest is the block.
+            let signature = insideList
+                ? textView.sourceTextSignature
+                : recordSignature
             result.append(SelectionParticipant(view: textView, inList: insideList,
                                               signature: signature))
             return
         }
         for subview in view.subviews {
             collectSelectionTextViews(in: subview, insideList: insideList,
-                                      signature: signature, into: &result)
+                                      recordSignature: recordSignature,
+                                      into: &result)
         }
     }
 

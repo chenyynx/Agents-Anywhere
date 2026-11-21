@@ -531,11 +531,17 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
     /// keeps answering what was set — callers diff it against the document to
     /// decide whether a block needs updating.
     private var sourceAttributed: NSAttributedString?
+    /// The assigned text's hash, kept per view so the selection overlay can
+    /// tell whether a block changed without re-hashing every refresh. Lists
+    /// and quotes need a per-item signature: their record digest changes when
+    /// a later item streams in, even though the selected item did not.
+    private(set) var sourceTextSignature: Int = 0
 
     var attributedText: NSAttributedString? {
         get { sourceAttributed }
         set {
             sourceAttributed = newValue
+            sourceTextSignature = newValue?.string.hashValue ?? 0
             selectionOffsets = nil
             ownStorage.attributedString = Self.recolouringLinks(newValue ?? NSAttributedString())
             setNeedsDisplay()

@@ -103,14 +103,14 @@
 - 门禁：`code-profile` 用 `codeTable` fixture 在 key window 渲染生产同款 `CodeMessageRowView`，断言表格每个 cell 有可交互文字视图、正文是 overlay 参与者且已装系统交互、overlay 确实覆盖 stack；另有 `tableReuse` 用例对同一个 `CodeMarkdownTextStackView` 连续安装两份表格文案，断言 cell 视图实例复用且仍可选中。M3 gate 保留表格 cell 结构断言（其驱动的是旧 `AssistantMarkdownCell`，不覆盖选择能力）。
 
 **范围外（后续）**：跨单元格拖选；表格并入正文连续选区；跨消息选择；表格 cell 内链接。
-**验证状态**：单元/门禁以 CI 结果为准；真机验收（表格长按选/复制、跨段落与列表项拖选、流式期间选择、滚动与代码块复制按钮）待 pp 用出包确认。
+**验证状态**：CI 1452（head `2c971852`）`test` / `code-profile` 全绿；pp 2026-11-22 真机确认（b1453，beta `683383a7`）：表格单元格选中/复制、跨段落与列表项拖选、自动滚动、高亮整块与表格横向滚动外框均正常。深色模式、AX 大字号与 iPad 换窗未单独复看。
 
 ### 11.1 选择交互补齐（2026-11-21，pp 真机反馈）
 
 - **自动滚动**：主驱动是捕获到的系统把手拖动（`UITextRangeAdjustmentGestureRecognizer`）：`.began` 锁端点，`.changed` 按手指位置写选区；手指进入时间线可视区上下 90pt 带时，用 `CADisplayLink` 滚动最近的祖先 `UIScrollView`，逐帧把移动端映射到边缘文字；离开边缘、松手、取消或选区清空即停。窗口上另有一个并行 pan（`cancelsTouchesInView = false`）作为双击/无系统把手的补充，起手范围是把手附近、选区内或整行上下约 40–48pt；已有选区时，从选区外起手的拖动保持为滚动，不改选区（终审修正）。
 - **选区颜色**：新增 `CodePageTheme.selectionTintUIColor`（light `#363636`，dark 白）。按截图取样：页面 249，官方高亮 210，原实现 199；系统按 tint 20% 画高亮，`#363636` 得到 210。
 - **菜单**：补 `selectAll`（全选）。官方菜单的朗读/分享、以及去掉翻译/搜索网页属于菜单裁剪，未做。
-- **未验证**：把手命中阈值、自动滚动速度、与系统把手拖动共存、深色模式下的 tint，均需真机确认。
+- **真机确认（pp 2026-11-22，b1453）**：把手命中、自动滚动速度与系统把手拖动共存、高亮整块、表格横向滚动外框均正常。深色模式 tint、AX 大字号、iPad 换窗未单独复看。
 - **高亮形状**：官方选中的是一整块（截图竖向 1248→1964 连续、x 到文字列右缘），我们原来是逐行矩形。`selectionRects` 在相邻行/段之间插入桥接矩形（gap ≤ 40pt），首尾行保持原 x 以保住手柄位置；跨代码块/表格的大洞不桥接。
 - **表格外框固定**：圆角/描边从滚动内容（surface）移到 `AssistantTableBlockView` 的固定 `borderView`，scrollView 设 cornerRadius 裁剪内容；横向滚动只移动表头/行线/文字，卡片边框不再随内容被裁掉。卡片宽度取 `min(totalWidth, 行宽)`，scrollView 同宽：窄表贴内容，宽表贴行宽并在内部横滚，避免窄表右侧出现只有边框、没有表头填充/行线的空带，也避免表头白底的直角戳出圆角描边（终审发现）。
 - **自动滚动（成熟解法调研）**：`UITextInteraction` 官方不做 auto-scroll。社区成熟做法（Runestone `TextView.swift`、Steve Shepard/Storyist、SO 58276112）：在 `UIGestureRecognizerDelegate.gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` 里按类名捕获系统私有的 `UITextRangeAdjustmentGestureRecognizer`（把手拖动），或在每个选区端点变化时把移动端 `scroll into view`。本实现采用前者：捕获把手手势后按它的位置自己驱动选区，display link 只负责滚动；系统提交 `selectedTextRange` 稀疏且只在手势结束附近，单靠它做 `scroll into view` 会"选完了才开始滚"（b1442 前的现象）。

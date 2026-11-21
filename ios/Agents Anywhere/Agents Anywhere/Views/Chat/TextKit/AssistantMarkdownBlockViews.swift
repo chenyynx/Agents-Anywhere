@@ -1025,6 +1025,9 @@ final class AssistantTableBlockView: UIView {
     private let displayScale: CGFloat
     private let scrollView = UIScrollView()
     private let surface: AssistantTableSurfaceView
+    /// The card's rounded frame. It lives outside the scroll view so the
+    /// border stays put while the columns slide underneath (pp 2026-11-21).
+    private let borderView = UIView()
     private var cellViews: [CellKey: AssistantMarkdownTextBlockView] = [:]
 
     init(table: AssistantTableBlock, width: CGFloat, displayScale: CGFloat) {
@@ -1041,9 +1044,17 @@ final class AssistantTableBlockView: UIView {
         scrollView.alwaysBounceVertical = false
         scrollView.bounces = false
         scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.layer.cornerCurve = .continuous
+        scrollView.clipsToBounds = true
         addSubview(scrollView)
         scrollView.addSubview(surface)
         installCellViews()
+
+        borderView.backgroundColor = .clear
+        borderView.isUserInteractionEnabled = false
+        borderView.layer.cornerCurve = .continuous
+        addSubview(borderView)
+        updateBorderAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1057,6 +1068,27 @@ final class AssistantTableBlockView: UIView {
         scrollView.contentSize = surface.frame.size
         for (key, view) in cellViews {
             view.frame = textRect(row: key.row, column: key.column)
+        }
+        updateBorderAppearance()
+    }
+
+    /// The frame follows the card, never the horizontal scroll offset.
+    private func updateBorderAppearance() {
+        let scale = max(traitCollection.displayScale, 1)
+        let line = 1 / scale
+        borderView.frame = bounds.insetBy(dx: line / 2, dy: line / 2)
+        borderView.layer.cornerRadius = max(0, table.cornerRadius - line / 2)
+        borderView.layer.borderWidth = line
+        borderView.layer.borderColor = (table.borderColor
+            ?? ChatTextUIColors.tableLine)
+            .resolvedColor(with: traitCollection).cgColor
+        scrollView.layer.cornerRadius = table.cornerRadius
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            updateBorderAppearance()
         }
     }
 
@@ -1117,6 +1149,7 @@ final class AssistantTableBlockView: UIView {
         let gridKept = columnMetricsMatch(table, newTable)
         table = newTable
         surface.update(table: newTable)
+        updateBorderAppearance()
         if gridKept {
             updateCellViews()
         } else {
@@ -1540,10 +1573,10 @@ private final class AssistantTableSurfaceView: UIView {
         let scale = traitCollection.displayScale > 0
             ? traitCollection.displayScale : displayScale
         let line = 1 / max(scale, 1)
-        let radius = table.cornerRadius
-        let clipPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius)
 
-        clipPath.addClip()
+        // The card's rounded clip and outer border belong to the fixed
+        // `borderView`/scroll view at the block level; this surface scrolls
+        // inside and only paints the header fill and row seams.
 
         // [E] R19 `typography-inline.md` §5 — header fill white / #1A1A19,
         // row seams and the outer border grey 0.043 @10% / white @10%, all
@@ -1568,14 +1601,7 @@ private final class AssistantTableSurfaceView: UIView {
         }
 
         // Cell glyphs are painted by the per-cell text views above this
-        // surface; only the chrome stays in this draw pass.
-
-        let border = UIBezierPath(
-            roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2),
-            cornerRadius: max(0, radius - line / 2))
-        border.lineWidth = line
-        lineColor.setStroke()
-        border.stroke()
+        // surface; only the header fill and row seams stay in this pass.
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {

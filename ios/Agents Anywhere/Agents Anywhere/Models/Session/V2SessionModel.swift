@@ -77,6 +77,18 @@ final class V2SessionRuntimeModel {
     private(set) var pendingStopEnd = false
     /// Whether the newest authoritative turn ending came from a user stop.
     private(set) var lastTurnEndWasStop = false
+    /// A turn ending observed while live facts were stale, waiting for a fresh
+    /// confirmation. Carries whether the user's stop caused it.
+    ///
+    /// A recovery snapshot can deliver `running → idle` before live facts
+    /// re-confirm freshness, and dropping that edge leaves the footer gate
+    /// open for the rest of the session — the next userless wake turn then
+    /// takes the finished turn's footer away (pp 2026-11-22,
+    /// `sess_MnWJXS5vTqBc6Q`: fresh=0 idle at 00:07:02, background wake at
+    /// 00:18:29, footer hosts 17→16 and only back at 00:21:18). The count
+    /// stays freshness-gated; the ending is only deferred until fresh facts
+    /// still report idle. A fresh in-flight status voids it.
+    private var deferredTurnEnd: Bool?
 
     func allows(_ id: V2CapabilityID) -> Bool {
         guard isFresh, let capability = capabilities?.capability(id: id) else { return false }
@@ -135,6 +147,16 @@ final class V2SessionRuntimeModel {
         predictedIdle = false
     }
 
+    /// Counts one authoritative turn ending. The only writer of
+    /// `authoritativeTurnEnds`, so the footer gate and the completion cue
+    /// cannot disagree about what a confirmed ending is.
+    private func finishTurnEnd(wasStop: Bool) {
+        lastTurnEndWasStop = wasStop
+        pendingStopEnd = false
+        deferredTurnEnd = nil
+        authoritativeTurnEnds += 1
+    }
+
     func update(_ data: V2SessionData?, connection: V2SessionConnectionState) {
         let previousStatus = state?.status
         let previousFresh = isFresh
@@ -151,16 +173,31 @@ final class V2SessionRuntimeModel {
         }
         let fresh = data?.liveStateIsFresh == true && carriesCurrentFacts
         if isFresh != fresh { isFresh = fresh }
-        if fresh, previousStatus?.isTurnInFlight == true, data?.state?.status == .idle {
-            lastTurnEndWasStop = pendingStopEnd
-            pendingStopEnd = false
-            authoritativeTurnEnds += 1
-        } else if data?.state?.status.isTurnInFlight == true,
-                  previousStatus?.isTurnInFlight != true {
-            // A new turn started before the stopped one ever reported idle:
-            // the stop's ending will never arrive, so do not let the flag
-            // mute a later completion.
-            pendingStopEnd = false
+        let appliedStatus = data?.state?.status
+        if appliedStatus?.isTurnInFlight == true {
+            // A turn is in flight: an ending observed while facts were stale
+            // cannot be confirmed by it, and this episode has its own ending.
+            deferredTurnEnd = nil
+            if previousStatus?.isTurnInFlight != true {
+                // A new turn started before the stopped one ever reported idle:
+                // the stop's ending will never arrive, so do not let the flag
+                // mute a later completion.
+                pendingStopEnd = false
+            }
+        } else if appliedStatus == .idle {
+            if previousStatus?.isTurnInFlight == true {
+                if fresh {
+                    finishTurnEnd(wasStop: pendingStopEnd)
+                } else if deferredTurnEnd == nil {
+                    // Seen through a stale observation (a recovery snapshot,
+                    // a projection marked stale on an event gap). Keep it
+                    // instead of dropping it; the next fresh apply that still
+                    // reports idle is the same ending, confirmed.
+                    deferredTurnEnd = pendingStopEnd
+                }
+            } else if let wasStop = deferredTurnEnd, fresh {
+                finishTurnEnd(wasStop: wasStop)
+            }
         }
         // Probe (b1287): the turn-end UI (footer gate, completion cue) keys on
         // this transition, but the device log could not say whether the state
@@ -168,7 +205,6 @@ final class V2SessionRuntimeModel {
         // delays it (~1.3 s between the server's idle event and the footer on
         // 2026-11-17). One line per status change / freshness flip / end
         // count — never per streaming flush.
-        let appliedStatus = data?.state?.status
         let appliedRuntimeID = data?.state?.runtimeId
         if previousStatus != appliedStatus || previousFresh != isFresh
             || previousEnds != authoritativeTurnEnds
@@ -182,6 +218,11 @@ final class V2SessionRuntimeModel {
                     "seq": String(data?.state?.updatedSeq ?? 0),
                     "fresh": isFresh ? "1" : "0",
                     "turnEnds": String(authoritativeTurnEnds),
+                    // 1 while an ending seen through a stale observation is
+                    // waiting for fresh facts to confirm it. Without it a log
+                    // cannot tell "never saw the ending" from "saw it stale"
+                    // (pp 2026-11-22).
+                    "defer": deferredTurnEnd == nil ? "0" : "1",
                     "hasState": data?.state == nil ? "0" : "1",
                     "connection": String(describing: connection),
                     // A new runtime instance id means the connector restarted

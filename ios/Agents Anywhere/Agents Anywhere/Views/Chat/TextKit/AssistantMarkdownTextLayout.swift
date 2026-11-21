@@ -1391,7 +1391,7 @@ extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
         // A device file reference is an app chip, not a web link (pp
         // 2026-11-22): red ink and no underline, so the chip is the surface
         // that says "tappable". Web links keep the official underline.
-        if let url = link as? URL, ChatLinkRoute.route(url) == .file {
+        if let url = link as? URL, ChatLinkRoute.route(url).isFileReference {
             return [.foregroundColor: CodePageTheme.fileReferenceTextUIColor]
         }
         return [.foregroundColor: CodePageTheme.externalLinkTextUIColor,

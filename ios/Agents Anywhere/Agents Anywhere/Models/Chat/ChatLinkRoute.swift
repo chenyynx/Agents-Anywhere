@@ -22,4 +22,11 @@ nonisolated enum ChatLinkRoute: Equatable {
         let scheme = url.scheme?.lowercased() ?? ""
         return ["http", "https", "mailto", "tel"].contains(scheme) ? .system : .ignore
     }
+
+    /// Pattern matching without binding the reference. `.file` carries an
+    /// associated value, so call sites cannot compare against `.file` itself.
+    var isFileReference: Bool {
+        if case .file = self { return true }
+        return false
+    }
 }

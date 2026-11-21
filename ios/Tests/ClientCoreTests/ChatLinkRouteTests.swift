@@ -12,6 +12,7 @@ import Testing
                                              line: 12, column: 3)
         let link = try #require(reference.link)
         #expect(ChatLinkRoute.route(link) == .file(reference))
+        #expect(ChatLinkRoute.route(link).isFileReference)
     }
 
     @Test func explicitPosixPathIsAFileReference() {
@@ -22,6 +23,7 @@ import Testing
 
     @Test func externalLinksBelongToTheSystem() {
         #expect(ChatLinkRoute.route(URL(string: "https://example.com/report")!) == .system)
+        #expect(!ChatLinkRoute.route(URL(string: "https://example.com/report")!).isFileReference)
         #expect(ChatLinkRoute.route(URL(string: "http://example.com")!) == .system)
         #expect(ChatLinkRoute.route(URL(string: "mailto:someone@example.com")!) == .system)
         #expect(ChatLinkRoute.route(URL(string: "tel:+123456789")!) == .system)

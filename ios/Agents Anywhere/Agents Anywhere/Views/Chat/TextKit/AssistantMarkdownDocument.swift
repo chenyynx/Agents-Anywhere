@@ -1190,7 +1190,7 @@ enum AssistantMarkdownDocumentParser {
                     // File references drop the underline (pp 2026-11-22): the
                     // chip and its red ink carry the affordance, not a link
                     // line. Web links keep the official underline.
-                    if !isCode, ChatLinkRoute.route(url) != .file { underline = .single }
+                    if !isCode, !ChatLinkRoute.route(url).isFileReference { underline = .single }
                 } else if ChatLink.isWeb(url) {
                     underline = .single
                 }

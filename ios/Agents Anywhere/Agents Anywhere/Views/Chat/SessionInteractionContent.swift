@@ -167,7 +167,13 @@ struct NoticeTextInput: View {
     var textPadding: CGFloat = 10
     var showsBackground = true
     var placeholderColor: Color? = nil
+    /// Focus this field as soon as it mounts. The question card uses it to
+    /// carry the keyboard across a page change: the caret arrows replace the
+    /// page (and its editor), which otherwise resigns and drops the
+    /// keyboard (pp 2026-11-22).
+    var startsFocused = false
     var onFocus: () -> Void = {}
+    var onBlur: () -> Void = {}
     var onEditingEnded: (String) -> Void = { _ in }
     let onChange: (String, Bool, String) -> Void
     @State private var editorID = UUID().uuidString
@@ -198,7 +204,10 @@ struct NoticeTextInput: View {
                     .fill(.quaternary.opacity(0.5))
             }
         }
-        .onChange(of: draft.isFocused) { _, focused in if focused { onFocus() } }
+        .onAppear { if startsFocused { draft.isFocused = true } }
+        .onChange(of: draft.isFocused) { _, focused in
+            if focused { onFocus() } else { onBlur() }
+        }
         .onChange(of: value, initial: true) { _, text in
             if !draft.isComposing, draft.text != text { draft.text = text }
         }

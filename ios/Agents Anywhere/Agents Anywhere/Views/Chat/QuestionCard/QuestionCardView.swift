@@ -44,10 +44,12 @@ struct QuestionCardView: View {
     /// The question whose custom-answer field owns the keyboard, if any.
     /// Scrolling follows it so what you type stays above the keyboard.
     @State private var focusedQuestionID: String?
+    /// The question whose field must take the keyboard as soon as it mounts
+    /// (set when paging while the keyboard is up).
+    @State private var focusAfterPageChange: String?
 
     /// Scroll anchors for the card's own scroll view.
     private static let topAnchorID = "question-card.top"
-    private static let inputAnchorID = "question-card.input"
 
     // MARK: - Derived state
 
@@ -107,6 +109,20 @@ struct QuestionCardView: View {
                 // 2026-11-22: 「要加卡片右侧的滚动条」).
                 .scrollIndicators(.visible)
                 .scrollBounceBehavior(.basedOnSize)
+                // The pinned footer meets the scroller on a hard line; fade
+                // the last 26 pt so content dissolves into the card instead
+                // of being chopped mid-glyph (pp 2026-11-22).
+                .mask {
+                    if isCardScrollable {
+                        LinearGradient(stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 1 - bottomFadeFraction),
+                            .init(color: .clear, location: 1),
+                        ], startPoint: .top, endPoint: .bottom)
+                    } else {
+                        Color.black
+                    }
+                }
                 .frame(maxHeight: .infinity)
                 .onChange(of: focusedQuestionID) { _, focused in
                     guard focused != nil else { return }
@@ -216,6 +232,12 @@ struct QuestionCardView: View {
         scrollHeight + footerHeight > maximumHeight + 0.5
     }
 
+    /// 26 pt of the scroll viewport as a gradient fraction.
+    private var bottomFadeFraction: CGFloat {
+        let viewport = max(1, cardHeight - footerHeight)
+        return min(0.3, 26 / viewport)
+    }
+
     /// The scrolling half: paging row, question, options and the
     /// custom-answer field. The status line and the actions stay pinned in
     /// the footer.
@@ -236,7 +258,9 @@ struct QuestionCardView: View {
         }
         .padding(.horizontal, QuestionCardMetrics.contentPaddingHorizontal)
         .padding(.top, QuestionCardMetrics.contentPadding)
-        .padding(.bottom, 8)
+        // 30 pt of trailing air keeps the focused input clear of the bottom
+        // fade band (see the scroll view's mask).
+        .padding(.bottom, 30)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -253,14 +277,15 @@ struct QuestionCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Keep the focused answer field's bottom at the scroll viewport's
-    /// bottom, directly above the pinned footer. The keyboard's own animation
-    /// moves the card; the card's scroll must not add a spring on top of it.
+    /// Park the content's bottom at the scroll viewport's bottom; the 30 pt
+    /// trailing padding then leaves the focused field above the fade band and
+    /// the pinned footer. The keyboard's own animation moves the card; the
+    /// card's scroll must not add a spring on top of it.
     private func scrollCardToInput(_ scroller: ScrollViewProxy) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            scroller.scrollTo(Self.inputAnchorID, anchor: .bottom)
+            scroller.scrollTo(Self.topAnchorID, anchor: .bottom)
         }
     }
 
@@ -450,12 +475,20 @@ struct QuestionCardView: View {
                                 textPadding: 0,
                                 showsBackground: false,
                                 placeholderColor: detailInk,
+                                // Paging swaps the whole page (and its
+                                // editor); carry the keyboard to the new
+                                // question's field when it owned the screen.
+                                startsFocused: focusAfterPageChange == question.id,
                                 onFocus: {
                                     item.setCustomSelected(true, question: question)
                                     // The capped card parks its bottom so
                                     // the focused field stays above the
                                     // keyboard.
                                     focusedQuestionID = question.id
+                                    focusAfterPageChange = nil
+                                },
+                                onBlur: {
+                                    if focusedQuestionID == question.id { focusedQuestionID = nil }
                                 },
                                 onEditingEnded: { item.composingFields.remove($0) },
                                 onChange: { text, marked, editorID in
@@ -469,7 +502,6 @@ struct QuestionCardView: View {
                     // placeholder sits straight on the card surface (device,
                     // 2026-11-20). Radius/padding stay for the text inset.
                     .foregroundStyle(QuestionCardTheme.color(QuestionCardMetrics.inputForeground, colorScheme))
-                    .id(Self.inputAnchorID)
             }
         }
     }
@@ -611,6 +643,13 @@ struct QuestionCardView: View {
     private func step(_ delta: Int) {
         let next = pageIndex + delta
         guard questions.indices.contains(next) else { return }
+        // A visible keyboard belongs to the card: hand it to the next
+        // question's answer field instead of letting the page swap dismiss it
+        // (pp 2026-11-22). Set before the index changes so the new page
+        // mounts already asking for focus.
+        if focusedQuestionID != nil, questions[next].allowCustom {
+            focusAfterPageChange = questions[next].id
+        }
         pageIndex = next
     }
 

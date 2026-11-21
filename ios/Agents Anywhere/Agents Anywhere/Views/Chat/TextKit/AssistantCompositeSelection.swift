@@ -62,6 +62,9 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     /// `selectedTextRange` until the drag commits, so waiting for that write
     /// made the scroll start only after the selection looked finished.
     private var adjustmentAnchor: (start: Int, end: Int)?
+    /// Which handle this range gesture grabbed. Fixed for the whole drag so a
+    /// finger crossing the anchor cannot flip the selection to the other end.
+    private var adjustmentMovingEnd: MovingEnd = .none
 
     private enum MovingEnd {
         case none, start, end
@@ -734,6 +737,24 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         return true
     }
 
+    /// Resolve which handle the range gesture grabbed: near a knob, below the
+    /// first line (start) or above the last one (end); fall back to the nearer
+    /// selection edge.
+    private func dragEnd(at point: CGPoint,
+                         offsets: (start: Int, end: Int)) -> MovingEnd {
+        let handle = handleEnd(at: point)
+        if handle != .none { return handle }
+        let rects = selectedRects()
+        guard let first = rects.first, let last = rects.last else { return .end }
+        if point.y < first.minY { return .start }
+        if point.y > last.maxY { return .end }
+        let toStart = distance(from: point,
+                               to: CGPoint(x: first.minX, y: first.minY))
+        let toEnd = distance(from: point,
+                             to: CGPoint(x: last.maxX, y: last.maxY))
+        return toStart <= toEnd ? .start : .end
+    }
+
     /// The system's selection-range handle drag. It fires on finger movement,
     /// so it is the reliable clock for auto-scroll even when the selection
     /// setter is only called at sparse commits.
@@ -741,33 +762,29 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         switch gesture.state {
         case .began:
             adjustmentAnchor = selectionOffsets
+            adjustmentMovingEnd = .none
+            if let offsets = selectionOffsets {
+                adjustmentMovingEnd = dragEnd(at: gesture.location(in: self),
+                                              offsets: offsets)
+            }
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",
                 detail: ["action": "range-begin"],
                 dedupe: false)
         case .changed:
+            if adjustmentAnchor == nil {
+                adjustmentAnchor = selectionOffsets
+            }
             guard let anchor = adjustmentAnchor else { return }
+            if adjustmentMovingEnd == .none {
+                adjustmentMovingEnd = dragEnd(at: gesture.location(in: self),
+                                              offsets: anchor)
+            }
             let point = gesture.location(in: self)
             guard let position = closestPosition(to: point)
                     as? MarkdownTextOffsetPosition else { return }
             let offset = position.offset
-            let moving: MovingEnd
-            if offset < anchor.start {
-                moving = .start
-            } else if offset > anchor.end {
-                moving = .end
-            } else {
-                let rects = selectedRects()
-                if let first = rects.first, let last = rects.last {
-                    let toStart = distance(from: point,
-                                           to: CGPoint(x: first.minX, y: first.minY))
-                    let toEnd = distance(from: point,
-                                         to: CGPoint(x: last.maxX, y: last.maxY))
-                    moving = toStart <= toEnd ? .start : .end
-                } else {
-                    moving = .end
-                }
-            }
+            let moving = adjustmentMovingEnd == .none ? .end : adjustmentMovingEnd
             let fixed = moving == .end ? anchor.start : anchor.end
             let start = min(fixed, offset)
             let end = max(fixed, offset)
@@ -793,6 +810,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             }
         case .ended, .cancelled, .failed:
             adjustmentAnchor = nil
+            adjustmentMovingEnd = .none
             finishSelectionDrag()
             ClientDiagnosticsLog.shared.record(
                 kind: "selection.autoscroll",

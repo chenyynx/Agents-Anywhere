@@ -470,7 +470,7 @@ final class CodeMarkdownTextStackView: UIView {
     }
 
     private func enableTextInteraction(in view: UIView) {
-        if view is AssistantCodeBlockView || view is AssistantTableBlockView {
+        if view is AssistantCodeBlockView {
             return
         }
         if let textView = view as? AssistantMarkdownBlockTextView {
@@ -569,10 +569,9 @@ final class CodeMarkdownTextStackView: UIView {
             interactiveText: true,
             key: key, digest: digest,
             typographyRevision: typographyRevision, cache: cache)
-        // Body text (including list/quote paragraphs) gets system
-        // link/selection interaction. Fenced code owns its copy button and
-        // horizontal scroll; tables keep their own link lift/menu, so
-        // those subtrees stay inert.
+        // Body text (including list/quote paragraphs and table cells) gets
+        // system link/selection interaction. Fenced code owns its copy button
+        // and horizontal scroll, so that subtree stays inert.
 #if AA_TIMELINE_PROBE
         let interactionStart = CACurrentMediaTime()
 #endif
@@ -628,9 +627,9 @@ final class CodeMarkdownTextStackView: UIView {
         records.removeSubrange(index...)
     }
 
-    /// Update one block whose identity survived. Text and code views update in
-    /// place; containers (list/quote/table/image/math) are replaced until each
-    /// grows its own incremental path.
+    /// Update one block whose identity survived. Text, code and table views
+    /// update in place; the remaining containers (list/quote/image/math) are
+    /// replaced until each grows its own incremental path.
     private func updateRecord(at index: Int, block: AssistantMarkdownBlock,
                               digest: Int, width: CGFloat, widthChanged: Bool) {
         let record = records[index]
@@ -678,9 +677,29 @@ final class CodeMarkdownTextStackView: UIView {
                 record.constraint.constant = updated
                 records[index].height = updated
             }
+        case .table(let table):
+            guard let view = record.view as? AssistantTableBlockView else {
+                replaceRecord(at: index, block: block, key: record.key,
+                              digest: digest, width: width)
+                return
+            }
+            if record.digest != digest || widthChanged {
+                // Reuse the cell text views while the column widths survive;
+                // only changed cells get new text. A streaming table no longer
+                // rebuilds one TextKit view per cell on every delta.
+                let updated = view.update(table: table)
+                // Cells created by this revision have not seen the record-time
+                // walk; enabling again is a no-op for the existing ones.
+                enableTextInteraction(in: record.view)
+                let structural = height(of: block, key: record.key,
+                                        digest: digest, width: width)
+                let resolved = structural > 0 ? structural : updated
+                record.constraint.constant = resolved
+                records[index].height = resolved
+            }
         case .divider:
             break
-        case .list, .quote, .table, .image, .math:
+        case .list, .quote, .image, .math:
             if record.digest != digest || widthChanged {
                 replaceRecord(at: index, block: block, key: record.key,
                               digest: digest, width: width)

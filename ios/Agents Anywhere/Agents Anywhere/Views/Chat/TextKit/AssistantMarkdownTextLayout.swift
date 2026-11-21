@@ -688,6 +688,12 @@ final class AssistantMarkdownBlockTextView: UIView, UIGestureRecognizerDelegate 
 
     private var textSelectionInteraction: UITextInteraction?
 
+    #if DEBUG
+    /// The M3 gate's table check: a cell text view counts as selectable only
+    /// after `enableTextInteraction` installed the system interaction.
+    var debugHasTextInteraction: Bool { textSelectionInteraction != nil }
+    #endif
+
     @discardableResult
     func openLink(at point: CGPoint) -> Bool {
         guard textInteractionEnabled,

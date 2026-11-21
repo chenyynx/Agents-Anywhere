@@ -1076,7 +1076,14 @@ final class AssistantTableBlockView: UIView {
     private func updateBorderAppearance() {
         let scale = max(traitCollection.displayScale, 1)
         let line = 1 / scale
-        borderView.frame = bounds.insetBy(dx: line / 2, dy: line / 2)
+        // A narrow table's card hugs its content; a wide one spans the row and
+        // scrolls inside. The surface (header fill, row seams) is drawn at
+        // `table.totalWidth`, so a full-width border would leave an unpainted
+        // band to the right of a narrow table.
+        let cardWidth = min(bounds.width, table.totalWidth)
+        borderView.frame = CGRect(x: bounds.minX, y: bounds.minY,
+                                  width: cardWidth, height: bounds.height)
+            .insetBy(dx: line / 2, dy: line / 2)
         borderView.layer.cornerRadius = max(0, table.cornerRadius - line / 2)
         borderView.layer.borderWidth = line
         borderView.layer.borderColor = (table.borderColor
@@ -1217,6 +1224,11 @@ final class AssistantTableBlockView: UIView {
     #if DEBUG
     var debugCellElementCount: Int { surface.debugCellElementCount }
     var debugSurfaceSubviewCount: Int { surface.subviews.count }
+    /// The fixed card frame's width and the content width it must hug when
+    /// the table is narrower than the row.
+    var debugCardWidth: CGFloat { borderView.frame.width }
+    var debugTableWidth: CGFloat { table.totalWidth }
+    var debugTableHeight: CGFloat { table.totalHeight }
     var debugCellLabelCount: Int {
         var count = 0
         func walk(_ view: UIView) {

@@ -3221,6 +3221,12 @@ final class CodeProfileAutoRunModel {
             failures.append("tableReuse: no table block after the first install")
             return
         }
+        // The offscreen stack has never been laid out; give the block its
+        // measured row frame so the fixed card border is computed.
+        table.frame = CGRect(x: 0, y: 0, width: 361,
+                             height: table.debugTableHeight)
+        table.setNeedsLayout()
+        table.layoutIfNeeded()
         let identifiers = table.debugCellViewIdentifiers
         let nonEmpty = table.debugNonEmptyCellCount
         // Header + two body rows × two columns.
@@ -3229,6 +3235,14 @@ final class CodeProfileAutoRunModel {
               "tableReuse: \(table.debugSelectableCellCount) selectable cells for \(nonEmpty) cells")
         check(table.debugCellFrameMismatchCount == 0,
               "tableReuse: cells off their text rect")
+        // This fixture is a narrow two-column table: the card must hug the
+        // content width, not the row width, or the border shows an empty band
+        // beside the header fill and row seams.
+        check(table.debugTableWidth < table.bounds.width - 1,
+              "tableReuse: fixture is not narrower than the row")
+        let expectedCardWidth = min(table.debugTableWidth, table.bounds.width)
+        check(abs(table.debugCardWidth - expectedCardWidth) <= 1,
+              "tableReuse: card width \(table.debugCardWidth), expected \(expectedCardWidth)")
 
         stack.install(document: doc2, key: "table-reuse-2", displayScale: 2,
                       generation: 1, cache: cache, typographyRevision: 1,

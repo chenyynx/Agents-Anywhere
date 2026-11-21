@@ -319,6 +319,30 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             failures.append("textkit table: no table surface")
         }
 
+        // Composite selection (pp 2026-11-21): every body text block joins one
+        // row-level overlay, and that overlay carries the system interaction.
+        // Code and table blocks stay out of the participant list.
+        var stackView: CodeMarkdownTextStackView?
+        var ancestor: UIView? = tableSurface
+        while let view = ancestor {
+            if let found = view as? CodeMarkdownTextStackView {
+                stackView = found
+                break
+            }
+            ancestor = view.superview
+        }
+        if let stackView {
+            let participants = stackView.debugSelectionParticipantCount
+            if participants < 1 {
+                failures.append("textkit selection: \(participants) participants, expected at least 1")
+            }
+            if !stackView.debugSelectionHasInteraction {
+                failures.append("textkit selection: no system interaction installed")
+            }
+        } else {
+            failures.append("textkit selection: no text stack above the table")
+        }
+
         var overlaps = 0
         let attributes = controller.layout.orderedAttributes
         for (upper, lower) in zip(attributes, attributes.dropFirst()) {

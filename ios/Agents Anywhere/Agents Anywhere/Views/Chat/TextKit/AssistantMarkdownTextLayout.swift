@@ -1516,4 +1516,64 @@ final class LinkTapRecognizer: UITapGestureRecognizer {
     }
 }
 
+// MARK: - Composite selection support
+
+/// Geometry the row-level `AssistantCompositeSelectionOverlay` needs from one
+/// block. These wrappers keep the block's internal selection state private
+/// while the overlay maps a point or a flattened offset onto it.
+extension AssistantMarkdownBlockTextView {
+    /// UTF-16 length of the block's source string.
+    var compositeTextLength: Int { textLength }
+
+    /// Character offset under a point in the block's own coordinates.
+    func compositeCharacterIndex(at point: CGPoint) -> Int? {
+        characterIndex(at: point)
+    }
+
+    /// Caret rectangle in the block's own coordinates.
+    func compositeCaretFrame(at offset: Int) -> CGRect? {
+        caretFrame(at: offset)
+    }
+
+    /// Word range (local UTF-16 offsets) under a character offset.
+    func compositeWordRange(at offset: Int) -> UITextRange? {
+        wordRange(at: offset)
+    }
+
+    /// Link URL under a point in the block's own coordinates.
+    func compositeLink(at point: CGPoint) -> URL? {
+        guard let index = characterIndex(at: point),
+              let source = sourceAttributed, source.length > 0 else { return nil }
+        let clamped = min(max(index, 0), source.length - 1)
+        return source.attribute(.link, at: clamped, effectiveRange: nil) as? URL
+    }
+
+    /// Raw source text for a local range. Used by the overlay's `text(in:)`,
+    /// where the length must match the UTF-16 offsets exactly (copy output is
+    /// the cleaned form below).
+    func compositeSubstring(for range: NSRange) -> String? {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return nil }
+        return (source.string as NSString).substring(with: range)
+    }
+
+    /// Clipboard plain text for a local range, cleaned exactly like the
+    /// single-block copy path.
+    func compositePlainText(for range: NSRange) -> String {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return "" }
+        return Self.cleanedPlainText(source.attributedSubstring(from: range))
+    }
+
+    /// Clipboard HTML for a local range, using the single-block formatter.
+    func compositeHTML(for range: NSRange) -> String {
+        guard let source = sourceAttributed,
+              range.location >= 0,
+              NSMaxRange(range) <= source.length else { return "" }
+        return Self.htmlRepresentation(of: source, range: range)
+    }
+}
+
 #endif

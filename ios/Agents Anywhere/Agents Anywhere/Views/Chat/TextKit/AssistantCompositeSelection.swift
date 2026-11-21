@@ -438,8 +438,14 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         case .began:
             let point = gesture.location(in: self)
             if hasSelection, let offsets = selectionOffsets {
-                guard bindDrag(at: point, offsets: offsets) else { return }
-                updateAutoScroll(gesture)
+                if bindDrag(at: point, offsets: offsets) {
+                    updateAutoScroll(gesture)
+                } else if textView(at: point) != nil {
+                    // A drag that starts anywhere else on the body text binds
+                    // once it moves; a double-tap selection is often followed
+                    // by a drag from just below the word.
+                    pendingSelectionDrag = true
+                }
             } else if textView(at: point) != nil {
                 pendingSelectionDrag = true
             }
@@ -447,7 +453,7 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
             if pendingSelectionDrag, selectionAnchor == nil,
                hasSelection, let offsets = selectionOffsets {
                 pendingSelectionDrag = false
-                if bindDrag(at: gesture.location(in: self), offsets: offsets) {
+                if bindPendingDrag(at: gesture.location(in: self), offsets: offsets) {
                     updateAutoScroll(gesture)
                 }
                 return
@@ -488,6 +494,33 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         ClientDiagnosticsLog.shared.record(
             kind: "selection.autoscroll",
             detail: ["action": "began",
+                     "end": movingEnd == .end ? "end" : "start",
+                     "range": "\(offsets.start)-\(offsets.end)"],
+            dedupe: false)
+        return true
+    }
+
+    /// A drag that began outside the selection or its handles: bind it to the
+    /// boundary on the side the finger is heading.
+    private func bindPendingDrag(at point: CGPoint,
+                                 offsets: (start: Int, end: Int)) -> Bool {
+        let rects = selectedRects()
+        guard let first = rects.first, let last = rects.last else { return false }
+        if point.y > last.maxY {
+            movingEnd = .end
+        } else if point.y < first.minY {
+            movingEnd = .start
+        } else {
+            let toStart = distance(from: point,
+                                   to: CGPoint(x: first.minX, y: first.minY))
+            let toEnd = distance(from: point,
+                                 to: CGPoint(x: last.maxX, y: last.maxY))
+            movingEnd = toStart <= toEnd ? .start : .end
+        }
+        selectionAnchor = movingEnd == .end ? offsets.start : offsets.end
+        ClientDiagnosticsLog.shared.record(
+            kind: "selection.autoscroll",
+            detail: ["action": "began-pending",
                      "end": movingEnd == .end ? "end" : "start",
                      "range": "\(offsets.start)-\(offsets.end)"],
             dedupe: false)
@@ -654,12 +687,17 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
     ) -> Bool {
         guard gestureRecognizer === selectionDragRecognizer else { return true }
         let point = gestureRecognizer.location(in: self)
-        guard hasSelection else {
-            // A long press that has not produced its selection yet: start
-            // tracking over body text and bind on the first change.
-            return textView(at: point) != nil
+        let onText = textView(at: point) != nil
+        let onHandle = handleEnd(at: point) != .none
+        let allowed = onText || onHandle
+        if !allowed {
+            ClientDiagnosticsLog.shared.record(
+                kind: "selection.autoscroll",
+                detail: ["action": "should-begin-reject",
+                         "hasSelection": hasSelection ? "1" : "0"],
+                dedupe: true)
         }
-        return handleEnd(at: point) != .none || selectionContains(point)
+        return allowed
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

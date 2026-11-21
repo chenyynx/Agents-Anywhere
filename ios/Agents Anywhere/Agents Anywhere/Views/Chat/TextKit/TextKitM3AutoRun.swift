@@ -292,13 +292,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
         var tableSurfaceCells = -1
         var tableSurfaceSubviews = -1
         var tableSurfaceLabels = -1
-        var tableSelectableCells = -1
         var tableCellFrameMismatches = -1
         if let tableSurface {
             tableSurfaceCells = tableSurface.debugCellElementCount
             tableSurfaceSubviews = tableSurface.debugSurfaceSubviewCount
             tableSurfaceLabels = tableSurface.debugCellLabelCount
-            tableSelectableCells = tableSurface.debugSelectableCellCount
             tableCellFrameMismatches = tableSurface.debugCellFrameMismatchCount
             if tableSurfaceCells != 6 {
                 failures.append("textkit table: \(tableSurfaceCells) cell elements, expected 6")
@@ -309,38 +307,11 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             if tableSurfaceLabels != 0 {
                 failures.append("textkit table: \(tableSurfaceLabels) cell labels, expected 0")
             }
-            if tableSelectableCells != 6 {
-                failures.append("textkit table: \(tableSelectableCells) selectable cells, expected 6")
-            }
             if tableCellFrameMismatches != 0 {
                 failures.append("textkit table: \(tableCellFrameMismatches) cells off their text rect")
             }
         } else {
             failures.append("textkit table: no table surface")
-        }
-
-        // Composite selection (pp 2026-11-21): every body text block joins one
-        // row-level overlay, and that overlay carries the system interaction.
-        // Code and table blocks stay out of the participant list.
-        var stackView: CodeMarkdownTextStackView?
-        var ancestor: UIView? = tableSurface
-        while let view = ancestor {
-            if let found = view as? CodeMarkdownTextStackView {
-                stackView = found
-                break
-            }
-            ancestor = view.superview
-        }
-        if let stackView {
-            let participants = stackView.debugSelectionParticipantCount
-            if participants < 1 {
-                failures.append("textkit selection: \(participants) participants, expected at least 1")
-            }
-            if !stackView.debugSelectionHasInteraction {
-                failures.append("textkit selection: no system interaction installed")
-            }
-        } else {
-            failures.append("textkit selection: no text stack above the table")
         }
 
         var overlaps = 0

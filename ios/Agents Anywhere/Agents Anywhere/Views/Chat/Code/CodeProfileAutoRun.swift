@@ -1736,6 +1736,24 @@ final class CodeProfileAutoRunModel {
             width: window.bounds.width, height: .greatestFiniteMagnitude)).height
             - safeTop - safeBottom)
 
+        // Composite selection wiring (pp 2026-11-21): the row's body text is
+        // one overlay carrying one system interaction, and that overlay is
+        // what makes a drag run past a paragraph. This row is the same
+        // `CodeMessageRowView` the timeline installs.
+        if let stack = Self.findTextStack(in: host.view) {
+            let participants = stack.debugSelectionParticipantCount
+            check(participants >= 1,
+                  "views: composite selection has \(participants) participants")
+            check(stack.debugSelectionHasInteraction,
+                  "views: composite selection has no system interaction")
+            report["compositeSelection"] = [
+                "participants": participants,
+                "interaction": stack.debugSelectionHasInteraction,
+            ]
+        } else {
+            failures.append("views: no CodeMarkdownTextStackView in the message row")
+        }
+
         let measured = CodeMessageHeightMeasurer.height(
             group: group, profile: .claudeCode,
             width: rowWidth, typography: typography, traits: traits, measured: true)
@@ -3159,6 +3177,15 @@ final class CodeProfileAutoRunModel {
     }
 
     // MARK: - Report
+
+    /// The Code row's text stack, if this view tree carries one.
+    private static func findTextStack(in view: UIView) -> CodeMarkdownTextStackView? {
+        if let stack = view as? CodeMarkdownTextStackView { return stack }
+        for subview in view.subviews {
+            if let found = findTextStack(in: subview) { return found }
+        }
+        return nil
+    }
 
     private func check(_ condition: Bool, _ message: @autoclosure () -> String) {
         guard !condition else { return }

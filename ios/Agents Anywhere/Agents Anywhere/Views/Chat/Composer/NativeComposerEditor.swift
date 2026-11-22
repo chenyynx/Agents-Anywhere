@@ -214,7 +214,8 @@ final class ComposerTextView: UITextView {
         typingAttributes[.font] = body
     }
     /// Long pasted logs leave the editor at paste time, not at send time: the
-    /// reply returns true when the text became an attachment instead.
+    /// reply returns true when the paste was consumed — turned into a file, or
+    /// refused with an error. Either way the raw text is never inserted.
     var onLongPaste: ((String) -> Bool)?
 
     override var keyCommands: [UIKeyCommand]? {
@@ -251,8 +252,14 @@ struct NativeComposerEditor: UIViewRepresentable {
     var expandAnimation: Animation? = nil
     var onTextChange: ((String, Bool) -> Void)? = nil
     /// Called before a paste enters the editor. Returning true means the paste
-    /// was turned into an attachment and must not be inserted as text.
+    /// was consumed — turned into an attachment, or refused with an error —
+    /// and must not be inserted as text.
     var onLongPaste: ((String) -> Bool)? = nil
+    /// A non-paste insertion hit the editor budget. The host shows the error.
+    var onEditorLimitReached: (() -> Void)? = nil
+    /// The draft itself is over the editor budget; repair it outside the view
+    /// update. Never hand such a string to TextKit.
+    var onOversizedDraft: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> ComposerTextView {
         let view = ComposerTextView()
@@ -303,8 +310,16 @@ struct NativeComposerEditor: UIViewRepresentable {
                 view.typingAttributes[.font] = bodyFont
             }
         }
-        // Do not replace native pre-edit text or disrupt its selection/candidate bar.
-        if view.markedTextRange == nil, controller.canonicalText(of: view) != draft.text {
+        // A draft over the editor budget must never reach TextKit. The
+        // 2026-11-22 crash had the main thread in `sizeThatFits` measuring a
+        // 4 MB draft past the scene-update watchdog, and because the draft is
+        // archived it repeated on every launch. Repair the model off this pass
+        // instead of measuring it here.
+        if LongMessageAttachmentPolicy.exceedsEditorLimit(draft.text) {
+            let repair = onOversizedDraft
+            Task { @MainActor in repair?() }
+        } else if view.markedTextRange == nil, controller.canonicalText(of: view) != draft.text {
+            // Do not replace native pre-edit text or disrupt its selection/candidate bar.
             let selection = view.selectedRange
             view.text = draft.text
             let end = (draft.text as NSString).length
@@ -346,7 +361,20 @@ struct NativeComposerEditor: UIViewRepresentable {
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             // UIKit owns IME candidate confirmation. A plain Return is always
             // accepted as text input, never interpreted as a send gesture.
-            true
+            guard textView.markedTextRange == nil else { return true }
+            // Only an insertion that would push the editor past its budget is
+            // intercepted. This is the last line for paths that never call
+            // `paste(_:)` — dictation, drop, a pasteboard without a string
+            // representation, a third-party IME — so TextKit cannot be handed
+            // a log the size of the 2026-11-22 one.
+            let current = ((textView.text ?? "") as NSString).length
+            let projected = max(0, current - range.length + (text as NSString).length)
+            guard projected > LongMessageAttachmentPolicy.maximumEditorCharacters else { return true }
+            // The host turns the insertion into a file, or refuses it with an
+            // error; either way nothing is inserted.
+            if parent.onLongPaste?(text) == true { return false }
+            parent.onEditorLimitReached?()
+            return false
         }
     }
 }

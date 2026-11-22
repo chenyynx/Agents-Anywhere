@@ -14701,19 +14701,19 @@
         }
       }
     },
-    "每条消息最多添加 5 个附件。": {
+    "每条消息最多添加 9 个附件。": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "You can add up to 5 attachments per message."
+            "value": "You can add up to 9 attachments per message."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每条消息最多添加 5 个附件。"
+            "value": "每条消息最多添加 9 个附件。"
           }
         }
       }

@@ -31,6 +31,12 @@ type MonacoCodeViewProps = {
   onReady?: (api: MonacoCodeViewApi) => void
   options?: import("monaco-editor").editor.IStandaloneEditorConstructionOptions
   style?: React.CSSProperties
+  // Pins one preview theme instead of following the document's light/dark
+  // class. The in-app preview is always the paper theme (pp 2026-11-22).
+  theme?: "aa-preview-light" | "aa-preview-dark"
+  // 1 = default text size. The preview scales the editor's font size instead
+  // of CSS-zooming the whole editor, so glyphs stay sharp (pp 2026-11-22).
+  zoom?: number
 }
 
 export function MonacoCodeView({
@@ -44,10 +50,12 @@ export function MonacoCodeView({
   onReady,
   options,
   style,
+  theme,
+  zoom = 1,
 }: MonacoCodeViewProps) {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
-  const latest = React.useRef({ content, documentKey, editable, fileName, language, options, onChange, onReady })
-  latest.current = { content, documentKey, editable, fileName, language, options, onChange, onReady }
+  const latest = React.useRef({ content, documentKey, editable, fileName, language, options, onChange, onReady, theme, zoom })
+  latest.current = { content, documentKey, editable, fileName, language, options, onChange, onReady, theme, zoom }
   const syncRef = React.useRef<(() => void) | null>(null)
 
   React.useEffect(() => {
@@ -69,7 +77,7 @@ export function MonacoCodeView({
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         smoothScrolling: true,
-        theme: currentMonacoTheme(),
+        theme: latest.current.theme ?? currentMonacoTheme(),
         wordWrap: "off",
         ...latest.current.options,
         readOnly: !latest.current.editable,
@@ -103,12 +111,22 @@ export function MonacoCodeView({
           oldModel?.dispose()
         }
         editor.updateOptions({ ...next.options, readOnly: !next.editable })
+        if (previous?.theme !== next.theme) monaco.editor.setTheme(next.theme ?? currentMonacoTheme())
+        if (previous?.zoom !== next.zoom) {
+          const baseFont = Number(next.options?.fontSize ?? 14)
+          const baseLine = Number(next.options?.lineHeight ?? 19)
+          editor.updateOptions({
+            fontSize: Math.max(6, Math.round(baseFont * next.zoom)),
+            lineHeight: Math.max(8, Math.round(baseLine * next.zoom)),
+          })
+        }
         if (changed) next.onReady?.(api)
         if (next.editable && !previous?.editable) editor.focus()
         previous = next
       }
       const wheelCleanup = containMonacoWheel(host, editor)
-      const themeObserver = new MutationObserver(() => monaco.editor.setTheme(currentMonacoTheme()))
+      const themeObserver = new MutationObserver(() =>
+        monaco.editor.setTheme(latest.current.theme ?? currentMonacoTheme()))
       themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
       const changeDisposable = editor.onDidChangeModelContent(() => {
         if (!switchingModel) latest.current.onChange?.(editor.getValue())
@@ -131,7 +149,7 @@ export function MonacoCodeView({
     }
   }, [])
 
-  React.useEffect(() => { syncRef.current?.() }, [content, documentKey, editable, fileName, language, options])
+  React.useEffect(() => { syncRef.current?.() }, [content, documentKey, editable, fileName, language, options, theme, zoom])
 
   return <div ref={hostRef} className={cn("aa-monaco-code-view overscroll-contain", className)} style={style} />
 }

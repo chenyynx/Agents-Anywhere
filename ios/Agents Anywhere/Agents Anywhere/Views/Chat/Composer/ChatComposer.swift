@@ -22,8 +22,15 @@ struct ChatComposer: View {
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
     /// Converts a pasted log into an attachment before it reaches the editor.
-    /// Returns true when the paste was consumed as a file.
+    /// Returns true when the paste was consumed as a file (or refused with an
+    /// error) — either way the raw text must not be inserted.
     var onLongPaste: ((String) -> Bool)? = nil
+    /// A non-paste insertion (IME, dictation, drop) was refused because the
+    /// editor is at its budget; the host owns the visible error.
+    var onEditorLimitReached: (() -> Void)? = nil
+    /// A draft already in the model exceeded the editor budget (older build,
+    /// another entry point). The host repairs the model off the update pass.
+    var onOversizedDraft: (() -> Void)? = nil
     /// Opens the markup editor for a staged image attachment.
     var onEditAttachment: ((ChatAttachment) -> Void)? = nil
     /// Which control the single trailing key shows and whether it is live,
@@ -97,7 +104,9 @@ struct ChatComposer: View {
                         }
                         NativeComposerEditor(draft: draft, controller: editor,
                             maximumHeight: maximumEditorHeight, onCommandSend: onSend,
-                            expandAnimation: expandAnimation, onLongPaste: onLongPaste)
+                            expandAnimation: expandAnimation, onLongPaste: onLongPaste,
+                            onEditorLimitReached: onEditorLimitReached,
+                            onOversizedDraft: onOversizedDraft)
                     }
 
                     // The visible send key stays inside the bar; its native

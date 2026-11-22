@@ -410,4 +410,69 @@ test("new file tabs share the tree and split while preserving drafts in existing
   assert.equal(editorA.disposed, false)
 })
 
+test("the app skin uses the flat white toolbar and keeps one light theme while editing", async t => {
+  t.mock.method(dashboardApi, "connectorFsReadText", async (_token, _connector, _root, path) => textFile(path))
+  const f = await fixture(t, FilePreviewSurface)
+  const props = {
+    token: "fixture",
+    connectorId: "connector",
+    root: "/repo",
+    mode: "window",
+    embeddedSkin: true,
+    initialPath: "/repo/skin.ts",
+    initialName: "skin.ts",
+  }
+  await f.render(props)
+  await act(async () => {})
+  const skin = f.host.querySelector(".aa-preview-embedded")
+  assert.ok(skin, "embedded skin wrapper is applied")
+  assert.ok(f.host.textContent.includes("skin.ts"))
+  assert.ok(f.host.textContent.includes("/repo/skin.ts"), "the path is part of the flat toolbar")
+  assert.ok(f.host.querySelector('[aria-label="Search"]'))
+  assert.ok(f.host.querySelector('[aria-label="Copy"]'))
+  assert.ok(f.host.querySelector('[aria-label="Download"]'))
+  assert.equal(editors.at(-1).options.theme, "aa-preview-light")
+  const edit = f.host.querySelector('[aria-label="Edit"]')
+  assert.ok(edit, "editing is available for writable previews")
+  assert.equal(edit.getAttribute("aria-pressed"), "false")
+  await act(async () => { edit.click() })
+  assert.equal(edit.getAttribute("aria-pressed"), "true")
+  assert.ok(f.host.querySelector('[aria-label="Save"]'))
+  assert.equal(f.host.querySelector('[aria-label="Save"]').disabled, true, "save stays disabled without edits")
+  assert.ok(f.host.querySelector('[aria-label="Copy"]'), "copy stays in the edit toolbar")
+  assert.equal(editors.at(-1).options.theme, "aa-preview-light", "editing does not flip the editor theme")
+})
+
+test("a one-use preview token renders the app skin without the edit affordance", async t => {
+  t.mock.method(dashboardApi, "createConnectorFsPreviewSession", async () => ({
+    previewAccessToken: "scoped",
+    expiresAt: "2026-11-22T00:00:00Z",
+    connectorId: "connector",
+    root: "/repo",
+    path: "/repo/readonly.ts",
+    serverTime: "2026-11-22T00:00:00Z",
+  }))
+  t.mock.method(dashboardApi, "connectorFsPreviewReadText", async () => textFile("/repo/readonly.ts"))
+  const f = await fixture(t, FilePreviewSurface)
+  await f.render({
+    token: null,
+    connectorId: "",
+    root: "",
+    previewToken: "one-use",
+    mode: "window",
+    embeddedSkin: true,
+    initialPath: "/repo/readonly.ts",
+    initialName: "readonly.ts",
+  })
+  await act(async () => {})
+  assert.ok(f.host.querySelector(".aa-preview-embedded"))
+  const edit = f.host.querySelector('[aria-label="Edit"]')
+  assert.ok(edit)
+  assert.equal(edit.disabled, true, "the edit button stays visible but disabled for read-only previews")
+  assert.ok(f.host.querySelector('[aria-label="Search"]'))
+  assert.ok(f.host.querySelector('[aria-label="Copy"]'))
+  assert.ok(f.host.querySelector('[aria-label="Download"]'))
+  assert.equal(editors.at(-1).options.theme, "aa-preview-light")
+})
+
 test.after(() => { mockHooks.deregister(); sourceHooks.deregister() })

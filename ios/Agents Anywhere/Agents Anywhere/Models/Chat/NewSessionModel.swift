@@ -71,7 +71,26 @@ final class NewSessionModel {
         projectID = preference.projectIDs?[preference.connectorID]
         workspace = preference.workspaces[preference.connectorID] ?? ""
         homePaths = preference.homePaths ?? [:]
-        draft.text = preference.draftText ?? ""
+        // A draft saved before the editor budget (or by a build that let a
+        // huge paste through) must not be measured by TextKit on every launch;
+        // 2026-11-22 b1485 was exactly that loop. Repair it at the boundary.
+        let storedDraftText = preference.draftText ?? ""
+        let restoredDraft = LongMessageAttachmentPolicy.sanitizeRestoredDraft(
+            storedDraftText, existingAttachmentCount: 0)
+        draft.text = restoredDraft.text
+        if let attachment = restoredDraft.attachment { draft.attachments = [attachment] }
+        if restoredDraft.didSanitize {
+            preference.draftText = restoredDraft.text
+            if let data = try? JSONEncoder().encode(preference) {
+                defaults.set(data, forKey: preferenceKey)
+            }
+            ClientDiagnosticsLog.shared.record(kind: "composer.draft.restore", detail: [
+                "characters": String(storedDraftText.count),
+                "keptText": String(restoredDraft.text.count),
+                "attachment": restoredDraft.attachment == nil ? "no" : "yes",
+                "source": "new-session",
+            ], dedupe: false)
+        }
     }
 
     var connector: V2Connector? { connectors.first { $0.id == connectorID } }
@@ -180,6 +199,37 @@ final class NewSessionModel {
         } catch { if isValid, !Task.isCancelled { homeErrors[device] = error.localizedDescription } }
     }
     var canAttach: Bool { prepared?.capabilities.allows("runtime.attachment") == true }
+    /// See `V2SessionRuntimeModel.attachmentDelivery`. While the page is still
+    /// preparing, delivery is unknown rather than unavailable: a long paste
+    /// becomes a local file card and the send gate speaks once facts arrive.
+    var attachmentDelivery: AttachmentDelivery {
+        guard let prepared else { return .unknown }
+        guard let capability = prepared.capabilities.capability(id: "runtime.attachment") else {
+            return .unavailable
+        }
+        return capability.supported && capability.allowed ? .deliverable : .unavailable
+    }
+
+    /// A long paste made while the page was still preparing becomes a local
+    /// card (`.unknown` delivery). If the prepared runtime then reports that it
+    /// cannot carry files, fold a sole policy card back into text while it
+    /// still fits the editor budget: the user keeps the text they could send
+    /// before the card existed, instead of a draft that can never be created.
+    private func foldOptimisticLongMessageIfNeeded() {
+        guard attachmentDelivery == .unavailable,
+              draft.text.isEmpty,
+              draft.attachments.count == 1,
+              let attachment = draft.attachments.first,
+              let text = LongMessageAttachmentPolicy.textFromLongMessageAttachment(attachment)
+        else { return }
+        draft.attachments.removeAll()
+        draft.text = text
+        saveDraft()
+        ClientDiagnosticsLog.shared.record(kind: "composer.paste.fold", detail: [
+            "characters": String(text.count),
+            "source": "new-session",
+        ], dedupe: false)
+    }
     var canCreate: Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil
@@ -273,6 +323,7 @@ final class NewSessionModel {
                 return
             }
             prepared = value
+            foldOptimisticLongMessageIfNeeded()
             settings.replace(ChatSettingsCatalog(value.catalogs), selections: savedSelections)
             // The last explicit choice from any session outranks this page's
             // older sheet preference — that is what makes "I changed the
@@ -408,6 +459,19 @@ final class NewSessionModel {
     }
     func saveDraft() {
         draftSaveTask?.cancel(); draftSaveTask = nil
+        // Never write a draft the editor budget would refuse to read back.
+        if LongMessageAttachmentPolicy.exceedsEditorLimit(draft.text) {
+            let oversizedCount = draft.text.count
+            let repaired = LongMessageAttachmentPolicy.sanitizeRestoredDraft(
+                draft.text, existingAttachmentCount: draft.attachments.count)
+            draft.text = repaired.text
+            if let attachment = repaired.attachment { draft.attachments.append(attachment) }
+            ClientDiagnosticsLog.shared.record(kind: "composer.draft.repair", detail: [
+                "characters": String(oversizedCount),
+                "keptText": String(repaired.text.count),
+                "attachment": repaired.attachment == nil ? "no" : "yes",
+            ], dedupe: false)
+        }
         guard preference.draftText != draft.text else { return }
         preference.draftText = draft.text; persist()
     }

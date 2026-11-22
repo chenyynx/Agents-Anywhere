@@ -1090,3 +1090,71 @@ def test_raw_walk_anchors_a_fired_prompt_turn_like_history_and_live() -> None:
     # The raw walk's anchor-less fallback translates to the same seed the SDK
     # walk uses, so a card rebuilt from it keeps the turn.
     assert _scan_turn_id("scheduled@42") == _history_turn_id("scheduled:42")
+
+
+def test_a_cross_session_message_anchors_like_a_fired_prompt() -> None:
+    """A peer message is a hidden enqueued prompt, so it anchors the turn.
+
+    Real 2.1.285 shape (2026-11-02): ``queue-operation`` enqueue, then the
+    hidden ``<cross-session-message>`` user row. The SDK view drops that row,
+    so history sees only the assistant that follows; the enqueue + exact-text
+    pair is what makes it a boundary and anchors that assistant's message id,
+    the same frame live casts the turn on.
+    """
+
+    text = (
+        '<cross-session-message from="uds:/tmp/peer.sock" from-name="ubuntu-a0">'
+        "hello</cross-session-message>"
+    )
+    raw = (
+        _visible_user_row("p1", "go"),
+        _assistant_row("a1", "first"),
+        _enqueue_row(text),
+        _hidden_meta_row("peer", text),
+        _assistant_row("a2", "peer reply", message_id="msg_peer"),
+    )
+    scan = scan_raw_transcript(raw)
+    assert scan.injected_prompt_rows.get("peer") is not None
+    messages = (
+        _user("p1", "go"),
+        _assistant("a1", "first"),
+        _assistant("a2", "peer reply", message_id="msg_peer"),
+    )
+    assert set(_history_turn_ids(messages, scan).values()) == {
+        _history_turn_id("p1"),
+        _history_turn_id("msg_peer"),
+    }
+    assert scan.turn_seeds.get("a2") == "msg_peer"
+
+
+def test_a_compact_boundary_drops_pre_compact_fired_prompt_boundaries() -> None:
+    """A fired prompt compacted away must not anchor the post-compact row.
+
+    The compaction continues the turn that was running; live keeps that turn's
+    id. The raw walk used to carry the stale boundary across the summary and
+    anchor the first assistant row after it on its own message id (2026-11-22
+    review, constructed repro).
+    """
+
+    raw = (
+        _visible_user_row("p1", "go"),
+        _assistant_row("a1", "first"),
+        _enqueue_row("Prompt"),
+        _hidden_meta_row("hidden-fired", "Prompt"),
+        json.dumps({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": "compact-1",
+            "compactMetadata": {},
+        }),
+        _assistant_row("a2", "after compact", message_id="msg_after"),
+    )
+    scan = scan_raw_transcript(raw)
+    assert scan.injected_prompt_rows == {}
+    messages = (
+        _user("p1", "go"),
+        _assistant("a1", "first"),
+        _assistant("a2", "after compact", message_id="msg_after"),
+    )
+    assert set(_history_turn_ids(messages, scan).values()) == {_history_turn_id("p1")}
+    assert scan.turn_seeds.get("a2") == "p1"

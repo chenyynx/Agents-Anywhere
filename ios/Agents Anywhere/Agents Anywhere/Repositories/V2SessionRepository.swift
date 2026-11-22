@@ -1500,7 +1500,7 @@ final class V2SessionRepository {
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
-            if trigger == "recovery", heldRowsBelowPage,
+            if (trigger == "recovery" || trigger == "refresh"), heldRowsBelowPage,
                let snapshotPageMinOrder, let boundaryTurnID {
                 scheduleTurnBoundaryRepair(
                     entry,
@@ -1547,8 +1547,9 @@ final class V2SessionRepository {
 
     /// Re-read the held rows below a recovery snapshot's page.
     ///
-    /// A recovery snapshot exists because the server rewrote more rows than
-    /// the event budget admits. Its page refreshes the newest rows; the rows
+    /// A recovery (or explicit refresh) snapshot can arrive after the server
+    /// rewrote rows outside its page — the event budget forced the snapshot,
+    /// or the reader pulled for truth. The page refreshes the newest rows; the rows
     /// the merge grafted back below the page can still carry the turn ids
     /// they had before a mass re-key, so one turn shows as two step groups.
     /// The repair reads that range again, oldest page last, and stops once the
@@ -1592,9 +1593,9 @@ final class V2SessionRepository {
                 return
             }
             guard isCurrent(entry), entry.readVersion == version,
-                  let projection = entry.projection else { return }
+                  entry.projection != nil else { return }
             guard !page.items.isEmpty else { break }
-            projection.mergeRepairPage(page)
+            entry.projection?.mergeRepairPage(page)
             pages += 1
             rows += page.items.count
             emit(entry)

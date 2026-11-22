@@ -91,6 +91,7 @@ struct NewSessionView: View, Equatable {
                     maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                     editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                     canSend: model.canCreate, canAttach: model.canAttach && model.prepared != nil,
+                    attachmentDelivery: model.attachmentDelivery,
                     canSelectModel: model.prepared?.capabilities.allows("catalog.model") == true,
                     canSelectPermission: model.prepared?.capabilities.allows("catalog.permission") == true,
                     isBusy: model.isCreating, isLoadingSettings: model.isPreparing,

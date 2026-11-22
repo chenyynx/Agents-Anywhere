@@ -14,6 +14,10 @@ struct ChatComposerDock: View {
     @Binding var showsCommandMenu: Bool
     var canSend = true
     var canAttach = true
+    /// Delivery classification for long pastes. `.unknown` (offline, not yet
+    /// fresh, new session preparing) still produces a local file card; only a
+    /// fresh "does not support attachments" falls back to measuring text.
+    var attachmentDelivery: AttachmentDelivery = .unknown
     var canSelectModel = true
     var canSelectPermission = true
     var isStreaming = false
@@ -96,6 +100,10 @@ struct ChatComposerDock: View {
                 onCommands: { showsCommandMenu.toggle() },
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
+                onEditorLimitReached: {
+                    attachmentError = String(localized: "内容过长，请分段输入或添加为文件。")
+                },
+                onOversizedDraft: repairOversizedDraft,
                 onEditAttachment: presentImageEditor,
                 affordance: affordance, onQueueSend: send)
                 .contentShape(Rectangle())
@@ -119,7 +127,8 @@ struct ChatComposerDock: View {
         .background {
             ZStack {
                 Color.clear.photosPicker(isPresented: pickerBinding(.photos), selection: $photos,
-                    maxSelectionCount: max(1, 5 - draft.attachments.count), matching: .images)
+                    maxSelectionCount: max(1, LongMessageAttachmentPolicy.maximumAttachments
+                        - draft.attachments.count), matching: .images)
                 Color.clear.fileImporter(isPresented: pickerBinding(.files), allowedContentTypes: [.item],
                     allowsMultipleSelection: true, onCompletion: importFiles)
             }
@@ -136,8 +145,11 @@ struct ChatComposerDock: View {
                         }
                     }
                 },
-                maxPhotoSelection: max(0, 5 - draft.attachments.count),
-                canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
+                maxPhotoSelection: max(0, LongMessageAttachmentPolicy.maximumAttachments
+                    - draft.attachments.count),
+                canAttach: canAttach
+                    && draft.attachments.count < LongMessageAttachmentPolicy.maximumAttachments
+                    && importCount == 0,
                 canSelectModel: canSelectModel,
                 canSelectPermission: canSelectPermission,
                 isLoading: isLoadingSettings, loadingError: settingsError,
@@ -228,14 +240,61 @@ struct ChatComposerDock: View {
 
     /// A long paste becomes an ordinary `.txt` attachment at paste time, so the
     /// editor never measures the log and its file card appears before send.
+    /// `true` means the paste is consumed either way: converted, or refused
+    /// with an error — the raw text must never fall through to the editor.
     private func convertLongPastedText(_ text: String) -> Bool {
-        guard let attachment = LongMessageAttachmentPolicy.makeAttachment(
-            from: text,
+        switch LongMessageAttachmentPolicy.decidePaste(
+            text,
             existingAttachmentCount: draft.attachments.count,
-            canAttach: canAttach && importCount == 0) else { return false }
-        draft.attachments.append(attachment)
+            delivery: attachmentDelivery) {
+        case .insert:
+            return false
+        case .attachment:
+            guard let attachment = LongMessageAttachmentPolicy.makeAttachment(
+                from: text,
+                existingAttachmentCount: draft.attachments.count) else {
+                // A slot raced away between the decision and the card: refuse
+                // the paste, never fall through to TextKit with the raw log.
+                attachmentError = String(localized: "内容过长，无法粘贴。请分段粘贴或添加为文件。")
+                return true
+            }
+            draft.attachments.append(attachment)
+            onDraftChange()
+            ClientDiagnosticsLog.shared.record(kind: "composer.paste", detail: [
+                "result": "attachment",
+                "characters": String(text.count),
+                "attachments": String(draft.attachments.count),
+                "delivery": attachmentDelivery.diagnosticName,
+            ], dedupe: false)
+            return true
+        case .refused:
+            attachmentError = String(localized: "内容过长，无法粘贴。请分段粘贴或添加为文件。")
+            ClientDiagnosticsLog.shared.record(kind: "composer.paste", detail: [
+                "result": "refused",
+                "characters": String(text.count),
+                "attachments": String(draft.attachments.count),
+                "delivery": attachmentDelivery.diagnosticName,
+            ], dedupe: false)
+            return true
+        }
+    }
+
+    /// Last line of defence for a draft that reached the model without passing
+    /// the paste gates (older build, another entry point). Runs off the view
+    /// update pass and repairs the model, so the editor never gets the string.
+    private func repairOversizedDraft() {
+        let text = draft.text
+        guard LongMessageAttachmentPolicy.exceedsEditorLimit(text) else { return }
+        let repaired = LongMessageAttachmentPolicy.sanitizeRestoredDraft(
+            text, existingAttachmentCount: draft.attachments.count)
+        draft.text = repaired.text
+        if let attachment = repaired.attachment { draft.attachments.append(attachment) }
         onDraftChange()
-        return true
+        ClientDiagnosticsLog.shared.record(kind: "composer.draft.repair", detail: [
+            "characters": String(text.count),
+            "keptText": String(repaired.text.count),
+            "attachment": repaired.attachment == nil ? "no" : "yes",
+        ], dedupe: false)
     }
 
     private func replaceEditedAttachment(_ updated: ChatAttachment) {
@@ -254,7 +313,9 @@ struct ChatComposerDock: View {
 
     private func append(name: String, data: Data, mediaType: String) async {
         guard draft.isValid else { return }
-        guard draft.attachments.count < 5 else { attachmentError = String(localized: "每条消息最多添加 5 个附件。"); return }
+        guard draft.attachments.count < LongMessageAttachmentPolicy.maximumAttachments else {
+            attachmentError = String(localized: "每条消息最多添加 9 个附件。"); return
+        }
         guard !data.isEmpty else { attachmentError = String(localized: "文件为空。"); return }
         guard data.count <= 25 * 1024 * 1024 else { attachmentError = String(localized: "单个附件请控制在 25 MiB 以内。"); return }
         let previewMaxPixelSize = ChatImageThumbnail.maximumPixelSize(
@@ -267,7 +328,8 @@ struct ChatComposerDock: View {
                 (ChatImageThumbnail.make(data: data, maxPixelSize: previewMaxPixelSize),
                     ChatImageThumbnail.imageSize(data: data))
             }.value : (nil, nil)
-        guard draft.isValid, draft.attachments.count < 5 else { return }
+        guard draft.isValid,
+              draft.attachments.count < LongMessageAttachmentPolicy.maximumAttachments else { return }
         draft.attachments.append(ChatAttachment(name: name, data: data, mediaType: mediaType,
             previewData: imageInfo.preview, pixelSize: imageInfo.pixelSize))
     }
@@ -294,13 +356,17 @@ struct ChatComposerDock: View {
             importCount += 1
             Task { @MainActor in
                 defer { importCount -= 1 }
-                for url in urls.prefix(5) {
+                let remaining = max(0, LongMessageAttachmentPolicy.maximumAttachments
+                    - draft.attachments.count)
+                for url in urls.prefix(remaining) {
                     do {
                         let file = try await Task.detached(priority: .userInitiated) { try ImportedChatFile.read(url) }.value
                         await append(name: file.name, data: file.data, mediaType: file.mediaType)
                     } catch { attachmentError = error.localizedDescription }
                 }
-                if urls.count > 5 { attachmentError = String(localized: "每条消息最多添加 5 个附件。") }
+                if urls.count > remaining {
+                    attachmentError = String(localized: "每条消息最多添加 9 个附件。")
+                }
             }
         } catch { attachmentError = error.localizedDescription }
     }

@@ -226,6 +226,10 @@ final class SessionChatModel {
         return responseUnavailableReason
     }
     var canAttach: Bool { session.runtime.allows("runtime.attachment") }
+    /// Delivery shape for the long-paste decision. Unlike `canAttach` this
+    /// keeps `unknown` while facts are stale, so a paste made at launch or
+    /// offline still becomes a file card instead of reaching TextKit.
+    var attachmentDelivery: AttachmentDelivery { session.runtime.attachmentDelivery }
     var canChangeTakeover: Bool {
         session.isValid && session.connection == .connected && session.metadata?.connectorStatus == .online
             && session.network.availability != .offline && !isWorking && !takeoverUncertain
@@ -716,16 +720,17 @@ final class SessionChatModel {
         // incident), and the model reads the saved text at its next tool
         // boundary. A runtime that cannot steer attachments keeps the queue
         // for exactly this draft.
-        if LongMessageAttachmentPolicy.shouldConvert(session.composer.text) {
+        if LongMessageAttachmentPolicy.decidePaste(
+            session.composer.text,
+            existingAttachmentCount: session.composer.attachments.count,
+            delivery: attachmentDelivery) == .attachment {
             // A long paste must never ride the turn as one giant bubble (the
-            // 2026-10-31 height incident). When it cannot become a file — the
-            // runtime cannot steer attachments, or the draft already carries
-            // five — the queue keeps that protection instead.
+            // 2026-10-31 height incident). When the runtime cannot steer
+            // attachments, the queue keeps that protection instead.
             guard session.steerAcceptsAttachments,
                   let converted = LongMessageAttachmentPolicy.makeAttachment(
                       from: session.composer.text,
-                      existingAttachmentCount: session.composer.attachments.count,
-                      canAttach: canAttach) else {
+                      existingAttachmentCount: session.composer.attachments.count) else {
                 await fallBackToQueue()
                 return
             }
@@ -767,10 +772,13 @@ final class SessionChatModel {
         else { return }
         // The queue is another way a long paste leaves the composer; convert
         // it here too, before the editor's committed text reaches the bubble.
-        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
-            from: session.composer.text,
+        if LongMessageAttachmentPolicy.decidePaste(
+            session.composer.text,
             existingAttachmentCount: session.composer.attachments.count,
-            canAttach: canAttach) {
+            delivery: attachmentDelivery) == .attachment,
+           let attachment = LongMessageAttachmentPolicy.makeAttachment(
+               from: session.composer.text,
+               existingAttachmentCount: session.composer.attachments.count) {
             session.composer.text = ""
             session.composer.attachments.append(attachment)
         }
@@ -852,19 +860,47 @@ final class SessionChatModel {
         }
         guard !isWorking, session.canSend, !session.composer.isComposing else { return }
         let draft = session.composer
+        var outgoingText = text
+        // A paste converted while delivery was unknown, on a runtime that
+        // turns out not to accept files: fold the policy card back into text
+        // (inside the editor budget) so the draft is not a dead end.
+        if attachmentDelivery == .unavailable,
+           draft.text.isEmpty,
+           draft.attachments.count == 1,
+           let attachment = draft.attachments.first,
+           let restoredText = LongMessageAttachmentPolicy.textFromLongMessageAttachment(attachment) {
+            draft.attachments.removeAll()
+            draft.text = restoredText
+            outgoingText = restoredText
+        }
         // A pasted log is cheaper as a file than as a chat bubble; the normal
-        // attachment upload carries it to the agent.
-        if let attachment = LongMessageAttachmentPolicy.makeAttachment(
-            from: text,
+        // attachment upload carries it to the agent. A runtime that explicitly
+        // cannot carry files keeps the text instead — it is already inside the
+        // editor budget, and a card it could never send would be a dead end.
+        switch LongMessageAttachmentPolicy.decidePaste(
+            outgoingText,
             existingAttachmentCount: draft.attachments.count,
-            canAttach: canAttach) {
-            draft.text = ""
-            draft.attachments.append(attachment)
-        } else {
-            draft.text = text
+            delivery: attachmentDelivery) {
+        case .attachment:
+            if let attachment = LongMessageAttachmentPolicy.makeAttachment(
+                from: outgoingText,
+                existingAttachmentCount: draft.attachments.count) {
+                draft.text = ""
+                draft.attachments.append(attachment)
+            } else {
+                draft.text = outgoingText
+            }
+        case .insert:
+            draft.text = outgoingText
+        case .refused:
+            refuse(String(localized: "内容过长，无法发送。请分段发送或添加为文件。"))
+            return
         }
         let selected = draft.attachments
-        guard selected.isEmpty || canAttach else { return }
+        guard selected.isEmpty || canAttach else {
+            refuse(String(localized: "当前无法发送带附件的消息，请稍后再试。"))
+            return
+        }
         isWorking = true
         error = nil
         defer { isWorking = false }

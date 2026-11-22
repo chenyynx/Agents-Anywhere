@@ -107,6 +107,18 @@ final class V2SessionRuntimeModel {
         return capability.supported && capability.available
     }
 
+    /// Whether a file can travel with a message, from fresh facts only.
+    /// `unknown` keeps the composer honest while no authoritative snapshot
+    /// exists (launch, reconnect, offline): a long paste still becomes a local
+    /// file card, and the send gate speaks once the facts arrive. This is
+    /// deliberately not `allows("runtime.attachment")`: availability is a
+    /// delivery question, not a "should the editor measure 4 MB" question.
+    var attachmentDelivery: AttachmentDelivery {
+        guard isFresh, let capabilities else { return .unknown }
+        guard let capability = capabilities.capability(id: "runtime.attachment") else { return .unavailable }
+        return capability.supported && capability.allowed ? .deliverable : .unavailable
+    }
+
     /// Whether the predicted idle is currently in force for composer gating.
     /// A prediction only gets to speak while the projection is fresh; once
     /// fresh facts stop flowing, the last authoritative state is the honest
@@ -1367,7 +1379,22 @@ final class V2SessionModel: Identifiable {
         let sameAsRecord = composer.text == pending.content
             && composer.attachments.map(\.id) == pending.localAttachmentIDs
         guard composer.text.isEmpty || sameAsRecord else { return false }
-        draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
+        // Same repair as a restored archive: a pending record may carry the
+        // oversized text an older build let into the editor.
+        let restoredDraft = LongMessageAttachmentPolicy.sanitizeRestoredDraft(
+            pending.content, existingAttachmentCount: pending.attachments.count)
+        draft = restoredDraft.text
+        composer.attachments = pending.attachments
+        if let attachment = restoredDraft.attachment { composer.attachments.append(attachment) }
+        draftAttachmentIDs = pending.attachmentIDs
+        if restoredDraft.didSanitize {
+            ClientDiagnosticsLog.shared.record(kind: "composer.draft.restore", detail: [
+                "characters": String(pending.content.count),
+                "keptText": String(restoredDraft.text.count),
+                "attachment": restoredDraft.attachment == nil ? "no" : "yes",
+                "source": "pending",
+            ], dedupe: false)
+        }
         pending.didRestoreDraft = true
         draftRestoredFromPendingID = pending.id
         composer.isFocused = true
@@ -1387,7 +1414,21 @@ final class V2SessionModel: Identifiable {
         cachedInterruptedTurns = nil
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
-        draft = archive.draft; composer.attachments = archive.draftAttachments
+        // An archived draft from a build that let a huge paste through must
+        // not be handed back to TextKit verbatim: that is a launch-time
+        // watchdog kill that repeats on every launch (2026-11-22 b1485).
+        let restoredDraft = LongMessageAttachmentPolicy.sanitizeRestoredDraft(
+            archive.draft, existingAttachmentCount: archive.draftAttachments.count)
+        draft = restoredDraft.text
+        composer.attachments = archive.draftAttachments
+        if let attachment = restoredDraft.attachment { composer.attachments.append(attachment) }
+        if restoredDraft.didSanitize {
+            ClientDiagnosticsLog.shared.record(kind: "composer.draft.restore", detail: [
+                "characters": String(archive.draft.count),
+                "keptText": String(restoredDraft.text.count),
+                "attachment": restoredDraft.attachment == nil ? "no" : "yes",
+            ], dedupe: false)
+        }
         draftAttachmentIDs = archive.draftAttachments.compactMap { $0.uploaded?.fileId }
         pendingMessages = archive.pending.map { value in
             let pending = V2PendingMessage(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,

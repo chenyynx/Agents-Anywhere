@@ -373,6 +373,7 @@ struct SessionChatView: View, Equatable {
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 editor: composerEditor, showsCommandMenu: $showsCommandMenu,
                 canSend: session.canSend, canAttach: model.canAttach,
+                attachmentDelivery: model.attachmentDelivery,
                 canSelectModel: session.runtime.allows("catalog.model"),
                 canSelectPermission: session.runtime.allows("catalog.permission"),
                 isStreaming: model.isComposerStreaming, canStop: session.runtime.permitsInterruptAttempt(),

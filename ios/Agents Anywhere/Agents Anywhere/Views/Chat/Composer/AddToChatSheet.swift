@@ -10,7 +10,7 @@ struct AddToChatSheet: View {
     var onFiles: () -> Void
     var onCamera: () -> Void = {}
     var onRecentPhotos: ([Data]) -> Void = { _ in }
-    var maxPhotoSelection = 5
+    var maxPhotoSelection = LongMessageAttachmentPolicy.maximumAttachments
     var canAttach = true
     var canSelectModel = true
     var canSelectPermission = true

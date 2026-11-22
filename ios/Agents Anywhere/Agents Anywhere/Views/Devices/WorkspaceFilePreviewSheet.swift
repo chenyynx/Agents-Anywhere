@@ -27,31 +27,51 @@ struct WorkspaceFilePreviewSheet: View {
         return session.isValid && session.network.availability != .offline && session.metadata?.connectorStatus == .online
     }
     var body: some View {
-        ZStack {
-            if let url {
-                WorkspacePreviewWebView(url: url, onLoaded: { loading = false }, onFailure: {
-                    loading = false; error = $0
-                }, onClose: { dismiss() }, onExternal: { openURL($0) },
-                    onDownload: { downloadedFile = $0 }, onDownloadFailure: downloadFailed,
-                    onDownloading: { isDownloading = $0 })
-                    .id(url)
+        NavigationStack {
+            ZStack {
+                if let url {
+                    WorkspacePreviewWebView(url: url, onLoaded: { loading = false }, onFailure: {
+                        loading = false; error = $0
+                    }, onClose: { dismiss() }, onExternal: { openURL($0) },
+                        onDownload: { downloadedFile = $0 }, onDownloadFailure: downloadFailed,
+                        onDownloading: { isDownloading = $0 })
+                        .id(url)
+                }
+                if let error {
+                    ContentUnavailableView {
+                        Label(String(localized: "无法预览文件"), appSymbol: "doc.badge.ellipsis")
+                    } description: { Text(error) } actions: { Button(String(localized: "重试")) { attempt += 1 }.disabled(!canRead) }
+                    .background(Color(uiColor: .systemBackground))
+                } else if loading { ProgressView(String(localized: "加载预览…")).padding(20).background(.regularMaterial, in: .rect(cornerRadius: 18)) }
             }
-            if let error {
-                ContentUnavailableView {
-                    Label(String(localized: "无法预览文件"), appSymbol: "doc.badge.ellipsis")
-                } description: { Text(error) } actions: { Button(String(localized: "重试")) { attempt += 1 }.disabled(!canRead) }
-                .background(Color(uiColor: .systemBackground))
-            } else if loading { ProgressView(String(localized: "加载预览…")).padding(20).background(.regularMaterial, in: .rect(cornerRadius: 18)) }
-        }
-        // The preview page paints its own background; running to the screen
-        // edge removes the sheet-coloured strip below the content (pp
-        // 2026-11-22). The navigation host used to keep the child inside the
-        // bottom safe area, so the page chrome is an overlay now instead.
-        .ignoresSafeArea(.container, edges: .bottom)
-        .safeAreaInset(edge: .top, spacing: 0) { previewChrome }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !canRead { Text(String(localized: "设备或网络已离线，恢复连接后可重新加载。"))
-                .font(.footnote).foregroundStyle(.secondary).padding(12).frame(maxWidth: .infinity).background(.regularMaterial) }
+            // The Web preview paints its own page background; letting the whole
+            // content stack run under the home indicator removes the sheet-
+            // coloured strip below the content (pp 2026-11-22). Applied to the
+            // stack, not the WebView: the navigation host otherwise keeps the
+            // child inside the safe area.
+            .ignoresSafeArea(.container, edges: .bottom)
+            .navigationTitle(name.isEmpty ? String(localized: "文件预览") : name).navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !canRead { Text(String(localized: "设备或网络已离线，恢复连接后可重新加载。"))
+                    .font(.footnote).foregroundStyle(.secondary).padding(12).frame(maxWidth: .infinity).background(.regularMaterial) }
+            }
+            .toolbar {
+                if isDownloading { ToolbarItem(placement: .topBarLeading) { ProgressView().accessibilityLabel(String(localized: "正在下载")) } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(String(localized: "重新加载"), appSymbol: "arrow.clockwise") { attempt += 1 }.disabled(!canRead || loading)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if isOpeningBrowser {
+                        ProgressView().accessibilityLabel(String(localized: "正在打开浏览器"))
+                    } else {
+                        Button(String(localized: "在浏览器中打开"), appSymbol: "arrow.up.right.square") {
+                            guard !isOpeningBrowser else { return }
+                            isOpeningBrowser = true; browserRequest += 1
+                        }.disabled(!canRead)
+                    }
+                }
+                SheetCloseToolbar { dismiss() }
+            }
         }
         .appSheetPresentation(.expanded)
         .overlay(alignment: .top) {
@@ -79,59 +99,6 @@ struct WorkspaceFilePreviewSheet: View {
             await openInBrowser()
         }
     }
-    /// The sheet's own navigation bar. The WebView is no longer inside a
-    /// NavigationStack (that host kept it inside the bottom safe area), so the
-    /// bar is an overlay laid out by `safeAreaInset` above the page.
-    private var previewChrome: some View {
-        HStack(spacing: 12) {
-            if isDownloading {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel(String(localized: "正在下载"))
-            }
-            Button { attempt += 1 } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 16, weight: .medium))
-            }
-            .disabled(!canRead || loading)
-            .accessibilityLabel(String(localized: "重新加载"))
-
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .semibold))
-            }
-            .accessibilityLabel(String(localized: "关闭"))
-
-            Spacer(minLength: 8)
-
-            Text(name.isEmpty ? String(localized: "文件预览") : name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .accessibilityAddTraits(.isHeader)
-
-            Spacer(minLength: 8)
-
-            if isOpeningBrowser {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel(String(localized: "正在打开浏览器"))
-            } else {
-                Button {
-                    guard !isOpeningBrowser else { return }
-                    isOpeningBrowser = true; browserRequest += 1
-                } label: {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 16, weight: .medium))
-                }
-                .disabled(!canRead)
-                .accessibilityLabel(String(localized: "在浏览器中打开"))
-            }
-        }
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
     private func preparePreviewURL(embedded: Bool = true) async throws -> URL {
         let entry = V2WorkspaceEntry(name: name, path: path, type: "file", size: nil, modifiedAt: nil)
         return try await service.previewURL(connectorId: connectorId, root: root,

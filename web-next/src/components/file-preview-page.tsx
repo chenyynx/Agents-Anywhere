@@ -529,6 +529,11 @@ export function FilePreviewSurface({
         "flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground",
         mode === "window" && "h-svh",
       )}
+      // viewport-fit=cover lets the page paint under the home indicator; keep
+      // the scrolling content above it without leaving a background gap.
+      style={mode === "window"
+        ? { paddingBottom: "env(safe-area-inset-bottom)" }
+        : undefined}
     >
       <header
         inert={pendingFile || undefined}

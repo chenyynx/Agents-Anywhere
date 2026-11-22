@@ -23,7 +23,7 @@ storage error must never turn a timeline write into a failed turn.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,25 +64,39 @@ class ClaudeOpenAgentCards:
         session: ClaudeSession,
         item: RuntimeTimelineItem,
     ) -> None:
-        """Track one published item's card; terminal publishes retire it.
+        """Track one published item's card; terminal publishes retire it."""
 
-        Called from the publish path for every item — the in-memory mirror makes
-        a repeated running upsert a no-op (agent cards are republished on every
-        task event), so this costs one storage round trip per card open/close,
-        not per frame.
+        await self.record_many(session, (item,))
+
+    async def record_many(
+        self,
+        session: ClaudeSession,
+        items: Iterable[RuntimeTimelineItem],
+    ) -> None:
+        """Track a batch of published items with one storage write.
+
+        Called from the live per-item publish path and from ``timeline_sync``
+        (a history rebuild publishes a batch and would otherwise leave its
+        cards out of the sweep's work list). Only agent-call items count, and
+        the in-memory mirror makes repeated running upserts a no-op.
         """
 
-        content = item.content
-        if (
-            item.type != "tool"
-            or not isinstance(content, Mapping)
-            or content.get("kind") != "agent_call"
-        ):
-            return
         if not session.external_session_id or not session.cwd:
             # Without the meta the oracle's probe cannot run, so storing the
             # entry would create a work item the reconciliation could never
             # judge. The live paths still cover the card.
+            return
+        cards: list[RuntimeTimelineItem] = []
+        for item in items:
+            content = item.content
+            if (
+                item.type != "tool"
+                or not isinstance(content, Mapping)
+                or content.get("kind") != "agent_call"
+            ):
+                continue
+            cards.append(item)
+        if not cards:
             return
         try:
             async with self.lock:
@@ -95,10 +109,11 @@ class ClaudeOpenAgentCards:
                     for card_id in entry.get("itemIds") or ()
                     if isinstance(card_id, str) and card_id
                 }
-                if item.status in AGENT_CARD_TERMINAL_STATUSES:
-                    ids.discard(item.id)
-                else:
-                    ids.add(item.id)
+                for item in cards:
+                    if item.status in AGENT_CARD_TERMINAL_STATUSES:
+                        ids.discard(item.id)
+                    else:
+                        ids.add(item.id)
                 updated: dict[str, Any] = {
                     "externalSessionId": session.external_session_id,
                     "cwd": session.cwd,
@@ -115,9 +130,9 @@ class ClaudeOpenAgentCards:
             # Display truth is rebuilt from the transcript at startup; losing an
             # index write costs a delayed closure, never a wrong one.
             logger.exception(
-                "Claude open-agent-card index update failed session_id={} item={}",
+                "Claude open-agent-card index update failed session_id={} items={}",
                 session.session_id,
-                item.id,
+                [item.id for item in cards],
             )
 
     async def _load(self) -> dict[str, dict[str, Any]] | None:

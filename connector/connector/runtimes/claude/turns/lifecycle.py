@@ -111,6 +111,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_session_id,
     message_text,
     message_usage,
+    override_raw_scan,
     stable_message_item_id,
     stable_tool_item_id,
     stable_turn_result_item_id,
@@ -241,6 +242,13 @@ CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
 # seconds is far below the 15-minute staleness deadline and cheap (a stat per
 # open task), so a stranded card closes promptly without hammering the disk.
 AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS = 60.0
+
+#: Sessions without an open card that the periodic sweep still re-judges each
+#: tick. The durable open-card index is the primary work list; the rotating
+#: slice is the safety net for a card the index failed to record. Eight
+#: sessions/tick covers the whole store in a bounded number of minutes without
+#: re-reading every idle transcript every minute.
+AGENT_CARD_SWEEP_ROTATION_SESSIONS = 8
 
 # F1 (zombie-agent-card): the kill switch for the snapshot vouch. When on
 # (default), the exemption set `live_agent_task_ids` vouches only for tasks
@@ -436,11 +444,14 @@ def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
 
     Single entry point: delegates to the projector's own default seam
     (`messages._read_session_raw_scan`), which wraps the reader's memoized
-    scanner — keyed by ``(path, size, mtime)`` — so repeating it every sweep
-    against an unchanged transcript costs one dict lookup, and the sweep and
-    the folds can never disagree about what the file says. A scan failure is
-    never evidence — it returns ``None`` and the sweep proceeds with whatever
-    else it has.
+    scanner — keyed by ``(path, size, mtime, prefix)`` — so repeating it every
+    sweep against an unchanged transcript costs one dict lookup, and the sweep
+    and the folds can never disagree about what the file says. A scan failure
+    is never evidence — it returns ``None`` and the sweep proceeds with
+    whatever else it has.
+
+    This synchronous form stays for tests. The production sweep uses
+    :func:`_raw_transcript_scan_async`.
     """
 
     try:
@@ -450,6 +461,27 @@ def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
         )
 
         return _read_session_raw_scan(session)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Claude sweep raw transcript scan failed session_id={}",
+            session.session_id,
+        )
+        return None
+
+
+async def _raw_transcript_scan_async(
+    session: ClaudeSession,
+    *,
+    priority: Literal["foreground", "background"] = "foreground",
+) -> RawTranscriptScan | None:
+    """Async seam: run the sweep's scan on the bounded scan service."""
+
+    try:
+        from connector.runtimes.claude.timeline.messages import (
+            _read_session_raw_scan_async,
+        )
+
+        return await _read_session_raw_scan_async(session, priority=priority)
     except Exception:  # noqa: BLE001
         logger.exception(
             "Claude sweep raw transcript scan failed session_id={}",
@@ -523,6 +555,8 @@ class ClaudeTurnRunner:
     #: reconciliation reads it so a card stranded by a previous process is
     #: judged even in a session this connector never touches again.
     open_cards: ClaudeOpenAgentCards | None = None
+    #: Round-robin cursor for the no-open-card safety slice in the 60s sweep.
+    _sweep_rotation_cursor: int = field(default=0, init=False)
     #: The history syncer, so a resumed scheduled session — which can wake
     #: before any user turn in this process — backfills its history before its
     #: first live row. Same gate as the user path, same best-effort contract.
@@ -665,7 +699,14 @@ class ClaudeTurnRunner:
                 await asyncio.sleep(AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS)
                 if self.stopping:
                     return
-                for session in self.session_store.sessions():
+                sessions = list(self.session_store.sessions())
+                candidates = await self._agent_card_sweep_candidates(sessions)
+                logger.debug(
+                    "Claude agent-card sweep candidates store={} candidates={}",
+                    len(sessions),
+                    len(candidates),
+                )
+                for session in candidates:
                     if self.stopping:
                         return
                     await self.sweep_agent_cards_by_evidence(session)
@@ -674,6 +715,53 @@ class ClaudeTurnRunner:
             except Exception:  # noqa: BLE001
                 logger.exception("Claude agent-card evidence sweep tick failed")
 
+    async def _agent_card_sweep_candidates(
+        self,
+        sessions: list[ClaudeSession],
+    ) -> list[ClaudeSession]:
+        """The sessions one 60s sweep actually judges.
+
+        Primary set: the durable open-card index (a session with an open card
+        is re-judged every tick, including sessions the live store has not
+        adopted yet — the same ensure the startup reconciliation uses).
+        Safety slice: a rotating window of sessions without an indexed card,
+        so an index write that was lost can still be healed within minutes.
+        Without the index (tests / older wiring) the historical all-sessions
+        behaviour is preserved.
+        """
+
+        if self.open_cards is None:
+            return sessions
+        open_state = await self.open_cards.read()
+        by_id = {session.session_id: session for session in sessions}
+        candidates: list[ClaudeSession] = []
+        for session_id, entry in open_state.items():
+            session = by_id.get(session_id)
+            if session is None:
+                external_session_id = entry.get("externalSessionId")
+                cwd = entry.get("cwd")
+                if (
+                    not isinstance(external_session_id, str)
+                    or not external_session_id
+                    or not isinstance(cwd, str)
+                    or not cwd
+                ):
+                    continue
+                session = self.session_store.ensure(
+                    session_id=session_id,
+                    external_session_id=external_session_id,
+                    cwd=cwd,
+                )
+            candidates.append(session)
+        open_ids = {session.session_id for session in candidates}
+        rest = [session for session in sessions if session.session_id not in open_ids]
+        if rest:
+            count = min(AGENT_CARD_SWEEP_ROTATION_SESSIONS, len(rest))
+            start = self._sweep_rotation_cursor % len(rest)
+            rotated = rest[start:] + rest[:start]
+            candidates.extend(rotated[:count])
+            self._sweep_rotation_cursor = (start + count) % len(rest)
+        return candidates
 
     async def reconnect_sessions(self) -> None:
         """Resume only AA sessions previously observed to have scheduled tasks."""
@@ -1252,12 +1340,18 @@ class ClaudeTurnRunner:
             )
             if usage:
                 overlay.usage.update(usage)
-            items = self.timeline.fold_agent_task_items(
-                session,
-                tool_use_id=tool_use_id,
-                overlay=overlay,
-                status=status,
-            )
+            # The sync fold resolves aliases/evidence from the raw scan. Await
+            # one scan here (cache hit or bounded worker), then let every
+            # synchronous lookup in the fold reuse it instead of touching the
+            # 90MB file on the event loop.
+            raw_scan = await _raw_transcript_scan_async(session)
+            with override_raw_scan(session, raw_scan):
+                items = self.timeline.fold_agent_task_items(
+                    session,
+                    tool_use_id=tool_use_id,
+                    overlay=overlay,
+                    status=status,
+                )
             for item in items:
                 if self._publish_gate_skips(session, item):
                     # Idempotent closure (L2 §3.4): the terminal burst repeats
@@ -1422,6 +1516,7 @@ class ClaudeTurnRunner:
             return 0
         try:
             kwargs: dict[str, Any] = {}
+            scan: RawTranscriptScan | None = None
             if evidence and self.oracle is not None:
                 oracle = self.oracle
                 clock = getattr(oracle, "clock", None)
@@ -1430,7 +1525,7 @@ class ClaudeTurnRunner:
                     if callable(clock)
                     else int(time.time() * 1000)
                 )
-                scan = _raw_transcript_scan(session)
+                scan = await _raw_transcript_scan_async(session, priority="background")
                 kwargs = {
                     "oracle": oracle,
                     "attached_task_ids": self._attached_agent_task_ids(session),
@@ -1446,7 +1541,8 @@ class ClaudeTurnRunner:
                     # judge one clock.
                     "now_ms": now_ms,
                 }
-            items = self.timeline.close_open_agent_cards(session, **kwargs)
+            with override_raw_scan(session, scan):
+                items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
             for item in items:
                 if self._publish_gate_skips(session, item):

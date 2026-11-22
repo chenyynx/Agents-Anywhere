@@ -29,10 +29,12 @@ and never touch the real disk or wall time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
@@ -1907,12 +1909,18 @@ def participation_age_seconds(
 #: pin unbounded memory. The charge is deliberately conservative (0.5) and the
 #: budget holds today's working set (867MB source → ~433MB charged, ~189MB
 #: actual) while keeping the real ceiling near 256MB as the library grows.
-_SCAN_CACHE: dict[tuple[str, int, int], RawTranscriptScan] = {}
+ScanCacheKey = tuple[str, int, int, str]
+_SCAN_CACHE: dict[ScanCacheKey, RawTranscriptScan] = {}
+_SCAN_CACHE_LOCK = threading.Lock()
 _SCAN_CACHE_BUDGET_BYTES = 512 * 1024 * 1024
 _SCAN_RETAINED_BYTES_PER_SOURCE_BYTE = 0.5
 #: Per-entry floor: a cache of tiny transcripts is bounded by count as well as
 #: bytes (512MB / 64KB = 8192 entries of per-entry overhead at most).
 _SCAN_MIN_CHARGE_BYTES = 64 * 1024
+#: Bytes hashed from each end of the file. Size+mtime alone lets a same-size
+#: rewrite (tombstone removal) reuse a stale scan; the head/tail signature
+#: catches the realistic rewrites without reading the whole file on a hit.
+_SCAN_PREFIX_BYTES = 4096
 
 
 def _scan_cache_charge(source_size: int) -> int:
@@ -1924,46 +1932,131 @@ def _scan_cache_charge(source_size: int) -> int:
     )
 
 
-def scan_transcript_file(path: Path) -> RawTranscriptScan | None:
-    """Scan a transcript file, memoized by (path, size, mtime_ns).
+def _transcript_prefix_signature(path: Path, size: int) -> str | None:
+    """Hash the first and last few KiB of a transcript (same-size rewrite guard)."""
 
-    Returns ``None`` when the file cannot be stat'ed or read — absence of a raw
-    transcript is never evidence and must not raise. A changed file (size or
-    mtime) inherently misses the cache, so no invalidation is needed.
-    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_SCAN_PREFIX_BYTES)
+            tail = b""
+            if size > _SCAN_PREFIX_BYTES:
+                handle.seek(max(0, size - _SCAN_PREFIX_BYTES))
+                tail = handle.read(_SCAN_PREFIX_BYTES)
+    except OSError:
+        return None
+    return hashlib.blake2b(head + b"\0" + tail, digest_size=16).hexdigest()
+
+
+def transcript_scan_key(path: Path) -> ScanCacheKey | None:
+    """The identity of one transcript version, or ``None`` when unreadable."""
 
     try:
         stat = os.stat(path)
     except OSError:
         return None
-    key = (str(path), stat.st_size, stat.st_mtime_ns)
-    cached = _SCAN_CACHE.pop(key, None)
-    if cached is not None:
-        _SCAN_CACHE[key] = cached  # re-insert: most recently used
+    prefix = _transcript_prefix_signature(path, stat.st_size)
+    if prefix is None:
+        return None
+    return (str(path), stat.st_size, stat.st_mtime_ns, prefix)
+
+
+def cached_transcript_scan(path: Path) -> RawTranscriptScan | None:
+    """The cached scan for the file's current version, without reading it."""
+
+    key = transcript_scan_key(path)
+    if key is None:
+        return None
+    with _SCAN_CACHE_LOCK:
+        cached = _SCAN_CACHE.pop(key, None)
+        if cached is not None:
+            _SCAN_CACHE[key] = cached  # re-insert: most recently used
         return cached
+
+
+def _read_transcript_lines(
+    path: Path,
+    *,
+    cancel: Callable[[], bool] | None,
+    chunk_size: int,
+) -> tuple[str, ...] | None:
+    """Read a transcript in chunks, consuming only complete lines.
+
+    Returns ``None`` when cancelled or unreadable. The final unterminated line
+    is still returned at EOF (same as ``str.splitlines``); an incremental
+    cursor is not built here — this is the full-scan path.
+    """
+
     try:
         with open(path, encoding="utf-8") as handle:
-            lines = tuple(handle.read().splitlines())
-    except OSError:
+            lines: list[str] = []
+            buffer = ""
+            while True:
+                if cancel is not None and cancel():
+                    return None
+                chunk = handle.read(chunk_size)
+                if not chunk:
+                    break
+                buffer += chunk
+                parts = buffer.split("\n")
+                buffer = parts.pop()
+                for line in parts:
+                    if line.endswith("\r"):
+                        line = line[:-1]
+                    lines.append(line)
+            if buffer:
+                if buffer.endswith("\r"):
+                    buffer = buffer[:-1]
+                lines.append(buffer)
+            return tuple(lines)
+    except (OSError, UnicodeError):
+        return None
+
+
+def scan_transcript_file(
+    path: Path,
+    *,
+    cancel: Callable[[], bool] | None = None,
+    chunk_size: int = 1 << 20,
+) -> RawTranscriptScan | None:
+    """Scan a transcript file, memoized by (path, size, mtime_ns, prefix).
+
+    Returns ``None`` when the file cannot be stat'ed or read, or when
+    ``cancel()`` turns true between chunks — absence of a raw transcript is
+    never evidence and must not raise. A changed file (size, mtime, or a
+    same-size rewrite that moves its head/tail bytes) inherenty misses the
+    cache, so no invalidation is needed.
+    """
+
+    key = transcript_scan_key(path)
+    if key is None:
+        return None
+    with _SCAN_CACHE_LOCK:
+        cached = _SCAN_CACHE.pop(key, None)
+        if cached is not None:
+            _SCAN_CACHE[key] = cached  # re-insert: most recently used
+            return cached
+    lines = _read_transcript_lines(path, cancel=cancel, chunk_size=chunk_size)
+    if lines is None:
         return None
     scan = scan_raw_transcript(lines)
     # One entry per transcript: an active session appends continuously, and
-    # keeping its older (path, size, mtime) keys would let a single file fill
-    # the cache and evict every other session — the 2026-11-09 stall. The
-    # current key was already popped above, so this only drops older versions.
-    for stale_key in [stale for stale in _SCAN_CACHE if stale[0] == str(path)]:
-        _SCAN_CACHE.pop(stale_key, None)
-    charge = _scan_cache_charge(stat.st_size)
-    if charge > _SCAN_CACHE_BUDGET_BYTES:
-        # A single transcript larger than the whole budget is still returned;
-        # caching it would evict everything else and not stay under the cap.
-        return scan
-    held = sum(_scan_cache_charge(held_key[1]) for held_key in _SCAN_CACHE)
-    while _SCAN_CACHE and held + charge > _SCAN_CACHE_BUDGET_BYTES:
-        oldest_key = next(iter(_SCAN_CACHE))
-        held -= _scan_cache_charge(oldest_key[1])
-        _SCAN_CACHE.pop(oldest_key)
-    _SCAN_CACHE[key] = scan
+    # keeping its older keys would let a single file fill the cache and evict
+    # every other session — the 2026-11-09 stall. The current key was already
+    # popped above, so this only drops older versions.
+    size = key[1]
+    charge = _scan_cache_charge(size)
+    with _SCAN_CACHE_LOCK:
+        for stale_key in [stale for stale in _SCAN_CACHE if stale[0] == key[0]]:
+            _SCAN_CACHE.pop(stale_key, None)
+        if charge <= _SCAN_CACHE_BUDGET_BYTES:
+            held = sum(_scan_cache_charge(held_key[1]) for held_key in _SCAN_CACHE)
+            while _SCAN_CACHE and held + charge > _SCAN_CACHE_BUDGET_BYTES:
+                oldest_key = next(iter(_SCAN_CACHE))
+                held -= _scan_cache_charge(oldest_key[1])
+                _SCAN_CACHE.pop(oldest_key)
+            _SCAN_CACHE[key] = scan
+    # A single transcript larger than the whole budget is still returned;
+    # caching it would evict everything else and not stay under the cap.
     return scan
 
 

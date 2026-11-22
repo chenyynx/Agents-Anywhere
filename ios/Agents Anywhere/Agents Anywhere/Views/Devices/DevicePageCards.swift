@@ -241,7 +241,7 @@ struct DeviceAgentsEntry: View {
                     AppSymbol("anthropicon.agent", size: 18)
                         .foregroundStyle(SettingsStyle.icon(colorScheme))
                 }
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(title)
                         .font(SettingsStyle.text(15))
                         .foregroundStyle(DevicePageStyle.ink(colorScheme))
@@ -257,7 +257,7 @@ struct DeviceAgentsEntry: View {
                     .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 16)
+            .padding(.vertical, 15)
             .frame(minHeight: 68)
             .deviceCardChrome()
             .contentShape(.rect)
@@ -289,7 +289,7 @@ struct DeviceDirectoryCard: View {
                         AppSymbol("folder", size: 18)
                             .foregroundStyle(SettingsStyle.icon(colorScheme))
                     }
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 4) {
                             Text(name)
                                 .font(SettingsStyle.text(15))
@@ -301,7 +301,7 @@ struct DeviceDirectoryCard: View {
                             }
                         }
                         Text(path)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(SettingsStyle.text(15))
                             .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -326,7 +326,7 @@ struct DeviceDirectoryCard: View {
                 .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.vertical, 15)
         .frame(minHeight: 68)
         .deviceCardChrome()
         .contentShape(.rect)

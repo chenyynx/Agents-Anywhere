@@ -314,23 +314,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
                                        pendingHasEcho: Bool, liveTurnGroupID: String?,
                                        latestUserRowID: String?,
+                                       groups: [ChatTimelineGroup],
                                        gateLiveUserTurn: Bool) {
         let status = model.session.runtime.state?.status.rawValue ?? "nil"
-        // The rows that decide a non-nil live group, by the same predicate the
-        // build uses. Only the send window scans: the resolution consults them
-        // only while a send awaits its echo, and the ids are what names the row
-        // that parked the group (device 2026-11-23 06:38: a background fork
-        // stayed `running`, liveGroup=set, an intermediate footer blinked).
-        let activeIDs: [String] = {
-            guard pendingID != nil || liveTurnGroupID != nil,
-                  let latestUserRowID,
-                  let index = model.timeline.rows.firstIndex(where: { $0.id == latestUserRowID })
-            else { return [] }
-            return model.timeline.rows[(index + 1)...]
-                .filter { TimelineTurnActions.isLiveActivityRow($0.value) }
-                .prefix(3)
-                .map(\.id)
-        }()
+        // The resolution reads these rows only while a send awaits its echo;
+        // scanning in any other state would cost a full window walk per
+        // refresh for a decision the gate is not making. `ignored` names the
+        // exempt active row (background hand-off / compaction) that `active`
+        // cannot show — the 2026-11-23 fork stayed `running` yet sat in
+        // neither list before this field existed.
+        let sendWindow = pendingID != nil && !pendingHasEcho
+        let activeIDs: [String] = sendWindow
+            ? TimelineTurnActions.liveActivityRowIDs(
+                groups: groups, latestUserRowID: latestUserRowID)
+            : []
+        let ignoredIDs: [String] = sendWindow
+            ? TimelineTurnActions.ignoredActivityRowIDs(
+                groups: groups, latestUserRowID: latestUserRowID)
+            : []
         let probe = [
             "suppress=\(suppressLatest ? 1 : 0)",
             "gate=\(gateLiveUserTurn ? 1 : 0)",
@@ -340,6 +341,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "status=\(status)",
             "liveGroup=\(liveTurnGroupID == nil ? "nil" : "set")",
             "active=\(activeIDs.joined(separator: ","))",
+            "ignored=\(ignoredIDs.joined(separator: ","))",
             "lastUser=\(latestUserRowID ?? "nil")",
         ].joined(separator: " ")
         guard probe != lastFooterGateProbe else { return }
@@ -2429,6 +2431,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               pendingHasEcho: submittingPendingHasEcho,
                               liveTurnGroupID: liveTurnGroupID,
                               latestUserRowID: latestUserRowID,
+                              groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
             groups: groups,

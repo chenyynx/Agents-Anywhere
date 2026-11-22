@@ -312,7 +312,11 @@ enum TimelineTurnActions {
     /// running at send time, and the parked id merged the bubble-less turns
     /// after the bubble until the echo landed (device 2026-11-23 06:38:
     /// `timeline.footer.gate` liveGroup=set, `timeline.turn.footer` hosts
-    /// 9 → 8 → 9, the send's follow 30 pt short and a second +30.3 follow).
+    /// 9 → 8 → 9, the send's follow 30 pt short and a second +30 follow).
+    ///
+    /// The window spans every group after the bubble, not only the bubble's
+    /// own turn bucket: a foreground running row from a later, bubble-less
+    /// wake-up turn parks this group too (pre-existing; unchanged here).
     static func resolveLiveTurnGroupID(isLiveUserTurn: Bool,
                                        hasUnEchoedPending: Bool,
                                        latestUserRowID: String?,
@@ -338,7 +342,7 @@ enum TimelineTurnActions {
     /// The footer build and the live-group resolution must agree, or a row one
     /// of them deliberately ignores still parks the live group on an older
     /// user bubble and turns turn-id splitting off for the trailing stretch.
-    /// A background hand-off card and a settled compaction marker are not
+    /// A background hand-off card and a running compaction marker are not
     /// activity: the first keeps running after its turn's reply finished
     /// (pp 2026-11-18 需求 2: 不等子代理), the second is session maintenance
     /// (pp 2026-11-15: copy/share vanished for the whole compaction).
@@ -346,6 +350,45 @@ enum TimelineTurnActions {
         item.status.isActive
             && !TimelineEntryPresentation.isCompactItem(item)
             && !isBackgroundHandoffRow(item)
+    }
+
+    /// The rows after the last visible user bubble that still count as live
+    /// activity, in timeline order — the exact input `resolveLiveTurnGroupID`
+    /// consults. The adapter's `timeline.footer.gate` probe reads this instead
+    /// of scanning `timeline.rows`, which also holds sub-agent child rows the
+    /// grouping drops: a probe id the resolution never sees reads as a
+    /// contradiction (device 2026-11-23 06:38 window review).
+    static func liveActivityRowIDs(groups: [ChatTimelineGroup],
+                                   latestUserRowID: String?,
+                                   limit: Int = 3) -> [String] {
+        rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
+            .filter { isLiveActivityRow($0.value) }
+            .prefix(limit)
+            .map(\.id)
+    }
+
+    /// The same window's rows that are `status.isActive` but deliberately not
+    /// activity (a background hand-off card or a running compaction marker).
+    /// They explain a send window that shows running rows while `liveGroup`
+    /// stays nil, and they name the card whose background flag a later wire
+    /// rewrite can drop — invisible to `liveActivityRowIDs` by design.
+    static func ignoredActivityRowIDs(groups: [ChatTimelineGroup],
+                                      latestUserRowID: String?,
+                                      limit: Int = 3) -> [String] {
+        rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
+            .filter { $0.value.status.isActive && !isLiveActivityRow($0.value) }
+            .prefix(limit)
+            .map(\.id)
+    }
+
+    private static func rowsAfterLastUserBubble(groups: [ChatTimelineGroup],
+                                                latestUserRowID: String?) -> [ChatTimelineRowModel] {
+        guard let latestUserRowID,
+              let bubbleIndex = groups.lastIndex(where: { group in
+                  group.rows.contains { $0.id == latestUserRowID }
+              })
+        else { return [] }
+        return groups[(bubbleIndex + 1)...].flatMap { $0.rows }
     }
 
     /// One row that hands the turn off to the background: a subagent dispatch

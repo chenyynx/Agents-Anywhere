@@ -100,46 +100,6 @@ struct DeviceHeaderIconButton: View {
     }
 }
 
-/// Single-select tags (Active / Archived / All). Selected tags carry the app
-/// tint instead of a filled grey capsule.
-struct DeviceFilterTags<Value: Hashable & Identifiable>: View {
-    let values: [Value]
-    @Binding var selection: Value
-    let title: (Value) -> String
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(values) { value in
-                let selected = value == selection
-                Button { selection = value } label: {
-                    Text(title(value))
-                        .font(SettingsStyle.text(13, weight: selected ? .semibold : .regular))
-                        // A filter name never wraps or squeezes: at 13 pt the
-                        // narrow chip was breaking 「已归档」 onto two lines
-                        // (pp 2026-11-13). The row's ViewThatFits fallback moves
-                        // the scope menu instead of shrinking the tags.
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundStyle(selected
-                            ? SettingsStyle.controlTint(colorScheme)
-                            : SettingsStyle.secondary(colorScheme))
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 32)
-                        .background {
-                            if selected {
-                                Capsule().fill(SettingsStyle.controlTint(colorScheme).opacity(0.12))
-                            }
-                        }
-                        .contentShape(.capsule)
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
-    }
-}
-
 enum DeviceStatusTone {
     case ok, progress, warning, error, neutral
 

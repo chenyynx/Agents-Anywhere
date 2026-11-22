@@ -143,7 +143,7 @@ struct DeviceSessionList: View {
     var body: some View {
         DeviceSection(String(localized: "Sessions")) {
             HStack(spacing: 10) {
-                scopeMenu
+                filterMenu
                 Menu {
                     Button(model.isSelectingSessions
                         ? String(localized: "Cancel")
@@ -170,7 +170,6 @@ struct DeviceSessionList: View {
             .padding(.trailing, 6)
         } content: {
             VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
-                filters.padding(.horizontal, 2)
                 if model.isSelectingSessions {
                     Button(String(localized: "Select up to 200 sessions"), action: model.toggleSelectAll)
                         .font(SettingsStyle.text(15))
@@ -197,15 +196,17 @@ struct DeviceSessionList: View {
         }
     }
 
-    private var filters: some View {
-        DeviceFilterTags(values: V2DeviceSessionFilter.allCases,
-            selection: Binding(get: { model.sessionFilter }, set: model.setSessionFilter)) { String(localized: $0.title) }
-    }
-
-    /// The official "Alle ⌄" control: the project/workspace scope in the
-    /// section header, dark ink rather than a grey chip.
-    private var scopeMenu: some View {
+    /// The official single "Alle ⌄" control: status filter and project scope
+    /// live in one menu so the section header stays one line. The chip row the
+    /// previous design carried is gone (pp 2026-11-23).
+    private var filterMenu: some View {
         Menu {
+            Picker(String(localized: "Sessions"),
+                   selection: Binding(get: { model.sessionFilter }, set: model.setSessionFilter)) {
+                ForEach(V2DeviceSessionFilter.allCases) { filter in
+                    Text(String(localized: filter.title)).tag(filter)
+                }
+            }
             Picker(showsProjectNames ? String(localized: "Project") : String(localized: "工作目录"),
                 selection: Binding(get: { model.projectID }, set: model.selectProject)) {
                 Text(allScopesTitle).tag(String?.none)
@@ -215,7 +216,7 @@ struct DeviceSessionList: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(scopeTitle)
+                Text(headerFilterTitle)
                     .font(SettingsStyle.text(15))
                     .foregroundStyle(AppTheme.text300(colorScheme))
                     .lineLimit(1)
@@ -226,7 +227,14 @@ struct DeviceSessionList: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(showsProjectNames ? String(localized: "Project") : String(localized: "工作目录"))
+        .accessibilityLabel(String(localized: "Sessions"))
+    }
+
+    private var headerFilterTitle: String {
+        if let project = projects.first(where: { $0.id == model.projectID }) {
+            return showsProjectNames ? project.name : ProjectWorkspacePath.name(project.workspacePath)
+        }
+        return String(localized: model.sessionFilter.title)
     }
 
     private func select(_ session: V2SessionMeta) {
@@ -235,10 +243,6 @@ struct DeviceSessionList: View {
 
     private var allScopesTitle: String {
         showsProjectNames ? String(localized: "All projects") : String(localized: "All workspaces")
-    }
-    private var scopeTitle: String {
-        guard let project = projects.first(where: { $0.id == model.projectID }) else { return allScopesTitle }
-        return showsProjectNames ? project.name : ProjectWorkspacePath.name(project.workspacePath)
     }
     private func scopeSubtitle(_ session: V2SessionMeta) -> String? {
         let project = projects.first { $0.id == session.projectId }

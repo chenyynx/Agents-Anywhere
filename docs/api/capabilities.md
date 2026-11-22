@@ -67,6 +67,13 @@ the turn that actually read it. A steer stopped before delivery therefore
 leaves no row in the stopped turn; if the runtime delivers it as the next
 turn, its row appears in that turn.
 
+`parameters.attachments: true` declares that a steer may carry attachments.
+The runtime materializes them as local files and lists the paths in the
+steered text, exactly as a normal turn prompt does, so the model reads them
+inside the same turn; the steered message itself stays plain text. Clients
+must read this fact instead of the runtime name: without it, an attachment
+draft takes the queue. Today `claude` and `codex` declare it.
+
 ### `session.commands`
 
 `session.commands` answers one question: does the session have a loaded runtime
@@ -148,7 +155,8 @@ The wire shape should stay simple and flat:
   "available": false,
   "allowed": true,
   "unavailableReason": "runtime_no_active_turn",
-  "metadata": {}
+  "metadata": {},
+  "parameters": {}
 }
 ```
 
@@ -179,6 +187,10 @@ Field semantics:
   localized text, but should not rely on free-form messages.
 - `revision` orders capability-set updates for one scope. Clients ignore older
   revisions.
+- `parameters` carries per-capability facts a client may act on beyond the
+  three booleans (`session.steer.parameters.attachments` is the first one).
+  Clients that do not know a parameter must ignore it and keep their older
+  behavior — the default for every capability is `{}`.
 
 ## Ownership
 

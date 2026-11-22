@@ -766,11 +766,19 @@ class SessionRunService:
                 _timeline_attachment_payload(item) for item in attachment_payloads
             ]
 
+        # A steer carrying attachments downloads them onto the connector before
+        # the runtime sees the message. The default 30 s budget covers the
+        # round trip, not a multi-megabyte transfer: a transfer that outlives
+        # it would be reported as a failed steer while the connector still
+        # delivers it (the client then shows "结果尚未确认" for a message that
+        # reached the model). Give the attachment path a longer bound.
+        request_timeout = 90.0 if payload.attachments else 30.0
         try:
             result = await self._manager.request(
                 session.connectorId,
                 "session.steer",
                 params,
+                timeout=request_timeout,
             )
         except ConnectorOfflineError as exc:
             raise SessionRunConflictError(str(exc)) from exc

@@ -684,10 +684,13 @@ final class SessionChatModel {
     var canQueueSend: Bool { session.permitsQueuedSend && session.isValid }
 
     /// Whether the running turn can take this draft as a steering message.
-    /// Text only for v1; a draft with attachments keeps the queue path.
+    /// Text alone is always steerable; a draft carrying attachments only when
+    /// the runtime declares its steer path accepts them
+    /// (`session.steer.parameters.attachments`), otherwise the queue is the
+    /// path for that draft.
     var canSteerSend: Bool {
         isComposerStreaming && session.canSteerMessage
-            && session.composer.attachments.isEmpty
+            && (session.composer.attachments.isEmpty || session.steerAcceptsAttachments)
     }
 
     /// Commit the editor's draft as a steering message. The send key already
@@ -707,21 +710,42 @@ final class SessionChatModel {
             await fallBackToQueue()
             return
         }
-        let text = session.composer.text
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        // Steering is text-only. A long typed message that the normal paths
-        // would turn into an attachment must not ride the turn as one giant
-        // bubble (the 2026-10-31 height incident); fall back to the queue,
-        // which performs the conversion.
-        if LongMessageAttachmentPolicy.makeAttachment(
-            from: text,
-            existingAttachmentCount: session.composer.attachments.count,
-            canAttach: canAttach) != nil {
-            await fallBackToQueue()
-            return
+        // A long typed message becomes a file before it takes the wire, the
+        // same conversion the normal send does: the steer bubble stays a
+        // file card instead of one giant bubble (the 2026-10-31 height
+        // incident), and the model reads the saved text at its next tool
+        // boundary. A runtime that cannot steer attachments keeps the queue
+        // for exactly this draft.
+        if LongMessageAttachmentPolicy.shouldConvert(session.composer.text) {
+            // A long paste must never ride the turn as one giant bubble (the
+            // 2026-10-31 height incident). When it cannot become a file — the
+            // runtime cannot steer attachments, or the draft already carries
+            // five — the queue keeps that protection instead.
+            guard session.steerAcceptsAttachments,
+                  let converted = LongMessageAttachmentPolicy.makeAttachment(
+                      from: session.composer.text,
+                      existingAttachmentCount: session.composer.attachments.count,
+                      canAttach: canAttach) else {
+                await fallBackToQueue()
+                return
+            }
+            session.composer.text = ""
+            session.composer.attachments.append(converted)
         }
+        let text = session.composer.text
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !session.composer.attachments.isEmpty else { return }
         session.draft = text
-        _ = await session.sendDraft(delivery: .steer)
+        _ = await session.sendDraft(delivery: .steer) { pending in
+            for attachment in pending.attachments where attachment.uploaded == nil {
+                let uploaded = try await self.attachments.upload(sessionId: self.session.id, attachments: [attachment.local])
+                guard self.session.isValid, !Task.isCancelled else { throw CancellationError() }
+                guard let file = uploaded.first else { throw HTTPError.invalidResponse }
+                pending.bindUpload(file, localID: attachment.id)
+                self.session.attachmentPreviews.remember(pending.attachments, clientID: pending.id)
+                self.repository.draftDidChange(sessionID: self.session.id)
+            }
+        }
         surfaceBlockedSendIfNeeded()
     }
     /// Increments once per successful enqueue. The View observes it as the

@@ -3333,7 +3333,7 @@ class ClaudeTurnRunner:
                         # submit time, so a steer stopped before delivery
                         # leaves no orphan row, and one delivered as the next
                         # turn lands in that turn.
-                        steer_text, steer_client_id = steer
+                        steer_text, steer_client_id, steer_attachments = steer
                         item = self.timeline.message_item(
                             session=session,
                             turn_id=turn_id,
@@ -3343,6 +3343,7 @@ class ClaudeTurnRunner:
                             client_message_id=steer_client_id,
                             native_item_id=native_message_id,
                             native_item_type="steeringUserMessage",
+                            attachments=steer_attachments,
                         )
                         try:
                             await self.publish_items(execution, (item,))

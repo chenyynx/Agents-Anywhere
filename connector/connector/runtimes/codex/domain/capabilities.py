@@ -110,6 +110,10 @@ def codex_session_capabilities(context: CodexCapabilityContext) -> RuntimeCapabi
                 capability_id=CAPABILITY_SESSION_STEER,
                 available=steer_available,
                 unavailable_reason=steer_unavailable_reason(context),
+                # Steer materializes attachments into local files and lists
+                # their paths in the steered text (turns/actions.steer_turn),
+                # so a client may steer a draft that carries files.
+                parameters={"attachments": True},
             ),
             session_capability(
                 context,
@@ -215,6 +219,7 @@ def session_capability(
     unavailable_reason: str | None = None,
     supported: bool = True,
     metadata: dict[str, Any] | None = None,
+    parameters: dict[str, Any] | None = None,
 ) -> RuntimeCapability:
     return RuntimeCapability(
         capability_id=capability_id,
@@ -226,6 +231,7 @@ def session_capability(
         available=available,
         unavailable_reason=unavailable_reason,
         metadata=metadata or {},
+        parameters=parameters or {},
     )
 
 

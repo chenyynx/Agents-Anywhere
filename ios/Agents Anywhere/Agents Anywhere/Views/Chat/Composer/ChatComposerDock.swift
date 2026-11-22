@@ -33,7 +33,9 @@ struct ChatComposerDock: View {
     var onDraftChange: () -> Void = {}
     /// Whether a running turn's send key may enqueue (queue capability).
     var canQueueSend = true
-    /// Whether the running turn can take a steering message (text only).
+    /// Whether the running turn can take this draft as a steering message —
+    /// text always, attachments only when the runtime declares its steer path
+    /// accepts them (`session.steer.parameters.attachments`).
     var canSteerSend = false
     /// Increments once per successful enqueue; drives the light-impact haptic.
     var queueEnqueueTick = 0
@@ -73,7 +75,9 @@ struct ChatComposerDock: View {
     private var affordance: ComposerQueueAffordance {
         ComposerQueueAffordance.resolve(
             isStreaming: isStreaming,
-            hasText: !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            hasCommittableContent: midTurnAction == .steer
+                ? draft.hasSendableContent
+                : !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             // Enabled exactly when the tap has an action (see `midTurnAction`).
             canQueue: midTurnAction != .unavailable,
             canStop: canStop,

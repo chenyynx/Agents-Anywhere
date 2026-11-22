@@ -246,6 +246,7 @@ async def _exercise_runtime_capability_notification() -> None:
                         "available": True,
                         "allowed": True,
                         "metadata": {"source": "codex.catalog"},
+                        "parameters": {},
                     }
                 ],
                 "metadata": {"source": "codex.runtime"},
@@ -476,6 +477,7 @@ async def _exercise_session_capability_notification() -> None:
                         "allowed": True,
                         "unavailableReason": "session_running",
                         "metadata": {},
+                        "parameters": {},
                     },
                     {
                         "capabilityId": CAPABILITY_SESSION_INTERRUPT,
@@ -488,6 +490,7 @@ async def _exercise_session_capability_notification() -> None:
                         "available": True,
                         "allowed": True,
                         "metadata": {},
+                        "parameters": {},
                     },
                 ],
                 "metadata": {},

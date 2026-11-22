@@ -509,7 +509,7 @@ struct SessionChatView: View, Equatable {
     private var composerPlaceholder: String {
         if requiresTakeover { return String(localized: "请先接管") }
         if model.isComposerStreaming,
-           session.composer.isFocused, !session.composer.hasContent {
+           session.composer.isFocused, !session.composer.hasSendableContent {
             // The hint must match what this tap will actually do: steering
             // needs the running status, and anything else falls back to the
             // queue.

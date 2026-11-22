@@ -428,7 +428,7 @@ test("the app skin uses the two-card toolbar and keeps one light theme while edi
   assert.ok(f.host.querySelector('[aria-label="Search"]'))
   assert.ok(f.host.querySelector('[aria-label="Copy"]'))
   assert.ok(f.host.querySelector('[aria-label="Download"]'))
-  assert.ok(f.host.querySelector('[aria-label="Reset zoom"]'))
+  assert.ok(f.host.querySelector('[aria-label="Zoom level"]'))
   assert.equal(editors.at(-1).options.theme, "aa-preview-light")
   const edit = f.host.querySelector('[aria-label="Edit"]')
   assert.ok(edit, "editing is available for writable previews")
@@ -478,6 +478,8 @@ test("the app skin paints the card backdrop behind images", async t => {
   assert.ok(surface, "the image preview renders")
   assert.match(surface.className, /bg-\[#ECECEA\]/, "the image sits on the same backdrop as the toolbar cards")
   assert.match(f.host.querySelector(".aa-preview-embedded").className, /bg-\[#ECECEA\]/)
+  assert.ok(f.host.querySelector('[aria-label="More"]'), "the media actions menu renders")
+  assert.ok(f.host.querySelector('[aria-label="Zoom level"]'), "the zoom presets menu renders")
 })
 
 test("a one-use preview token renders the app skin without the edit affordance", async t => {

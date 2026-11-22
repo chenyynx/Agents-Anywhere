@@ -166,6 +166,8 @@ struct DeviceSessionList: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(String(localized: "Sessions actions"))
             }
+            // Official "Alle" sits 6 pt inside the card's trailing edge.
+            .padding(.trailing, 6)
         } content: {
             VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
                 filters.padding(.horizontal, 2)
@@ -214,11 +216,11 @@ struct DeviceSessionList: View {
         } label: {
             HStack(spacing: 4) {
                 Text(scopeTitle)
-                    .font(SettingsStyle.text(16, weight: .medium))
-                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .font(SettingsStyle.text(15))
+                    .foregroundStyle(AppTheme.text300(colorScheme))
                     .lineLimit(1)
                 AppSymbol("chevron.down", size: 12)
-                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .foregroundStyle(AppTheme.text300(colorScheme))
             }
             .frame(minHeight: 32)
             .contentShape(.rect)

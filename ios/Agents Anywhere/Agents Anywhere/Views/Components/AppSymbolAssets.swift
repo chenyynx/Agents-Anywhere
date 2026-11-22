@@ -130,6 +130,7 @@ enum AppSymbolAssets {
         "anthropicon.clock": "anthropicon.clock",
         "anthropicon.cloud": "anthropicon.cloud",
         "anthropicon.computer": "anthropicon.computer",
+        "anthropicon.laptop": "anthropicon.laptop",
         "anthropicon.connectors": "anthropicon-connectors",
         "anthropicon.copy": "anthropicon.copy",
         "anthropicon.dotsHorizontal": "anthropicon.dotsHorizontal",

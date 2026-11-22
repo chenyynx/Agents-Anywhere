@@ -59,7 +59,7 @@ struct DeviceManagementView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
+                VStack(alignment: .leading, spacing: 32) {
                     deviceSection
                     agentsSection
                     if showsSessionList {
@@ -86,8 +86,10 @@ struct DeviceManagementView: View {
                         onArchiveAll: { confirmsArchiveAll = true })
                     .id(DeviceSessionAnchor.id)
                 }
-                .padding(.top, 8).padding(.bottom, 96)
-                .modifier(ChatPageContentColumn())
+                .padding(.bottom, 64)
+                // Official Code tab insets cards by 16 pt; the shared default
+                // is 24 for the chat column (measured 2026-11-23).
+                .modifier(ChatPageContentColumn(horizontalInset: 16))
                 .background { ChatPageScrollEdge() }
             }
             .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 56 } action: { _, scrolled in
@@ -133,7 +135,7 @@ struct DeviceManagementView: View {
             if !model.isSelectingSessions {
                 DeviceNewSessionFab { onNewSession(nil) }
                     .padding(.trailing, DevicePageStyle.fabTrailing)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, 2)
             }
         }
         .onChange(of: allSessions, initial: true) { _, values in model.updateSessions(connectorId: connector.id, allSessions: values) }
@@ -143,7 +145,7 @@ struct DeviceManagementView: View {
         .sheet(isPresented: $showsAgents) {
             NavigationStack {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
+                    VStack(alignment: .leading, spacing: 28) {
                         DeviceAgentSection(model: agents)
                     }
                     .padding(.horizontal, SettingsStyle.inset)

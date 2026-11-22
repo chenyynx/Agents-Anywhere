@@ -9,6 +9,7 @@ import UIKit
 /// from the companion Japanese capture under `REFERENCES/round2/device/`.
 nonisolated enum DevicePageStyle {
     static let cardRadius: CGFloat = 24
+    /// Official Code tab stacks cards 10 pt apart (29 px at 3x).
     static let cardGap: CGFloat = 10
     static let deviceCardWidth: CGFloat = 163
     static let deviceCardHeight: CGFloat = 99
@@ -25,8 +26,33 @@ nonisolated enum DevicePageStyle {
         SettingsStyle.ink(scheme)
     }
 
+    /// Official Code tab secondary: #7A7973 (the settings page's
+    /// black-at-58% reads too dark here).
     static func secondary(_ scheme: ColorScheme) -> Color {
-        SettingsStyle.secondary(scheme)
+        scheme == .dark
+            ? Color(red: 0xC3 / 255.0, green: 0xC2 / 255.0, blue: 0xB7 / 255.0)
+            : Color(red: 0x7A / 255.0, green: 0x79 / 255.0, blue: 0x74 / 255.0)
+    }
+
+    /// The device laptop glyph is ink (#0B0B0B light), not the settings row
+    /// icon grey.
+    static func deviceGlyph(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0xF9 / 255.0, green: 0xF9 / 255.0, blue: 0xF7 / 255.0)
+            : Color(red: 0x0B / 255.0, green: 0x0B / 255.0, blue: 0x0B / 255.0)
+    }
+
+    /// `ListCardOutlineModifier` draws a 1-physical-pixel #DDDDDD edge;
+    /// `RaisedCard` adds black @ 0.08 / radius 4 / y 2. Dark uses #323232 and
+    /// a deeper shadow.
+    static func cardBorder(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x32 / 255.0, green: 0x32 / 255.0, blue: 0x32 / 255.0)
+            : Color(red: 0xDD / 255.0, green: 0xDD / 255.0, blue: 0xDD / 255.0)
+    }
+
+    static func cardShadow(_ scheme: ColorScheme) -> Color {
+        Color.black.opacity(scheme == .dark ? 0.20 : 0.08)
     }
 
     /// Official "Verbunden" green: #409027 on the light capture, a brighter
@@ -48,7 +74,7 @@ nonisolated enum DevicePageStyle {
     static func fabFill(_ scheme: ColorScheme) -> Color {
         scheme == .dark
             ? Color(red: 0xF8 / 255.0, green: 0xF8 / 255.0, blue: 0xF6 / 255.0)
-            : Color(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x2A / 255.0)
+            : Color(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x29 / 255.0)
     }
 
     static func fabInk(_ scheme: ColorScheme) -> Color {
@@ -56,8 +82,37 @@ nonisolated enum DevicePageStyle {
     }
 }
 
-/// One device in the top row. The current device carries a quiet ink border so
-/// the page's sections stay attributable; every other card switches device.
+/// The official card surface: white fill, a 1-physical-pixel edge and a downward shadow.
+/// The shadow lives on the background shape so text stays crisp.
+struct DeviceCardChrome: ViewModifier {
+    var cornerRadius: CGFloat = DevicePageStyle.cardRadius
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(DevicePageStyle.card(colorScheme))
+                    .shadow(color: DevicePageStyle.cardShadow(colorScheme),
+                            radius: 4, x: 0, y: 2)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(DevicePageStyle.cardBorder(colorScheme),
+                                  lineWidth: 1 / displayScale)
+            }
+    }
+}
+
+extension View {
+    func deviceCardChrome(cornerRadius: CGFloat = DevicePageStyle.cardRadius) -> some View {
+        modifier(DeviceCardChrome(cornerRadius: cornerRadius))
+    }
+}
+
+/// One device in the top row. The reference capture shows no selected ring;
+/// the page's nav title already names the device.
 struct DeviceIdentityCard: View {
     let connector: V2Connector
     let isCurrent: Bool
@@ -70,23 +125,23 @@ struct DeviceIdentityCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 0) {
                 ZStack(alignment: .topTrailing) {
-                    AppSymbol("anthropicon.computer", size: 20)
-                        .foregroundStyle(SettingsStyle.icon(colorScheme))
+                    AnthropiconView(name: "anthropicon.laptop", size: .large)
+                        .foregroundStyle(DevicePageStyle.deviceGlyph(colorScheme))
                     if online {
                         Circle()
                             .fill(DevicePageStyle.success(colorScheme))
-                            .frame(width: 7, height: 7)
-                            .offset(x: 3, y: -2)
+                            .frame(width: 6, height: 6)
+                            .offset(x: 1, y: -1)
                     }
                 }
                 Spacer(minLength: 0)
                 Text(connector.name)
-                    .font(SettingsStyle.text(16, weight: .semibold))
+                    .font(SettingsStyle.text(15))
                     .foregroundStyle(DevicePageStyle.ink(colorScheme))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(online ? String(localized: "已连接") : String(localized: "离线"))
-                    .font(SettingsStyle.text(15))
+                    .font(SettingsStyle.text(13))
                     .foregroundStyle(online
                         ? DevicePageStyle.success(colorScheme)
                         : DevicePageStyle.secondary(colorScheme))
@@ -96,16 +151,7 @@ struct DeviceIdentityCard: View {
             .padding(16)
             .frame(width: DevicePageStyle.deviceCardWidth, alignment: .leading)
             .frame(minHeight: DevicePageStyle.deviceCardHeight, alignment: .leading)
-            .background(DevicePageStyle.card(colorScheme),
-                        in: RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius,
-                                             style: .continuous))
-            .overlay {
-                if isCurrent {
-                    RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius, style: .continuous)
-                        .strokeBorder(DevicePageStyle.ink(colorScheme)
-                            .opacity(colorScheme == .dark ? 0.32 : 0.14), lineWidth: 1.5)
-                }
-            }
+            .deviceCardChrome()
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -128,9 +174,9 @@ struct DeviceLeadingTile<Content: View>: View {
     }
 }
 
-/// The running mark on a session tile: a thin ring that turns while the turn
-/// runs. It holds the official still pose under Reduce Motion.
-struct DeviceActivityRing: View {
+/// Official working mark: the `anthropicon.spinner` arc, turning once a
+/// second; the still pose holds under Reduce Motion.
+struct DeviceWorkingGlyph: View {
     let color: Color
     let isAnimating: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -140,23 +186,27 @@ struct DeviceActivityRing: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animates)) { context in
             let seconds = context.date.timeIntervalSinceReferenceDate
-            ring
+            AnthropiconView(name: "anthropicon.spinner", size: .medium)
+                .foregroundStyle(color)
                 .rotationEffect(.degrees(animates
                     ? seconds.truncatingRemainder(dividingBy: 1) * 360
                     : 0))
         }
-        .frame(width: 22, height: 22)
+        .frame(width: 20, height: 20)
     }
+}
 
-    private var ring: some View {
-        ZStack {
-            Circle()
-                .stroke(color.opacity(0.22), lineWidth: 2)
-            Circle()
-                .trim(from: 0, to: 0.7)
-                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        }
-        .frame(width: 22, height: 22)
+/// Official idle mark: a 20 pt ring dashed into seven round-capped segments
+/// (#7A7973, 1.67 pt, dash 2.6 / gap 5.63; the caps bring the ink dash to
+/// ~4.2 pt). The official ring is drawn in code, not shipped as an asset.
+struct DeviceIdleRing: View {
+    let color: Color
+
+    var body: some View {
+        Circle()
+            .strokeBorder(color, style: StrokeStyle(lineWidth: 1.67, lineCap: .round,
+                                                   dash: [2.6, 5.63]))
+            .frame(width: 20, height: 20)
     }
 }
 
@@ -186,14 +236,14 @@ struct DeviceAgentsEntry: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 13) {
+            HStack(spacing: 12) {
                 DeviceLeadingTile {
                     AppSymbol("anthropicon.agent", size: 18)
                         .foregroundStyle(SettingsStyle.icon(colorScheme))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(SettingsStyle.text(16))
+                        .font(SettingsStyle.text(15))
                         .foregroundStyle(DevicePageStyle.ink(colorScheme))
                         .lineLimit(1)
                     Text(subtitle)
@@ -207,11 +257,9 @@ struct DeviceAgentsEntry: View {
                     .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .frame(minHeight: 69)
-            .background(DevicePageStyle.card(colorScheme),
-                        in: RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius,
-                                             style: .continuous))
+            .padding(.vertical, 16)
+            .frame(minHeight: 68)
+            .deviceCardChrome()
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -234,9 +282,9 @@ struct DeviceDirectoryCard: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 12) {
             Button(action: onOpen) {
-                HStack(spacing: 13) {
+                HStack(spacing: 12) {
                     DeviceLeadingTile {
                         AppSymbol("folder", size: 18)
                             .foregroundStyle(SettingsStyle.icon(colorScheme))
@@ -244,7 +292,7 @@ struct DeviceDirectoryCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
                             Text(name)
-                                .font(SettingsStyle.text(16))
+                                .font(SettingsStyle.text(15))
                                 .foregroundStyle(DevicePageStyle.ink(colorScheme))
                                 .lineLimit(1)
                             if pinned {
@@ -278,11 +326,9 @@ struct DeviceDirectoryCard: View {
                 .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(minHeight: 69)
-        .background(DevicePageStyle.card(colorScheme),
-                    in: RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius,
-                                         style: .continuous))
+        .padding(.vertical, 16)
+        .frame(minHeight: 68)
+        .deviceCardChrome()
         .contentShape(.rect)
     }
 }
@@ -326,24 +372,24 @@ struct DeviceSessionCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 13) {
+            HStack(spacing: 12) {
                 leading
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 1) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(title)
-                            .font(SettingsStyle.text(16, weight: session.unread ? .semibold : .regular))
+                            .font(SettingsStyle.text(15))
                             .foregroundStyle(DevicePageStyle.ink(colorScheme))
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         if let timeText {
                             Text(timeText)
-                                .font(SettingsStyle.text(15))
+                                .font(SettingsStyle.text(13))
                                 .monospacedDigit()
                                 .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                         }
                     }
                     HStack(spacing: 4) {
-                        AppSymbol("anthropicon.computer", size: 12)
+                        AnthropiconView(name: "anthropicon.laptop", size: .small)
                             .foregroundStyle(connectionColor)
                         Text(connectionText)
                             .foregroundStyle(connectionColor)
@@ -365,11 +411,9 @@ struct DeviceSessionCard: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, minHeight: 69, alignment: .leading)
-            .background(DevicePageStyle.card(colorScheme),
-                        in: RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius,
-                                             style: .continuous))
+            .padding(.vertical, 15)
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+            .deviceCardChrome()
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -397,10 +441,9 @@ struct DeviceSessionCard: View {
         } else {
             DeviceLeadingTile {
                 if DeviceSessionActivity.isRunning(session.status) {
-                    DeviceActivityRing(color: markColor, isAnimating: session.status == .running)
+                    DeviceWorkingGlyph(color: markColor, isAnimating: session.status == .running)
                 } else {
-                    AppSymbol("circle.dashed", size: 22)
-                        .foregroundStyle(markColor)
+                    DeviceIdleRing(color: markColor)
                 }
             }
         }
@@ -414,18 +457,26 @@ struct DeviceNewSessionFab: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                AppSymbol("plus", size: 16)
+            HStack(spacing: 12) {
+                AppSymbol("plus", size: 12)
                 Text(String(localized: "新建会话"))
-                    .font(SettingsStyle.text(16, weight: .semibold))
+                    .font(SettingsStyle.text(15, weight: .medium))
             }
             .foregroundStyle(DevicePageStyle.fabInk(colorScheme))
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 17)
             .frame(height: DevicePageStyle.fabHeight)
             .background(Capsule().fill(DevicePageStyle.fabFill(colorScheme)))
             .contentShape(.capsule)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DeviceFABButtonStyle())
         .accessibilityLabel(String(localized: "新建会话"))
+    }
+}
+
+/// Official ActionPill press feedback: the label drops to 0.6 opacity.
+struct DeviceFABButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }

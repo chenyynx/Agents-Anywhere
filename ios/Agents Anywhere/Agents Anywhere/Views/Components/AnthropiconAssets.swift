@@ -61,6 +61,12 @@ nonisolated enum AnthropiconAssets {
         // the official `anthropicon-map.tsv` point sizes (100/200/300 dpi),
         // the same source as every other entry in this table.
         "anthropicon.listBullet": [size(13, 12), size(15, 14), size(18, 16)],
+        // Device card / session environment glyph. Official point sizes from
+        // `DATA/anthropicon-map.tsv` (15×11 / 17×13 / 20×15); the extracted SVG
+        // is from 1.261005.20 via carfile-go.
+        "anthropicon.laptop": [size(15, 11), size(17, 13), size(20, 15)],
+        // Official working-state arc (Code tab session row).
+        "anthropicon.spinner": [size(14, 14), size(16, 16), size(19, 19)],
         "anthropicon.fileAdd": [size(11, 15), size(13, 17), size(15, 20)],
         "anthropicon.agentSimple": [size(10, 10), size(11, 11), size(13, 13)],
         "anthropicon.wrench": [size(14, 14), size(16, 16), size(19, 19)],

@@ -21,7 +21,7 @@ struct DeviceSection<Actions: View, Content: View>: View {
             HStack(spacing: 8) {
                 Text(title)
                     .font(SettingsStyle.text(15))
-                    .foregroundStyle(SettingsStyle.header(colorScheme))
+                    .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                     .lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
@@ -38,7 +38,6 @@ struct DeviceSection<Actions: View, Content: View>: View {
 /// card per row (`DeviceDirectoryCard` / `DeviceSessionCard`); this container
 /// keeps the dense settings-style row stack for the configuration sheet.
 struct DeviceCard<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -46,9 +45,7 @@ struct DeviceCard<Content: View>: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SettingsStyle.card(colorScheme),
-                    in: RoundedRectangle(cornerRadius: DevicePageStyle.cardRadius,
-                                         style: .continuous))
+        .deviceCardChrome()
     }
 }
 

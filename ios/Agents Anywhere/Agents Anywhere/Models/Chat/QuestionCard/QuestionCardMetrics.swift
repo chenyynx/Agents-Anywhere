@@ -31,6 +31,16 @@ nonisolated enum QuestionCardMetrics {
     /// host edge — the Chat variant measures ~8 pt above the tab bar; the
     /// card was flush against the keyboard before (pp 2026-11-20).
     static let cardBottomMargin: CGFloat = 12
+    /// Keyboard-down ceiling: the card may use at most 60% of the page's
+    /// usable height. That sits just above the keyboard-up height (~55% on a
+    /// 6.3" phone), so showing or hiding the keyboard moves the card only a
+    /// little instead of jumping between a strip and a full page (pp
+    /// 2026-11-22: 「键盘收起来的时候这个卡片不该这么高」).
+    static let collapsedHeightFraction: CGFloat = 0.6
+    /// Clamp for very small windows (a ceiling below this leaves no usable
+    /// card) and very large ones (never let the ceiling cover the page).
+    static let collapsedHeightMinimum: CGFloat = 320
+    static let collapsedHeightMaximum: CGFloat = 460
 
     static let pagingSpacing: CGFloat = 8
     static let pagingLeading: CGFloat = 4

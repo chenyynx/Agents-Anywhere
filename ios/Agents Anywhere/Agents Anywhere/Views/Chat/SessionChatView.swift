@@ -279,30 +279,54 @@ struct SessionChatView: View, Equatable {
             .overlay(alignment: .topLeading) { statusOverlay }
     }
 
-    /// The card's ceiling: from the page's top (the navigation safe area)
-    /// down to the keyboard's top, minus the dock's 12 pt bottom margin.
-    /// `safeAreaInsets` cannot be used here: on device the page frame already
-    /// shrinks with the keyboard *and* the insets still report it, so
-    /// subtracting them shrank the card to its 160 pt floor (pp 2026-11-22:
-    /// 「卡片太小了」). The keyboard frame supplies the bottom edge when the
-    /// page frame itself does not move.
+    /// The card's ceiling. With the keyboard up it runs from the page's top
+    /// (the navigation safe area) down to the keyboard's top; with the
+    /// keyboard down it is a fixed 60% of the page, clamped to 320–460 pt so
+    /// the card never covers the page (pp 2026-11-22). Both end 12 pt above
+    /// the dock's bottom margin.
+    ///
+    /// `safeAreaInsets` cannot be used for the arithmetic: on device the page
+    /// frame already shrinks with the keyboard *and* the insets still report
+    /// it, so subtracting them shrank the card to its 160 pt floor (pp
+    /// 2026-11-22: 「卡片太小了」). The keyboard frame supplies the bottom
+    /// edge when the page frame itself does not move.
     private func questionCardHeightLimit(_ geometry: GeometryProxy) -> CGFloat {
         let insets = geometry.safeAreaInsets
-        let bottom: CGFloat
         // The top edge is the navigation safe area. Whichever of the page
         // frame and the reported inset actually carries it, the larger one
         // is the safe choice (a page frame that already starts below the bar
         // reports a zero top inset, and a page that bleeds under the bar
         // still reports the bar).
         let top: CGFloat
+        let pageBottom: CGFloat
         if let pageFrame {
             top = max(pageFrame.minY, insets.top)
-            bottom = min(pageFrame.maxY, keyboardTop ?? .greatestFiniteMagnitude)
+            pageBottom = pageFrame.maxY
         } else {
             top = insets.top
-            bottom = geometry.size.height - insets.bottom
+            pageBottom = max(0, geometry.size.height - insets.bottom)
         }
-        return max(160, bottom - top - QuestionCardMetrics.cardBottomMargin)
+        let area = max(0, pageBottom - top)
+        let ceiling: CGFloat
+        // The keyboard is up when its end frame sits at or above the page
+        // bottom: either the page already shrank to the keyboard (the frame
+        // then equals the page bottom) or the keyboard frame supplies the
+        // tighter bottom. A hide reports its end frame at the screen bottom —
+        // below the page — and must settle on the fixed ceiling instead of
+        // ballooning for the animation.
+        if let keyboardTop, keyboardTop < pageBottom + 1 {
+            ceiling = max(0, min(pageBottom, keyboardTop) - top)
+        } else {
+            // Keyboard down: a fixed ceiling of 60% of the page, clamped, so
+            // the card never covers the page. 60% sits just above the
+            // keyboard-up height, so showing or hiding the keyboard moves the
+            // card only a little (pp 2026-11-22).
+            let fraction = area * QuestionCardMetrics.collapsedHeightFraction
+            ceiling = min(area,
+                          min(QuestionCardMetrics.collapsedHeightMaximum,
+                              max(QuestionCardMetrics.collapsedHeightMinimum, fraction)))
+        }
+        return max(160, ceiling - QuestionCardMetrics.cardBottomMargin)
     }
 
     /// One line per keyboard change while a question card is up: the numbers

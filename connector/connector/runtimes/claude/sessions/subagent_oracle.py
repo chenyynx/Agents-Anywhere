@@ -1204,7 +1204,14 @@ def scan_raw_transcript(
             _capture_tool_result_metadata(
                 row, raw_tool_use_result, tool_result_metadata
             )
-        if row_type == "queue-operation" and row.get("operation") == "enqueue":
+        if row_type == "system" and row.get("subtype") == "compact_boundary":
+            # A fired-prompt boundary from before the compact must not anchor
+            # the first assistant row after it: that row belongs to the turn
+            # the compaction continued, and live keeps the current turn. Only
+            # boundaries from this compact generation may open a turn.
+            injected_prompt_rows.clear()
+            pending_scheduled = False
+        elif row_type == "queue-operation" and row.get("operation") == "enqueue":
             queued = row.get("content")
             if isinstance(queued, str) and queued.strip():
                 pending_enqueues.append(queued.strip())

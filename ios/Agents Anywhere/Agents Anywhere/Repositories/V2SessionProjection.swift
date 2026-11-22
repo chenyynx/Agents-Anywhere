@@ -525,6 +525,26 @@ struct V2SessionProjection {
         return data.items.count - before
     }
 
+    /// Re-reads one range of the held window to repair stale row fields.
+    ///
+    /// A recovery snapshot only refreshes its own page. Rows the merge grafted
+    /// back from the held window keep the turn ids they had before a server
+    /// re-key, so a turn that crosses the page boundary shows two groups. The
+    /// repair fetches those ranges again and lets the page's rows supersede the
+    /// stale copies in place. Unlike `applyHistory`, this must not move the
+    /// reading anchor or the window bounds: the reader is usually at the live
+    /// tail, and a repair is maintenance, not a history visit.
+    @discardableResult
+    mutating func mergeRepairPage(_ page: V2SessionTimelinePage) -> Int {
+        guard page.sessionId == data.session.id else { return 0 }
+        let before = data.items.count
+        let trim = merge(page.items, history: true)
+        data.hasOlderItems = data.hasOlderItems || page.hasMore || trim.droppedOlder
+        data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
+        TimelineDiagnostics.validateOrder(sessionID: data.session.id, items: data.items)
+        return data.items.count - before
+    }
+
     /// A window page can carry a server summary of a row this window already
     /// holds in full. The two share the same revision and `updatedSeq`, so
     /// `supersedes` cannot tell them apart; the full row is strictly more

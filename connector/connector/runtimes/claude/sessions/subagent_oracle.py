@@ -2023,16 +2023,27 @@ def _read_transcript_lines(
                 if not chunk:
                     break
                 buffer += chunk
-                parts = buffer.splitlines(keepends=True)
-                if parts and not parts[-1].endswith(_SCAN_LINE_BREAK_CHARS):
-                    # Keep the incomplete tail for the next chunk; every other
-                    # part is a complete line under the same separators
-                    # ``str.splitlines`` recognises.
-                    buffer = parts.pop()
-                else:
-                    buffer = ""
-                for part in parts:
-                    lines.extend(part.splitlines() or [""])
+                if not any(sep in chunk for sep in _SCAN_LINE_BREAK_CHARS):
+                    # A pathological single-line transcript must stay O(n):
+                    # don't rescan an unterminated buffer on every chunk.
+                    continue
+                last_break = max(
+                    buffer.rfind(sep) for sep in _SCAN_LINE_BREAK_CHARS
+                )
+                if last_break < 0:
+                    continue
+                if last_break == len(buffer) - 1 and buffer[last_break] == "\r":
+                    # A CRLF pair may straddle the chunk boundary; hold the
+                    # trailing \r so the next chunk's \n joins it.
+                    last_break = max(
+                        buffer.rfind(sep, 0, last_break)
+                        for sep in _SCAN_LINE_BREAK_CHARS
+                    )
+                    if last_break < 0:
+                        continue
+                complete = buffer[: last_break + 1]
+                buffer = buffer[last_break + 1 :]
+                lines.extend(complete.splitlines() or [""])
             if buffer:
                 lines.extend(buffer.splitlines() or [""])
             return tuple(lines)

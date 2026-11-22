@@ -55,12 +55,25 @@ def test_chunked_scan_matches_full_scan_across_separators(tmp_path: Path) -> Non
         assert _fields(got) == _fields(expected), name
 
 
+def test_crlf_boundary_at_every_small_chunk_size(tmp_path: Path) -> None:
+    rows = [_row("a" * 36), _row("b" * 36), _row("c" * 36)]
+    content = "\r\n".join(rows) + "\r\n"
+    path = tmp_path / "crlf.jsonl"
+    path.write_text(content, encoding="utf-8")
+    expected = scan_raw_transcript(tuple(content.splitlines()))
+    for chunk_size in range(1, 10):
+        _clear_cache()
+        got = scan_transcript_file(path, chunk_size=chunk_size)
+        assert got is not None
+        assert _fields(got) == _fields(expected), chunk_size
+
+
 def test_chunked_scan_keeps_first_and_last_rows_of_a_large_file(
     tmp_path: Path,
 ) -> None:
     first = _row("f" * 36, "first")
     last = _row("l" * 36, "last")
-    middle = [_row(f"{i:036d}", "x" * 200) for i in range(2000)]
+    middle = [_row(f"{i:036d}", "x" * 200) for i in range(6000)]
     content = "\n".join([first, *middle, last]) + "\n"
     path = tmp_path / "large.jsonl"
     path.write_text(content, encoding="utf-8")

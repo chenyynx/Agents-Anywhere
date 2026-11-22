@@ -271,8 +271,14 @@ class TranscriptScanService:
             futures = list(self._inflight.values())
             self._inflight.clear()
         for future in futures:
-            if not future.done():
-                future.cancel()
+            if future.done():
+                continue
+            try:
+                if not future.get_loop().is_closed():
+                    future.cancel()
+            except RuntimeError:
+                # A future whose loop was closed by the owning test/process.
+                pass
         for pool in self._pools.values():
             pool.shutdown(wait=False, cancel_futures=True)
 

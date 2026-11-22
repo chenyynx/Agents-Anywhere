@@ -628,8 +628,11 @@ export function FilePreviewSurface({
     <main
       ref={containerRef}
       className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground",
-        embeddedSkin && "aa-preview-embedded",
+        "flex h-full min-h-0 flex-col overflow-hidden text-foreground",
+        // The app skin is a grey canvas with white cards floating on it — the
+        // header strip, content states and safe-area padding all use the same
+        // backdrop (pp 2026-11-23).
+        embeddedSkin ? "aa-preview-embedded bg-[#ECECEA]" : "bg-background",
         // dvh, not svh: in the app's WebView `svh` stops at the bottom safe
         // area even with viewport-fit=cover, leaving a 34 pt strip of the
         // WebView background below the page (pp 2026-11-22).
@@ -886,6 +889,7 @@ export function FilePreviewSurface({
             onDownload={() => void handleDownload()}
             downloading={false}
             zoom={embeddedSkin ? zoom : 1}
+            embedded={embeddedSkin}
           />
         ) : null}
         {embeddedSkin && zoomPill ? (
@@ -985,18 +989,26 @@ function BinaryPreview({
   objectUrl,
   onDownload,
   zoom = 1,
+  embedded = false,
 }: {
   file: BinaryFileInfo
   objectUrl: string | null
   onDownload: () => void
   downloading: boolean
   zoom?: number
+  embedded?: boolean
 }) {
   const t = useTranslations("preview")
   const kind = previewKind(file.mediaType, file.name)
   if (objectUrl && kind === "image") {
     return (
-      <div className="size-full min-h-0 min-w-0 overflow-auto bg-muted/20 p-4">
+      <div
+        data-testid="preview-image-surface"
+        className={cn(
+          "size-full min-h-0 min-w-0 overflow-auto p-4",
+          embedded ? "bg-[#ECECEA]" : "bg-muted/20",
+        )}
+      >
         <ZoomFrame zoom={zoom}>
           <img src={objectUrl} alt={file.name} className="block size-full object-contain" />
         </ZoomFrame>

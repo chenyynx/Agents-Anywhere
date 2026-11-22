@@ -439,6 +439,47 @@ test("the app skin uses the two-card toolbar and keeps one light theme while edi
   assert.equal(editors.at(-1).options.theme, "aa-preview-light", "editing does not flip the editor theme")
 })
 
+test("the app skin paints the card backdrop behind images", async t => {
+  t.mock.method(dashboardApi, "connectorFsReadText", async (_token, _connector, _root, path) => ({
+    ...textFile(path),
+    binary: true,
+  }))
+  t.mock.method(dashboardApi, "connectorFsRead", async (_token, _connector, _root, path) => ({
+    result: {
+      path,
+      name: "picture.png",
+      size: 10,
+      sha256: "x",
+      mediaType: "image/png",
+      downloadUrl: "https://fixture.example/picture.png",
+    },
+  }))
+  t.mock.method(dashboardApi, "downloadBlob", async () => new Blob(["png"], { type: "image/png" }))
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  URL.createObjectURL = () => "blob:fixture-image"
+  URL.revokeObjectURL = () => {}
+  t.after(() => {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+  })
+  const f = await fixture(t, FilePreviewSurface)
+  await f.render({
+    token: "fixture",
+    connectorId: "connector",
+    root: "/repo",
+    mode: "window",
+    embeddedSkin: true,
+    initialPath: "/repo/picture.png",
+    initialName: "picture.png",
+  })
+  await act(async () => {})
+  const surface = f.host.querySelector('[data-testid="preview-image-surface"]')
+  assert.ok(surface, "the image preview renders")
+  assert.match(surface.className, /bg-\[#ECECEA\]/, "the image sits on the same backdrop as the toolbar cards")
+  assert.match(f.host.querySelector(".aa-preview-embedded").className, /bg-\[#ECECEA\]/)
+})
+
 test("a one-use preview token renders the app skin without the edit affordance", async t => {
   t.mock.method(dashboardApi, "createConnectorFsPreviewSession", async () => ({
     previewAccessToken: "scoped",

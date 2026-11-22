@@ -63,6 +63,15 @@ nonisolated enum DevicePageStyle {
             : Color(red: 0x40 / 255.0, green: 0x90 / 255.0, blue: 0x27 / 255.0)
     }
 
+    /// The device card's own "Verbunden" uses a darker green than the session
+    /// connection line: official dominant core (41,97,23) = #296117, while the
+    /// session line and the status dot are #409027 (pp 2026-11-23).
+    static func deviceStatusSuccess(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x5B / 255.0, green: 0xD7 / 255.0, blue: 0x5B / 255.0)
+            : Color(red: 0x29 / 255.0, green: 0x61 / 255.0, blue: 0x17 / 255.0)
+    }
+
     /// The 36 pt leading tile behind the session mark: #F3F3F0 official light.
     static func tile(_ scheme: ColorScheme) -> Color {
         scheme == .dark
@@ -136,7 +145,7 @@ struct DeviceIdentityCard: View {
                     // thinner than the Latin face at this size (pp 2026-11-23).
                     .fontWeight(.medium)
                     .foregroundStyle(online
-                        ? DevicePageStyle.success(colorScheme)
+                        ? DevicePageStyle.deviceStatusSuccess(colorScheme)
                         : DevicePageStyle.secondary(colorScheme))
                     .lineLimit(1)
                     .padding(.top, 4)

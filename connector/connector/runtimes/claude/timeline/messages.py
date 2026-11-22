@@ -4,9 +4,11 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 from connector.logging import logger
 from connector.runtime_protocol import (
@@ -1993,20 +1995,68 @@ class ClaudeMessageProjector:
         return updated
 
 
+_RAW_SCAN_OVERRIDE: ContextVar[tuple[str, RawTranscriptScan | None] | None] = (
+    ContextVar("claude_raw_scan_override", default=None)
+)
+
+
+@contextmanager
+def override_raw_scan(
+    session: ClaudeSession,
+    scan: RawTranscriptScan | None,
+) -> Iterator[None]:
+    """Use one already-awaited scan for every fold in this async scope.
+
+    The live fold helpers are synchronous and are called from async event
+    handlers; without this they would each run their own scan on the event
+    loop. The caller prefetches once on the scan service and wraps the fold.
+    ``None`` is an explicit "scanned, nothing there" value — it suppresses the
+    fallback read just like a real scan.
+    """
+
+    token = _RAW_SCAN_OVERRIDE.set((session.session_id, scan))
+    try:
+        yield
+    finally:
+        _RAW_SCAN_OVERRIDE.reset(token)
+
+
 def _read_session_raw_scan(session: ClaudeSession) -> RawTranscriptScan | None:
     """The default raw-scan seam: the reader's own memoized scanner.
 
     Imported inside the call because ``sessions.reader`` imports this module
     at load time — a module-level import here would close the cycle. The
-    reader's ``_read_raw_transcript_scan`` is memoized by (path, size, mtime),
-    so repeated folds over one settle cost a stat and a dict lookup.
+    reader's ``_read_raw_transcript_scan`` is memoized by (path, size,
+    mtime_ns, head/middle/tail signature), so repeated folds over one settle
+    cost a stat, three small samples and a dict lookup.
+
+    A caller that already awaited a scan wraps its folds in
+    :func:`override_raw_scan`; the override wins so the sync fold never
+    touches the file on the event loop.
     """
 
+    override = _RAW_SCAN_OVERRIDE.get()
+    if override is not None and override[0] == session.session_id:
+        return override[1]
     from connector.runtimes.claude.sessions.reader import (
         _read_raw_transcript_scan,
     )
 
     return _read_raw_transcript_scan(session)
+
+
+async def _read_session_raw_scan_async(
+    session: ClaudeSession,
+    *,
+    priority: Literal["foreground", "background"] = "foreground",
+) -> RawTranscriptScan | None:
+    """Async seam for callers that can await a bounded background scan."""
+
+    from connector.runtimes.claude.sessions.reader import (
+        _read_raw_transcript_scan_async,
+    )
+
+    return await _read_raw_transcript_scan_async(session, priority=priority)
 
 
 def _terminal_time_order_override(

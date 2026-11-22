@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Self
 
 import asyncer
@@ -58,6 +59,10 @@ from connector.runtimes.claude.sessions.bindings import (
     ClaudeSessionBindingStore,
 )
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.scan_service import (
+    Priority,
+    get_scan_service,
+)
 from connector.runtimes.claude.sessions.subagent_oracle import (
     ClaudeSubagentOracle,
     RawTranscriptScan,
@@ -100,6 +105,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_text,
     message_tool_blocks,
     message_usage,
+    override_raw_scan,
     receipt_agent_id,
     synthesized_agent_call_content,
 )
@@ -548,7 +554,7 @@ class ClaudeSessionReader:
             pending_messages=self.pending_messages,
             prefer_latest=True,
         )
-        raw_scan = _read_raw_transcript_scan(session)
+        raw_scan = await _read_raw_transcript_scan_async(session)
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,
             visible_messages,
@@ -947,16 +953,17 @@ def _history_items_from_messages(
     for index in sorted(notification_folds):
         for fold in notification_folds[index]:
             fold_start = len(items)
-            items.extend(
-                projector.fold_agent_task_items(
-                    session,
-                    tool_use_id=fold.tool_use_id,
-                    overlay=fold.overlay,
-                    status=fold.status,
-                    base=fold.base,
-                    turn_id=fold.turn_id,
+            with override_raw_scan(session, raw_scan):
+                items.extend(
+                    projector.fold_agent_task_items(
+                        session,
+                        tool_use_id=fold.tool_use_id,
+                        overlay=fold.overlay,
+                        status=fold.status,
+                        base=fold.base,
+                        turn_id=fold.turn_id,
+                    )
                 )
-            )
             items[fold_start:] = _adopt_published_turn_ids(session, items[fold_start:])
     resequenced = _resequence_history_items(_dedupe_history_items(items))
     if oracle is None:
@@ -1877,24 +1884,54 @@ def _agent_task_notification_folds(
     return folds
 
 
+def _raw_transcript_path(session: ClaudeSession) -> Path | None:
+    if not session.cwd or not session.external_session_id:
+        return None
+    return (
+        claude_projects_dir()
+        / claude_project_key(session.cwd)
+        / f"{session.external_session_id}.jsonl"
+    )
+
+
 def _read_raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
     """Scan this session's raw transcript JSONL, or ``None`` when unreadable.
 
     The SDK message view drops some persisted rows (R1); the raw file is where
     the dropped terminal notices — and the only launch timestamps (F5) —
-    survive. The scan is cached by (path, size, mtime) so the settle sync's
-    repeated reads of an unchanged file cost one dict lookup (F8).
+    survive. The scan is cached by (path, size, mtime, prefix) so the settle
+    sync's repeated reads of an unchanged file cost one dict lookup (F8).
+
+    This synchronous form stays for tests and non-async callers. Production
+    async paths use :func:`_read_raw_transcript_scan_async`, which runs the
+    same scan on the bounded scan service instead of the event loop.
     """
 
-    if not session.cwd or not session.external_session_id:
+    path = _raw_transcript_path(session)
+    if path is None:
         return None
-    path = (
-        claude_projects_dir()
-        / claude_project_key(session.cwd)
-        / f"{session.external_session_id}.jsonl"
-    )
     try:
         return scan_transcript_file(path)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Claude raw transcript read failed external_session_id={}",
+            session.external_session_id,
+        )
+        return None
+
+
+async def _read_raw_transcript_scan_async(
+    session: ClaudeSession,
+    *,
+    priority: Priority = "foreground",
+) -> RawTranscriptScan | None:
+    """Async seam: scan off the event loop with single-flight/cancellation."""
+
+    path = _raw_transcript_path(session)
+    if path is None:
+        return None
+    try:
+        return await get_scan_service().scan(path, priority=priority)
     except Exception:  # noqa: BLE001
         logger.exception(
             "Claude raw transcript read failed external_session_id={}",

@@ -111,6 +111,7 @@ from connector.runtimes.claude.timeline.messages import (
     message_session_id,
     message_text,
     message_usage,
+    override_raw_scan,
     stable_message_item_id,
     stable_tool_item_id,
     stable_turn_result_item_id,
@@ -436,11 +437,14 @@ def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
 
     Single entry point: delegates to the projector's own default seam
     (`messages._read_session_raw_scan`), which wraps the reader's memoized
-    scanner — keyed by ``(path, size, mtime)`` — so repeating it every sweep
-    against an unchanged transcript costs one dict lookup, and the sweep and
-    the folds can never disagree about what the file says. A scan failure is
-    never evidence — it returns ``None`` and the sweep proceeds with whatever
-    else it has.
+    scanner — keyed by ``(path, size, mtime, prefix)`` — so repeating it every
+    sweep against an unchanged transcript costs one dict lookup, and the sweep
+    and the folds can never disagree about what the file says. A scan failure
+    is never evidence — it returns ``None`` and the sweep proceeds with
+    whatever else it has.
+
+    This synchronous form stays for tests. The production sweep uses
+    :func:`_raw_transcript_scan_async`.
     """
 
     try:
@@ -450,6 +454,27 @@ def _raw_transcript_scan(session: ClaudeSession) -> RawTranscriptScan | None:
         )
 
         return _read_session_raw_scan(session)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Claude sweep raw transcript scan failed session_id={}",
+            session.session_id,
+        )
+        return None
+
+
+async def _raw_transcript_scan_async(
+    session: ClaudeSession,
+    *,
+    priority: Literal["foreground", "background"] = "foreground",
+) -> RawTranscriptScan | None:
+    """Async seam: run the sweep's scan on the bounded scan service."""
+
+    try:
+        from connector.runtimes.claude.timeline.messages import (
+            _read_session_raw_scan_async,
+        )
+
+        return await _read_session_raw_scan_async(session, priority=priority)
     except Exception:  # noqa: BLE001
         logger.exception(
             "Claude sweep raw transcript scan failed session_id={}",
@@ -673,7 +698,6 @@ class ClaudeTurnRunner:
                 raise
             except Exception:  # noqa: BLE001
                 logger.exception("Claude agent-card evidence sweep tick failed")
-
 
     async def reconnect_sessions(self) -> None:
         """Resume only AA sessions previously observed to have scheduled tasks."""
@@ -1252,12 +1276,18 @@ class ClaudeTurnRunner:
             )
             if usage:
                 overlay.usage.update(usage)
-            items = self.timeline.fold_agent_task_items(
-                session,
-                tool_use_id=tool_use_id,
-                overlay=overlay,
-                status=status,
-            )
+            # The sync fold resolves aliases/evidence from the raw scan. Await
+            # one scan here (cache hit or bounded worker), then let every
+            # synchronous lookup in the fold reuse it instead of touching the
+            # 90MB file on the event loop.
+            raw_scan = await _raw_transcript_scan_async(session)
+            with override_raw_scan(session, raw_scan):
+                items = self.timeline.fold_agent_task_items(
+                    session,
+                    tool_use_id=tool_use_id,
+                    overlay=overlay,
+                    status=status,
+                )
             for item in items:
                 if self._publish_gate_skips(session, item):
                     # Idempotent closure (L2 §3.4): the terminal burst repeats
@@ -1422,6 +1452,7 @@ class ClaudeTurnRunner:
             return 0
         try:
             kwargs: dict[str, Any] = {}
+            scan: RawTranscriptScan | None = None
             if evidence and self.oracle is not None:
                 oracle = self.oracle
                 clock = getattr(oracle, "clock", None)
@@ -1430,7 +1461,7 @@ class ClaudeTurnRunner:
                     if callable(clock)
                     else int(time.time() * 1000)
                 )
-                scan = _raw_transcript_scan(session)
+                scan = await _raw_transcript_scan_async(session, priority="background")
                 kwargs = {
                     "oracle": oracle,
                     "attached_task_ids": self._attached_agent_task_ids(session),
@@ -1446,7 +1477,8 @@ class ClaudeTurnRunner:
                     # judge one clock.
                     "now_ms": now_ms,
                 }
-            items = self.timeline.close_open_agent_cards(session, **kwargs)
+            with override_raw_scan(session, scan):
+                items = self.timeline.close_open_agent_cards(session, **kwargs)
             published = 0
             for item in items:
                 if self._publish_gate_skips(session, item):

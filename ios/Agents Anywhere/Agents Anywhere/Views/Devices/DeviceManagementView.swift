@@ -229,6 +229,7 @@ struct DeviceManagementView: View {
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
+            .scrollClipDisabled(true)
         }
     }
 

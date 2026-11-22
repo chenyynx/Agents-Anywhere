@@ -197,15 +197,15 @@ struct DeviceWorkingGlyph: View {
 }
 
 /// Official idle mark: a 20 pt ring dashed into seven round-capped segments
-/// (#7A7973, 1.67 pt, dash 2.6 / gap 5.63; the caps bring the ink dash to
-/// ~4.2 pt). The official ring is drawn in code, not shipped as an asset.
+/// (#7A7973, 1.5 pt ring, dash 2.7 / gap 5.6; the round caps bring the ink
+/// dash to ~4.2 pt). The official ring is drawn in code, no asset.
 struct DeviceIdleRing: View {
     let color: Color
 
     var body: some View {
         Circle()
-            .strokeBorder(color, style: StrokeStyle(lineWidth: 1.67, lineCap: .round,
-                                                   dash: [2.6, 5.63]))
+            .strokeBorder(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round,
+                                                   dash: [2.7, 5.6]))
             .frame(width: 20, height: 20)
     }
 }

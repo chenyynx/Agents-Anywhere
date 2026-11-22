@@ -142,32 +142,9 @@ struct DeviceSessionList: View {
 
     var body: some View {
         DeviceSection(String(localized: "Sessions")) {
-            HStack(spacing: 10) {
-                filterMenu
-                Menu {
-                    Button(model.isSelectingSessions
-                        ? String(localized: "Cancel")
-                        : String(localized: "Select sessions")) {
-                        if model.isSelectingSessions { model.stopSelectingSessions() } else { model.startSelectingSessions() }
-                    }
-                    .disabled(!canManage || (isEmpty && !model.isSelectingSessions))
-                    if !model.isSelectingSessions {
-                        Button(restores
-                            ? String(localized: "Restore all in scope")
-                            : String(localized: "Archive all in scope")) { onArchiveAll() }
-                            .disabled(!canManage || isEmpty)
-                    }
-                } label: {
-                    AppSymbol("ellipsis", size: 17)
-                        .foregroundStyle(SettingsStyle.ink(colorScheme))
-                        .frame(width: 32, height: 32)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(String(localized: "Sessions actions"))
-            }
-            // Official "Alle" sits 6 pt inside the card's trailing edge.
-            .padding(.trailing, 6)
+            // The official header carries one control only ("Alle ⌄").
+            filterMenu
+                .padding(.trailing, 6)
         } content: {
             VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
                 if model.isSelectingSessions {
@@ -213,6 +190,19 @@ struct DeviceSessionList: View {
                 ForEach(projects) {
                     Text(showsProjectNames ? $0.name : $0.workspacePath).tag(Optional($0.id))
                 }
+            }
+            Divider()
+            Button(model.isSelectingSessions
+                ? String(localized: "Cancel")
+                : String(localized: "Select sessions")) {
+                if model.isSelectingSessions { model.stopSelectingSessions() } else { model.startSelectingSessions() }
+            }
+            .disabled(!canManage || (isEmpty && !model.isSelectingSessions))
+            if !model.isSelectingSessions {
+                Button(restores
+                    ? String(localized: "Restore all in scope")
+                    : String(localized: "Archive all in scope")) { onArchiveAll() }
+                    .disabled(!canManage || isEmpty)
             }
         } label: {
             HStack(spacing: 4) {

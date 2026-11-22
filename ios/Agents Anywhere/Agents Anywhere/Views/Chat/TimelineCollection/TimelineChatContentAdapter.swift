@@ -313,8 +313,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// normal session adds a handful of lines.
     private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
                                        pendingHasEcho: Bool, liveTurnGroupID: String?,
+                                       latestUserRowID: String?,
                                        gateLiveUserTurn: Bool) {
         let status = model.session.runtime.state?.status.rawValue ?? "nil"
+        // The rows that decide a non-nil live group, by the same predicate the
+        // build uses. Only the send window scans: the resolution consults them
+        // only while a send awaits its echo, and the ids are what names the row
+        // that parked the group (device 2026-11-23 06:38: a background fork
+        // stayed `running`, liveGroup=set, an intermediate footer blinked).
+        let activeIDs: [String] = {
+            guard pendingID != nil || liveTurnGroupID != nil,
+                  let latestUserRowID,
+                  let index = model.timeline.rows.firstIndex(where: { $0.id == latestUserRowID })
+            else { return [] }
+            return model.timeline.rows[(index + 1)...]
+                .filter { TimelineTurnActions.isLiveActivityRow($0.value) }
+                .prefix(3)
+                .map(\.id)
+        }()
         let probe = [
             "suppress=\(suppressLatest ? 1 : 0)",
             "gate=\(gateLiveUserTurn ? 1 : 0)",
@@ -323,6 +339,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "running=\(model.isRunning ? 1 : 0)",
             "status=\(status)",
             "liveGroup=\(liveTurnGroupID == nil ? "nil" : "set")",
+            "active=\(activeIDs.joined(separator: ","))",
+            "lastUser=\(latestUserRowID ?? "nil")",
         ].joined(separator: " ")
         guard probe != lastFooterGateProbe else { return }
         lastFooterGateProbe = probe
@@ -2410,6 +2428,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               pendingID: submittingPendingID,
                               pendingHasEcho: submittingPendingHasEcho,
                               liveTurnGroupID: liveTurnGroupID,
+                              latestUserRowID: latestUserRowID,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
             groups: groups,

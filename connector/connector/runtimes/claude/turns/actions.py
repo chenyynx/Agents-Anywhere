@@ -31,6 +31,10 @@ from connector.runtimes.claude.sdk.stop_affordance import stop_background_tasks
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import _history_turn_id
 from connector.runtimes.claude.timeline.messages import stable_message_item_id
+from connector.runtimes.claude.turns.attachments import (
+    content_with_attachment_notes,
+    materialize_claude_attachments,
+)
 from connector.runtimes.claude.turns.interactions import ClaudeInteractionController
 from connector.runtimes.claude.turns.lifecycle import ClaudeTurnRunner
 from connector.runtimes.claude.turns.selections import ClaudeSelectionController
@@ -173,7 +177,7 @@ class ClaudeTurnActionHandler:
         attachments: tuple[RuntimeAttachment, ...] = (),
         client_message_id: str | None = None,
     ) -> RuntimeOperationResult:
-        """Deliver one message into the live turn (text only, v1).
+        """Deliver one message into the live turn.
 
         No new execution and no new turn id: the SDK hands the message to
         Claude at the next model-request boundary inside the same turn. The
@@ -182,14 +186,16 @@ class ClaudeTurnActionHandler:
         read it. A message stopped before being read therefore leaves no row
         behind, and a message the runtime delivers as the next turn lands in
         that turn instead of the one it was submitted into.
+
+        Attachments ride the same channel a normal turn uses: the bytes land
+        in the session's attachment directory and the steered text carries the
+        same "Attached files:" list the turn prompt does, so the model can
+        read them at the next tool boundary of the very turn it is running
+        (probe 2026-11-22: a steered note led to `Read` in the same turn).
+        Downloading before the execution lock keeps a slow attachment from
+        holding up an interrupt, which takes the same lock.
         """
 
-        if attachments:
-            return RuntimeOperationResult(
-                ok=False,
-                code="claude_steer_attachments_unsupported",
-                message="Claude steering does not accept attachments",
-            )
         session = self.session_store.get(session_id)
         if session is None:
             return RuntimeOperationResult(
@@ -197,12 +203,70 @@ class ClaudeTurnActionHandler:
                 code="claude_no_active_turn",
                 message="Claude session has no active turn to steer",
             )
+        # Cheap pre-check before a download could write orphans for a turn that
+        # is already gone; the execution-lock check below stays authoritative.
+        if session.execution is None:
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_no_active_turn",
+                message="Claude session has no active turn to steer",
+            )
+        expected_execution = session.execution
+        materialized_attachments = await materialize_claude_attachments(
+            self.runner.host,
+            session_id,
+            attachments,
+        )
+        # A steer is a single write: losing one of its files silently would
+        # tell the user the model got a file it never saw (and the echo row
+        # would drop the card with no trace). Refuse instead — the client shows
+        # a failed steer and keeps the draft.
+        if attachments and len(materialized_attachments) != len(attachments):
+            logger.warning(
+                "Claude steer attachment download incomplete session_id={} "
+                "requested={} materialized={}",
+                session_id,
+                len(attachments),
+                len(materialized_attachments),
+            )
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_attachment_failed",
+                message="Claude could not load the steering attachments",
+            )
+        effective_content = content_with_attachment_notes(
+            content,
+            materialized_attachments,
+        )
+        if not effective_content.strip():
+            return RuntimeOperationResult(
+                ok=False,
+                code="claude_steer_empty_content",
+                message="Claude steering message has no content",
+            )
+        attachment_mappings = tuple(
+            attachment.to_mapping() for attachment in materialized_attachments
+        )
         async with session.execution_lock:
             execution = session.execution
             client = execution.client if execution is not None else None
             turn_id = execution.turn_id if execution is not None else None
             accepts = self._client_accepts_steer(client)
-            if execution is None or client is None or turn_id is None or not accepts:
+            # The download ran outside the lock (so a slow file cannot hold up
+            # an interrupt). The turn that owned this steer may have been
+            # stopped or replaced while it ran: a steer submitted into a
+            # stopping turn leaks into the NEXT turn once the CLI is
+            # interrupted, which is exactly what the withdraw pass exists to
+            # prevent. Refuse unless the same, unstopped execution is still
+            # the session's.
+            if (
+                execution is None
+                or execution is not expected_execution
+                or execution.interrupt_source is not None
+                or client is None
+                or turn_id is None
+                or not accepts
+            ):
                 return RuntimeOperationResult(
                     ok=False,
                     code="claude_no_active_turn",
@@ -215,7 +279,7 @@ class ClaudeTurnActionHandler:
             # turn's message, while the client is told nothing).
             steer_uuid = str(uuid4())
             try:
-                await client.steer(content, steer_uuid)
+                await client.steer(effective_content, steer_uuid)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Claude steer failed session_id={} turn_id={}",
@@ -227,7 +291,12 @@ class ClaudeTurnActionHandler:
                     code="claude_steer_failed",
                     message="Claude rejected the steering message",
                 )
-            session.remember_steer(steer_uuid, content, client_message_id)
+            session.remember_steer(
+                steer_uuid,
+                content,
+                client_message_id,
+                attachment_mappings,
+            )
             # Register the steer for history reconciliation as well: a steer
             # can be read as the NEXT turn instead of a same-turn echo, and
             # then the transcript sync publishes its user row without a
@@ -242,7 +311,7 @@ class ClaudeTurnActionHandler:
                     client_message_id=client_message_id,
                     platform_item_id=stable_message_item_id(session, steer_uuid),
                     text=content,
-                    attachments=(),
+                    attachments=attachment_mappings,
                 )
                 if session.external_session_id is not None:
                     self.runner.pending_messages.bind_live_native_message(
@@ -392,7 +461,7 @@ class ClaudeTurnActionHandler:
         if client is None:
             client = response
         outcomes: list[dict[str, str]] = []
-        for steer_uuid, (_text, client_message_id) in list(
+        for steer_uuid, (_text, client_message_id, _attachments) in list(
             session.pending_steers.items()
         ):
             remaining = deadline - time.monotonic()

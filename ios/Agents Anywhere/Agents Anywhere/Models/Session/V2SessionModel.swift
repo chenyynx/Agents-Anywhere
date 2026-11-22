@@ -856,7 +856,8 @@ final class V2SessionModel: Identifiable {
     /// Running, a pending permission prompt and a pending question are all
     /// the same turn; the runtime holds the message until that step completes
     /// and the model reads it inside the turn. Stopping / pending / optimistic
-    /// idle fall back to the queue. Attachments are refused for v1.
+    /// idle fall back to the queue. Attachments are a separate fact:
+    /// `steerAcceptsAttachments`, declared by the runtime.
     var canSteerMessage: Bool {
         ComposerSteerGate.allows(
             status: runtime.state?.status,
@@ -864,6 +865,14 @@ final class V2SessionModel: Identifiable {
             stopRequested: runtime.stopRequested,
             predictedIdle: runtime.predictedIdle,
             isValid: isValid)
+    }
+
+    /// Whether this runtime's steer path accepts attachments — the capability
+    /// fact `session.steer.parameters.attachments`, declared by the runtime.
+    /// Independent of the turn window (`canSteerMessage`) so the two answers
+    /// stay owned by their own sources.
+    var steerAcceptsAttachments: Bool {
+        SteerAttachmentGate.allows(runtime.capabilities?.capability(id: "session.steer"))
     }
 
     /// How a draft leaves the composer while a turn runs.
@@ -888,10 +897,11 @@ final class V2SessionModel: Identifiable {
                 return nil
             }
         case .steer:
-            // A running turn takes text only; the queue remains the path for
-            // attachments, and an Agent without `session.steer` falls back to
-            // the queue at the view layer.
-            guard canSteerMessage, composer.attachments.isEmpty else {
+            // A running turn takes text alone unless the runtime declares its
+            // steer path accepts attachments (`session.steer.parameters.attachments`);
+            // an Agent without `session.steer` falls back to the queue at the
+            // view layer.
+            guard canSteerMessage, composer.attachments.isEmpty || steerAcceptsAttachments else {
                 failure = V2ClientFailure(kind: .unavailable, message: String(localized: "当前 Agent 无法引导正在运行的任务。"))
                 return nil
             }

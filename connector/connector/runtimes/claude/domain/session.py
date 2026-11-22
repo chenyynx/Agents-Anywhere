@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from connector.runtime_protocol import RuntimeTimelineItem
@@ -93,24 +94,31 @@ class ClaudeSession:
     # covers every later process).
     interrupted_turn_ids: set[str] = field(default_factory=set)
     #: Steering messages sent into a live turn but not yet seen echoed back:
-    #: steer uuid -> (text, client_message_id). The timeline row is published
-    #: when the echo arrives, under the turn that actually read it — so a
-    #: message stopped before being read leaves no orphan row, and a message
-    #: delivered as the next turn lands in that turn. Bounded; insertion order
-    #: is preserved, which is also the order the runtime will read them.
-    pending_steers: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    #: steer uuid -> (text, client_message_id, attachment mappings). The
+    #: timeline row is published when the echo arrives, under the turn that
+    #: actually read it — so a message stopped before being read leaves no
+    #: orphan row, and a message delivered as the next turn lands in that
+    #: turn. Bounded; insertion order is preserved, which is also the order
+    #: the runtime will read them.
+    pending_steers: dict[
+        str, tuple[str, str | None, tuple[Mapping[str, object], ...]]
+    ] = field(default_factory=dict)
 
     def remember_steer(
         self,
         steer_id: str,
         text: str,
         client_message_id: str | None,
+        attachments: tuple[Mapping[str, object], ...] = (),
     ) -> None:
-        self.pending_steers[steer_id] = (text, client_message_id)
+        self.pending_steers[steer_id] = (text, client_message_id, attachments)
         while len(self.pending_steers) > 32:
             self.pending_steers.pop(next(iter(self.pending_steers)))
 
-    def take_steer(self, item_id: str) -> tuple[str, str | None] | None:
+    def take_steer(
+        self,
+        item_id: str,
+    ) -> tuple[str, str | None, tuple[Mapping[str, object], ...]] | None:
         return self.pending_steers.pop(item_id, None)
 
     @property

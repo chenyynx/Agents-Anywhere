@@ -2318,6 +2318,7 @@ async def _exercise_runtime() -> None:
         "available": True,
         "allowed": True,
         "metadata": {"runtimeType": "codex", "runtimeId": "codex"},
+        "parameters": {},
     }
 
     await client.handle_message(
@@ -2371,6 +2372,7 @@ async def _exercise_runtime() -> None:
         "allowed": True,
         "unavailableReason": "session_not_running",
         "metadata": {"runtimeType": "codex", "runtimeId": "codex"},
+        "parameters": {},
     }
 
     await client.handle_message(

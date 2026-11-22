@@ -214,6 +214,11 @@ class RuntimeCapability:
     allowed: bool = True
     unavailable_reason: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    #: Capability facts a client may act on beyond available/allowed, keyed
+    #: per capability (docs/api/capabilities.md). Serialized verbatim onto the
+    #: wire so every client reads the same declaration instead of guessing
+    #: from the runtime name.
+    parameters: Mapping[str, Any] = field(default_factory=dict)
     runtime_id: str | None = None
 
 

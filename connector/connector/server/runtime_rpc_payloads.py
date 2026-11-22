@@ -165,6 +165,7 @@ def capability_payload(capability: RuntimeCapability) -> dict[str, Any]:
             "allowed": capability.allowed,
             "unavailableReason": capability.unavailable_reason,
             "metadata": dict(capability.metadata),
+            "parameters": dict(capability.parameters),
         }
     )
 

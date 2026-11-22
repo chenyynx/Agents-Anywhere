@@ -115,16 +115,18 @@ import Testing
         await chat.steerComposer()
 
         // The paste became a file before the wire: no giant bubble, no giant
-        // steer text.
+        // steer text. `sendDraft` clears the composer onto the pending record,
+        // so the file lives on the pending message, not the editor.
         #expect(model.composer.text.isEmpty)
-        #expect(model.composer.attachments.count == 1)
-        #expect(model.composer.attachments.first?.mediaType == "text/plain")
-        #expect(model.composer.attachments.first?.name.hasPrefix("long-message-") == true)
+        #expect(model.composer.attachments.isEmpty)
+        let pending = try #require(model.pendingMessages.first)
+        #expect(pending.attachments.count == 1)
+        #expect(pending.attachments.first?.mediaType == "text/plain")
+        #expect(pending.attachments.first?.name.hasPrefix("long-message-") == true)
         #expect(http.uploads.count == 1)
         let steer = try #require(http.calls.last { $0.path.hasSuffix("/runtime/steer") })
         #expect(steer.body?["content"]?.stringValue == "")
         #expect(steer.body?["attachments"]?.arrayValue?.first?["fileId"]?.stringValue == "file")
-        let pending = try #require(model.pendingMessages.first)
         #expect(pending.isSteer)
         #expect(pending.attachmentIDs == ["file"])
     }

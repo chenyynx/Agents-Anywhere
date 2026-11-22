@@ -91,8 +91,8 @@ struct DeviceHeaderIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            AppSymbol(symbol, size: 17)
-                .foregroundStyle(SettingsStyle.icon(colorScheme))
+            AppSymbol(symbol, size: 16)
+                .foregroundStyle(AppTheme.text300(colorScheme))
                 .frame(width: 32, height: 32)
                 .contentShape(.rect)
         }

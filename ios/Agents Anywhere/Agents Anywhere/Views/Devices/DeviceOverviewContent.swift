@@ -3,6 +3,9 @@ import UIKit
 
 /// Web shows six project cards and a "show all" toggle; a phone column fits four.
 private let collapsedDirectoryCount = 4
+/// A device can have hundreds of recent working directories; the page shows
+/// the primary one and leaves the rest behind "show all" (pp 2026-11-23).
+private let collapsedWorkspaceCount = 1
 
 struct DeviceProjectList: View {
     let projects: [V2Project]
@@ -24,7 +27,7 @@ struct DeviceProjectList: View {
 
     var body: some View {
         DeviceSection(String(localized: "Projects")) {
-            DeviceHeaderIconButton(title: String(localized: "Create project"), symbol: "plus", action: onCreate)
+            DeviceHeaderIconButton(title: String(localized: "Create project"), symbol: "anthropicon.add", action: onCreate)
                 .disabled(!canManage)
         } content: {
             VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
@@ -67,12 +70,12 @@ struct DeviceWorkspaceList: View {
     @State private var expanded = false
 
     private var visible: [WorkspaceDirectoryChoice] {
-        expanded ? workspaces : Array(workspaces.prefix(collapsedDirectoryCount))
+        expanded ? workspaces : Array(workspaces.prefix(collapsedWorkspaceCount))
     }
 
     var body: some View {
         DeviceSection(String(localized: "工作目录")) {
-            DeviceHeaderIconButton(title: String(localized: "选择工作目录"), symbol: "plus", action: onBrowse)
+            DeviceHeaderIconButton(title: String(localized: "选择工作目录"), symbol: "anthropicon.add", action: onBrowse)
                 .disabled(!canReadFiles)
         } content: {
             VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
@@ -89,8 +92,8 @@ struct DeviceWorkspaceList: View {
                             Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { UIPasteboard.general.string = workspace.path }
                         }
                     }
-                    if workspaces.count > collapsedDirectoryCount {
-                        DeviceShowAllButton(expanded: $expanded, count: workspaces.count - collapsedDirectoryCount)
+                    if workspaces.count > collapsedWorkspaceCount {
+                        DeviceShowAllButton(expanded: $expanded, count: workspaces.count - collapsedWorkspaceCount)
                     }
                 }
             }

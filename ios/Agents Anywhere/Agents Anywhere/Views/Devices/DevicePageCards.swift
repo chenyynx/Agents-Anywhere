@@ -245,8 +245,7 @@ struct DeviceAgentsEntry: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
+                AnthropiconView(name: "anthropicon.caretRight", size: .medium)
                     .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
             }
             .padding(.horizontal, 16)
@@ -279,7 +278,7 @@ struct DeviceDirectoryCard: View {
             Button(action: onOpen) {
                 HStack(spacing: 12) {
                     DeviceLeadingTile {
-                        AppSymbol("folder", size: 18)
+                        AnthropiconView(name: "anthropicon.folder", size: .large)
                             .foregroundStyle(SettingsStyle.icon(colorScheme))
                     }
                     VStack(alignment: .leading, spacing: 1) {
@@ -307,15 +306,14 @@ struct DeviceDirectoryCard: View {
             .disabled(!canOpen)
             .accessibilityHint(openHint)
             Button(action: onNewSession) {
-                AppSymbol("square.and.pencil", size: 17)
+                AppSymbol("anthropicon.edit", size: 19)
                     .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                     .frame(width: 32, height: 40)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(String(localized: "New session"))
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
+            AnthropiconView(name: "anthropicon.caretRight", size: .medium)
                 .foregroundStyle(DevicePageStyle.secondary(colorScheme).opacity(0.8))
         }
         .padding(.horizontal, 16)
@@ -454,7 +452,7 @@ struct DeviceNewSessionFab: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                AppSymbol("plus", size: 12)
+                AppSymbol("anthropicon.add", size: 12)
                 Text(String(localized: "新建会话"))
                     .font(SettingsStyle.text(15, weight: .medium))
             }

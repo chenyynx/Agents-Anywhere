@@ -10,13 +10,15 @@ on 2026-11-23. This service keeps the scanning contract unchanged (full
 * ``background`` — the periodic evidence sweep, one worker.
 
 Two pools, not one, so a slow sweep can never starve a settle read. Identical
-file versions are single-flighted: concurrent sweep/settle/fold requests share
-one scan future instead of reading the same 97MB file several times.
+file versions are single-flighted per lane: concurrent requests in the same
+lane share one scan future instead of reading the same 97MB file several times.
+A foreground request never queues behind a background sweep of the same file;
+it starts its own scan in the foreground lane.
 
-Sync callers (the live projector's folding helpers) use
-``cached_or_schedule``: a cache hit returns immediately; a miss schedules the
-scan and returns ``None`` so the caller can keep its fail-closed behaviour.
-Async callers use ``scan`` and await the result.
+Async callers use ``scan`` and await the result. Synchronous folds are wrapped
+by ``messages.override_raw_scan`` after the caller has awaited one scan; the
+service deliberately has no synchronous scheduling seam, so a missed override
+fails visible in tests rather than silently blocking the loop.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from connector.runtimes.claude.sessions.subagent_oracle import (
 )
 
 Priority = Literal["foreground", "background"]
+InflightKey = tuple[ScanCacheKey, Priority]
 
 #: One worker per lane is deliberate: each scan can hold a >3x-file-size parse
 #: in memory, so more parallelism buys head-of-line blocking, not throughput.
@@ -70,12 +73,20 @@ class TranscriptScanService:
             ),
         }
         self._lock = threading.Lock()
-        self._inflight: dict[ScanCacheKey, asyncio.Future[RawTranscriptScan | None]] = {}
+        #: Per-lane single-flight: a foreground settle must not queue behind a
+        #: background sweep scan of the same file. The same version may be
+        #: scanned once per lane (bounded by two workers); within a lane it is
+        #: shared.
+        self._inflight: dict[
+            InflightKey,
+            asyncio.Future[RawTranscriptScan | None],
+        ] = {}
         self._stats: dict[str, int] = {
             "cache_hits": 0,
             "singleflight_hits": 0,
             "scans": 0,
             "scan_errors": 0,
+            "submit_errors": 0,
             "cancelled": 0,
         }
         self._last_scan_ms: dict[Priority, float] = {
@@ -119,43 +130,26 @@ class TranscriptScanService:
                 return None
             raise
 
-    def cached_or_schedule(
-        self,
-        path: Path,
-        *,
-        priority: Priority = "foreground",
-    ) -> RawTranscriptScan | None:
-        """Sync seam: cached scan now, or schedule one and return ``None``.
-
-        Outside a running loop (unit tests, CLI tools) this falls back to the
-        old inline scan so synchronous callers keep their exact behaviour.
-        """
-
-        cached = cached_transcript_scan(path)
-        if cached is not None:
-            self._bump("cache_hits")
-            return cached
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return scan_transcript_file(path)
-        self._request(path, priority)
-        return None
-
     def _request(
         self,
         path: Path,
         priority: Priority,
     ) -> asyncio.Future[RawTranscriptScan | None] | None:
-        key = transcript_scan_key(path)
-        if key is None:
+        scan_key = transcript_scan_key(path)
+        if scan_key is None:
             return None
+        key: InflightKey = (scan_key, priority)
         loop = asyncio.get_running_loop()
         with self._lock:
             existing = self._inflight.get(key)
-            if existing is not None and not existing.done():
-                self._stats["singleflight_hits"] += 1
-                return existing
+            if existing is not None:
+                # A future bound to a closed/other loop is poison: every later
+                # request for this version would await a result that can never
+                # arrive. Drop it and scan again in this loop.
+                if not existing.done() and existing.get_loop() is loop:
+                    self._stats["singleflight_hits"] += 1
+                    return existing
+                self._inflight.pop(key, None)
             future: asyncio.Future[RawTranscriptScan | None] = loop.create_future()
             self._inflight[key] = future
         cancelled = threading.Event()
@@ -163,22 +157,35 @@ class TranscriptScanService:
             lambda done: cancelled.set() if done.cancelled() else None
         )
         submitted_at = time.monotonic()
-        self._pools[priority].submit(
-            self._run,
-            path,
-            key,
-            future,
-            loop,
-            cancelled,
-            priority,
-            submitted_at,
-        )
+        try:
+            self._pools[priority].submit(
+                self._run,
+                path,
+                key,
+                future,
+                loop,
+                cancelled,
+                priority,
+                submitted_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - the pool may be shutting down
+            with self._lock:
+                self._inflight.pop(key, None)
+                self._stats["submit_errors"] += 1
+            logger.opt(exception=(type(exc), exc, exc.__traceback__)).error(
+                "Claude transcript scan submit failed path={} priority={}",
+                path,
+                priority,
+            )
+            if not future.done():
+                future.set_result(None)
+            return None
         return future
 
     def _run(
         self,
         path: Path,
-        key: ScanCacheKey,
+        key: InflightKey,
         future: asyncio.Future[RawTranscriptScan | None],
         loop: asyncio.AbstractEventLoop,
         cancelled: threading.Event,
@@ -207,11 +214,15 @@ class TranscriptScanService:
             )
         except RuntimeError:
             # The loop closed while the scan was running (shutdown/tests).
+            # Drop the in-flight entry so a later loop can scan this version
+            # instead of joining a future that can never be resolved.
+            with self._lock:
+                self._inflight.pop(key, None)
             return
 
     def _finish(
         self,
-        key: ScanCacheKey,
+        key: InflightKey,
         future: asyncio.Future[RawTranscriptScan | None],
         scan: RawTranscriptScan | None,
         error: BaseException | None,
@@ -219,6 +230,7 @@ class TranscriptScanService:
         queue_ms: float,
         scan_ms: float,
     ) -> None:
+        scan_key = key[0]
         with self._lock:
             self._inflight.pop(key, None)
             self._stats["scans"] += 1
@@ -231,15 +243,15 @@ class TranscriptScanService:
                 exception=(type(error), error, error.__traceback__)
             ).error(
                 "Claude transcript scan failed path={} error={!r}",
-                key[0],
+                scan_key[0],
                 error,
             )
         elif scan_ms >= _SLOW_SCAN_MS or queue_ms >= _SLOW_QUEUE_MS:
             logger.info(
                 "Claude transcript scan slow path={} priority={} bytes={} queue_ms={:.1f} scan_ms={:.1f}",
-                key[0],
+                scan_key[0],
                 priority,
-                key[1],
+                scan_key[1],
                 queue_ms,
                 scan_ms,
             )
@@ -255,6 +267,12 @@ class TranscriptScanService:
             self._stats[name] = self._stats.get(name, 0) + 1
 
     def shutdown(self) -> None:
+        with self._lock:
+            futures = list(self._inflight.values())
+            self._inflight.clear()
+        for future in futures:
+            if not future.done():
+                future.cancel()
         for pool in self._pools.values():
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -269,14 +287,3 @@ def get_scan_service() -> TranscriptScanService:
         if _SERVICE is None:
             _SERVICE = TranscriptScanService()
         return _SERVICE
-
-
-def reset_scan_service_for_tests() -> None:
-    """Drop the process-wide service (tests own their event loops)."""
-
-    global _SERVICE
-    with _SERVICE_LOCK:
-        service = _SERVICE
-        _SERVICE = None
-    if service is not None:
-        service.shutdown()

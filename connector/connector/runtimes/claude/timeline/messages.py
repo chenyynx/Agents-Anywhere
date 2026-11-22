@@ -2026,8 +2026,9 @@ def _read_session_raw_scan(session: ClaudeSession) -> RawTranscriptScan | None:
 
     Imported inside the call because ``sessions.reader`` imports this module
     at load time — a module-level import here would close the cycle. The
-    reader's ``_read_raw_transcript_scan`` is memoized by (path, size, mtime,
-    prefix), so repeated folds over one settle cost a stat and a dict lookup.
+    reader's ``_read_raw_transcript_scan`` is memoized by (path, size,
+    mtime_ns, head/middle/tail signature), so repeated folds over one settle
+    cost a stat, three small samples and a dict lookup.
 
     A caller that already awaited a scan wraps its folds in
     :func:`override_raw_scan`; the override wins so the sync fold never

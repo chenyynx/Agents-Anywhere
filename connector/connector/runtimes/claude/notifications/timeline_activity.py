@@ -43,12 +43,3 @@ class ClaudeTimelineActivityHandler:
                 "source": source,
             },
         )
-        if self.open_cards is not None:
-            # A history rebuild publishes a batch through this path, not the
-            # per-item one. Without recording here, those cards never enter the
-            # durable work list and a narrowed sweep cannot see them.
-            session = self.session_store.get(
-                snapshot.session_id, snapshot.external_session_id
-            )
-            if session is not None:
-                await self.open_cards.record_many(session, snapshot.items)

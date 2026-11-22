@@ -1892,11 +1892,12 @@ def participation_age_seconds(
     return max((now_ms - time_ms) / 1000.0, 0.0)
 
 
-#: A scan cache keyed by (path, size, mtime_ns). One sync settles a session by
-#: rebuilding its whole window, and the same transcript is read again on the
-#: next settle; caching the parsed scan (not the raw lines) keeps the repeated
-#: cost at one dict lookup. The 60s evidence sweep walks every store session, so
-#: a cache smaller than that working set re-parses the overflow every single
+#: A scan cache keyed by (path, size, mtime_ns, head/middle/tail signature).
+#: One sync settles a session by rebuilding its whole window, and the same
+#: transcript is read again on the next settle; caching the parsed scan (not
+#: the raw lines) keeps the repeated cost at a stat, three small samples and a
+#: dict lookup. The 60s evidence sweep walks every store session, so a cache
+#: smaller than that working set re-parses the overflow every single
 #: tick (2026-11-09: 33 transcripts / 867MB, 17s of blocked event loop per
 #: minute). A superseded version of the same path is dropped on insert, so one
 #: growing transcript cannot fill the cache with stale versions and evict the
@@ -1921,6 +1922,20 @@ _SCAN_MIN_CHARGE_BYTES = 64 * 1024
 #: rewrite (tombstone removal) reuse a stale scan; the head/tail signature
 #: catches the realistic rewrites without reading the whole file on a hit.
 _SCAN_PREFIX_BYTES = 4096
+#: The separators ``str.splitlines`` recognises. The chunked reader must keep
+#: the exact same line semantics for non-``\n`` line endings.
+_SCAN_LINE_BREAK_CHARS = (
+    "\n",
+    "\r",
+    "\v",
+    "\f",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x85",
+    "\u2028",
+    "\u2029",
+)
 
 
 def _scan_cache_charge(source_size: int) -> int:
@@ -1933,18 +1948,29 @@ def _scan_cache_charge(source_size: int) -> int:
 
 
 def _transcript_prefix_signature(path: Path, size: int) -> str | None:
-    """Hash the first and last few KiB of a transcript (same-size rewrite guard)."""
+    """Hash the head, middle and tail of a transcript (same-size rewrite guard).
+
+    Size+mtime alone cannot see an in-place rewrite that preserves both; the
+    three samples catch the realistic ``cp -p``/backup/rsync cases without
+    reading the whole file on every cache hit.
+    """
 
     try:
         with open(path, "rb") as handle:
             head = handle.read(_SCAN_PREFIX_BYTES)
+            middle = b""
+            if size > _SCAN_PREFIX_BYTES * 3:
+                handle.seek(size // 2 - _SCAN_PREFIX_BYTES // 2)
+                middle = handle.read(_SCAN_PREFIX_BYTES)
             tail = b""
             if size > _SCAN_PREFIX_BYTES:
                 handle.seek(max(0, size - _SCAN_PREFIX_BYTES))
                 tail = handle.read(_SCAN_PREFIX_BYTES)
     except OSError:
         return None
-    return hashlib.blake2b(head + b"\0" + tail, digest_size=16).hexdigest()
+    return hashlib.blake2b(
+        head + b"\0" + middle + b"\0" + tail, digest_size=16
+    ).hexdigest()
 
 
 def transcript_scan_key(path: Path) -> ScanCacheKey | None:
@@ -1997,16 +2023,18 @@ def _read_transcript_lines(
                 if not chunk:
                     break
                 buffer += chunk
-                parts = buffer.split("\n")
-                buffer = parts.pop()
-                for line in parts:
-                    if line.endswith("\r"):
-                        line = line[:-1]
-                    lines.append(line)
+                parts = buffer.splitlines(keepends=True)
+                if parts and not parts[-1].endswith(_SCAN_LINE_BREAK_CHARS):
+                    # Keep the incomplete tail for the next chunk; every other
+                    # part is a complete line under the same separators
+                    # ``str.splitlines`` recognises.
+                    buffer = parts.pop()
+                else:
+                    buffer = ""
+                for part in parts:
+                    lines.extend(part.splitlines() or [""])
             if buffer:
-                if buffer.endswith("\r"):
-                    buffer = buffer[:-1]
-                lines.append(buffer)
+                lines.extend(buffer.splitlines() or [""])
             return tuple(lines)
     except (OSError, UnicodeError):
         return None

@@ -243,13 +243,6 @@ CONTEXT_PROBE_SWEEP_INTERVAL_SECONDS = 5.0
 # open task), so a stranded card closes promptly without hammering the disk.
 AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS = 60.0
 
-#: Sessions without an open card that the periodic sweep still re-judges each
-#: tick. The durable open-card index is the primary work list; the rotating
-#: slice is the safety net for a card the index failed to record. Eight
-#: sessions/tick covers the whole store in a bounded number of minutes without
-#: re-reading every idle transcript every minute.
-AGENT_CARD_SWEEP_ROTATION_SESSIONS = 8
-
 # F1 (zombie-agent-card): the kill switch for the snapshot vouch. When on
 # (default), the exemption set `live_agent_task_ids` vouches only for tasks
 # present in BOTH the keep-alive register (`background.active_ids`) and the
@@ -555,8 +548,6 @@ class ClaudeTurnRunner:
     #: reconciliation reads it so a card stranded by a previous process is
     #: judged even in a session this connector never touches again.
     open_cards: ClaudeOpenAgentCards | None = None
-    #: Round-robin cursor for the no-open-card safety slice in the 60s sweep.
-    _sweep_rotation_cursor: int = field(default=0, init=False)
     #: The history syncer, so a resumed scheduled session — which can wake
     #: before any user turn in this process — backfills its history before its
     #: first live row. Same gate as the user path, same best-effort contract.
@@ -699,14 +690,7 @@ class ClaudeTurnRunner:
                 await asyncio.sleep(AGENT_CARD_EVIDENCE_SWEEP_INTERVAL_SECONDS)
                 if self.stopping:
                     return
-                sessions = list(self.session_store.sessions())
-                candidates = await self._agent_card_sweep_candidates(sessions)
-                logger.debug(
-                    "Claude agent-card sweep candidates store={} candidates={}",
-                    len(sessions),
-                    len(candidates),
-                )
-                for session in candidates:
+                for session in self.session_store.sessions():
                     if self.stopping:
                         return
                     await self.sweep_agent_cards_by_evidence(session)
@@ -714,54 +698,6 @@ class ClaudeTurnRunner:
                 raise
             except Exception:  # noqa: BLE001
                 logger.exception("Claude agent-card evidence sweep tick failed")
-
-    async def _agent_card_sweep_candidates(
-        self,
-        sessions: list[ClaudeSession],
-    ) -> list[ClaudeSession]:
-        """The sessions one 60s sweep actually judges.
-
-        Primary set: the durable open-card index (a session with an open card
-        is re-judged every tick, including sessions the live store has not
-        adopted yet — the same ensure the startup reconciliation uses).
-        Safety slice: a rotating window of sessions without an indexed card,
-        so an index write that was lost can still be healed within minutes.
-        Without the index (tests / older wiring) the historical all-sessions
-        behaviour is preserved.
-        """
-
-        if self.open_cards is None:
-            return sessions
-        open_state = await self.open_cards.read()
-        by_id = {session.session_id: session for session in sessions}
-        candidates: list[ClaudeSession] = []
-        for session_id, entry in open_state.items():
-            session = by_id.get(session_id)
-            if session is None:
-                external_session_id = entry.get("externalSessionId")
-                cwd = entry.get("cwd")
-                if (
-                    not isinstance(external_session_id, str)
-                    or not external_session_id
-                    or not isinstance(cwd, str)
-                    or not cwd
-                ):
-                    continue
-                session = self.session_store.ensure(
-                    session_id=session_id,
-                    external_session_id=external_session_id,
-                    cwd=cwd,
-                )
-            candidates.append(session)
-        open_ids = {session.session_id for session in candidates}
-        rest = [session for session in sessions if session.session_id not in open_ids]
-        if rest:
-            count = min(AGENT_CARD_SWEEP_ROTATION_SESSIONS, len(rest))
-            start = self._sweep_rotation_cursor % len(rest)
-            rotated = rest[start:] + rest[:start]
-            candidates.extend(rotated[:count])
-            self._sweep_rotation_cursor = (start + count) % len(rest)
-        return candidates
 
     async def reconnect_sessions(self) -> None:
         """Resume only AA sessions previously observed to have scheduled tasks."""

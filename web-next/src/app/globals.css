@@ -121,6 +121,33 @@
 --sidebar-ring: oklch(0.556 0 0);
 }
 
+/*
+ * In-app preview skin (pp 2026-11-22): one flat white toolbar, white paper
+ * below it. Scoped to the preview page; the rest of the Web app keeps the
+ * global theme.
+ */
+.aa-preview-embedded {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f0;
+  --secondary-foreground: #0a0a0a;
+  --muted: #f2f2f0;
+  --muted-foreground: #9a9a96;
+  --accent: rgba(0, 0, 0, 0.05);
+  --accent-foreground: #0a0a0a;
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: #ececea;
+  --input: #e4e4e2;
+  --ring: rgba(0, 0, 0, 0.25);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

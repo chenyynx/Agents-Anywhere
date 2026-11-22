@@ -31,6 +31,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
 import { MonacoCodeView, type MonacoCodeViewApi } from "@/components/monaco-code-view"
+import { EmbeddedPreviewHeader } from "@/components/embedded-preview-header"
 import { filePreviewLocation, type FilePreviewLocation } from "@/lib/file-preview-location"
 import { openNativeFilePreviewWindow } from "@/lib/file-preview-window"
 import { dashboardApi } from "@/features/dashboard/api"
@@ -59,6 +60,12 @@ const TEXT_MAX_BYTES = 1_000_000
 
 export function FilePreviewPage() {
   const params = useRouteSearchParams()
+  // The whole page is driven by the URL fragment (preview token, embedded
+  // flag), which the server cannot see. Mounting client-side keeps the server
+  // and first client render identical instead of hydrating the browser header
+  // and then swapping in the app skin (pp 2026-11-22).
+  const [mounted, setMounted] = React.useState(false)
+  React.useEffect(() => { setMounted(true) }, [])
   const connectorId = params.get("connectorId") ?? ""
   const root = params.get("root") ?? ""
   const routePath = params.get("path") ?? ""
@@ -68,6 +75,8 @@ export function FilePreviewPage() {
   const sourceMediaType = params.get("mediaType") ?? ""
   const sourceSize = routeSourceSize(params.get("size"))
   const token = React.useMemo(() => loadStoredSession()?.accessToken ?? null, [])
+
+  if (!mounted) return null
 
   return (
     <FilePreviewSurface
@@ -84,6 +93,9 @@ export function FilePreviewPage() {
       sourceSize={sourceSize}
       readOnly={Boolean(sourceUrl)}
       mode="window"
+      // The app marks its own WebView with embedded=1; the system browser
+      // keeps the full Web page (pp 2026-11-22).
+      embeddedSkin={params.get("embedded") === "1"}
     />
   )
 }
@@ -107,6 +119,8 @@ type FilePreviewSurfaceProps = {
   sourceSize?: number
   readOnly?: boolean
   mode?: "window" | "embedded"
+  /** The app's WebView skin: floating cards, paper read mode, dark edit mode. */
+  embeddedSkin?: boolean
   onDirtyChange?: (dirty: boolean) => void
   onOpenExternal?: () => void
 }
@@ -173,6 +187,7 @@ export function FilePreviewSurface({
   sourceSize,
   readOnly = false,
   mode = "embedded",
+  embeddedSkin = false,
   onOpenExternal,
   onDirtyChange,
 }: FilePreviewSurfaceProps) {
@@ -206,6 +221,12 @@ export function FilePreviewSurface({
   const objectUrlRef = React.useRef<string | null>(null)
   const loadRequestIdRef = React.useRef(0)
   const containerRef = React.useRef<HTMLElement | null>(null)
+  const contentRef = React.useRef<HTMLElement | null>(null)
+  const [zoom, setZoom] = React.useState(1)
+  const [zoomPill, setZoomPill] = React.useState(false)
+  const zoomRef = React.useRef(1)
+  zoomRef.current = zoom
+  const zoomPillTimer = React.useRef<number | null>(null)
 
   React.useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
 
@@ -213,6 +234,8 @@ export function FilePreviewSurface({
   const isSourcePreview = Boolean(sourceUrl)
   const readOnlyPreview = readOnly || isScopedPreview || isSourcePreview
   const canLoad = isScopedPreview || isSourcePreview || Boolean(token && connectorId && root && path)
+  const zoomableKind = state.kind === "binary" ? previewKind(state.file.mediaType, state.file.name) : null
+  const canZoom = embeddedSkin && (state.kind === "text" || zoomableKind === "image" || zoomableKind === "pdf")
 
   const revokeObjectUrl = React.useCallback(() => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
@@ -224,6 +247,8 @@ export function FilePreviewSurface({
     const t = translationRef.current
     const requestId = ++loadRequestIdRef.current
     const requestIsCurrent = () => requestId === loadRequestIdRef.current
+    setZoom(1)
+    setZoomPill(false)
     revokeObjectUrl()
     setLoadingFile(true)
     setState((previous) => previous.kind === "text" ? previous : { kind: "loading" })
@@ -379,6 +404,56 @@ export function FilePreviewSurface({
     }
   }, [loadFile, revokeObjectUrl])
 
+  const showZoomPill = React.useCallback(() => {
+    setZoomPill(true)
+    if (zoomPillTimer.current !== null) window.clearTimeout(zoomPillTimer.current)
+    zoomPillTimer.current = window.setTimeout(() => setZoomPill(false), 1500)
+  }, [])
+
+  React.useEffect(() => () => {
+    if (zoomPillTimer.current !== null) window.clearTimeout(zoomPillTimer.current)
+  }, [])
+
+  // Content-level pinch: the toolbar never moves; text scales through the
+  // Monaco font size, images and PDFs scale their own content (pp 2026-11-22).
+  React.useEffect(() => {
+    const node = contentRef.current
+    if (!node || !canZoom) return
+    let startDistance = 0
+    let startZoom = 1
+    let pinching = false
+    const distance = (touches: TouchList) => {
+      const a = touches[0]
+      const b = touches[1]
+      return a && b ? Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) : 0
+    }
+    const onStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) { pinching = false; return }
+      startDistance = distance(event.touches)
+      startZoom = zoomRef.current
+      pinching = true
+    }
+    const onMove = (event: TouchEvent) => {
+      if (!pinching || event.touches.length !== 2 || startDistance <= 0) return
+      event.preventDefault()
+      setZoom(Math.min(3, Math.max(0.5, startZoom * distance(event.touches) / startDistance)))
+      showZoomPill()
+    }
+    const onEnd = (event: TouchEvent) => {
+      if (event.touches.length < 2) pinching = false
+    }
+    node.addEventListener("touchstart", onStart, { passive: true })
+    node.addEventListener("touchmove", onMove, { passive: false })
+    node.addEventListener("touchend", onEnd, { passive: true })
+    node.addEventListener("touchcancel", onEnd, { passive: true })
+    return () => {
+      node.removeEventListener("touchstart", onStart)
+      node.removeEventListener("touchmove", onMove)
+      node.removeEventListener("touchend", onEnd)
+      node.removeEventListener("touchcancel", onEnd)
+    }
+  }, [canZoom, showZoomPill])
+
   React.useEffect(() => {
     if (mode !== "window") return
     if (state.kind === "loading" || state.kind === "error") return
@@ -527,6 +602,7 @@ export function FilePreviewSurface({
       ref={containerRef}
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground",
+        embeddedSkin && "aa-preview-embedded",
         // dvh, not svh: in the app's WebView `svh` stops at the bottom safe
         // area even with viewport-fit=cover, leaving a 34 pt strip of the
         // WebView background below the page (pp 2026-11-22).
@@ -534,10 +610,34 @@ export function FilePreviewSurface({
       )}
       // viewport-fit=cover lets the page paint under the home indicator; keep
       // the scrolling content above it without leaving a background gap.
-      style={mode === "window"
+      style={mode === "window" || embeddedSkin
         ? { paddingBottom: "env(safe-area-inset-bottom)" }
         : undefined}
     >
+      {embeddedSkin ? (
+        <EmbeddedPreviewHeader
+          name={name}
+          path={effectivePath}
+          canEdit={state.kind === "text" && !readOnlyPreview}
+          canCopy={state.kind === "text"}
+          canDownload={state.kind === "text" || state.kind === "binary"}
+          canSearch={state.kind === "text"}
+          editing={editMode}
+          dirty={dirty}
+          saving={saving}
+          savedFlash={savedFlash}
+          truncated={state.kind === "text" && state.file.truncated}
+          copied={copied}
+          error={saveError ?? downloadError}
+          disabled={pendingFile}
+          onEditingChange={handleEmbeddedEditModeChange}
+          onRefresh={() => void loadFile()}
+          onCopy={copyText}
+          onDownload={() => void handleDownload()}
+          onSave={() => void handleSave()}
+          onSearch={() => editorRef.current?.openSearch()}
+        />
+      ) : (
       <header
         inert={pendingFile || undefined}
         className={cn(
@@ -693,10 +793,11 @@ export function FilePreviewSurface({
           )}
         </div>
       </header>
-      {downloadError ? (
+      )}
+      {!embeddedSkin && downloadError ? (
         <div className="border-b px-3 py-2 text-xs text-destructive">{downloadError}</div>
       ) : null}
-      <section aria-busy={pendingFile} inert={pendingFile || undefined} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      <section ref={contentRef} aria-busy={pendingFile} inert={pendingFile || undefined} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {pendingFile && state.kind === "text" ? (
           <div className="absolute inset-x-0 top-0 z-10 flex justify-center bg-background/80 py-1 text-xs text-muted-foreground">{t("loading")}</div>
         ) : null}
@@ -716,6 +817,8 @@ export function FilePreviewSurface({
             fileName={state.file.name || name}
             content={state.file.content}
             editable={editMode && !readOnlyPreview && !pendingFile}
+            theme={embeddedSkin ? "aa-preview-light" : undefined}
+            zoom={embeddedSkin ? zoom : 1}
             onReady={handleEditorReady}
             onChange={handleEditorChange}
             className="h-full min-h-0 overflow-hidden"
@@ -737,7 +840,17 @@ export function FilePreviewSurface({
             objectUrl={state.objectUrl}
             onDownload={() => void handleDownload()}
             downloading={false}
+            zoom={embeddedSkin ? zoom : 1}
           />
+        ) : null}
+        {embeddedSkin && zoomPill ? (
+          <button
+            type="button"
+            onClick={() => { setZoom(1); setZoomPill(false) }}
+            className="absolute bottom-[calc(22px+env(safe-area-inset-bottom))] left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/90 px-3.5 py-1.5 text-xs text-white backdrop-blur-sm"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
         ) : null}
       </section>
     </main>
@@ -826,18 +939,23 @@ function BinaryPreview({
   file,
   objectUrl,
   onDownload,
+  zoom = 1,
 }: {
   file: BinaryFileInfo
   objectUrl: string | null
   onDownload: () => void
   downloading: boolean
+  zoom?: number
 }) {
   const t = useTranslations("preview")
   const kind = previewKind(file.mediaType, file.name)
   if (objectUrl && kind === "image") {
     return (
-      <div className="flex size-full min-h-0 min-w-0 items-center justify-center overflow-hidden bg-muted/20 p-4">
-        <img src={objectUrl} alt={file.name} className="block max-h-full max-w-full object-contain" />
+      <div className={cn(
+        "flex size-full min-h-0 min-w-0 overflow-auto bg-muted/20 p-4",
+        zoom === 1 ? "items-center justify-center" : "items-start justify-start",
+      )}>
+        <img src={objectUrl} alt={file.name} className="block max-h-full max-w-full object-contain" style={{ zoom }} />
       </div>
     )
   }
@@ -849,8 +967,8 @@ function BinaryPreview({
   }
   if (objectUrl && kind === "pdf") {
     return (
-      <div className="size-full min-h-0 min-w-0 overflow-hidden">
-        <iframe src={objectUrl} title={file.name} className="block size-full border-0" />
+      <div className="size-full min-h-0 min-w-0 overflow-auto">
+        <iframe src={objectUrl} title={file.name} className="block size-full border-0" style={{ zoom }} />
       </div>
     )
   }

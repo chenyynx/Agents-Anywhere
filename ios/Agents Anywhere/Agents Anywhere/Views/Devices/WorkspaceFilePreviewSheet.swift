@@ -1,6 +1,15 @@
 import SwiftUI
 import WebKit
 
+/// The Web preview page is always dark: its theme provider defaults to dark
+/// and the preview WebView uses a non-persistent store, so no saved theme can
+/// override it. Every layer that can peek out below the page is painted this
+/// colour, so the home-indicator strip cannot flash white (pp 2026-11-22).
+private let previewPageBackground = Color(.sRGB,
+    red: 10.0 / 255.0, green: 10.0 / 255.0, blue: 11.0 / 255.0, opacity: 1)
+private let previewPageBackgroundUIColor = UIColor(
+    red: 10.0 / 255.0, green: 10.0 / 255.0, blue: 11.0 / 255.0, alpha: 1)
+
 /// Every fs-backed preview uses the same scoped Web preview as the Web client.
 /// Native code only creates its one-use entry token; file rendering stays in Web.
 struct WorkspaceFilePreviewSheet: View {
@@ -73,6 +82,12 @@ struct WorkspaceFilePreviewSheet: View {
                 SheetCloseToolbar { dismiss() }
             }
         }
+        // Paint the sheet itself and let the stack run under the home
+        // indicator: whichever layer the bottom safe-area strip exposes, it is
+        // the page's own dark background, never the system sheet colour.
+        .background(previewPageBackground)
+        .presentationBackground(previewPageBackground)
+        .ignoresSafeArea(.container, edges: .bottom)
         .appSheetPresentation(.expanded)
         .overlay(alignment: .top) {
             ChatErrorToasts(store: toasts, isRetrying: false, onRetry: { _ in })
@@ -145,7 +160,9 @@ private struct WorkspacePreviewWebView: UIViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator; webView.uiDelegate = context.coordinator
-        webView.isOpaque = false; webView.backgroundColor = .systemBackground
+        webView.isOpaque = false
+        webView.backgroundColor = previewPageBackgroundUIColor
+        webView.scrollView.backgroundColor = previewPageBackgroundUIColor
         // The preview page is one HTML entry behind a one-use token; a cached
         // copy can predate a Web deploy (the bottom-safe-area fix). Always
         // fetch it fresh.

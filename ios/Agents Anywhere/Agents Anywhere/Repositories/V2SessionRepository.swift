@@ -1453,9 +1453,14 @@ final class V2SessionRepository {
             // protect rows the reader already completed; the deferred snapshot
             // carries summaries for them. Carry those rows across the
             // replacement instead of silently collapsing them back.
+            let heldRows = entry.projection?.data.items ?? []
             let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             entry.projection?.graftCompleteRows(completeRows)
+            // A recovery snapshot is the newest page, not the whole timeline:
+            // keep the held window when the page admits older rows and
+            // overlaps it (live snapshot / latest page already do).
+            entry.projection?.mergeHeldWindow(heldRows)
             if let projection = entry.projection {
                 let items = projection.data.items
                 ClientDiagnosticsLog.shared.record(

@@ -3371,6 +3371,12 @@ class ClaudeTurnRunner:
                         if (
                             client.prompt_uuid is not None
                             and native_message_id != client.prompt_uuid
+                            # Only the prompt's own echo is a fact about
+                            # adoption. Other user-role rows (the CLI's
+                            # ``[Image: …]`` meta rows) replay different
+                            # uuids by design; warning on them sent one
+                            # investigation after the wrong cause.
+                            and client_message_text_matches(text, effective_content)
                         ):
                             logger.warning(
                                 "Claude prompt uuid was not adopted by the SDK replay "

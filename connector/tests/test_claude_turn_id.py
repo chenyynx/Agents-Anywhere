@@ -70,6 +70,7 @@ from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_turn_id,
     _history_turn_ids,
+    _scan_turn_id,
 )
 from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcript
 from connector.runtimes.claude.turns.lifecycle import _turn_anchor_from_frame
@@ -1056,6 +1057,36 @@ async def _test_syncer_snapshot_is_identical_under_two_session_aliases() -> None
             for item in prepared.snapshot.items
         ]
 
-    assert await prepare("sess_platform_alias") == await prepare(
-        "sess_claude_2a8440e6956b15810b3f0726"
+    attached = await prepare("sess_platform_alias")
+    discovered = await prepare("sess_claude_2a8440e6956b15810b3f0726")
+    assert len(attached) >= 2
+    assert {item.turn_id for item in attached} == {_history_turn_id(prompt_uuid)}
+    assert attached == discovered
+
+
+def test_raw_walk_anchors_a_fired_prompt_turn_like_history_and_live() -> None:
+    """A fired prompt opens a scheduled turn for the raw walk too.
+
+    ``enqueue`` + hidden meta prompt + assistant. The SDK walk marks the
+    boundary from ``injected_prompt_rows`` and the live side casts the turn on
+    the first ``message_start``; the raw walk must hash the same message id.
+    It used to keep the previous user turn's seed there, so an Agent card
+    rebuilt from a dispatch row outside the visible chain landed on the wrong
+    turn (2026-11-22 review).
+    """
+
+    raw = (
+        _enqueue_row("Prompt"),
+        _hidden_meta_row("hidden-fired", "Prompt"),
+        _assistant_row("row-answer", "answer", message_id="msg_fired"),
     )
+    scan = scan_raw_transcript(raw)
+    assert scan.injected_prompt_rows.get("hidden-fired") is not None
+    assert scan.turn_seeds.get("row-answer") == "msg_fired"
+    messages = (_assistant("row-answer", "answer", message_id="msg_fired"),)
+    assert set(_history_turn_ids(messages, scan).values()) == {
+        _history_turn_id("msg_fired")
+    }
+    # The raw walk's anchor-less fallback translates to the same seed the SDK
+    # walk uses, so a card rebuilt from it keeps the turn.
+    assert _scan_turn_id("scheduled@42") == _history_turn_id("scheduled:42")

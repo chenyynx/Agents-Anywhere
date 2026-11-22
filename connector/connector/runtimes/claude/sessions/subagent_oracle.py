@@ -1223,6 +1223,12 @@ def scan_raw_transcript(
                 # hidden user rows (continuation nudges, command caveats,
                 # image placeholders), whose text never equals an enqueue.
                 injected_prompt_rows[row_uuid] = line_index
+                # The next assistant row anchors this turn on its message id,
+                # exactly like the SDK walk's boundary and the live cast
+                # frame. Without it the raw walk keeps the previous user
+                # turn's seed, and an Agent card rebuilt from a dispatch row
+                # outside the visible chain lands on the wrong turn.
+                pending_scheduled = True
             # A persisted conversation row closes the queue window either
             # way: the queued prompt is now the row's own, or it was never a
             # prompt (a command/notice enqueue).

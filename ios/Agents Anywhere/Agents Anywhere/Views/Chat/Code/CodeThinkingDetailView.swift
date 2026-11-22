@@ -22,6 +22,9 @@ struct CodeThinkingDetailView: View {
     /// True while the row belongs to the running turn: open on the newest
     /// text and keep following it as it streams (pp 2026-11-03).
     var startsAtBottom: Bool = false
+    /// The page's body-link router; a thinking block renders File references
+    /// and must resolve them the same way the rows do.
+    var onOpenLink: ((URL) -> Bool)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -57,7 +60,7 @@ struct CodeThinkingDetailView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    CodeThinkingMarkdownView(text: bodyText)
+                    CodeThinkingMarkdownView(text: bodyText, onOpenLink: onOpenLink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let chat,
                        !deferredIDs.isEmpty
@@ -94,6 +97,8 @@ struct CodeThinkingDetailView: View {
 /// message body uses, so link/selection behaviour is unchanged.
 struct CodeThinkingMarkdownView: View {
     let text: String
+    /// See `CodeThinkingDetailView.onOpenLink`.
+    var onOpenLink: ((URL) -> Bool)? = nil
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.layoutDirection) private var layoutDirection
@@ -104,7 +109,8 @@ struct CodeThinkingMarkdownView: View {
         // its own corners while a selection's edit menu was up (pp
         // 2026-11-15), and this page trades selection away instead of chasing
         // the system chrome. Links still tap.
-        CodeMarkdownTextLeaf(text: text, typography: typography, allowsSelection: false)
+        CodeMarkdownTextLeaf(text: text, typography: typography, allowsSelection: false,
+                             onOpenLink: onOpenLink)
     }
 
     @MainActor

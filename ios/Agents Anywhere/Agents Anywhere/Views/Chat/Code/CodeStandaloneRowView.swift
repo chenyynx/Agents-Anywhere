@@ -21,6 +21,9 @@ struct CodeStandaloneRowView: View, Equatable {
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
+    /// Body-link routing for the Code row this fallback draws; see
+    /// `CodeMessageRowView.onOpenLink`.
+    var onOpenLink: ((URL) -> Bool)?
     /// Interaction cards targeting this row. Passing the subset keeps unrelated
     /// groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
@@ -260,6 +263,7 @@ struct CodeStandaloneRowView: View, Equatable {
             },
             attachmentState: { _ in .complete },
             loadThumbnail: { try await chat.thumbnail(for: $0) },
-            onAttachment: onAttachment)
+            onAttachment: onAttachment,
+            onOpenLink: onOpenLink)
     }
 }

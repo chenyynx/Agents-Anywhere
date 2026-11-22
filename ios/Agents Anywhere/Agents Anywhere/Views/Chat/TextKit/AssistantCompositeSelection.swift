@@ -268,9 +268,17 @@ final class AssistantCompositeSelectionOverlay: UIView, UITextInput,
         let point = recognizer.location(in: self)
         guard let view = textView(at: point),
               let url = view.compositeLink(at: convert(point, to: view)) else { return }
+        // An owner-supplied router sees every scheme: a body file reference is
+        // an `aa-workspace-file://` link the page turns into a preview, which
+        // the old system-only allowlist here dropped without a trace. Without
+        // an owner the default stays system-only.
+        if let openLink {
+            openLink(url)
+            return
+        }
         guard let scheme = url.scheme?.lowercased(),
               ["http", "https", "mailto", "tel"].contains(scheme) else { return }
-        (openLink ?? { UIApplication.shared.open($0) })(url)
+        UIApplication.shared.open(url)
     }
 
     // MARK: - Clipboard

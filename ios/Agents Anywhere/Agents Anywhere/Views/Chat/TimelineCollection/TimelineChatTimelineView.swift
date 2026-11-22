@@ -44,6 +44,7 @@ struct TimelineChatTimelineView: View {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
+         onOpenLink: @escaping (URL) -> Bool,
          onSubAgent: @escaping (String) -> Void,
          jumpRequest: ConversationOutlineJumpRequest,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
@@ -52,7 +53,8 @@ struct TimelineChatTimelineView: View {
         self.safeAreaInsets = safeAreaInsets
         _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
-            onAttachment: onAttachment, onFile: onFile, onSubAgent: onSubAgent,
+            onAttachment: onAttachment, onFile: onFile, onOpenLink: onOpenLink,
+            onSubAgent: onSubAgent,
             renderMode: renderMode))
     }
 
@@ -391,7 +393,8 @@ struct TimelineChatTimelineView: View {
                 case let .thinking(thinking):
                     CodeThinkingDetailView(text: thinking.text, itemID: thinking.id,
                                            sourceIDs: thinking.sourceIDs, chat: model,
-                                           startsAtBottom: thinking.startsAtBottom)
+                                           startsAtBottom: thinking.startsAtBottom,
+                                           onOpenLink: bridge.onOpenLink)
                 case let .stepGroup(stepGroup):
                     CodeStepGroupDetailView(group: stepGroup.group,
                                             cwd: model.session.metadata?.cwd,
@@ -418,6 +421,9 @@ struct TimelineChatTimelineView: View {
 final class TimelineChatBridge: ObservableObject {
     let model: SessionChatModel
     let adapter: TimelineChatContentAdapter
+    /// The page's body-link router; the thinking detail renders File
+    /// references too and must resolve them the same way the rows do.
+    let onOpenLink: (URL) -> Bool
     /// Only the floating return control observes this; the page body stays
     /// unscaled by scroll-driven visibility changes.
     let scrollDownIndicator = CodeScrollDownIndicatorState()
@@ -451,11 +457,14 @@ final class TimelineChatBridge: ObservableObject {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
+         onOpenLink: @escaping (URL) -> Bool,
          onSubAgent: @escaping (String) -> Void,
          renderMode: TimelineRenderMode = .merged) {
         self.model = model
+        self.onOpenLink = onOpenLink
         let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
-                                                 onFile: onFile, onSubAgent: onSubAgent,
+                                                 onFile: onFile, onOpenLink: onOpenLink,
+                                                 onSubAgent: onSubAgent,
                                                  renderMode: renderMode)
         self.adapter = adapter
         // The adapter owns the row views; the page owns the presentation.

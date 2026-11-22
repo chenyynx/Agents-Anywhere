@@ -1388,8 +1388,11 @@ extension AssistantMarkdownBlockTextView: NSTextLayoutManagerDelegate {
         at location: NSTextLocation,
         defaultAttributes renderingAttributes: [NSAttributedString.Key: Any] = [:]
     ) -> [NSAttributedString.Key: Any]? {
-        [.foregroundColor: CodePageTheme.markdownTextUIColor,
-         .underlineStyle: NSUnderlineStyle.single.rawValue]
+        // Every tappable link shares one look (pp 2026-11-22): the tunable
+        // link ink and the official underline. The URL only decides where a
+        // tap goes (in-app preview vs the browser), not how the link draws.
+        return [.foregroundColor: CodePageTheme.linkTextUIColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue]
     }
 }
 

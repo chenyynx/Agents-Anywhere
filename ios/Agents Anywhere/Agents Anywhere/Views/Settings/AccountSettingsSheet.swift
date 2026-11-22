@@ -184,6 +184,12 @@ struct AccountSettingsSheet: View {
             SettingsToggleRow(icon: "anthropicon.scroll",
                               title: String(localized: "隐藏指令图标"),
                               isOn: $commandsHidden)
+            SettingsRowDivider()
+            // One page: a shrunk real chat page plus the three ink wells
+            // (pp 2026-11-22).
+            SettingsNavigationRow(icon: "anthropicon.palette",
+                                  title: String(localized: "链接与代码配色"),
+                                  destination: CodeLinkColorSettingsView())
         }
     }
 

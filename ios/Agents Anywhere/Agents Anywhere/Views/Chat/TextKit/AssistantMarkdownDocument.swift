@@ -1126,8 +1126,14 @@ enum AssistantMarkdownDocumentParser {
             var strikethrough: NSUnderlineStyle?
             var baselineOffset: CGFloat?
 
+            // Inline code that carries a link — a URL or a file reference —
+            // draws as a link, not a code chip (pp 2026-11-22): every
+            // tappable thing shares one look. Only link-less code keeps the
+            // chip.
+            let linkedCodeIsLink = run.link != nil
+
             if let inline = run.inlinePresentationIntent {
-                if inline.contains(.code) {
+                if inline.contains(.code), !linkedCodeIsLink {
                     isCode = true
                     // [E] typography-inline.md §3/§8 — the official inline-code
                     // preset is weight 400. Chat keeps AA's optional bold-ink
@@ -1187,6 +1193,9 @@ enum AssistantMarkdownDocumentParser {
                 // drawn by the chip instead: the official delegate returns an
                 // empty dictionary for it, so it gets no underline.
                 if roles != nil {
+                    // Every link in the Code page keeps the official
+                    // underline (pp 2026-11-22); the tap destination is the
+                    // only difference between a file reference and a URL.
                     if !isCode { underline = .single }
                 } else if ChatLink.isWeb(url) {
                     underline = .single

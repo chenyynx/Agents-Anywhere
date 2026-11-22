@@ -32,6 +32,10 @@ import Testing
                 // The queue fallback needs the send capability's support and
                 // permission (permitsQueuedSend), independent of availability.
                 capabilityJSON("session.send_message"),
+                // A long paste only becomes a file when the runtime can take
+                // attachments at all (`canAttach`); without this fact the
+                // conversion is a no-op and these cases would test nothing.
+                capabilityJSON("runtime.attachment"),
             ],
             "revision": 10,
         ]

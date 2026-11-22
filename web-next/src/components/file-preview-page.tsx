@@ -527,7 +527,10 @@ export function FilePreviewSurface({
       ref={containerRef}
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground",
-        mode === "window" && "h-svh",
+        // dvh, not svh: in the app's WebView `svh` stops at the bottom safe
+        // area even with viewport-fit=cover, leaving a 34 pt strip of the
+        // WebView background below the page (pp 2026-11-22).
+        mode === "window" && "h-dvh",
       )}
       // viewport-fit=cover lets the page paint under the home indicator; keep
       // the scrolling content above it without leaving a background gap.

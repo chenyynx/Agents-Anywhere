@@ -36,11 +36,6 @@ struct WorkspaceFilePreviewSheet: View {
                         onDownload: { downloadedFile = $0 }, onDownloadFailure: downloadFailed,
                         onDownloading: { isDownloading = $0 })
                         .id(url)
-                        // The Web preview paints its own page background; letting
-                        // it run under the home indicator removes the sheet-
-                        // coloured strip the reader saw below the content
-                        // (pp 2026-11-22).
-                        .ignoresSafeArea(.container, edges: .bottom)
                 }
                 if let error {
                     ContentUnavailableView {
@@ -49,6 +44,12 @@ struct WorkspaceFilePreviewSheet: View {
                     .background(Color(uiColor: .systemBackground))
                 } else if loading { ProgressView(String(localized: "加载预览…")).padding(20).background(.regularMaterial, in: .rect(cornerRadius: 18)) }
             }
+            // The Web preview paints its own page background; letting the whole
+            // content stack run under the home indicator removes the sheet-
+            // coloured strip below the content (pp 2026-11-22). Applied to the
+            // stack, not the WebView: the navigation host otherwise keeps the
+            // child inside the safe area.
+            .ignoresSafeArea(.container, edges: .bottom)
             .navigationTitle(name.isEmpty ? String(localized: "文件预览") : name).navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !canRead { Text(String(localized: "设备或网络已离线，恢复连接后可重新加载。"))
@@ -145,7 +146,12 @@ private struct WorkspacePreviewWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator; webView.uiDelegate = context.coordinator
         webView.isOpaque = false; webView.backgroundColor = .systemBackground
-        webView.load(URLRequest(url: url))
+        // The preview page is one HTML entry behind a one-use token; a cached
+        // copy can predate a Web deploy (the bottom-safe-area fix). Always
+        // fetch it fresh.
+        webView.load(URLRequest(url: url,
+                                cachePolicy: .reloadIgnoringLocalCacheData,
+                                timeoutInterval: 60))
         return webView
     }
     func updateUIView(_ view: WKWebView, context: Context) {

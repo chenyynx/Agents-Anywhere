@@ -24,8 +24,9 @@ These tests pin the contract:
   assigns and the SDK replays as the transcript user row's uuid;
 * a user-less turn is seeded by its FIRST assistant message id, which the
   live ``message_start`` frame carries before any partial row is published;
-* the seed is hashed under the AA session id (not the native Claude session
-  id, which does not exist yet on a new session's first turn);
+* the seed is hashed ALONE: neither the AA session id (one native session has
+  two aliases, platform and discovery) nor the native Claude id (which does
+  not exist yet on a new session's first turn) may enter the hash;
 * the seed is computed over the FULL chain, so an incremental projection
   window reproduces the ids the full import already published;
 * the raw transcript's hidden fired-prompt rows are what mark a scheduled
@@ -69,6 +70,7 @@ from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_turn_id,
     _history_turn_ids,
+    _scan_turn_id,
 )
 from connector.runtimes.claude.sessions.subagent_oracle import scan_raw_transcript
 from connector.runtimes.claude.turns.lifecycle import _turn_anchor_from_frame
@@ -282,29 +284,30 @@ def test_real_user_turn_seed_is_the_prompt_uuid() -> None:
     session = _session()
     messages = (_user(prompt_uuid, "go"), _assistant("assistant-1", "done"))
     items = _history_items_from_messages(session, messages, raw_lines=raw)
-    expected = _history_turn_id(session.session_id, prompt_uuid)
+    expected = _history_turn_id(prompt_uuid)
     assert items
     assert {item.turn_id for item in items} == {expected}
 
 
-def test_turn_id_scope_is_the_aa_session_id_not_the_native_one() -> None:
-    # A new session's first turn has no native id yet; hashing it would make
-    # live (None) and history (discovered id) disagree. The AA session id is
-    # known on both sides.
+def test_turn_id_depends_on_neither_session_id() -> None:
+    # A new session's first turn has no native id yet, and the same transcript
+    # is projected under the platform alias and the discovery alias. The seed
+    # alone must carry the identity: a late native id and a different AA alias
+    # must not move the id.
     seed = "33333333-4444-5555-6666-777777777777"
-    without_native = _history_turn_ids(
+    raw = (_visible_user_row(seed, "go"),)
+    messages = (_user(seed, "go"),)
+    expected = _history_turn_id(seed)
+    for session in (
         _session(external_session_id=None),
-        (_user(seed, "go"),),
-        None,
-    )
-    with_native = _history_turn_ids(
         _session(external_session_id="native-later"),
-        (_user(seed, "go"),),
-        None,
-    )
-    expected = _history_turn_id(SESSION_ID, seed)
-    assert without_native[f"uuid:{seed}"] == expected
-    assert with_native[f"uuid:{seed}"] == expected
+        _session(
+            session_id="sess_claude_2a8440e6956b15810b3f0726",
+            external_session_id="native-later",
+        ),
+    ):
+        (item,) = _history_items_from_messages(session, messages, raw_lines=raw)
+        assert item.turn_id == expected
 
 
 def test_two_scheduled_turns_get_distinct_anchored_ids() -> None:
@@ -324,8 +327,8 @@ def test_two_scheduled_turns_get_distinct_anchored_ids() -> None:
     items = _history_items_from_messages(session, messages, raw_lines=raw)
     by_text = {item.content.get("text"): item.turn_id for item in items}
     assert by_text == {
-        "one": _history_turn_id(session.session_id, "assistant-1"),
-        "two": _history_turn_id(session.session_id, "assistant-2"),
+        "one": _history_turn_id("assistant-1"),
+        "two": _history_turn_id("assistant-2"),
     }
     assert by_text["one"] != by_text["two"]
 
@@ -353,10 +356,8 @@ def test_scheduled_turn_does_not_inherit_the_previous_user_turn() -> None:
     )
     items = _history_items_from_messages(session, messages, raw_lines=raw)
     by_text = {item.content.get("text"): item.turn_id for item in items}
-    assert by_text["answer"] == _history_turn_id(session.session_id, prompt_uuid)
-    assert by_text["scheduled answer"] == _history_turn_id(
-        session.session_id, "assistant-scheduled"
-    )
+    assert by_text["answer"] == _history_turn_id(prompt_uuid)
+    assert by_text["scheduled answer"] == _history_turn_id("assistant-scheduled")
     assert by_text["scheduled answer"] != by_text["answer"]
 
 
@@ -389,10 +390,8 @@ def test_task_notification_starts_a_scheduled_turn_anchored_on_its_first_assista
     )
     items = _history_items_from_messages(session, messages, raw_lines=raw)
     by_text = {item.content.get("text"): item.turn_id for item in items}
-    assert by_text["answer"] == _history_turn_id(session.session_id, prompt_uuid)
-    assert by_text["wake-up answer"] == _history_turn_id(
-        session.session_id, "assistant-wakeup"
-    )
+    assert by_text["answer"] == _history_turn_id(prompt_uuid)
+    assert by_text["wake-up answer"] == _history_turn_id("assistant-wakeup")
     assert by_text["wake-up answer"] != by_text["answer"]
 
 
@@ -412,8 +411,8 @@ def test_two_task_notifications_get_distinct_scheduled_ids() -> None:
     )
     items = _history_items_from_messages(session, messages, raw_lines=raw)
     by_text = {item.content.get("text"): item.turn_id for item in items}
-    assert by_text["one"] == _history_turn_id(session.session_id, "assistant-1")
-    assert by_text["two"] == _history_turn_id(session.session_id, "assistant-2")
+    assert by_text["one"] == _history_turn_id("assistant-1")
+    assert by_text["two"] == _history_turn_id("assistant-2")
     assert by_text["one"] != by_text["two"]
 
 
@@ -457,7 +456,7 @@ def test_history_keeps_the_turn_id_the_live_side_published(monkeypatch) -> None:
     )
     drifted = {
         key: "turn_claude_projection_drift"
-        for key in _history_turn_ids(session, messages, scan_raw_transcript(raw))
+        for key in _history_turn_ids(messages, scan_raw_transcript(raw))
     }
     recorder = _RecordingLogger()
     monkeypatch.setattr(reader_module, "logger", recorder)
@@ -497,7 +496,7 @@ def test_incremental_window_reuses_the_full_chain_turn_ids() -> None:
         _assistant("assistant-two", "reply two"),
     )
     scan = scan_raw_transcript(raw)
-    full_ids = _history_turn_ids(session, full_chain, scan)
+    full_ids = _history_turn_ids(full_chain, scan)
 
     # The incremental projection starts at the second assistant row — the
     # exact shape a cursor's suffix produces. Derived from the suffix alone it
@@ -507,7 +506,7 @@ def test_incremental_window_reuses_the_full_chain_turn_ids() -> None:
         session, window, raw_lines=raw, turn_ids=full_ids
     )
     assert [item.turn_id for item in items] == [full_ids["uuid:assistant-two"]]
-    assert items[0].turn_id == _history_turn_id(session.session_id, prompt_two)
+    assert items[0].turn_id == _history_turn_id(prompt_two)
 
 
 def test_syncer_computes_turn_ids_over_the_full_chain_not_the_window() -> None:
@@ -542,7 +541,7 @@ async def _test_syncer_computes_turn_ids_over_the_full_chain_not_the_window() ->
         uuid="row-reply-two",
         message={"role": "assistant", "content": "second reply"},
     )
-    expected = _history_turn_id(SESSION_ID, prompt_uuid)
+    expected = _history_turn_id(prompt_uuid)
 
     # Full-view computation: a first sync has no cursor and projects the chain.
     full_prepared = await _syncer(
@@ -583,13 +582,12 @@ def test_assistant_api_message_id_is_preferred_over_the_row_uuid() -> None:
         _assistant_row("row-thinking", "", message_id="msg_shared"),
         _assistant_row("row-text", "answer", message_id="msg_shared"),
     )
-    session = _session()
     messages = (
         _assistant("row-thinking", "", message_id="msg_shared"),
         _assistant("row-text", "answer", message_id="msg_shared"),
     )
-    ids = _history_turn_ids(session, messages, scan_raw_transcript(raw))
-    expected = _history_turn_id(session.session_id, "msg_shared")
+    ids = _history_turn_ids(messages, scan_raw_transcript(raw))
+    expected = _history_turn_id("msg_shared")
     assert set(ids.values()) == {expected}
 
 
@@ -717,7 +715,7 @@ def test_live_and_history_scheduled_turn_ids_match_end_to_end() -> None:
             }
             # The real user turn: both its user item and its reply hash the
             # pre-assigned prompt uuid (not a random token, not the native id).
-            expected_user_turn = _history_turn_id("timer", prompt_uuid)
+            expected_user_turn = _history_turn_id(prompt_uuid)
             assert replies["reply:schedule"] == expected_user_turn
             user_items = [
                 item
@@ -729,12 +727,8 @@ def test_live_and_history_scheduled_turn_ids_match_end_to_end() -> None:
             )
             # The scheduled turns: distinct from each other and from the
             # previous turn, anchored on their FIRST assistant message.
-            assert replies["scheduled one"] == _history_turn_id(
-                "timer", "msg_sched_one"
-            )
-            assert replies["scheduled two"] == _history_turn_id(
-                "timer", "row_sched_two"
-            )
+            assert replies["scheduled one"] == _history_turn_id("msg_sched_one")
+            assert replies["scheduled two"] == _history_turn_id("row_sched_two")
             assert (
                 len(
                     {
@@ -858,7 +852,7 @@ async def _test_pure_attachment_prompt_turn_ids_match_live_and_history() -> None
         # The send really is attachment-only: no typed text, one attachment.
         assert live_users[0].content.get("text") == ""
         assert live_users[0].content.get("attachments")
-        expected = _history_turn_id(session_id, client.prompt_uuids[0])
+        expected = _history_turn_id(client.prompt_uuids[0])
         assert live_users[0].turn_id == expected
 
         handled = await runtime.sync_session_timeline(
@@ -903,8 +897,8 @@ def test_command_history_rows_do_not_seed_a_turn() -> None:
         _user("command-row", "<command-name>/compact</command-name>"),
         _assistant("assistant-after", "after"),
     )
-    previous_turn = _history_turn_id(SESSION_ID, prompt_uuid)
-    turn_ids = _history_turn_ids(_session(), messages, None)
+    previous_turn = _history_turn_id(prompt_uuid)
+    turn_ids = _history_turn_ids(messages, None)
     assert turn_ids["uuid:command-row"] == previous_turn
     assert turn_ids["uuid:assistant-after"] == previous_turn
 
@@ -959,14 +953,140 @@ async def _test_command_turn_live_id_is_opaque_and_not_repeatable() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_projection_version_is_seven_and_older_cursors_rebase() -> None:
-    assert HISTORY_PROJECTION_VERSION == 7
+def test_projection_version_is_eight_and_older_cursors_rebase() -> None:
+    assert HISTORY_PROJECTION_VERSION == 8
     stale = ClaudeHistoryCursor(
         last_modified=1,
         file_size=2,
         message_count=3,
         last_message_uuid="m3",
-        projector_version=6,
+        projector_version=7,
     )
     window = messages_after_cursor((object(),), stale)
     assert window.rebased is True
+
+
+# ---------------------------------------------------------------------------
+# Session-alias invariance
+# ---------------------------------------------------------------------------
+
+
+def test_turn_ids_are_identical_under_two_session_aliases() -> None:
+    """One native transcript must project one turn map under any AA id.
+
+    The platform session (``sess_<random>``) and the discovery session
+    (``sess_claude_<hash>``, ``stable_session_id``) are aliases of the same
+    Claude session; the Server resolves a discovery sync into the platform
+    session by external id (``sessions.resolve_connector_session_id``). A turn
+    id that hashes the AA id therefore flips every row when the two writers
+    alternate — 2026-11-22: one connector restart rewrote 56 sessions /
+    27,052 items, and one turn kept two ids, splitting its step group
+    (``sess_iTPt9D48BXhspg``: 874 of 2058 rows on the discovery id).
+    """
+
+    prompt = "cccccccc-1111-2222-3333-444444444444"
+    raw = (
+        _visible_user_row(prompt, "go"),
+        _assistant_row("assistant-1", "done"),
+        _enqueue_row("Prompt two"),
+        _hidden_meta_row("hidden-2", "Prompt two"),
+        _assistant_row("assistant-2", "scheduled answer", message_id="msg_sched"),
+    )
+    messages = (
+        _user(prompt, "go"),
+        _assistant("assistant-1", "done"),
+        _assistant("assistant-2", "scheduled answer", message_id="msg_sched"),
+    )
+    attached = _session(
+        session_id="sess_platform_alias",
+        external_session_id=EXTERNAL_SESSION_ID,
+    )
+    discovered = _session(
+        session_id="sess_claude_2a8440e6956b15810b3f0726",
+        external_session_id=EXTERNAL_SESSION_ID,
+    )
+
+    def projected_items(session: ClaudeSession) -> list[Any]:
+        # The whole row, not just the id: a future alias-dependent field must
+        # fail here too. The AA session id is the one field allowed to differ.
+        return [
+            replace(item, session_id="alias")
+            for item in _history_items_from_messages(
+                session, messages, raw_lines=raw
+            )
+        ]
+
+    assert projected_items(attached) == projected_items(discovered)
+    # Both seed kinds land on the plain seed hash: a real prompt on its uuid,
+    # the user-less turn on its first assistant message id.
+    assert {item.turn_id for item in projected_items(attached)} == {
+        _history_turn_id(prompt),
+        _history_turn_id("msg_sched"),
+    }
+
+
+def test_syncer_snapshot_is_identical_under_two_session_aliases() -> None:
+    """The sync payload is alias-invariant end to end.
+
+    Drives the real ``ClaudeHistorySyncer`` (cursor, full-chain walk, projection)
+    twice over the same transcript under the two AA aliases the Server merges
+    into one session, comparing every field except the AA session id itself.
+    Any difference here is a row the Server would rewrite.
+    """
+
+    asyncio.run(_test_syncer_snapshot_is_identical_under_two_session_aliases())
+
+
+async def _test_syncer_snapshot_is_identical_under_two_session_aliases() -> None:
+    prompt_uuid = "dddddddd-1111-2222-3333-444444444444"
+    user = SimpleNamespace(
+        type="user", uuid=prompt_uuid, message={"role": "user", "content": "go"}
+    )
+    reply = SimpleNamespace(
+        type="assistant", uuid="row-reply", message={"role": "assistant", "content": "done"}
+    )
+
+    async def prepare(session_id: str):
+        prepared = await _syncer(
+            host=_SyncStateHost(),
+            sdk=_CompactHistorySdk([user, reply]),
+        ).prepare_session_timeline_sync(session_id, EXTERNAL_SESSION_ID)
+        assert prepared is not None and prepared.snapshot is not None
+        return [
+            replace(item, session_id="alias")
+            for item in prepared.snapshot.items
+        ]
+
+    attached = await prepare("sess_platform_alias")
+    discovered = await prepare("sess_claude_2a8440e6956b15810b3f0726")
+    assert len(attached) >= 2
+    assert {item.turn_id for item in attached} == {_history_turn_id(prompt_uuid)}
+    assert attached == discovered
+
+
+def test_raw_walk_anchors_a_fired_prompt_turn_like_history_and_live() -> None:
+    """A fired prompt opens a scheduled turn for the raw walk too.
+
+    ``enqueue`` + hidden meta prompt + assistant. The SDK walk marks the
+    boundary from ``injected_prompt_rows`` and the live side casts the turn on
+    the first ``message_start``; the raw walk must hash the same message id.
+    It used to keep the previous user turn's seed there, so an Agent card
+    rebuilt from a dispatch row outside the visible chain landed on the wrong
+    turn (2026-11-22 review).
+    """
+
+    raw = (
+        _enqueue_row("Prompt"),
+        _hidden_meta_row("hidden-fired", "Prompt"),
+        _assistant_row("row-answer", "answer", message_id="msg_fired"),
+    )
+    scan = scan_raw_transcript(raw)
+    assert scan.injected_prompt_rows.get("hidden-fired") is not None
+    assert scan.turn_seeds.get("row-answer") == "msg_fired"
+    messages = (_assistant("row-answer", "answer", message_id="msg_fired"),)
+    assert set(_history_turn_ids(messages, scan).values()) == {
+        _history_turn_id("msg_fired")
+    }
+    # The raw walk's anchor-less fallback translates to the same seed the SDK
+    # walk uses, so a card rebuilt from it keeps the turn.
+    assert _scan_turn_id("scheduled@42") == _history_turn_id("scheduled:42")

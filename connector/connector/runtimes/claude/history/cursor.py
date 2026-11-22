@@ -26,7 +26,8 @@ from typing import Any
 #
 # v6 (2026-10-28): one stable turn id across live and history. A turn is now
 # anchored on the real user prompt uuid, and a scheduled/user-less turn on the
-# first assistant message id, both hashed under the AA session id; the seed is
+# first assistant message id, both hashed under the AA session id at the time
+# (v8 removed it); the seed is
 # computed over the full transcript chain so incremental windows keep the ids
 # the full import published. Every stored v5 cursor must rebuild once so the
 # rows already past it carry `source.turnId` at all (the field was previously
@@ -37,7 +38,17 @@ from typing import Any
 # `[Request interrupted by user]` marker. A v6 cursor must rebuild once so
 # rows published before this projection gain the flag (and with it the official
 # interrupted-response notice) without waiting for the session's next turn.
-HISTORY_PROJECTION_VERSION = 7
+#
+# v8 (2026-11-22): the turn id hashes the transcript seed ALONE; the AA
+# session id left the hash. One native session is projected under two aliases
+# (platform ``sess_<random>`` and discovery ``sess_claude_<hash>``), and a hash
+# that included the alias flipped every row each time the writers alternated —
+# one connector restart re-keyed 56 sessions / 27,052 rows. A v7 cursor must
+# rebuild once so the rows the history projection owns converge on the
+# canonical id. (A live-only fallback row — `claude.turn.result` — has no
+# transcript counterpart and is never rebuilt; production has zero such rows,
+# and post-v8 writers derive its item id from the canonical id already.)
+HISTORY_PROJECTION_VERSION = 8
 
 
 @dataclass(frozen=True, slots=True)

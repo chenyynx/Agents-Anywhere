@@ -42,6 +42,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.checklist": [size(14, 14), size(15, 15), size(18, 18)],
         "anthropicon.tasks": [size(14, 14), size(15, 16), size(18, 19)],
         "anthropicon.tool": [size(15, 13), size(17, 15), size(20, 18)],
+        "anthropicon.caretDown": [size(13, 8), size(15, 8), size(18, 10)],
         "anthropicon.caretRight": [size(8, 13), size(8, 15), size(10, 18)],
         "anthropicon.arrowDown": [size(11, 12), size(12, 13), size(14, 15)],
         "anthropicon.extendedThinking": [size(14, 14), size(16, 16), size(19, 19)],

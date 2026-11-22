@@ -112,7 +112,7 @@ struct DeviceShowAllButton: View {
                 Text(expanded
                     ? String(localized: "Show less")
                     : String(localized: "Show all \(count) more"))
-                AppSymbol("chevron.down", size: 12)
+                AnthropiconView(name: "anthropicon.caretDown", size: .small)
                     .rotationEffect(.degrees(expanded ? 180 : 0))
                 Spacer(minLength: 0)
             }
@@ -205,12 +205,14 @@ struct DeviceSessionList: View {
                     .disabled(!canManage || isEmpty)
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 11) {
                 Text(headerFilterTitle)
                     .font(SettingsStyle.text(15))
                     .foregroundStyle(AppTheme.text300(colorScheme))
                     .lineLimit(1)
-                AppSymbol("chevron.down", size: 12)
+                // Official menu affordance: anthropicon.caretDown (ink 11.4×6.2,
+                // 11.7 pt after the label), not the Lucide chevron.
+                AnthropiconView(name: "anthropicon.caretDown", size: .small)
                     .foregroundStyle(AppTheme.text300(colorScheme))
             }
             .frame(minHeight: 32)

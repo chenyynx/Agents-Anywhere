@@ -126,6 +126,7 @@ enum AppSymbolAssets {
         "anthropicon.arrowOutSquare": "anthropicon.arrowOutSquare",
         "anthropicon.arrowUpRight": "anthropicon.arrowUpRight",
         "anthropicon.camera": "anthropicon-camera",
+        "anthropicon.caretDown": "anthropicon.caretDown",
         "anthropicon.caretRight": "anthropicon.caretRight",
         "anthropicon.clock": "anthropicon.clock",
         "anthropicon.cloud": "anthropicon.cloud",

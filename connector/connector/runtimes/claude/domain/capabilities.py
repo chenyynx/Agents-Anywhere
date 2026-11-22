@@ -182,6 +182,17 @@ def claude_session_capabilities(
                         )
                     )
                 ),
+                # Attachments ride the steer as the same local-file notes a
+                # normal turn uses (actions.steer_turn), so a client may
+                # steer a draft that carries files. The fact is declared here
+                # rather than inferred from the runtime name, and only when
+                # the steer itself is supported — a disabled steer must not
+                # advertise a deliverable shape.
+                parameters=(
+                    {"attachments": True}
+                    if capabilities.get("steerTurn") is True
+                    else {}
+                ),
                 metadata={"source": "claude.runtime"},
             ),
             RuntimeCapability(

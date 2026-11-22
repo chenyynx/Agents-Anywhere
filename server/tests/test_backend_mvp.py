@@ -6274,6 +6274,96 @@ def test_steer_routes_waiting_approval_session(tmp_path):
     assert params["clientMessageId"] == "msg_steer_waiting_approval"
 
 
+def test_steer_forwards_uploaded_attachments_and_extends_the_rpc_bound(tmp_path):
+    """A steer's files travel like a send's, and its transfer gets more time.
+
+    The connector downloads the attachment before the runtime sees the
+    message; the default 30 s connector-RPC budget would report a slow
+    transfer as a failed steer while the message still lands.
+    """
+
+    client = make_client(tmp_path)
+    connector_id, _, session_id, headers = create_connector_and_session(client)
+    fake_rpc = FakeLocalRpc()
+    client.app.state.rpc = fake_rpc
+    asyncio.run(client.app.state.store.set_connector_status(connector_id, "online"))
+    seed_runtime_capabilities(
+        client.app, connector_id, "codex", "session.steer", "runtime.attachment",
+    )
+    client.post(f"/sessions/{session_id}/takeover", headers=headers).raise_for_status()
+    fake_rpc.runtime_states[session_id] = {
+        "sessionId": session_id,
+        "runtime": "codex",
+        "externalSessionId": "thread-demo",
+        "status": "running",
+        "selections": {},
+        "metadata": {},
+    }
+    data = b"steer attachment body\n"
+    upload_response = client.post(
+        f"/sessions/{session_id}/attachments",
+        headers=headers,
+        files={"files": ("shot.png", data, "image/png")},
+        data={"dimensions": json.dumps([{"width": 640, "height": 480}])},
+    )
+    assert upload_response.status_code == 200, upload_response.text
+    attachment = upload_response.json()["attachments"][0]
+
+    response = client.post(
+        f"/sessions/{session_id}/runtime/steer",
+        headers=headers,
+        json={
+            "content": "look at this",
+            "attachments": [{"fileId": attachment["fileId"]}],
+            "clientMessageId": "steer_with_file",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    _, method, params, timeout = wait_for_rpc_method(fake_rpc, "session.steer")
+    assert method == "session.steer"
+    assert params["content"] == "look at this"
+    assert params["clientMessageId"] == "steer_with_file"
+    assert params["attachments"] == [
+        {
+            "fileId": attachment["fileId"],
+            "name": "shot.png",
+            "mediaType": "image/png",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "downloadUrl": f"/api/v2/connector/sessions/{session_id}/attachments/{attachment['fileId']}/content",
+            "platformOpenUrl": f"/api/v2/sessions/{session_id}/attachments/{attachment['fileId']}/open",
+            "width": 640,
+            "height": 480,
+        }
+    ]
+    assert params["timelineAttachments"] == [
+        {
+            "fileId": attachment["fileId"],
+            "name": "shot.png",
+            "mediaType": "image/png",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "width": 640,
+            "height": 480,
+        }
+    ]
+    assert timeout == 90.0
+
+    # A text-only steer keeps the default budget.
+    text_only = client.post(
+        f"/sessions/{session_id}/runtime/steer",
+        headers=headers,
+        json={"content": "and this too", "clientMessageId": "steer_text"},
+    )
+    assert text_only.status_code == 200, text_only.text
+    last_steer = next(
+        request for request in reversed(fake_rpc.requests)
+        if request[1] == "session.steer"
+    )
+    assert last_steer[3] == 30.0
+
+
 def test_running_dsh_steer_is_routed_by_capability(tmp_path):
     client = make_client(tmp_path)
     connector_id, _, session_id, headers = create_connector_and_session(

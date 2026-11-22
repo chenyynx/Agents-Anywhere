@@ -17,10 +17,13 @@ These tests pin the CONNECTOR half:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from claude_agent_sdk import AssistantMessage, UserMessage
 
+from connector.runtime_protocol import RuntimeAttachment, RuntimeAttachmentContent
 from connector.runtimes.claude.domain.capabilities import (
     ClaudeCapabilityContext,
     claude_session_capabilities,
@@ -190,7 +193,7 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
         if item.source.get("itemType") == "steeringUserMessage"
     ]
     assert session.pending_steers[client.steer_uuid] == (
-        STEER, "client_steer_1",
+        STEER, "client_steer_1", (),
     )
 
     client.steer_echo_allowed.set()
@@ -238,6 +241,46 @@ async def _test_claude_steer_stays_in_the_running_turn() -> None:
     assert session.execution is None
     # The same-turn echo consumed the pending registration.
     assert session.pending_steers == {}
+
+
+def test_claude_steer_is_refused_after_the_turn_was_stopped() -> None:
+    asyncio.run(_test_claude_steer_is_refused_after_the_turn_was_stopped())
+
+
+async def _test_claude_steer_is_refused_after_the_turn_was_stopped() -> None:
+    """A stop that wins the race against a slow attachment download must not
+    let the steer leak into the next turn: the execution is marked stopped
+    before the lock, and the submit re-checks it under the lock."""
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_stopped", "claude_session_0", "hello",
+        client_message_id="client_msg_stopped",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_stopped"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+    execution = session.execution
+    assert execution is not None
+    execution.interrupt_source = "claude.session.interrupt"
+
+    refused = await runtime.steer_turn(
+        "sess_stopped", "claude_session_0", STEER,
+        client_message_id="client_steer_stopped",
+    )
+    assert refused.ok is False
+    assert refused.code == "claude_no_active_turn"
+    assert client.steer_uuid is None
+    assert session.pending_steers == {}
+
+    client.steer_received.set()
+    client.steer_echo_allowed.set()
+    await asyncio.wait_for(task, 10)
 
 
 def test_claude_steer_registers_for_history_reconciliation() -> None:
@@ -368,6 +411,8 @@ def test_claude_session_capabilities_gate_steer_on_running() -> None:
     assert running.supported is True
     assert running.available is True
     assert running.unavailable_reason is None
+    # The client's attachment gate reads this fact, never the runtime name.
+    assert running.parameters == {"attachments": True}
 
     # A pending permission prompt or question is still the same turn.
     for status in ("waiting", "waiting_approval"):
@@ -555,16 +600,26 @@ def test_pending_steers_stay_bounded_and_are_consumed() -> None:
         session.remember_steer(f"steer_{index}", f"text_{index}", f"client_{index}")
     assert len(session.pending_steers) == 32
     assert list(session.pending_steers)[0] == "steer_8"
-    assert session.take_steer("steer_39") == ("text_39", "client_39")
+    assert session.take_steer("steer_39") == ("text_39", "client_39", ())
     assert session.take_steer("steer_missing") is None
 
 
-def test_claude_steer_rejects_attachments() -> None:
-    asyncio.run(_test_claude_steer_rejects_attachments())
+def test_claude_steer_materializes_attachments_into_the_steer_text(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("AGENT_CONNECTOR_ATTACHMENTS_ROOT", str(tmp_path))
+    asyncio.run(_test_claude_steer_materializes_attachments_into_the_steer_text())
 
 
-async def _test_claude_steer_rejects_attachments() -> None:
+async def _test_claude_steer_materializes_attachments_into_the_steer_text() -> None:
     host = _RecordingHost()
+    host.attachments["file_red"] = RuntimeAttachmentContent(
+        file_id="file_red",
+        name="red.png",
+        media_type="image/png",
+        content=b"\x89PNG-probe-bytes",
+    )
     client = _SteerClaudeClient()
     runtime = _runtime(host=host, client=client)
 
@@ -578,13 +633,106 @@ async def _test_claude_steer_rejects_attachments() -> None:
     assert task is not None
     await asyncio.wait_for(client.tool_running.wait(), 5)
 
-    refused = await runtime.steer_turn(
-        "sess_attachments", "claude_session_0", "with a file",
-        attachments=(object(),),  # type: ignore[arg-type]
+    steered = await runtime.steer_turn(
+        "sess_attachments", "claude_session_0", "look at the picture",
+        attachments=(
+            RuntimeAttachment(file_id="file_red", name="red.png"),
+        ),
         client_message_id="client_steer_att",
     )
+    assert steered.ok is True
+
+    # The steer itself stays a plain text message: the bytes land in the
+    # session's attachment directory and the text names the same path the
+    # turn prompt would (the model reads it at its next tool boundary).
+    steer_text = client.steer_text or ""
+    assert steer_text.startswith("look at the picture\n\nAttached files:")
+    assert "red.png" in steer_text
+    assert "image/png" in steer_text
+    mapping = session.pending_steers[client.steer_uuid][2][0]
+    assert mapping["fileId"] == "file_red"
+    assert mapping["name"] == "red.png"
+    assert mapping["mediaType"] == "image/png"
+    assert Path(str(mapping["path"])).read_bytes() == b"\x89PNG-probe-bytes"
+    assert str(mapping["path"]) in steer_text
+    assert client.priorities == ["later", "next"]
+    # The history-reconciliation registration carries the same attachment
+    # mappings: a steer read as the NEXT turn must publish its file card, not
+    # a text-only row that disagrees with what the model actually saw.
+    bindings = runtime._pending_messages.match_history_messages(
+        session_id="sess_attachments",
+        external_session_id=session.external_session_id,
+        messages=(ClaudeHistoryUserMessage(
+            native_message_id=client.steer_uuid, text=steer_text),),
+    )
+    history_mapping = bindings[client.steer_uuid].attachments[0]
+    assert history_mapping["fileId"] == "file_red"
+    assert history_mapping["name"] == "red.png"
+    assert Path(str(history_mapping["path"])).read_bytes() == b"\x89PNG-probe-bytes"
+
+    client.steer_echo_allowed.set()
+    await asyncio.wait_for(task, 10)
+
+    # The echoed row is the user's original text plus the attachment, under
+    # the running turn — the same shape a normal send publishes.
+    steer_rows = [
+        item for item in host.timeline_item_upserts
+        if item.role == "user"
+        and item.source.get("itemType") == "steeringUserMessage"
+    ]
+    assert len(steer_rows) == 1
+    assert steer_rows[0].content["text"] == "look at the picture"
+    (attachment,) = steer_rows[0].content["attachments"]
+    assert attachment["fileId"] == "file_red"
+    assert attachment["name"] == "red.png"
+    assert attachment["mediaType"] == "image/png"
+    assert Path(str(attachment["path"])).read_bytes() == b"\x89PNG-probe-bytes"
+    assert steer_rows[0].turn_id == started.result["turnId"]
+    assert len(host.session_turn_ends) == 1
+
+
+def test_claude_steer_refuses_when_an_attachment_cannot_materialize(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("AGENT_CONNECTOR_ATTACHMENTS_ROOT", str(tmp_path))
+    asyncio.run(_test_claude_steer_refuses_when_an_attachment_cannot_materialize())
+
+
+async def _test_claude_steer_refuses_when_an_attachment_cannot_materialize() -> None:
+    """A steer is one write: a file that never lands must fail it visibly.
+
+    Delivering the text without the file tells the user (and the echoed row)
+    that the model saw something it never received; the client keeps the
+    draft and shows the failure instead.
+    """
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+
+    started = await runtime.start_turn(
+        "sess_missing", "claude_session_0", "hello",
+        client_message_id="client_msg_missing",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_missing"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    refused = await runtime.steer_turn(
+        "sess_missing", "claude_session_0", "look at the picture",
+        attachments=(
+            RuntimeAttachment(file_id="file_missing", name="gone.png"),
+        ),
+        client_message_id="client_steer_missing",
+    )
     assert refused.ok is False
-    assert refused.code == "claude_steer_attachments_unsupported"
+    assert refused.code == "claude_steer_attachment_failed"
+    # Nothing was submitted and nothing is waiting for an echo.
+    assert client.steer_uuid is None
+    assert session.pending_steers == {}
 
     client.steer_received.set()
     client.steer_echo_allowed.set()

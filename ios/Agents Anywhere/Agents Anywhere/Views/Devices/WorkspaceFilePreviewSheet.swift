@@ -146,6 +146,12 @@ private struct WorkspacePreviewWebView: UIViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator; webView.uiDelegate = context.coordinator
         webView.isOpaque = false; webView.backgroundColor = .systemBackground
+        // WKWebView insets its own scroll view for the bottom safe area: the
+        // page stops 34 pt above the screen edge and the scroll view's
+        // background shows as a white strip. SwiftUI's ignoresSafeArea cannot
+        // reach this inset; turning the automatic adjustment off lets the page
+        // paint to the edge (pp 2026-11-22).
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         // The preview page is one HTML entry behind a one-use token; a cached
         // copy can predate a Web deploy (the bottom-safe-area fix). Always
         // fetch it fresh.

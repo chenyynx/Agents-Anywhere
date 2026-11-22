@@ -121,6 +121,20 @@ enum SteerPendingStatusResolver {
     }
 }
 
+/// Whether a steering message may carry attachments.
+///
+/// Declared by the runtime as a capability fact on `session.steer`
+/// (`parameters.attachments`), never inferred from the provider name: a
+/// runtime that does not declare it keeps the queue as the only path for a
+/// draft carrying files. The fact is orthogonal to availability — the turn
+/// window is still `ComposerSteerGate`'s answer.
+enum SteerAttachmentGate {
+    static func allows(_ capability: V2RuntimeCapability?) -> Bool {
+        guard let capability, capability.supported, capability.allowed else { return false }
+        return capability.parameters["attachments"]?.boolValue == true
+    }
+}
+
 enum ComposerSteerGate {
     static let steerableStatuses: Set<V2RuntimeStatus> = [
         .running, .waiting, .waitingApproval,

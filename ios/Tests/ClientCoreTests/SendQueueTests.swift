@@ -515,24 +515,24 @@ import Testing
 
     @Test func affordanceResolvesTheThreeShapesAndTheirEnablement() {
         // Idle: the plain send key, gated by the full send gate.
-        let idle = ComposerQueueAffordance.resolve(isStreaming: false, hasText: true, canQueue: true, canStop: true, canSend: false)
+        let idle = ComposerQueueAffordance.resolve(isStreaming: false, hasCommittableContent: true, canQueue: true, canStop: true, canSend: false)
         #expect(idle.shape == .send)
         #expect(!idle.isActionEnabled)
-        #expect(ComposerQueueAffordance.resolve(isStreaming: false, hasText: true, canQueue: false, canStop: true, canSend: true).shape == .send)
+        #expect(ComposerQueueAffordance.resolve(isStreaming: false, hasCommittableContent: true, canQueue: false, canStop: true, canSend: true).shape == .send)
 
         // Running with no text: the plain stop key, gated by the interrupt gate.
-        let stop = ComposerQueueAffordance.resolve(isStreaming: true, hasText: false, canQueue: false, canStop: true, canSend: false)
+        let stop = ComposerQueueAffordance.resolve(isStreaming: true, hasCommittableContent: false, canQueue: false, canStop: true, canSend: false)
         #expect(stop.shape == .stop)
         #expect(stop.isActionEnabled)
-        let unstopable = ComposerQueueAffordance.resolve(isStreaming: true, hasText: false, canQueue: false, canStop: false, canSend: false)
+        let unstopable = ComposerQueueAffordance.resolve(isStreaming: true, hasCommittableContent: false, canQueue: false, canStop: false, canSend: false)
         #expect(unstopable.shape == .stop)
         #expect(!unstopable.isActionEnabled)
 
         // Running with text: the split form; the arrow follows the queue gate.
-        let queued = ComposerQueueAffordance.resolve(isStreaming: true, hasText: true, canQueue: true, canStop: true, canSend: false)
+        let queued = ComposerQueueAffordance.resolve(isStreaming: true, hasCommittableContent: true, canQueue: true, canStop: true, canSend: false)
         #expect(queued.shape == .queueSend)
         #expect(queued.isActionEnabled)
-        let refused = ComposerQueueAffordance.resolve(isStreaming: true, hasText: true, canQueue: false, canStop: true, canSend: false)
+        let refused = ComposerQueueAffordance.resolve(isStreaming: true, hasCommittableContent: true, canQueue: false, canStop: true, canSend: false)
         #expect(refused.shape == .queueSend)
         #expect(!refused.isActionEnabled)
     }

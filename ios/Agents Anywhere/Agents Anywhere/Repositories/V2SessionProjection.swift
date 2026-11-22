@@ -490,6 +490,41 @@ struct V2SessionProjection {
         return grafted
     }
 
+    /// Keep the reader's loaded window across a recovery snapshot.
+    ///
+    /// A recovery snapshot is the server's newest page, not the whole
+    /// timeline: `hasMore` says older rows exist beyond it. Rebuilding the
+    /// projection from that page alone dropped every held row outside it —
+    /// device 2026-11-22 11:01: a 526-row window was replaced by the 300-row
+    /// page, the step grouping collapsed 40 → 27 units, the content shrank
+    /// ~2,800 pt and the bottom-fixed viewport jumped. The live snapshot
+    /// (`ab8ad0b1`) and the latest page (`6a69c6bb`) already merge on
+    /// overlap; this is the recovery path's half of the same rule.
+    ///
+    /// Only a bounded page (`hasOlderItems` — the snapshot's `hasMore`) that
+    /// overlaps the held range merges. A complete snapshot or a disjoint
+    /// range still means a real reset: the held rows are deletions, not a
+    /// narrower page, and must not survive.
+    @discardableResult
+    mutating func mergeHeldWindow(_ held: [V2TimelineItem]) -> Int {
+        guard !held.isEmpty, !data.items.isEmpty, data.hasOlderItems,
+              let windowFirst = data.items.first?.orderSeq,
+              let windowLast = data.items.last?.orderSeq,
+              let heldFirst = held.first?.orderSeq,
+              let heldLast = held.last?.orderSeq,
+              heldFirst <= windowLast, heldLast >= windowFirst
+        else { return 0 }
+        let before = data.items.count
+        // `history: true`: the held rows are already part of this timeline,
+        // so the newest-edge guards must not reject the older side. A row the
+        // snapshot also carries keeps the newer of the two (the merge's
+        // supersede rule); only rows the page does not carry are grafted back.
+        let trim = merge(held, history: true)
+        data.hasOlderItems = data.hasOlderItems || trim.droppedOlder
+        data.hasNewerItems = data.hasNewerItems || trim.droppedNewer
+        return data.items.count - before
+    }
+
     /// A window page can carry a server summary of a row this window already
     /// holds in full. The two share the same revision and `updatedSeq`, so
     /// `supersedes` cannot tell them apart; the full row is strictly more

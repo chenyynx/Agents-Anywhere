@@ -221,6 +221,62 @@ import Testing
         #expect(!projection.data.hasNewerItems)
     }
 
+    @Test func aRecoverySnapshotKeepsTheHeldOlderWindow() throws {
+        // Device 2026-11-22 11:01: the recovery page is the newest 300 rows
+        // with hasMore=1, but the reader held 526. Replacing the window with
+        // the page collapsed the grouping and jumped the viewport; the held
+        // rows under the page must survive.
+        let heldRows = try (1...40).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        let page = try (21...40).map { try itemObject(id: "item-\($0)", order: $0) }
+        var rebuilt = V2SessionProjection(
+            snapshot: try snapshot(items: page, hasMore: true), maximumItems: 1000)
+        #expect(rebuilt.data.items.map(\.orderSeq) == Array(21...40))
+        #expect(rebuilt.mergeHeldWindow(heldRows) == 20)
+        #expect(rebuilt.data.items.map(\.orderSeq) == Array(1...40))
+        #expect(rebuilt.data.hasOlderItems)
+    }
+
+    @Test func aRecoverySnapshotWithACompleteTimelineReplacesTheWindow() throws {
+        let heldRows = try (1...40).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        let page = try (21...40).map { try itemObject(id: "item-\($0)", order: $0) }
+        var rebuilt = V2SessionProjection(
+            snapshot: try snapshot(items: page, hasMore: false), maximumItems: 1000)
+        // A complete timeline means the missing rows are deletions; nothing
+        // is grafted back.
+        #expect(rebuilt.mergeHeldWindow(heldRows) == 0)
+        #expect(rebuilt.data.items.map(\.orderSeq) == Array(21...40))
+    }
+
+    @Test func aRecoverySnapshotWithADisjointRangeReplacesTheWindow() throws {
+        let heldRows = try (1...40).map {
+            try decode(itemObject(id: "item-\($0)", order: $0), as: V2TimelineItem.self)
+        }
+        let page = try (500...520).map { try itemObject(id: "item-\($0)", order: $0) }
+        var rebuilt = V2SessionProjection(
+            snapshot: try snapshot(items: page, hasMore: true), maximumItems: 1000)
+        #expect(rebuilt.mergeHeldWindow(heldRows) == 0)
+        #expect(rebuilt.data.items.map(\.orderSeq) == Array(500...520))
+    }
+
+    @Test func aRecoverySnapshotRowWinsOverAnOlderHeldTwin() throws {
+        let heldRows = try [1, 2, 30].map {
+            try decode(itemObject(id: "item-\($0)", order: $0, revision: 1, text: "held"),
+                       as: V2TimelineItem.self)
+        }
+        let page = try [30, 31, 32].map {
+            try itemObject(id: "item-\($0)", order: $0, revision: 3, text: "page")
+        }
+        var rebuilt = V2SessionProjection(
+            snapshot: try snapshot(items: page, hasMore: true), maximumItems: 1000)
+        #expect(rebuilt.mergeHeldWindow(heldRows) == 2)
+        #expect(rebuilt.data.items.map(\.orderSeq) == [1, 2, 30, 31, 32])
+        #expect(rebuilt.data.items.first { $0.id == "item-30" }?.displayText == "page")
+    }
+
     @Test func historyWindowKeepsTheVisibleAnchorAndTheNewestTail() throws {
         // Latest page 481...500; the reader is at 495 near the tail. One older
         // page arrives with the visible anchor at 495.

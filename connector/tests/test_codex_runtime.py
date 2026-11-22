@@ -5477,6 +5477,31 @@ async def _test_codex_runtime_merges_v1_bindings_from_multiple_session_aliases(
     assert "platformItemId" not in migrated["bindings"][0]
 
 
+def test_codex_session_capabilities_declare_attachment_steer() -> None:
+    from connector.runtimes.codex.domain.capabilities import (
+        codex_capability_context,
+        codex_session_capabilities,
+    )
+
+    capabilities = codex_session_capabilities(
+        codex_capability_context(
+            connector_id="conn_1",
+            revision=1,
+            client_available=True,
+            session_id="sess_1",
+            external_session_id="thread_1",
+            has_active_turn=True,
+        )
+    )
+    steer = next(
+        item
+        for item in capabilities.capabilities
+        if item.capability_id == "session.steer"
+    )
+    # The client's attachment gate reads this fact, never the runtime name.
+    assert steer.parameters == {"attachments": True}
+
+
 def test_codex_runtime_tags_live_steer_echo_with_client_message_id() -> None:
     asyncio.run(_test_codex_runtime_tags_live_steer_echo_with_client_message_id())
 
@@ -5514,6 +5539,68 @@ async def _test_codex_runtime_tags_live_steer_echo_with_client_message_id() -> N
     assert item.source["clientMessageId"] == "cm_steer_1"
     assert item.source["rawType"] == "steeringUserMessage"
     assert item.role == "user"
+
+
+def test_codex_runtime_steers_with_attachments(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENT_CONNECTOR_ATTACHMENTS_ROOT", str(tmp_path))
+    asyncio.run(_test_codex_runtime_steers_with_attachments(tmp_path))
+
+
+async def _test_codex_runtime_steers_with_attachments(tmp_path: Path) -> None:
+    client = FakeCodexClient()
+    host = FakeHost()
+    host.attachments["file_steer"] = RuntimeAttachmentContent(
+        file_id="file_steer",
+        name="note.txt",
+        media_type="text/plain",
+        content=b"hello attachment",
+    )
+    runtime = CodexRuntime(config=_config(), host=host, client=client)
+
+    await runtime.start_turn("sess_1", "thread_1", "start")
+    steered = await runtime.steer_turn(
+        "sess_1",
+        "thread_1",
+        "more context",
+        attachments=(RuntimeAttachment(file_id="file_steer", name="note.txt"),),
+        client_message_id="cm_steer_att",
+    )
+    assert steered.ok is True
+
+    steer_requests = [
+        params for method, params in client.requests if method == "turn/steer"
+    ]
+    assert len(steer_requests) == 1
+    text = steer_requests[0]["input"][0]["text"]
+    # Codex's note carries the path inline (its own attachment helper).
+    assert text.startswith("more context\n\n[Attached file:")
+    assert "note.txt" in text
+    assert "text/plain" in text
+    materialized = tmp_path / "sess_1" / "file_steer-note.txt"
+    assert materialized.read_bytes() == b"hello attachment"
+    assert str(materialized) in text
+
+    # The echo row carries the file card, not a text-only row: the model saw
+    # the file, so the transcript must show it too.
+    await runtime._handle_notification(
+        {
+            "method": "item/started",
+            "params": {
+                "platformSessionId": "sess_1",
+                "threadId": "thread_1",
+                "turnId": "turn_new",
+                "item": {
+                    "id": "item_steer_user",
+                    "type": "steeringUserMessage",
+                    "text": "more context",
+                },
+            },
+        }
+    )
+    item = host.timeline_item_upserts[-1]
+    assert item.source["clientMessageId"] == "cm_steer_att"
+    assert item.content["attachments"][0]["fileId"] == "file_steer"
+    assert item.content["attachments"][0]["name"] == "note.txt"
 
 
 def test_codex_runtime_snapshot_and_live_use_same_sdk_item_identity() -> None:

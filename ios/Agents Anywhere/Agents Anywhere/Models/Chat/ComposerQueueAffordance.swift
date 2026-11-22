@@ -28,17 +28,19 @@ struct ComposerQueueAffordance: Equatable {
     /// - `isStreaming`: a turn is in flight as the *composer* sees it
     ///   (`isComposerStreaming`: authoritative, minus the optimistic idle that
     ///   an accepted stop opens early). This is not `isRunning`.
-    /// - `hasText`: the draft has non-blank text. Only text can become a queued
-    ///   message — the queue key is deliberately not offered for an
-    ///   attachment-only draft, which keeps the existing stop key instead.
-    /// - `canQueue`: the session permits an enqueue (capability, freshness).
+    /// - `hasCommittableContent`: the draft holds something the mid-turn key
+    ///   can actually deliver — non-blank text, or an attachment-only draft
+    ///   whose steer path accepts files (`session.steer.parameters.attachments`).
+    ///   An attachment-only draft on a runtime that cannot steer files keeps
+    ///   the stop key: enqueueing it would be a no-op (the queue is text-fed).
+    /// - `canQueue`: the session permits a mid-turn commit (capability, freshness).
     /// - `canStop`: the interrupt gate, for the plain stop key's enablement.
     /// - `canSend`: the idle send key's full gate, including draft composability.
-    static func resolve(isStreaming: Bool, hasText: Bool, canQueue: Bool, canStop: Bool, canSend: Bool) -> ComposerQueueAffordance {
+    static func resolve(isStreaming: Bool, hasCommittableContent: Bool, canQueue: Bool, canStop: Bool, canSend: Bool) -> ComposerQueueAffordance {
         guard isStreaming else {
             return ComposerQueueAffordance(shape: .send, isActionEnabled: canSend)
         }
-        guard hasText else {
+        guard hasCommittableContent else {
             return ComposerQueueAffordance(shape: .stop, isActionEnabled: canStop)
         }
         return ComposerQueueAffordance(shape: .queueSend, isActionEnabled: canQueue)

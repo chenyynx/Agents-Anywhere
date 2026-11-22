@@ -132,6 +132,9 @@ struct DeviceIdentityCard: View {
                     .truncationMode(.middle)
                 Text(online ? String(localized: "已连接") : String(localized: "离线"))
                     .font(SettingsStyle.text(13))
+                    // CJK falls back to PingFang, whose regular strokes read
+                    // thinner than the Latin face at this size (pp 2026-11-23).
+                    .fontWeight(.medium)
                     .foregroundStyle(online
                         ? DevicePageStyle.success(colorScheme)
                         : DevicePageStyle.secondary(colorScheme))
@@ -382,6 +385,9 @@ struct DeviceSessionCard: View {
                         AnthropiconView(name: "anthropicon.laptop", size: .small)
                             .foregroundStyle(connectionColor)
                         Text(connectionText)
+                            // Same CJK-vs-Latin stroke-weight match as the
+                            // device status label (pp 2026-11-23).
+                            .fontWeight(.medium)
                             .foregroundStyle(connectionColor)
                         Text(verbatim: "·")
                             .foregroundStyle(DevicePageStyle.secondary(colorScheme))

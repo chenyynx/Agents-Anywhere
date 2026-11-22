@@ -973,11 +973,10 @@ function BinaryPreview({
   const kind = previewKind(file.mediaType, file.name)
   if (objectUrl && kind === "image") {
     return (
-      <div className={cn(
-        "flex size-full min-h-0 min-w-0 overflow-auto bg-muted/20 p-4",
-        zoom === 1 ? "items-center justify-center" : "items-start justify-start",
-      )}>
-        <img src={objectUrl} alt={file.name} className="block max-h-full max-w-full object-contain" style={{ zoom }} />
+      <div className="size-full min-h-0 min-w-0 overflow-auto bg-muted/20 p-4">
+        <ZoomFrame zoom={zoom}>
+          <img src={objectUrl} alt={file.name} className="block size-full object-contain" />
+        </ZoomFrame>
       </div>
     )
   }
@@ -990,7 +989,9 @@ function BinaryPreview({
   if (objectUrl && kind === "pdf") {
     return (
       <div className="size-full min-h-0 min-w-0 overflow-auto">
-        <iframe src={objectUrl} title={file.name} className="block size-full border-0" style={{ zoom }} />
+        <ZoomFrame zoom={zoom}>
+          <iframe src={objectUrl} title={file.name} className="block size-full border-0" />
+        </ZoomFrame>
       </div>
     )
   }
@@ -1137,6 +1138,26 @@ function isPathInsideRoot(path: string, root: string) {
 function normalizePath(path: string) {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "")
   return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized || "/"
+}
+
+// CSS `zoom` did not scale images/PDFs inside WKWebView, so reserve the scaled
+// box and transform the original layout into it. The scroll container then has
+// the right scrollable area (pp 2026-11-22).
+function ZoomFrame({ zoom, children }: { zoom: number; children: React.ReactNode }) {
+  return (
+    <div style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}>
+      <div
+        style={{
+          width: `${100 / zoom}%`,
+          height: `${100 / zoom}%`,
+          transform: `scale(${zoom})`,
+          transformOrigin: "top left",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  )
 }
 
 function formatBytes(size: number) {

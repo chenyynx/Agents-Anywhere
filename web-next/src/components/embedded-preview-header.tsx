@@ -3,19 +3,23 @@
 import * as React from "react"
 import {
   Check,
+  ChevronDown,
   Copy,
   Download,
   Edit3,
+  Lock,
   RotateCw,
   Search,
+  ZoomIn,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { cn } from "@/lib/utils"
 
+type PreviewKind = "code" | "image" | "pdf" | "other"
+
 type EmbeddedPreviewHeaderProps = {
-  name: string
-  path: string
+  kind: PreviewKind
   canEdit: boolean
   canCopy: boolean
   canDownload: boolean
@@ -26,9 +30,13 @@ type EmbeddedPreviewHeaderProps = {
   savedFlash: boolean
   truncated: boolean
   copied: boolean
+  viewMode: "zoom" | "fixed"
+  zoom: number
   error: string | null
   disabled: boolean
   onEditingChange: (editing: boolean) => void
+  onViewModeChange: (mode: "zoom" | "fixed") => void
+  onZoomReset: () => void
   onRefresh: () => void
   onCopy: () => void
   onDownload: () => void
@@ -36,12 +44,12 @@ type EmbeddedPreviewHeaderProps = {
   onSearch: () => void
 }
 
-// Flat white toolbar, same shape as the original preview header: file name and
-// path on the left, all file actions on the right. No cards, no path popover
-// (pp 2026-11-22).
+// The app preview toolbar: two content-sized white cards on the paper-grey
+// strip. Left card holds view controls (or edit/search for code); the right
+// card holds file actions and the zoom readout. No file name or path — the
+// native navigation bar already shows the title (pp 2026-11-23).
 export function EmbeddedPreviewHeader({
-  name,
-  path,
+  kind,
   canEdit,
   canCopy,
   canDownload,
@@ -52,9 +60,13 @@ export function EmbeddedPreviewHeader({
   savedFlash,
   truncated,
   copied,
+  viewMode,
+  zoom,
   error,
   disabled,
   onEditingChange,
+  onViewModeChange,
+  onZoomReset,
   onRefresh,
   onCopy,
   onDownload,
@@ -63,70 +75,117 @@ export function EmbeddedPreviewHeader({
 }: EmbeddedPreviewHeaderProps) {
   const t = useTranslations("preview")
   const tCommon = useTranslations("common")
+  const media = kind === "image" || kind === "pdf"
+  const canZoom = kind === "code" || media
 
   return (
     <div className="shrink-0">
-      <div
-        inert={disabled || undefined}
-        className="aa-preview-toolbar flex min-h-14 items-center gap-2 border-b px-3 py-1.5"
-      >
-        <div className="flex min-w-0 flex-1 flex-col gap-px">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-sm font-medium">{name || t("untitled")}</span>
-            {dirty ? <span className="size-1.5 shrink-0 rounded-full bg-[#FF9F0A]" aria-label={t("unsaved")} /> : null}
-            {truncated ? (
-              <span className="shrink-0 rounded-[5px] bg-muted px-1.5 py-px text-[10px] leading-4 text-muted-foreground">
-                {t("truncated")}
-              </span>
-            ) : null}
-          </div>
-          <div className="truncate font-mono text-[11px] leading-4 text-muted-foreground" title={path}>{path}</div>
+      <div inert={disabled || undefined} className="flex items-center justify-center gap-[18px] bg-[#ECECEA] px-2 py-2.5">
+        <div className="flex h-[46px] items-center gap-0.5 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
+          {media ? (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => onViewModeChange(viewMode === "zoom" ? "fixed" : "zoom")}
+                className={cn(
+                  "flex h-8 items-center gap-1 px-0.5 text-[15px] transition-colors",
+                  viewMode === "zoom" ? "text-[#0A84FF]" : "text-[#8A8A86]",
+                )}
+              >
+                {viewMode === "zoom" ? t("zoomMode") : t("fixedMode")}
+                <ChevronDown className="size-2.5 text-[#82827F]" />
+              </button>
+              <button
+                type="button"
+                aria-label={t("zoomMode")}
+                aria-pressed={viewMode === "zoom"}
+                onClick={() => onViewModeChange("zoom")}
+                className={cn(
+                  "grid size-[30px] place-items-center rounded-[9px] text-[#8A8A86] transition-colors",
+                  viewMode === "zoom" && "bg-[#CEE3FB] text-[#144677]",
+                )}
+              >
+                <ZoomIn className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label={t("fixedMode")}
+                aria-pressed={viewMode === "fixed"}
+                onClick={() => onViewModeChange("fixed")}
+                className={cn(
+                  "grid size-[30px] place-items-center rounded-[9px] text-[#8A8A86] transition-colors",
+                  viewMode === "fixed" && "bg-[#F0F0EE] text-[#0A0A0A]",
+                )}
+              >
+                <Lock className="size-3.5" />
+              </button>
+            </div>
+          ) : (
+            <>
+              <IconAction label={t("refresh")} onClick={onRefresh} disabled={disabled}>
+                <RotateCw className="size-3.5" />
+              </IconAction>
+              <IconAction
+                label={t("edit")}
+                onClick={() => onEditingChange(!editing)}
+                disabled={disabled || !canEdit}
+                className={editing ? "bg-[#F0F0EE] text-[#0A84FF]" : undefined}
+              >
+                <Edit3 className="size-3.5" />
+              </IconAction>
+              <span className="mx-0.5 h-5 w-px shrink-0 bg-[#E4E4E4]" aria-hidden="true" />
+              <IconAction label={t("search")} onClick={onSearch} disabled={disabled || !canSearch}>
+                <Search className="size-3.5" />
+              </IconAction>
+            </>
+          )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5">
-          <IconAction label={t("refresh")} onClick={onRefresh} disabled={disabled}>
-            <RotateCw className="size-[17px]" />
-          </IconAction>
-          <button
-            type="button"
-            aria-label={t("edit")}
-            aria-pressed={editing}
-            disabled={disabled || !canEdit}
-            onClick={() => onEditingChange(!editing)}
-            className={cn(
-              "flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-30",
-              editing && "bg-accent",
-            )}
-          >
-            <Edit3 className="size-3.5" />
-            <span>{t("edit")}</span>
-          </button>
-          <IconAction label={t("search")} onClick={onSearch} disabled={disabled || !canSearch}>
-            <Search className="size-[17px]" />
-          </IconAction>
-          <IconAction
-            label={copied ? tCommon("copied") : t("copy")}
-            onClick={onCopy}
-            disabled={disabled || !canCopy}
-          >
-            {copied ? <Check className="size-[17px] text-emerald-600" /> : <Copy className="size-[17px]" />}
-          </IconAction>
+        <div className="flex h-[46px] items-center gap-0.5 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
+          {kind !== "image" && kind !== "pdf" ? (
+            <IconAction
+              label={copied ? tCommon("copied") : t("copy")}
+              onClick={onCopy}
+              disabled={disabled || !canCopy}
+            >
+              {copied ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
+            </IconAction>
+          ) : null}
           <IconAction label={t("download")} onClick={onDownload} disabled={disabled || !canDownload}>
-            <Download className="size-[17px]" />
+            <Download className="size-3.5" />
           </IconAction>
-          <button
-            type="button"
-            aria-label={t("save")}
-            disabled={disabled || !editing || !dirty || saving}
-            onClick={onSave}
-            className="flex h-8 min-w-13 shrink-0 items-center justify-center rounded-lg bg-foreground px-3 text-[13px] font-medium text-background transition-colors hover:bg-foreground/90 disabled:bg-muted disabled:text-muted-foreground"
-          >
-            {saving ? t("saving") : savedFlash ? t("saved") : t("save")}
-          </button>
+          {kind === "code" || kind === "other" ? (
+            <button
+              type="button"
+              aria-label={t("save")}
+              disabled={disabled || !editing || !dirty || saving}
+              onClick={onSave}
+              className="h-8 min-w-0 shrink-0 rounded-[9px] px-1 text-[15px] font-normal text-[#0A0A0A] transition-colors disabled:text-[#B5B5B0]"
+            >
+              {saving ? t("saving") : savedFlash ? t("saved") : t("save")}
+            </button>
+          ) : null}
+          {canZoom ? (
+            <button
+              type="button"
+              aria-label={t("resetZoom")}
+              disabled={disabled || viewMode === "fixed"}
+              onClick={onZoomReset}
+              className="flex h-8 min-w-[46px] items-center justify-end gap-1 text-[15px] text-[#0A0A0A] tabular-nums transition-colors disabled:text-[#B5B5B0]"
+            >
+              {Math.round(zoom * 100)}%
+              <ChevronDown className="size-2.5 text-[#82827F]" />
+            </button>
+          ) : null}
+          {truncated ? (
+            <span className="ml-1 shrink-0 rounded-[5px] bg-[#F2F2F0] px-1.5 py-px text-[10px] leading-4 text-[#82827F]">
+              {t("truncated")}
+            </span>
+          ) : null}
         </div>
       </div>
       {error ? (
-        <div role="alert" className="aa-preview-banner mx-3 mt-2 rounded-[10px] bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive">
+        <div role="alert" className="mx-3 mb-2 rounded-[10px] bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive">
           {error}
         </div>
       ) : null}
@@ -138,11 +197,13 @@ function IconAction({
   label,
   onClick,
   disabled,
+  className,
   children,
 }: {
   label: string
   onClick: () => void
   disabled?: boolean
+  className?: string
   children: React.ReactNode
 }) {
   return (
@@ -152,7 +213,10 @@ function IconAction({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className="flex size-9 shrink-0 items-center justify-center rounded-[9px] transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-30"
+      className={cn(
+        "grid size-8 shrink-0 place-items-center rounded-[9px] text-[#0A0A0A] transition-colors hover:bg-[#F2F2F0] disabled:pointer-events-none disabled:opacity-30",
+        className,
+      )}
     >
       {children}
     </button>

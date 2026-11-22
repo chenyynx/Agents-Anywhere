@@ -223,6 +223,7 @@ export function FilePreviewSurface({
   const containerRef = React.useRef<HTMLElement | null>(null)
   const contentRef = React.useRef<HTMLElement | null>(null)
   const [zoom, setZoom] = React.useState(1)
+  const [viewMode, setViewMode] = React.useState<"zoom" | "fixed">("zoom")
   const [zoomPill, setZoomPill] = React.useState(false)
   const zoomRef = React.useRef(1)
   zoomRef.current = zoom
@@ -236,6 +237,9 @@ export function FilePreviewSurface({
   const canLoad = isScopedPreview || isSourcePreview || Boolean(token && connectorId && root && path)
   const zoomableKind = state.kind === "binary" ? previewKind(state.file.mediaType, state.file.name) : null
   const canZoom = embeddedSkin && (state.kind === "text" || zoomableKind === "image" || zoomableKind === "pdf")
+  const toolKind: "code" | "image" | "pdf" | "other" =
+    state.kind === "text" ? "code" : zoomableKind === "image" ? "image" : zoomableKind === "pdf" ? "pdf" : "other"
+  const fixedView = viewMode === "fixed" && (toolKind === "image" || toolKind === "pdf")
 
   const revokeObjectUrl = React.useCallback(() => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
@@ -248,6 +252,7 @@ export function FilePreviewSurface({
     const requestId = ++loadRequestIdRef.current
     const requestIsCurrent = () => requestId === loadRequestIdRef.current
     setZoom(1)
+    setViewMode("zoom")
     setZoomPill(false)
     revokeObjectUrl()
     setLoadingFile(true)
@@ -418,7 +423,7 @@ export function FilePreviewSurface({
   // Monaco font size, images and PDFs scale their own content (pp 2026-11-22).
   React.useEffect(() => {
     const node = contentRef.current
-    if (!node || !canZoom) return
+    if (!node || !canZoom || fixedView) return
     let startDistance = 0
     let startZoom = 1
     let pinching = false
@@ -474,7 +479,7 @@ export function FilePreviewSurface({
       node.removeEventListener("gesturechange", onGestureChange, { capture: true })
       node.removeEventListener("gestureend", onGestureEnd, { capture: true })
     }
-  }, [canZoom, showZoomPill])
+  }, [canZoom, fixedView, showZoomPill])
 
   React.useEffect(() => {
     if (mode !== "window") return
@@ -638,8 +643,7 @@ export function FilePreviewSurface({
     >
       {embeddedSkin ? (
         <EmbeddedPreviewHeader
-          name={name}
-          path={effectivePath}
+          kind={toolKind}
           canEdit={state.kind === "text" && !readOnlyPreview}
           canCopy={state.kind === "text"}
           canDownload={state.kind === "text" || state.kind === "binary"}
@@ -650,8 +654,12 @@ export function FilePreviewSurface({
           savedFlash={savedFlash}
           truncated={state.kind === "text" && state.file.truncated}
           copied={copied}
+          viewMode={viewMode}
+          zoom={Math.round((toolKind === "image" ? zoom : zoom) * 100) / 100}
           error={saveError ?? downloadError}
           disabled={pendingFile}
+          onViewModeChange={(mode) => { setViewMode(mode); if (mode === "fixed") setZoom(1) }}
+          onZoomReset={() => setZoom(1)}
           onEditingChange={handleEmbeddedEditModeChange}
           onRefresh={() => void loadFile()}
           onCopy={copyText}
@@ -825,13 +833,28 @@ export function FilePreviewSurface({
         ) : null}
         {state.kind === "loading" ? <CenteredStatus label={t("loading")} /> : null}
         {state.kind === "error" ? (
-          <div className="mx-auto flex h-full max-w-xl items-center px-6">
-            <Alert variant="destructive">
-              <FileWarning className="size-4" />
-              <AlertTitle>{t("unavailable")}</AlertTitle>
-              <AlertDescription>{state.message}</AlertDescription>
-            </Alert>
-          </div>
+          embeddedSkin ? (
+            <div className="mx-auto flex h-full max-w-md flex-col items-center justify-center px-6 text-center">
+              <FileWarning className="size-9 text-[#D92D20]" />
+              <div className="mt-3 text-[15px] font-semibold">{t("unavailable")}</div>
+              <p className="mt-1 text-sm text-muted-foreground">{state.message}</p>
+              <button
+                type="button"
+                onClick={() => void loadFile()}
+                className="mt-5 h-[34px] rounded-[9px] bg-[#F0F0EE] px-4 text-sm font-medium text-[#3A3A38] transition-colors hover:bg-[#E8E8E5]"
+              >
+                {tCommon("retry")}
+              </button>
+            </div>
+          ) : (
+            <div className="mx-auto flex h-full max-w-xl items-center px-6">
+              <Alert variant="destructive">
+                <FileWarning className="size-4" />
+                <AlertTitle>{t("unavailable")}</AlertTitle>
+                <AlertDescription>{state.message}</AlertDescription>
+              </Alert>
+            </div>
+          )
         ) : null}
         {state.kind === "text" ? (
           <MonacoCodeView
@@ -988,7 +1011,7 @@ function BinaryPreview({
   }
   if (objectUrl && kind === "pdf") {
     return (
-      <div className="size-full min-h-0 min-w-0 overflow-auto">
+      <div className="size-full min-h-0 min-w-0 overflow-auto bg-[#ECECEA]">
         <ZoomFrame zoom={zoom}>
           <iframe src={objectUrl} title={file.name} className="block size-full border-0" />
         </ZoomFrame>
@@ -1005,7 +1028,11 @@ function BinaryPreview({
             {file.mediaType || "application/octet-stream"} · {formatBytes(file.size)}
           </div>
         </div>
-        <Button type="button" onClick={onDownload}>
+        <Button
+          type="button"
+          onClick={onDownload}
+          className="bg-[#F0F0EE] text-[#3A3A38] hover:bg-[#E8E8E5]"
+        >
           <Download className="size-4" />
           {t("download")}
         </Button>

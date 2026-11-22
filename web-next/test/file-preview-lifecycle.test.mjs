@@ -410,7 +410,7 @@ test("new file tabs share the tree and split while preserving drafts in existing
   assert.equal(editorA.disposed, false)
 })
 
-test("the app skin uses the flat white toolbar and keeps one light theme while editing", async t => {
+test("the app skin uses the two-card toolbar and keeps one light theme while editing", async t => {
   t.mock.method(dashboardApi, "connectorFsReadText", async (_token, _connector, _root, path) => textFile(path))
   const f = await fixture(t, FilePreviewSurface)
   const props = {
@@ -424,22 +424,18 @@ test("the app skin uses the flat white toolbar and keeps one light theme while e
   }
   await f.render(props)
   await act(async () => {})
-  const skin = f.host.querySelector(".aa-preview-embedded")
-  assert.ok(skin, "embedded skin wrapper is applied")
-  assert.ok(f.host.textContent.includes("skin.ts"))
-  assert.ok(f.host.textContent.includes("/repo/skin.ts"), "the path is part of the flat toolbar")
+  assert.ok(f.host.querySelector(".aa-preview-embedded"), "embedded skin wrapper is applied")
   assert.ok(f.host.querySelector('[aria-label="Search"]'))
   assert.ok(f.host.querySelector('[aria-label="Copy"]'))
   assert.ok(f.host.querySelector('[aria-label="Download"]'))
+  assert.ok(f.host.querySelector('[aria-label="Reset zoom"]'))
   assert.equal(editors.at(-1).options.theme, "aa-preview-light")
   const edit = f.host.querySelector('[aria-label="Edit"]')
   assert.ok(edit, "editing is available for writable previews")
-  assert.equal(edit.getAttribute("aria-pressed"), "false")
+  assert.equal(edit.disabled, false)
   await act(async () => { edit.click() })
-  assert.equal(edit.getAttribute("aria-pressed"), "true")
   assert.ok(f.host.querySelector('[aria-label="Save"]'))
   assert.equal(f.host.querySelector('[aria-label="Save"]').disabled, true, "save stays disabled without edits")
-  assert.ok(f.host.querySelector('[aria-label="Copy"]'), "copy stays in the edit toolbar")
   assert.equal(editors.at(-1).options.theme, "aa-preview-light", "editing does not flip the editor theme")
 })
 

@@ -16,18 +16,24 @@ struct DeviceProjectList: View {
     let onPin: (V2Project) -> Void
     let onArchive: (V2Project) -> Void
     let onDelete: (V2Project) -> Void
+    @State private var expanded = false
+
+    private var visible: [V2Project] {
+        expanded ? projects : Array(projects.prefix(collapsedDirectoryCount))
+    }
 
     var body: some View {
         DeviceSection(String(localized: "Projects")) {
             DeviceHeaderIconButton(title: String(localized: "Create project"), symbol: "plus", action: onCreate)
                 .disabled(!canManage)
         } content: {
-            DeviceCard {
+            VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
                 if projects.isEmpty {
-                    DeviceEmptyText(text: String(localized: "No projects yet"))
+                    DeviceEmptyCard(text: String(localized: "No projects yet"))
                 } else {
-                    DeviceDirectoryRows(items: projects) { project in
-                        DeviceDirectoryRow(name: project.name, path: project.workspacePath, pinned: project.pinned,
+                    ForEach(visible) { project in
+                        DeviceDirectoryCard(name: project.name, path: project.workspacePath,
+                            pinned: project.pinned, canOpen: true,
                             openHint: String(localized: "Show project sessions"),
                             onOpen: { onOpen(project) }, onNewSession: { onNewSession(project) })
                         .contextMenu {
@@ -43,6 +49,9 @@ struct DeviceProjectList: View {
                                 .disabled(!canManage || project.sidebarSessionCounts.active + project.sidebarSessionCounts.archived > 0)
                         }
                     }
+                    if projects.count > collapsedDirectoryCount {
+                        DeviceShowAllButton(expanded: $expanded, count: projects.count - collapsedDirectoryCount)
+                    }
                 }
             }
         }
@@ -55,19 +64,24 @@ struct DeviceWorkspaceList: View {
     let onBrowse: () -> Void
     let onOpen: (WorkspaceDirectoryChoice) -> Void
     let onNewSession: (WorkspaceDirectoryChoice) -> Void
+    @State private var expanded = false
+
+    private var visible: [WorkspaceDirectoryChoice] {
+        expanded ? workspaces : Array(workspaces.prefix(collapsedDirectoryCount))
+    }
 
     var body: some View {
         DeviceSection(String(localized: "工作目录")) {
             DeviceHeaderIconButton(title: String(localized: "选择工作目录"), symbol: "plus", action: onBrowse)
                 .disabled(!canReadFiles)
         } content: {
-            DeviceCard {
+            VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
                 if workspaces.isEmpty {
-                    DeviceEmptyText(text: String(localized: "No workspaces yet"))
+                    DeviceEmptyCard(text: String(localized: "No workspaces yet"))
                 } else {
-                    DeviceDirectoryRows(items: workspaces) { workspace in
-                        DeviceDirectoryRow(name: workspace.name, path: workspace.path,
-                            openHint: String(localized: "Files"), canOpen: canReadFiles,
+                    ForEach(visible) { workspace in
+                        DeviceDirectoryCard(name: workspace.name, path: workspace.path,
+                            canOpen: canReadFiles, openHint: String(localized: "Files"),
                             onOpen: { onOpen(workspace) }, onNewSession: { onNewSession(workspace) })
                         .contextMenu {
                             Button(String(localized: "New session"), systemImage: "square.and.pencil") { onNewSession(workspace) }
@@ -75,127 +89,49 @@ struct DeviceWorkspaceList: View {
                             Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { UIPasteboard.general.string = workspace.path }
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-struct DeviceHeaderIconButton: View {
-    let title: String
-    let symbol: String
-    let action: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Button(action: action) {
-            AppSymbol(symbol, size: 17)
-                .foregroundStyle(SettingsStyle.icon(colorScheme))
-                .frame(width: 32, height: 32)
-                .contentShape(.rect)
-        }
-        .buttonStyle(.plain).accessibilityLabel(title)
-    }
-}
-
-/// The directories as settings rows: four visible until expanded, then a
-/// "show all" row at the bottom of the same card.
-private struct DeviceDirectoryRows<Item: Identifiable, Row: View>: View {
-    let items: [Item]
-    @ViewBuilder let row: (Item) -> Row
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var expanded = false
-
-    var body: some View {
-        let visible = expanded ? items : Array(items.prefix(collapsedDirectoryCount))
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(visible.enumerated()), id: \.element.id) { index, item in
-                if index > 0 { DeviceRowDivider() }
-                row(item)
-            }
-            if items.count > collapsedDirectoryCount {
-                DeviceRowDivider(leading: SettingsStyle.rowPadding)
-                Button { withAnimation(.snappy) { expanded.toggle() } } label: {
-                    HStack(spacing: 4) {
-                        Text(expanded ? String(localized: "Show less")
-                             : String(localized: "Show all \(items.count - collapsedDirectoryCount) more"))
-                        AppSymbol("chevron.down", size: 12)
-                            .rotationEffect(.degrees(expanded ? 180 : 0))
-                        Spacer(minLength: 0)
+                    if workspaces.count > collapsedDirectoryCount {
+                        DeviceShowAllButton(expanded: $expanded, count: workspaces.count - collapsedDirectoryCount)
                     }
-                    .font(SettingsStyle.text(15))
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                    .padding(.horizontal, SettingsStyle.rowPadding)
-                    .frame(minHeight: 44)
-                    .contentShape(.rect)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 }
 
-private struct DeviceDirectoryRow: View {
-    let name: String
-    let path: String
-    var pinned = false
-    let openHint: String
-    var canOpen = true
-    let onOpen: () -> Void
-    let onNewSession: () -> Void
+/// The "show all N more" text button that sits under a collapsed card list.
+struct DeviceShowAllButton: View {
+    @Binding var expanded: Bool
+    let count: Int
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: SettingsStyle.iconGap) {
-            Button(action: onOpen) {
-                HStack(spacing: SettingsStyle.iconGap) {
-                    AppSymbol("folder", size: 17)
-                        .frame(width: SettingsStyle.iconFrame)
-                        .foregroundStyle(SettingsStyle.icon(colorScheme))
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Text(name)
-                                .font(SettingsStyle.text(16))
-                                .foregroundStyle(SettingsStyle.ink(colorScheme))
-                                .lineLimit(1)
-                            if pinned {
-                                AppSymbol("pin", size: 11)
-                                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                            }
-                        }
-                        Text(path)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer(minLength: 8)
-                }
-                .contentShape(.rect)
+        Button {
+            withAnimation(.snappy) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 4) {
+                Text(expanded
+                    ? String(localized: "Show less")
+                    : String(localized: "Show all \(count) more"))
+                AppSymbol("chevron.down", size: 12)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain).disabled(!canOpen).accessibilityHint(openHint)
-            Button(action: onNewSession) {
-                AppSymbol("square.and.pencil", size: 17)
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                    .frame(width: 32, height: 40).contentShape(.rect)
-            }
-            .buttonStyle(.plain).accessibilityLabel(String(localized: "New session"))
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+            .font(SettingsStyle.text(15))
+            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+            .padding(.horizontal, 4)
+            .frame(minHeight: 32)
+            .contentShape(.rect)
         }
-        .padding(.horizontal, SettingsStyle.rowPadding)
-        .padding(.vertical, 8)
-        .frame(minHeight: 56)
+        .buttonStyle(.plain)
     }
 }
 
 struct DeviceSessionList: View {
     @Bindable var model: DeviceManagementModel
     let projects: [V2Project]
+    let deviceName: String
     let showsProjectNames: Bool
     let canManage: Bool
-    let isWorking: Bool
-    let onNewSession: () -> Void
     let onOpen: (String) -> Void
     let onArchive: (V2SessionMeta) -> Void
     let onArchiveAll: () -> Void
@@ -206,25 +142,33 @@ struct DeviceSessionList: View {
 
     var body: some View {
         DeviceSection(String(localized: "Sessions")) {
-            HStack(spacing: 12) {
-                DevicePillButton(title: model.isSelectingSessions ? String(localized: "Cancel") : String(localized: "Select sessions")) {
-                    if model.isSelectingSessions { model.stopSelectingSessions() } else { model.startSelectingSessions() }
+            HStack(spacing: 10) {
+                scopeMenu
+                Menu {
+                    Button(model.isSelectingSessions
+                        ? String(localized: "Cancel")
+                        : String(localized: "Select sessions")) {
+                        if model.isSelectingSessions { model.stopSelectingSessions() } else { model.startSelectingSessions() }
+                    }
+                    .disabled(!canManage || (isEmpty && !model.isSelectingSessions))
+                    if !model.isSelectingSessions {
+                        Button(restores
+                            ? String(localized: "Restore all in scope")
+                            : String(localized: "Archive all in scope")) { onArchiveAll() }
+                            .disabled(!canManage || isEmpty)
+                    }
+                } label: {
+                    AppSymbol("ellipsis", size: 17)
+                        .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        .frame(width: 32, height: 32)
+                        .contentShape(.rect)
                 }
-                .disabled(!canManage || (isEmpty && !model.isSelectingSessions))
-                if !model.isSelectingSessions {
-                    DevicePillButton(title: restores ? String(localized: "Restore all in scope") : String(localized: "Archive all in scope"),
-                        isLoading: isWorking, action: onArchiveAll)
-                        .disabled(!canManage || isEmpty)
-                    DeviceHeaderIconButton(title: String(localized: "New session"), symbol: "square.and.pencil", action: onNewSession)
-                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Sessions actions"))
             }
         } content: {
-            VStack(alignment: .leading, spacing: 8) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { filters; Spacer(minLength: 8); scopeMenu }
-                    VStack(alignment: .leading, spacing: 8) { filters; scopeMenu }
-                }
-                .padding(.horizontal, 2)
+            VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
+                filters.padding(.horizontal, 2)
                 if model.isSelectingSessions {
                     Button(String(localized: "Select up to 200 sessions"), action: model.toggleSelectAll)
                         .font(SettingsStyle.text(15))
@@ -234,14 +178,17 @@ struct DeviceSessionList: View {
                         .padding(.horizontal, 2)
                         .disabled(!canManage)
                 }
-                DeviceCard {
-                    if isEmpty {
-                        DeviceEmptyText(text: String(localized: "No sessions here"))
-                    } else {
-                        ForEach(Array(model.filteredSessions.enumerated()), id: \.element.id) { index, session in
-                            if index > 0 { DeviceRowDivider() }
-                            row(session)
-                        }
+                if isEmpty {
+                    DeviceEmptyCard(text: String(localized: "No sessions here"))
+                } else {
+                    ForEach(model.filteredSessions) { session in
+                        DeviceSessionCard(session: session, deviceName: deviceName,
+                            projectName: scopeSubtitle(session),
+                            isSelecting: model.isSelectingSessions,
+                            selected: model.selectedSessionIds.contains(session.id),
+                            canManage: canManage,
+                            onTap: { select(session) },
+                            onArchive: { onArchive(session) })
                     }
                 }
             }
@@ -253,6 +200,8 @@ struct DeviceSessionList: View {
             selection: Binding(get: { model.sessionFilter }, set: model.setSessionFilter)) { String(localized: $0.title) }
     }
 
+    /// The official "Alle ⌄" control: the project/workspace scope in the
+    /// section header, dark ink rather than a grey chip.
     private var scopeMenu: some View {
         Menu {
             Picker(showsProjectNames ? String(localized: "Project") : String(localized: "工作目录"),
@@ -264,78 +213,24 @@ struct DeviceSessionList: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(scopeTitle).lineLimit(1)
+                Text(scopeTitle)
+                    .font(SettingsStyle.text(16, weight: .medium))
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .lineLimit(1)
                 AppSymbol("chevron.down", size: 12)
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
             }
-            .font(SettingsStyle.text(15))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
-            .frame(minHeight: 34).contentShape(.rect)
+            .frame(minHeight: 32)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(showsProjectNames ? String(localized: "Project") : String(localized: "工作目录"))
     }
 
-    private func row(_ session: V2SessionMeta) -> some View {
-        Button { onOpen(session.id) } label: {
-            HStack(spacing: SettingsStyle.iconGap) {
-                Group {
-                    if model.isSelectingSessions {
-                        AppSymbol(model.selectedSessionIds.contains(session.id) ? "checkmark.circle.fill" : "circle", size: 18)
-                            .foregroundStyle(model.selectedSessionIds.contains(session.id)
-                                ? AnyShapeStyle(SettingsStyle.ink(colorScheme))
-                                : AnyShapeStyle(SettingsStyle.secondary(colorScheme)))
-                    } else {
-                        DeviceStatusDot(tone: tone(session.status))
-                    }
-                }
-                .frame(width: SettingsStyle.iconFrame)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.title.flatMap { $0.isEmpty ? nil : $0 } ?? String(localized: "Untitled session"))
-                        .font(SettingsStyle.text(16, weight: session.unread ? .semibold : .regular))
-                        .foregroundStyle(SettingsStyle.ink(colorScheme)).lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(session.runtime)
-                        if let subtitle = scopeSubtitle(session) {
-                            Text(verbatim: "·"); Text(subtitle).lineLimit(1)
-                        }
-                    }
-                    .font(SettingsStyle.text(13))
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme)).lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                if let date = activityDate(session) {
-                    Text(date, format: .dateTime.month(.abbreviated).day())
-                        .font(SettingsStyle.text(13))
-                        .monospacedDigit()
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                }
-            }
-            .padding(.horizontal, SettingsStyle.rowPadding)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityValue(session.status.displayName)
-        .contextMenu {
-            Button(String(localized: "Open"), systemImage: "arrow.up.right") { onOpen(session.id) }
-            Button(session.archived ? String(localized: "Restore") : String(localized: "Archive"),
-                systemImage: session.archived ? "tray.and.arrow.up" : "archivebox") { onArchive(session) }
-                .disabled(!canManage || session.id.hasPrefix("local:"))
-            Button(String(localized: "Copy session ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = session.id }
-        }
+    private func select(_ session: V2SessionMeta) {
+        if model.isSelectingSessions { model.toggleSessionSelection(session.id) } else { onOpen(session.id) }
     }
 
-    /// Same colors as Web's device page session dots.
-    private func tone(_ status: V2RuntimeStatus) -> DeviceStatusTone {
-        switch status {
-        case .running: .ok
-        case .waitingApproval, .blocked: .warning
-        case .error: .error
-        case .waiting, .pending, .stopping: .progress
-        default: .neutral
-        }
-    }
     private var allScopesTitle: String {
         showsProjectNames ? String(localized: "All projects") : String(localized: "All workspaces")
     }
@@ -347,9 +242,6 @@ struct DeviceSessionList: View {
         let project = projects.first { $0.id == session.projectId }
         if showsProjectNames { return project?.name }
         return (session.cwd ?? project?.workspacePath).map(ProjectWorkspacePath.name)
-    }
-    private func activityDate(_ session: V2SessionMeta) -> Date? {
-        V2Timestamp.date(session.sortAt ?? session.lastActivityAt ?? session.lastItemAt)
     }
 }
 

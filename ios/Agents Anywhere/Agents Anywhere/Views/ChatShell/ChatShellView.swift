@@ -182,6 +182,7 @@ struct ChatShellView: View {
         {
             DeviceManagementView(
                 connector: connector,
+                connectors: appState.connectors,
                 allSessions: appState.sessions,
                 projects: appState.projects,
                 agents: clients.agents(on: connectorId),
@@ -190,6 +191,7 @@ struct ChatShellView: View {
                 workspaceFilesService: workspaceFilesService,
                 serverURL: serverURL,
                 onMenu: toggleSidebar,
+                onOpenDevice: openDevice,
                 onOpenSession: openSession,
                 onNewSession: { path in
                     if let model = appState.nativeChatServices?.newSession {

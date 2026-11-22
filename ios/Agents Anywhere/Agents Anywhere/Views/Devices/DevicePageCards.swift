@@ -70,16 +70,6 @@ nonisolated enum DevicePageStyle {
             : Color(red: 0xF3 / 255.0, green: 0xF3 / 255.0, blue: 0xF0 / 255.0)
     }
 
-    /// The official floating button is dark on light and white on dark.
-    static func fabFill(_ scheme: ColorScheme) -> Color {
-        scheme == .dark
-            ? Color(red: 0xF8 / 255.0, green: 0xF8 / 255.0, blue: 0xF6 / 255.0)
-            : Color(red: 0x2A / 255.0, green: 0x2A / 255.0, blue: 0x29 / 255.0)
-    }
-
-    static func fabInk(_ scheme: ColorScheme) -> Color {
-        scheme == .dark ? .black : .white
-    }
 }
 
 /// The official card surface: white fill, a 1-physical-pixel edge and a downward shadow.
@@ -462,21 +452,14 @@ struct DeviceNewSessionFab: View {
                 Text(String(localized: "新建会话"))
                     .font(SettingsStyle.text(15, weight: .medium))
             }
-            .foregroundStyle(DevicePageStyle.fabInk(colorScheme))
+            .foregroundStyle(AppTheme.sidebarProminentLabel(colorScheme))
             .padding(.horizontal, 17)
-            .frame(height: DevicePageStyle.fabHeight)
-            .background(Capsule().fill(DevicePageStyle.fabFill(colorScheme)))
+            .frame(minWidth: 109, minHeight: DevicePageStyle.fabHeight)
             .contentShape(.capsule)
         }
-        .buttonStyle(DeviceFABButtonStyle())
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive()
+            .tint(AppTheme.sidebarProminentFill(colorScheme)), in: Capsule())
         .accessibilityLabel(String(localized: "新建会话"))
-    }
-}
-
-/// Official ActionPill press feedback: the label drops to 0.6 opacity.
-struct DeviceFABButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }

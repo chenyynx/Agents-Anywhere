@@ -26,7 +26,6 @@ struct DeviceManagementView: View {
     @State private var model = DeviceManagementModel()
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showsToolbarTitle = false
     @State private var toasts = ChatToastStore()
     @State private var isRenaming = false
     @State private var proposedName = ""
@@ -92,9 +91,6 @@ struct DeviceManagementView: View {
                 .modifier(ChatPageContentColumn(horizontalInset: 16))
                 .background { ChatPageScrollEdge() }
             }
-            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 56 } action: { _, scrolled in
-                withAnimation(.easeOut(duration: 0.15)) { showsToolbarTitle = scrolled }
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The settings cards are white; without the paper page colour the
@@ -104,8 +100,10 @@ struct DeviceManagementView: View {
         .scrollIndicators(.hidden).scrollEdgeEffectStyle(.soft, for: .all)
         .refreshable { await dashboard.refresh(); await agents.refresh() }
         .task(id: agents.connected) { await agents.refresh() }
-        .modifier(ChatPageToolbar(title: showsToolbarTitle ? connector.name : "",
-            subtitle: showsToolbarTitle ? connectionDescription : nil, onMenu: onMenu))
+        // The device identity is persistent in the nav bar (pp 2026-11-23);
+        // it no longer waits for the first scroll.
+        .modifier(ChatPageToolbar(title: connector.name,
+            subtitle: connectionDescription, onMenu: onMenu))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

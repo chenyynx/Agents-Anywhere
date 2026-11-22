@@ -493,13 +493,44 @@ nonisolated enum CodePageTheme {
             : UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1)
     }
 
-    /// [E] CANONICAL/06-visuals-assets.md §2.2 — inline-code text
-    /// `#184F95` light / `#6DA7EC` dark (`0.094,0.31,0.584` /
-    /// `0.427,0.655,0.925`). Links use the body text colour.
-    static let inlineCodeTextUIColor = UIColor { traits in
+    /// Selection tint for transcript text. The system paints the highlight as
+    /// this colour at ~20%; the official transcript's grey reads 210 over the
+    /// 249 page (pp 2026-11-21 screenshots), which is a #363636 tint at that
+    /// alpha — a black tint read 199. Dark mode keeps a light tint so the
+    /// highlight stays visible on the dark page.
+    static let selectionTintUIColor = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.427, green: 0.655, blue: 0.925, alpha: 1)
-            : UIColor(red: 0.094, green: 0.31, blue: 0.584, alpha: 1)
+            ? UIColor(white: 1.0, alpha: 1)
+            : UIColor(white: 54.0 / 255.0, alpha: 1)
+    }
+
+    /// The Code page's three link/code inks are user-tunable (pp 2026-11-22).
+    /// Each resolves its stored pair at draw time, so a settings change shows
+    /// up the next time the page draws without rebuilding any document. The
+    /// built-in pairs keep the shipped values — inline code `#184F95` light /
+    /// `#6DA7EC` dark (`[E] CANONICAL/06-visuals-assets.md §2.2`).
+    static let inlineCodeTextUIColor = codeInkUIColor(.inlineCode)
+
+    /// Every tappable link — file reference or web address — shares one ink
+    /// and the official underline (pp 2026-11-22): one affordance, one look.
+    /// What a tap opens (in-app preview vs the browser) is the only
+    /// difference.
+    static let linkTextUIColor = codeInkUIColor(.link)
+
+    private enum CodeInk { case link, inlineCode }
+
+    private static func codeInkUIColor(_ ink: CodeInk) -> UIColor {
+        UIColor { traits in
+            let colors: ChatColorSettings.Pair
+            switch ink {
+            case .link: colors = ChatColorSettings.codeLink()
+            case .inlineCode: colors = ChatColorSettings.codeInlineCode()
+            }
+            let hex = traits.userInterfaceStyle == .dark ? colors.dark : colors.light
+            guard let (r, g, b) = ChatColorSettings.parse(hex) else { return .label }
+            return UIColor(red: CGFloat(r) / 255, green: CGFloat(g) / 255,
+                           blue: CGFloat(b) / 255, alpha: 1)
+        }
     }
 
     /// [E] R19 `typography-inline.md` §3 — inline-code chip fill: grey

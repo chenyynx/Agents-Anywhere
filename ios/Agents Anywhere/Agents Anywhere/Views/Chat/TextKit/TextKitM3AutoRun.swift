@@ -285,23 +285,34 @@ final class TextKitM3AutoRunModel: TimelineCollectionContentProviding {
             await wait(100)
         }
 
-        // The assistant body's fixture table is 3 rows × 2 columns. The M3.4
-        // surface must expose six cell elements and no cell subviews.
+        // The assistant body's fixture table is 3 rows × 2 columns. The
+        // surface exposes six accessibility elements; the glyphs live in six
+        // cell text views (pp 2026-11-21), so the surface carries six
+        // subviews while VoiceOver still reads one element per cell.
+        //
+        // This gate drives the legacy `AssistantMarkdownCell`, which applies
+        // no selection interaction; selectability of these cells is asserted
+        // on the live `CodeMessageRowView` in `code-profile`.
         var tableSurfaceCells = -1
         var tableSurfaceSubviews = -1
         var tableSurfaceLabels = -1
+        var tableCellFrameMismatches = -1
         if let tableSurface {
             tableSurfaceCells = tableSurface.debugCellElementCount
             tableSurfaceSubviews = tableSurface.debugSurfaceSubviewCount
             tableSurfaceLabels = tableSurface.debugCellLabelCount
+            tableCellFrameMismatches = tableSurface.debugCellFrameMismatchCount
             if tableSurfaceCells != 6 {
                 failures.append("textkit table: \(tableSurfaceCells) cell elements, expected 6")
             }
-            if tableSurfaceSubviews != 0 {
-                failures.append("textkit table: \(tableSurfaceSubviews) surface subviews, expected 0")
+            if tableSurfaceSubviews != 6 {
+                failures.append("textkit table: \(tableSurfaceSubviews) surface subviews, expected 6 cell views")
             }
             if tableSurfaceLabels != 0 {
                 failures.append("textkit table: \(tableSurfaceLabels) cell labels, expected 0")
+            }
+            if tableCellFrameMismatches != 0 {
+                failures.append("textkit table: \(tableCellFrameMismatches) cells off their text rect")
             }
         } else {
             failures.append("textkit table: no table surface")

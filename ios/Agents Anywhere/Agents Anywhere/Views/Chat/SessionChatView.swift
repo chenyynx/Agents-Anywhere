@@ -30,6 +30,11 @@ struct SessionChatView: View, Equatable {
     @State private var windowKeyboardVisible = false
     /// The page's bottom inset last seen with no keyboard on screen.
     @State private var keyboardFreeBottomInset: CGFloat?
+    /// The page's frame in global coordinates — a question card may fill it
+    /// between the navigation safe area and the keyboard.
+    @State private var pageFrame: CGRect?
+    /// The keyboard's top edge in window coordinates (nil while hidden).
+    @State private var keyboardTop: CGFloat?
 #if AA_TIMELINE_PROBE
     @State private var diagnosticsHUDVisible = false
 #endif
@@ -123,6 +128,7 @@ struct SessionChatView: View, Equatable {
         GeometryReader { proxy in
             TimelineChatTimelineView(model: model,
                 onAttachment: openAttachment, onFile: openFile,
+                onOpenLink: openBodyLink,
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 jumpRequest: outlineJump,
                 safeAreaInsets: timelineSafeAreaInsets(proxy),
@@ -257,7 +263,14 @@ struct SessionChatView: View, Equatable {
             // `safeAreaBar` keeps it over the content while the list
             // scrolls beneath the glass.
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                composerDockArea(maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)))
+                composerDockArea(
+                    maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)),
+                    // The bar sits on the keyboard; the card may only use the
+                    // room between the navigation bar and the keyboard. The
+                    // card scrolls beyond this cap instead of running behind
+                    // the keyboard (pp 2026-11-22).
+                    maximumCardHeight: questionCardHeightLimit(geometry)
+                )
             }
             // [E] chrome-composer.md §4 — Code page background
             // `#F9F9F7` / `#151515`, edge to edge.
@@ -266,17 +279,94 @@ struct SessionChatView: View, Equatable {
             .overlay(alignment: .topLeading) { statusOverlay }
     }
 
+    /// The card's ceiling. With the keyboard up it runs from the page's top
+    /// (the navigation safe area) down to the keyboard's top; with the
+    /// keyboard down it is a fixed 60% of the page, clamped to 320–460 pt so
+    /// the card never covers the page (pp 2026-11-22). Both end 12 pt above
+    /// the dock's bottom margin.
+    ///
+    /// `safeAreaInsets` cannot be used for the arithmetic: on device the page
+    /// frame already shrinks with the keyboard *and* the insets still report
+    /// it, so subtracting them shrank the card to its 160 pt floor (pp
+    /// 2026-11-22: 「卡片太小了」). The keyboard frame supplies the bottom
+    /// edge when the page frame itself does not move.
+    private func questionCardHeightLimit(_ geometry: GeometryProxy) -> CGFloat {
+        let insets = geometry.safeAreaInsets
+        // The top edge is the navigation safe area. Whichever of the page
+        // frame and the reported inset actually carries it, the larger one
+        // is the safe choice (a page frame that already starts below the bar
+        // reports a zero top inset, and a page that bleeds under the bar
+        // still reports the bar).
+        let top: CGFloat
+        let pageBottom: CGFloat
+        if let pageFrame {
+            top = max(pageFrame.minY, insets.top)
+            pageBottom = pageFrame.maxY
+        } else {
+            top = insets.top
+            pageBottom = max(0, geometry.size.height - insets.bottom)
+        }
+        let area = max(0, pageBottom - top)
+        let ceiling: CGFloat
+        // The keyboard is up when its end frame sits at or above the page
+        // bottom: either the page already shrank to the keyboard (the frame
+        // then equals the page bottom) or the keyboard frame supplies the
+        // tighter bottom. A hide reports its end frame at the screen bottom —
+        // below the page — and must settle on the fixed ceiling instead of
+        // ballooning for the animation.
+        if let keyboardTop, keyboardTop < pageBottom + 1 {
+            ceiling = max(0, min(pageBottom, keyboardTop) - top)
+        } else {
+            // Keyboard down: a fixed ceiling of 60% of the page, clamped, so
+            // the card never covers the page. 60% sits just above the
+            // keyboard-up height, so showing or hiding the keyboard moves the
+            // card only a little (pp 2026-11-22).
+            let fraction = area * QuestionCardMetrics.collapsedHeightFraction
+            ceiling = min(area,
+                          min(QuestionCardMetrics.collapsedHeightMaximum,
+                              max(QuestionCardMetrics.collapsedHeightMinimum, fraction)))
+        }
+        return max(160, ceiling - QuestionCardMetrics.cardBottomMargin)
+    }
+
+    /// One line per keyboard change while a question card is up: the numbers
+    /// separate a wrong page frame from a wrong keyboard frame on device.
+    private func recordQuestionCardDock(_ geometry: GeometryProxy) {
+        guard showsQuestionCard else { return }
+        func number(_ value: CGFloat?) -> String {
+            value.map { String(Int($0.rounded())) } ?? "nil"
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "question.card.dock",
+            sessionID: session.id,
+            detail: [
+                "pageTop": number(pageFrame?.minY),
+                "pageBottom": number(pageFrame?.maxY),
+                "kbTop": number(keyboardTop),
+                "cap": number(questionCardHeightLimit(geometry)),
+                "sizeH": number(geometry.size.height),
+                "insetTop": number(geometry.safeAreaInsets.top),
+                "insetBottom": number(geometry.safeAreaInsets.bottom),
+            ])
+    }
+
+    private static func keyboardTop(in note: Notification) -> CGFloat? {
+        (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
-    private func composerDockArea(maximumEditorHeight: CGFloat) -> some View {
+    private func composerDockArea(maximumEditorHeight: CGFloat,
+                                  maximumCardHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             // The SubAgent entry is no longer a dock row: it moved to the
             // navigation bar as its own circular item (pp 2026-11-18,
             // `SubAgentToolbarButton`), so the composer keeps every point of
             // vertical space the dock used to give the capsule.
             SessionInteractionDock(chat: model,
-                onShowAll: { expandedNoticeID = $0; sheet = .notices })
+                onShowAll: { expandedNoticeID = $0; sheet = .notices },
+                maximumCardHeight: maximumCardHeight)
                 .traceChatLayout("interaction-dock")
             if !showsQuestionCard {
                 ChatComposerDock(draft: session.composer, settings: model.settings,
@@ -329,7 +419,8 @@ struct SessionChatView: View, Equatable {
         case .outline: ConversationOutlineSheet(chat: model, jump: outlineJump)
         case .subagents(let cardID, let fromCapsule):
             SubAgentPanelSheet(chat: model, deviceName: deviceName, fallbackRuntimeName: fallbackRuntimeName,
-                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile, onAttachment: openAttachment)
+                initialCardID: cardID, opensFromCapsule: fromCapsule, onFile: openFile,
+                onAttachment: openAttachment, onOpenLink: openBodyLink)
         case .files:
             if let meta = session.metadata, let cwd = meta.cwd {
                 WorkspaceFilesSheet(connectorId: meta.connectorId,
@@ -444,6 +535,17 @@ struct SessionChatView: View, Equatable {
     var body: some View {
         GeometryReader { geometry in
             pageContent(geometry: geometry)
+                // The page's real frame decides how far a question card may
+                // grow: its top is the navigation safe area, its bottom is
+                // the keyboard (SwiftUI may shrink the frame itself or only
+                // report the inset — the keyboard frame fills the second
+                // case).
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    if pageFrame != frame { pageFrame = frame }
+                }
+                .onChange(of: keyboardTop) { _, _ in
+                    recordQuestionCardDock(geometry)
+                }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
@@ -534,12 +636,20 @@ struct SessionChatView: View, Equatable {
         // is only over at did-hide, so the animating frame that still carries
         // the keyboard height cannot be mistaken for the resting bottom.
         .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillShowNotification)) { _ in
+            for: UIResponder.keyboardWillShowNotification)) { note in
             windowKeyboardVisible = true
+            keyboardTop = Self.keyboardTop(in: note)
+        }
+        // The keyboard can change frame without a fresh show (language
+        // switch, candidate bar); the card's cap follows its top edge.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            keyboardTop = Self.keyboardTop(in: note)
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardDidHideNotification)) { _ in
             windowKeyboardVisible = false
+            keyboardTop = nil
             if !isOutlineSheetPresented { outlineKeyboardInsetFreeze = false }
         }
 #if AA_TIMELINE_PROBE
@@ -549,11 +659,15 @@ struct SessionChatView: View, Equatable {
         }
 #endif
         .environment(\.openURL, OpenURLAction { url in
-            if let reference = SessionFileReference.reference(from: url) {
+            switch ChatLinkRoute.route(url) {
+            case .file(let reference):
                 if session.isValid { sheet = .preview(reference) }
                 return .handled
+            case .system:
+                return .systemAction
+            case .ignore:
+                return .discarded
             }
-            return ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
@@ -803,6 +917,22 @@ struct SessionChatView: View, Equatable {
     private func openFile(_ path: String) {
         guard session.isValid, !path.isEmpty else { return }
         sheet = .preview(SessionFileReference.parse(path))
+    }
+
+    /// The Code rows draw body text in UIKit views, so their link taps never
+    /// reach the SwiftUI `openURL` action above. Returning false lets the text
+    /// view open the URL through the system — the same meaning as
+    /// `.systemAction` on the SwiftUI path.
+    private func openBodyLink(_ url: URL) -> Bool {
+        switch ChatLinkRoute.route(url) {
+        case .file(let reference):
+            if session.isValid { sheet = .preview(reference) }
+            return true
+        case .system:
+            return false
+        case .ignore:
+            return true
+        }
     }
 
     private func openAttachment(_ file: V2AttachmentContent, thumbnail: UIImage?) {

@@ -1271,6 +1271,8 @@ final class CodeProfileAutoRunModel {
 
     private func captureViews() async {
         prepareViews()
+        verifyTableIncrementalReuse()
+        await verifyTextSelectionWiring()
         await verifyMessageRowHeight()
         await verifyRowHeights()
         await verifyReadOutputHeight()
@@ -1712,7 +1714,9 @@ final class CodeProfileAutoRunModel {
                 // row itself is laid out below the status bar in the timeline.
                 // The parity gate hit the same 68 pt inset in the M1 spike.
                 .ignoresSafeArea())
-        host.view.frame = CGRect(x: 0, y: 0, width: window.bounds.width, height: 200)
+        host.view.frame = CGRect(x: 0, y: 0,
+                                 width: window.bounds.width,
+                                 height: window.bounds.height)
         host.view.backgroundColor = .clear
         window.addSubview(host.view)
         host.view.layoutIfNeeded()
@@ -1735,6 +1739,24 @@ final class CodeProfileAutoRunModel {
         let rendered = max(0, host.sizeThatFits(in: CGSize(
             width: window.bounds.width, height: .greatestFiniteMagnitude)).height
             - safeTop - safeBottom)
+
+        // Composite selection wiring (pp 2026-11-21): the row's body text is
+        // one overlay carrying one system interaction, and that overlay is
+        // what makes a drag run past a paragraph. This row is the same
+        // `CodeMessageRowView` the timeline installs.
+        if let stack = Self.findTextStack(in: host.view) {
+            let participants = stack.debugSelectionParticipantCount
+            check(participants >= 1,
+                  "views: composite selection has \(participants) participants")
+            check(stack.debugSelectionHasInteraction,
+                  "views: composite selection has no system interaction")
+            report["compositeSelection"] = [
+                "participants": participants,
+                "interaction": stack.debugSelectionHasInteraction,
+            ]
+        } else {
+            failures.append("views: no CodeMarkdownTextStackView in the message row")
+        }
 
         let measured = CodeMessageHeightMeasurer.height(
             group: group, profile: .claudeCode,
@@ -3159,6 +3181,188 @@ final class CodeProfileAutoRunModel {
     }
 
     // MARK: - Report
+
+    /// Streaming table revision on the real stack: same grid, one cell text
+    /// changed. The cell views must survive (reuse), stay selectable, and keep
+    /// their text rects; this is the path plain rendering gates never reach.
+    private func verifyTableIncrementalReuse() {
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
+        let first = """
+        Intro paragraph.
+
+        | Case | Height |
+        | --- | --- |
+        | short | 56 |
+        | long | 610 |
+        """
+        let second = first.replacingOccurrences(of: "| short | 56 |",
+                                                with: "| short | 57 |")
+        guard let doc1 = AssistantMarkdownDocumentParser.make(
+                  text: first, resolvesFileReferences: false,
+                  typography: typography),
+              let doc2 = AssistantMarkdownDocumentParser.make(
+                  text: second, resolvesFileReferences: false,
+                  typography: typography) else {
+            failures.append("tableReuse: fixture did not parse")
+            return
+        }
+        let cache = AssistantMarkdownBlockHeightCache()
+        let stack = CodeMarkdownTextStackView()
+        stack.allowsSelection = true
+        stack.install(document: doc1, key: "table-reuse-1", displayScale: 2,
+                      generation: 1, cache: cache, typographyRevision: 1,
+                      width: 361)
+        _ = stack.prepareAndMeasure(width: 361)
+        guard let table = Self.findTableBlock(in: stack) else {
+            failures.append("tableReuse: no table block after the first install")
+            return
+        }
+        // The offscreen stack has never been laid out; give the block the
+        // row's bounds and lay it out directly so the fixed card border is
+        // computed (layoutIfNeeded is a no-op on a detached view).
+        table.bounds = CGRect(x: 0, y: 0, width: 361,
+                              height: table.debugTableHeight)
+        table.layoutSubviews()
+        let identifiers = table.debugCellViewIdentifiers
+        let nonEmpty = table.debugNonEmptyCellCount
+        // Header + two body rows × two columns.
+        check(nonEmpty == 6, "tableReuse: \(nonEmpty) non-empty cells, expected 6")
+        check(table.debugSelectableCellCount == nonEmpty,
+              "tableReuse: \(table.debugSelectableCellCount) selectable cells for \(nonEmpty) cells")
+        check(table.debugCellFrameMismatchCount == 0,
+              "tableReuse: cells off their text rect")
+        // This fixture is a narrow two-column table: the card must hug the
+        // content width, not the row width, or the border shows an empty band
+        // beside the header fill and row seams.
+        check(table.debugTableWidth < table.bounds.width - 1,
+              "tableReuse: fixture is not narrower than the row"
+              + " (table \(table.debugTableWidth), bounds \(table.bounds.width))")
+        let expectedCardWidth = min(table.debugTableWidth, table.bounds.width)
+        check(abs(table.debugCardWidth - expectedCardWidth) <= 1,
+              "tableReuse: card width \(table.debugCardWidth), expected"
+              + " \(expectedCardWidth) (table \(table.debugTableWidth),"
+              + " bounds \(table.bounds.width))")
+
+        stack.install(document: doc2, key: "table-reuse-2", displayScale: 2,
+                      generation: 1, cache: cache, typographyRevision: 1,
+                      width: 361)
+        _ = stack.prepareAndMeasure(width: 361)
+        guard let updated = Self.findTableBlock(in: stack) else {
+            failures.append("tableReuse: no table block after the second install")
+            return
+        }
+        let reused = updated.debugCellViewIdentifiers == identifiers
+        check(reused, "tableReuse: cell views were rebuilt on a same-grid revision")
+        check(updated.debugSelectableCellCount == updated.debugNonEmptyCellCount,
+              "tableReuse: a reused table lost its cell interaction")
+        check(updated.debugCellFrameMismatchCount == 0,
+              "tableReuse: cells off their text rect after the update")
+        report["tableReuse"] = [
+            "cells": updated.debugNonEmptyCellCount,
+            "selectable": updated.debugSelectableCellCount,
+            "reused": reused,
+        ]
+    }
+
+    /// Selection wiring on the live Code row, fed the gate's table fixture:
+    /// the cells must carry their own interaction and the body text must be
+    /// participants of the row-level overlay.
+    private func verifyTextSelectionWiring() async {
+        guard let window = keyWindow,
+              let items = Self.decodeItems(RendererMeasureFixtureJSON.codeTable) else {
+            failures.append("textSelection: fixture unavailable")
+            return
+        }
+        let group = ChatTimelineGroup(kind: .single,
+            rows: items.map { ChatTimelineRowModel($0) },
+            explicitID: "gate-selection-wiring")
+        let typography = TimelineChatContentAdapter.typography(
+            dynamicType: String(describing: DynamicTypeSize.large),
+            layoutDirection: 0,
+            boldText: false,
+            scale: CodePageTheme.markdownScale)
+        let host = UIHostingController(rootView:
+            CodeMessageRowView(group: group, profile: .claudeCode, cwd: "/repo",
+                               typography: typography)
+                .padding(.horizontal, CodePageTheme.rowMarginLeading)
+                .ignoresSafeArea())
+        host.view.frame = CGRect(x: 0, y: 0,
+                                 width: window.bounds.width,
+                                 height: window.bounds.height)
+        host.view.backgroundColor = .clear
+        window.addSubview(host.view)
+        host.view.layoutIfNeeded()
+        await wait(800)
+        host.view.layoutIfNeeded()
+
+        if let table = Self.findTableBlock(in: host.view) {
+            let selectable = table.debugSelectableCellCount
+            let cells = table.debugNonEmptyCellCount
+            check(selectable > 0, "textSelection: table has no selectable cells")
+            check(selectable == cells,
+                  "textSelection: \(selectable) selectable cells for \(cells) non-empty cells")
+            report["tableSelection"] = [
+                "selectable": selectable,
+                "cells": cells,
+            ]
+        } else {
+            failures.append("textSelection: no table block in the fixture")
+        }
+
+        if let stack = Self.findTextStack(in: host.view) {
+            let participants = stack.debugSelectionParticipantCount
+            // The fixture has exactly one body text block (paragraph), one
+            // code block and one table. A different count means the code or
+            // table subtree leaked into the participant list.
+            check(participants == 1,
+                  "textSelection: \(participants) composite participants, expected 1")
+            check(stack.debugSelectionHasInteraction,
+                  "textSelection: composite selection has no system interaction")
+            // Wiring, not only construction: the overlay must actually be a
+            // subview covering the stack, or no touch can ever reach it.
+            let overlay = stack.debugSelectionOverlay
+            check(overlay.superview === stack,
+                  "textSelection: overlay is not installed in the stack")
+            let bounds = stack.bounds
+            let frame = overlay.frame
+            let covers = abs(frame.minX - bounds.minX) <= 0.5
+                && abs(frame.minY - bounds.minY) <= 0.5
+                && abs(frame.width - bounds.width) <= 0.5
+                && abs(frame.height - bounds.height) <= 0.5
+            check(covers,
+                  "textSelection: overlay frame \(frame) does not cover \(bounds)")
+            report["compositeSelection"] = [
+                "participants": participants,
+                "interaction": stack.debugSelectionHasInteraction,
+                "installed": overlay.superview === stack,
+                "coversStack": covers,
+            ]
+        } else {
+            failures.append("textSelection: no text stack in the fixture")
+        }
+        host.view.removeFromSuperview()
+    }
+
+    private static func findTableBlock(in view: UIView) -> AssistantTableBlockView? {
+        if let table = view as? AssistantTableBlockView { return table }
+        for subview in view.subviews {
+            if let found = findTableBlock(in: subview) { return found }
+        }
+        return nil
+    }
+
+    /// The Code row's text stack, if this view tree carries one.
+    private static func findTextStack(in view: UIView) -> CodeMarkdownTextStackView? {
+        if let stack = view as? CodeMarkdownTextStackView { return stack }
+        for subview in view.subviews {
+            if let found = findTextStack(in: subview) { return found }
+        }
+        return nil
+    }
 
     private func check(_ condition: Bool, _ message: @autoclosure () -> String) {
         guard !condition else { return }

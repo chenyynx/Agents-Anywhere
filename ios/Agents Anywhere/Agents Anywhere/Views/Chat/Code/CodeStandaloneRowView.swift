@@ -21,6 +21,9 @@ struct CodeStandaloneRowView: View, Equatable {
     /// The second argument is the thumbnail already decoded by the bubble.
     let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     let onFile: (String) -> Void
+    /// Body-link routing for the Code row this fallback draws; see
+    /// `CodeMessageRowView.onOpenLink`.
+    var onOpenLink: ((URL) -> Bool)?
     /// Interaction cards targeting this row. Passing the subset keeps unrelated
     /// groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
@@ -75,7 +78,12 @@ struct CodeStandaloneRowView: View, Equatable {
         if let answered = QuestionAnsweredModel(item: row.value) {
             // The official answered card replaces the skipped question row
             // (and the generic Code tool row an anchored answer used to draw).
+            // Its group is self-margined (no list gap), so the card draws the
+            // Code page's 5 pt row margins itself: 5 pt above and below keeps
+            // it 10 pt from both neighbours instead of 5 above / 25 below
+            // (pp 2026-11-22).
             QuestionAnsweredCardView(pairs: answered.pairs)
+                .padding(.vertical, CodePageTheme.rowMarginTop)
         } else {
         let value = row.entry(cwd: cwd)
         if case .message = row.value.content {
@@ -255,6 +263,7 @@ struct CodeStandaloneRowView: View, Equatable {
             },
             attachmentState: { _ in .complete },
             loadThumbnail: { try await chat.thumbnail(for: $0) },
-            onAttachment: onAttachment)
+            onAttachment: onAttachment,
+            onOpenLink: onOpenLink)
     }
 }

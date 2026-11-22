@@ -29,6 +29,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     let model: SessionChatModel
     private let onAttachment: (V2AttachmentContent, UIImage?) -> Void
     private let onFile: (String) -> Void
+    /// Body-link routing for the Code rows; false means "let the system open".
+    private let onOpenLink: (URL) -> Bool
     private let onSubAgent: (String) -> Void
 
     weak var controller: TimelineCollectionController?
@@ -426,11 +428,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
          onFile: @escaping (String) -> Void,
+         onOpenLink: @escaping (URL) -> Bool,
          onSubAgent: @escaping (String) -> Void,
          renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.onAttachment = onAttachment
         self.onFile = onFile
+        self.onOpenLink = onOpenLink
         self.onSubAgent = onSubAgent
         self.renderMode = renderMode
         typography = Self.currentTypography()
@@ -632,8 +636,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 hasher.combine(width)
                 let cacheKey = hasher.revision
                 if let cached = answeredCardEstimateCache[cacheKey] { return .fixed(cached) }
+                // The card's group is self-margined: the view draws the Code
+                // page's 5 pt top and bottom margins itself, so the cell has
+                // to carry them too (pp 2026-11-22).
                 let height = QuestionAnsweredCardView.estimatedHeight(
                     pairs: answered.pairs, width: width)
+                    + 2 * CodePageTheme.rowMarginTop
                 if answeredCardEstimateCache.count > 600 { answeredCardEstimateCache.removeAll() }
                 answeredCardEstimateCache[cacheKey] = height
                 return .fixed(height)
@@ -1430,7 +1438,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     loadThumbnail: { file in
                         try await chatModel.thumbnail(for: file)
                     },
-                    onAttachment: onAttachment))
+                    onAttachment: onAttachment,
+                    onOpenLink: onOpenLink))
             }
             // A group with no declared message key is one standalone row
             // (compaction divider, marker, artifact, interaction anchor). The
@@ -1442,6 +1451,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 profile: codeProfile,
                 onAttachment: onAttachment,
                 onFile: onFile,
+                onOpenLink: onOpenLink,
                 inlineNotices: group.rows.flatMap { inlineNoticesByRow[$0.id] ?? [] },
                 showsInterruptedNotice:
                     chatInterruptedItemIDs.contains(
@@ -2624,6 +2634,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         noteQueueHandoffIfNeeded()
     }
 
+    /// Viewport numbers are logged with `-1` when unmeasured. A NaN can slip
+    /// through a viewport mid-rebuild and must not read as a real size
+    /// (device 2026-11-21: `contentH=nan` on a session switch).
+    private func viewportLogValue(_ value: CGFloat?) -> String {
+        guard let value, value.isFinite else { return "-1" }
+        return String(format: "%.1f", value)
+    }
+
     /// Diagnostic probe for the queued-send handoff (device 2026-11-14).
     ///
     /// The page moved and a settled row looked active exactly when a queued
@@ -2665,9 +2683,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     return String(format: "%.1f", height)
                 }(),
                 "working": lastHasWorkingStatus ? "1" : "0",
-                "offsetY": String(format: "%.1f", viewport?.offsetY ?? -1),
-                "contentH": String(format: "%.1f", viewport?.contentHeight ?? -1),
-                "visibleH": String(format: "%.1f", viewport?.visibleHeight ?? -1),
+                "offsetY": viewportLogValue(viewport?.offsetY),
+                "contentH": viewportLogValue(viewport?.contentHeight),
+                "visibleH": viewportLogValue(viewport?.visibleHeight),
                 "atBottom": {
                     guard let viewport, viewport.isMeasured else { return "0" }
                     return viewport.visibleBottom >= viewport.contentHeight - 1 ? "1" : "0"

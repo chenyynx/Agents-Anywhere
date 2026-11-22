@@ -168,6 +168,7 @@ struct NoticeTextInput: View {
     var showsBackground = true
     var placeholderColor: Color? = nil
     var onFocus: () -> Void = {}
+    var onBlur: () -> Void = {}
     var onEditingEnded: (String) -> Void = { _ in }
     let onChange: (String, Bool, String) -> Void
     @State private var editorID = UUID().uuidString
@@ -198,7 +199,9 @@ struct NoticeTextInput: View {
                     .fill(.quaternary.opacity(0.5))
             }
         }
-        .onChange(of: draft.isFocused) { _, focused in if focused { onFocus() } }
+        .onChange(of: draft.isFocused) { _, focused in
+            if focused { onFocus() } else { onBlur() }
+        }
         .onChange(of: value, initial: true) { _, text in
             if !draft.isComposing, draft.text != text { draft.text = text }
         }

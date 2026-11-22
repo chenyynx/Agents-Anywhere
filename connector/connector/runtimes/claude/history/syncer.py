@@ -36,7 +36,7 @@ from connector.runtimes.claude.sessions.reader import (
     _history_turn_ids,
     _match_history_client_messages,
     interrupted_turn_ids_from_messages,
-    _read_raw_transcript_scan,
+    _read_raw_transcript_scan_async,
     _sdk_session_metadata,
     _session_title,
     _string_attr,
@@ -309,7 +309,7 @@ class ClaudeHistorySyncer:
         # rotation's page accounting. A value the live transport already
         # authored stays authoritative (the G1 guard): ``ensure`` overwrites a
         # truthy field, so pass None for any value the store already holds.
-        raw_scan = _read_raw_transcript_scan(session)
+        raw_scan = await _read_raw_transcript_scan_async(session)
         # Turn identity is computed over the FULL chain even when the
         # projection below only covers an incremental window: a window that
         # starts mid-turn must reproduce the seed the full import used, or the

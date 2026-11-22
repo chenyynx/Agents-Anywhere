@@ -8,12 +8,21 @@ import {
   Download,
   Edit3,
   Lock,
+  MoreHorizontal,
   RotateCw,
   Search,
   ZoomIn,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 
 type PreviewKind = "code" | "image" | "pdf" | "other"
@@ -36,9 +45,10 @@ type EmbeddedPreviewHeaderProps = {
   disabled: boolean
   onEditingChange: (editing: boolean) => void
   onViewModeChange: (mode: "zoom" | "fixed") => void
-  onZoomReset: () => void
+  onZoomChange: (zoom: number) => void
   onRefresh: () => void
   onCopy: () => void
+  onCopyPath: () => void
   onDownload: () => void
   onSave: () => void
   onSearch: () => void
@@ -66,9 +76,10 @@ export function EmbeddedPreviewHeader({
   disabled,
   onEditingChange,
   onViewModeChange,
-  onZoomReset,
+  onZoomChange,
   onRefresh,
   onCopy,
+  onCopyPath,
   onDownload,
   onSave,
   onSearch,
@@ -81,20 +92,21 @@ export function EmbeddedPreviewHeader({
   return (
     <div className="shrink-0">
       <div inert={disabled || undefined} className="flex items-center justify-center gap-[18px] bg-[#ECECEA] px-2 py-2.5">
-        <div className="flex h-[46px] items-center gap-0.5 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
+        <div className="flex h-[46px] items-center gap-1 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
           {media ? (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => onViewModeChange(viewMode === "zoom" ? "fixed" : "zoom")}
                 className={cn(
-                  "flex h-8 items-center gap-1 px-0.5 text-[15px] transition-colors",
-                  viewMode === "zoom" ? "text-[#0A84FF]" : "text-[#8A8A86]",
+                  "flex h-8 items-center gap-1 pl-0.5 pr-1 text-[15px] transition-colors",
+                  viewMode === "zoom" ? "text-[#3A3A38]" : "text-[#8A8A86]",
                 )}
               >
                 {viewMode === "zoom" ? t("zoomMode") : t("fixedMode")}
                 <ChevronDown className="size-2.5 text-[#82827F]" />
               </button>
+              <span className="h-5 w-px shrink-0 bg-[#E4E4E4]" aria-hidden="true" />
               <button
                 type="button"
                 aria-label={t("zoomMode")}
@@ -102,7 +114,7 @@ export function EmbeddedPreviewHeader({
                 onClick={() => onViewModeChange("zoom")}
                 className={cn(
                   "grid size-[30px] place-items-center rounded-[9px] text-[#8A8A86] transition-colors",
-                  viewMode === "zoom" && "bg-[#CEE3FB] text-[#144677]",
+                  viewMode === "zoom" && "bg-[#F0F0EE] text-[#3A3A38]",
                 )}
               >
                 <ZoomIn className="size-3.5" />
@@ -141,7 +153,7 @@ export function EmbeddedPreviewHeader({
           )}
         </div>
 
-        <div className="flex h-[46px] items-center gap-0.5 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
+        <div className="flex h-[46px] items-center gap-1 rounded-[10px] border-[1.1px] border-[rgba(0,0,0,0.21)] bg-white px-2.5 shadow-[0_4px_10px_rgba(0,0,0,0.04),0_4px_18px_rgba(0,0,0,0.04)]">
           {kind !== "image" && kind !== "pdf" ? (
             <IconAction
               label={copied ? tCommon("copied") : t("copy")}
@@ -154,6 +166,41 @@ export function EmbeddedPreviewHeader({
           <IconAction label={t("download")} onClick={onDownload} disabled={disabled || !canDownload}>
             <Download className="size-3.5" />
           </IconAction>
+          {media ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("more")}
+                  disabled={disabled}
+                  className="grid size-8 shrink-0 place-items-center rounded-[9px] text-[#0A0A0A] transition-colors hover:bg-[#F2F2F0] disabled:pointer-events-none disabled:opacity-30"
+                >
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="min-w-40 bg-white! text-[#0A0A0A]! ring-black/10!"
+              >
+                <DropdownMenuItem
+                  disabled={disabled}
+                  onSelect={() => onRefresh()}
+                  className="focus:bg-[#F2F2F0]! focus:text-[#0A0A0A]!"
+                >
+                  <RotateCw className="size-3.5" />
+                  {t("refresh")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={disabled}
+                  onSelect={() => onCopyPath()}
+                  className="focus:bg-[#F2F2F0]! focus:text-[#0A0A0A]!"
+                >
+                  <Copy className="size-3.5" />
+                  {t("copyPath")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
           {kind === "code" || kind === "other" ? (
             <button
               type="button"
@@ -166,16 +213,38 @@ export function EmbeddedPreviewHeader({
             </button>
           ) : null}
           {canZoom ? (
-            <button
-              type="button"
-              aria-label={t("resetZoom")}
-              disabled={disabled || viewMode === "fixed"}
-              onClick={onZoomReset}
-              className="flex h-8 min-w-[46px] items-center justify-end gap-1 text-[15px] text-[#0A0A0A] tabular-nums transition-colors disabled:text-[#B5B5B0]"
-            >
-              {Math.round(zoom * 100)}%
-              <ChevronDown className="size-2.5 text-[#82827F]" />
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("zoomLevel")}
+                  disabled={disabled || viewMode === "fixed"}
+                  className="flex h-8 min-w-[46px] items-center justify-end gap-1 pr-0.5 text-[15px] text-[#0A0A0A] tabular-nums transition-colors disabled:text-[#B5B5B0]"
+                >
+                  {Math.round(zoom * 100)}%
+                  <ChevronDown className="size-2.5 text-[#82827F]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="min-w-28 bg-white! text-[#0A0A0A]! ring-black/10!"
+              >
+                <DropdownMenuRadioGroup
+                  value={String(Math.round(zoom * 100))}
+                  onValueChange={(value) => onZoomChange(Number(value) / 100)}
+                >
+                  {[50, 75, 100, 125, 150, 200].map((percent) => (
+                    <DropdownMenuRadioItem
+                      key={percent}
+                      value={String(percent)}
+                      className="focus:bg-[#F2F2F0]! focus:text-[#0A0A0A]!"
+                    >
+                      {percent}%
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
           {truncated ? (
             <span className="ml-1 shrink-0 rounded-[5px] bg-[#F2F2F0] px-1.5 py-px text-[10px] leading-4 text-[#82827F]">

@@ -32,6 +32,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { Switch } from "@/components/ui/switch"
 import { MonacoCodeView, type MonacoCodeViewApi } from "@/components/monaco-code-view"
 import { EmbeddedPreviewHeader } from "@/components/embedded-preview-header"
+import { ImageCanvas } from "@/components/image-canvas"
 import { filePreviewLocation, type FilePreviewLocation } from "@/lib/file-preview-location"
 import { openNativeFilePreviewWindow } from "@/lib/file-preview-window"
 import { dashboardApi } from "@/features/dashboard/api"
@@ -415,15 +416,21 @@ export function FilePreviewSurface({
     zoomPillTimer.current = window.setTimeout(() => setZoomPill(false), 1500)
   }, [])
 
+  const handleZoomChange = React.useCallback((next: number) => {
+    setZoom(next)
+    showZoomPill()
+  }, [showZoomPill])
+
   React.useEffect(() => () => {
     if (zoomPillTimer.current !== null) window.clearTimeout(zoomPillTimer.current)
   }, [])
 
   // Content-level pinch: the toolbar never moves; text scales through the
-  // Monaco font size, images and PDFs scale their own content (pp 2026-11-22).
+  // Monaco font size and PDFs scale their own content. Images run their own
+  // free-canvas gestures instead (pp 2026-11-23).
   React.useEffect(() => {
     const node = contentRef.current
-    if (!node || !canZoom || fixedView) return
+    if (!node || !canZoom || fixedView || zoomableKind === "image") return
     let startDistance = 0
     let startZoom = 1
     let pinching = false
@@ -479,7 +486,7 @@ export function FilePreviewSurface({
       node.removeEventListener("gesturechange", onGestureChange, { capture: true })
       node.removeEventListener("gestureend", onGestureEnd, { capture: true })
     }
-  }, [canZoom, fixedView, showZoomPill])
+  }, [canZoom, fixedView, showZoomPill, zoomableKind])
 
   React.useEffect(() => {
     if (mode !== "window") return
@@ -624,12 +631,31 @@ export function FilePreviewSurface({
     }
   }, [state, tCommon])
 
+  const copyPath = React.useCallback(async () => {
+    const path =
+      state.kind === "text" || state.kind === "binary"
+        ? state.file.path
+        : state.kind === "directory"
+          ? state.path
+          : null
+    if (!path) return
+    try {
+      await copyToClipboard(path)
+      toast.success(tCommon("copied"))
+    } catch {
+      toast.error(tCommon("copyFailed"))
+    }
+  }, [state, tCommon])
+
   return (
     <main
       ref={containerRef}
       className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground",
-        embeddedSkin && "aa-preview-embedded",
+        "flex h-full min-h-0 flex-col overflow-hidden text-foreground",
+        // The app skin is a grey canvas with white cards floating on it — the
+        // header strip, content states and safe-area padding all use the same
+        // backdrop (pp 2026-11-23).
+        embeddedSkin ? "aa-preview-embedded bg-[#ECECEA]" : "bg-background",
         // dvh, not svh: in the app's WebView `svh` stops at the bottom safe
         // area even with viewport-fit=cover, leaving a 34 pt strip of the
         // WebView background below the page (pp 2026-11-22).
@@ -659,10 +685,11 @@ export function FilePreviewSurface({
           error={saveError ?? downloadError}
           disabled={pendingFile}
           onViewModeChange={(mode) => { setViewMode(mode); if (mode === "fixed") setZoom(1) }}
-          onZoomReset={() => setZoom(1)}
+          onZoomChange={handleZoomChange}
           onEditingChange={handleEmbeddedEditModeChange}
           onRefresh={() => void loadFile()}
           onCopy={copyText}
+          onCopyPath={() => void copyPath()}
           onDownload={() => void handleDownload()}
           onSave={() => void handleSave()}
           onSearch={() => editorRef.current?.openSearch()}
@@ -886,6 +913,9 @@ export function FilePreviewSurface({
             onDownload={() => void handleDownload()}
             downloading={false}
             zoom={embeddedSkin ? zoom : 1}
+            fixed={fixedView}
+            onZoomChange={handleZoomChange}
+            embedded={embeddedSkin}
           />
         ) : null}
         {embeddedSkin && zoomPill ? (
@@ -985,22 +1015,32 @@ function BinaryPreview({
   objectUrl,
   onDownload,
   zoom = 1,
+  fixed = false,
+  onZoomChange,
+  embedded = false,
 }: {
   file: BinaryFileInfo
   objectUrl: string | null
   onDownload: () => void
   downloading: boolean
   zoom?: number
+  fixed?: boolean
+  onZoomChange?: (zoom: number) => void
+  embedded?: boolean
 }) {
   const t = useTranslations("preview")
   const kind = previewKind(file.mediaType, file.name)
   if (objectUrl && kind === "image") {
     return (
-      <div className="size-full min-h-0 min-w-0 overflow-auto bg-muted/20 p-4">
-        <ZoomFrame zoom={zoom}>
-          <img src={objectUrl} alt={file.name} className="block size-full object-contain" />
-        </ZoomFrame>
-      </div>
+      <ImageCanvas
+        src={objectUrl}
+        alt={file.name}
+        zoom={zoom}
+        fixed={fixed}
+        onZoomChange={onZoomChange}
+        className={embedded ? "bg-[#ECECEA]" : "bg-muted/20"}
+        testId="preview-image-surface"
+      />
     )
   }
   if (objectUrl && kind === "video") {

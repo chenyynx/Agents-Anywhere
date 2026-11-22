@@ -442,15 +442,37 @@ export function FilePreviewSurface({
     const onEnd = (event: TouchEvent) => {
       if (event.touches.length < 2) pinching = false
     }
-    node.addEventListener("touchstart", onStart, { passive: true })
-    node.addEventListener("touchmove", onMove, { passive: false })
-    node.addEventListener("touchend", onEnd, { passive: true })
-    node.addEventListener("touchcancel", onEnd, { passive: true })
+    // iOS WebKit reports a two-finger pinch as gesture* events (and may keep
+    // the touchmove to itself). Handle both; capture phase so Monaco cannot
+    // swallow the gesture before it reaches the page (pp 2026-11-22).
+    let gestureStartZoom = 1
+    const onGestureStart = (event: Event) => {
+      event.preventDefault()
+      gestureStartZoom = zoomRef.current
+    }
+    const onGestureChange = (event: Event) => {
+      event.preventDefault()
+      const scale = Number((event as Event & { scale?: number }).scale)
+      if (!Number.isFinite(scale) || scale <= 0) return
+      setZoom(Math.min(3, Math.max(0.5, gestureStartZoom * scale)))
+      showZoomPill()
+    }
+    const onGestureEnd = (event: Event) => { event.preventDefault() }
+    node.addEventListener("touchstart", onStart, { capture: true, passive: true })
+    node.addEventListener("touchmove", onMove, { capture: true, passive: false })
+    node.addEventListener("touchend", onEnd, { capture: true, passive: true })
+    node.addEventListener("touchcancel", onEnd, { capture: true, passive: true })
+    node.addEventListener("gesturestart", onGestureStart, { capture: true, passive: false })
+    node.addEventListener("gesturechange", onGestureChange, { capture: true, passive: false })
+    node.addEventListener("gestureend", onGestureEnd, { capture: true, passive: false })
     return () => {
-      node.removeEventListener("touchstart", onStart)
-      node.removeEventListener("touchmove", onMove)
-      node.removeEventListener("touchend", onEnd)
-      node.removeEventListener("touchcancel", onEnd)
+      node.removeEventListener("touchstart", onStart, { capture: true })
+      node.removeEventListener("touchmove", onMove, { capture: true })
+      node.removeEventListener("touchend", onEnd, { capture: true })
+      node.removeEventListener("touchcancel", onEnd, { capture: true })
+      node.removeEventListener("gesturestart", onGestureStart, { capture: true })
+      node.removeEventListener("gesturechange", onGestureChange, { capture: true })
+      node.removeEventListener("gestureend", onGestureEnd, { capture: true })
     }
   }, [canZoom, showZoomPill])
 

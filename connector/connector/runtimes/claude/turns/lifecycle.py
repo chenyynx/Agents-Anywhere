@@ -736,7 +736,7 @@ class ClaudeTurnRunner:
             anchor = _turn_anchor_from_frame(response.cast_frame)
             execution = ClaudeExecution(
                 turn_id=(
-                    _history_turn_id(session.session_id, anchor)
+                    _history_turn_id(anchor)
                     if anchor is not None
                     else f"turn_claude_{secrets.token_urlsafe(12)}"
                 )
@@ -3056,7 +3056,7 @@ class ClaudeTurnRunner:
                     client.prompt_uuid = prompt_uuid
                     if client.user_id is not None:
                         client.user_id = prompt_uuid
-                    turn_id = _history_turn_id(session.session_id, prompt_uuid)
+                    turn_id = _history_turn_id(prompt_uuid)
                     execution.turn_id = turn_id
                 if command is None and (
                     client_message_id is not None
@@ -3245,9 +3245,7 @@ class ClaudeTurnRunner:
                     deferred_anchor = _turn_anchor_from_frame(message)
                     if deferred_anchor is not None:
                         if execution.published_items == 0:
-                            turn_id = _history_turn_id(
-                                session.session_id, deferred_anchor
-                            )
+                            turn_id = _history_turn_id(deferred_anchor)
                             execution.turn_id = turn_id
                             turn_anchor_bound = True
                         elif not turn_bind_warned:

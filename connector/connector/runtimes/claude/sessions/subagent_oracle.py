@@ -958,8 +958,8 @@ class RawTranscriptScan:
     #: is published under a turn id no other row of the run carries (pp
     #: 2026-11-18: the card alone in another turn split one step run into
     #: three one-line rows). A ``scheduled@<line>`` seed is the anchor-less
-    #: fallback; the reader expands it to the session-scoped ``scheduled``
-    #: seed ``_history_turn_ids`` would have used.
+    #: fallback; the reader expands it to the ``scheduled:<line>`` seed
+    #: ``_history_turn_ids`` would have used (no session id in it).
     turn_seeds: Mapping[str, str] = field(default_factory=dict)
     #: Hidden user-row uuid -> its 0-based line in ``raw_lines``: the prompt
     #: rows the CLI persists for turns it injected on its own (a fired

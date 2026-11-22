@@ -703,4 +703,4 @@ def test_a_dispatch_outside_the_window_keeps_the_raw_turns_anchor() -> None:
     )
 
     card = _card_items(items)[0]
-    assert card.turn_id == _history_turn_id(SESSION_ID, "prompt-row")
+    assert card.turn_id == _history_turn_id("prompt-row")

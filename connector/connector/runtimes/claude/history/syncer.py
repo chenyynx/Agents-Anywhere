@@ -314,7 +314,7 @@ class ClaudeHistorySyncer:
         # projection below only covers an incremental window: a window that
         # starts mid-turn must reproduce the seed the full import used, or the
         # same row would be re-keyed with a different turn id on every sync.
-        turn_ids = _history_turn_ids(session, visible_messages, raw_scan)
+        turn_ids = _history_turn_ids(visible_messages, raw_scan)
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(

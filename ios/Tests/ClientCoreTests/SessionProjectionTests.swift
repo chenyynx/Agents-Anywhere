@@ -277,6 +277,41 @@ import Testing
         #expect(rebuilt.data.items.first { $0.id == "item-30" }?.displayText == "page")
     }
 
+    @Test func aRepairPageReplacesStaleTurnIdsInPlace() throws {
+        func turnItem(_ order: Int, turn: String, revision: Int = 1) throws -> [String: Any] {
+            var item = try itemObject(id: "item-\(order)", order: order,
+                                      revision: revision, text: "row \(order)")
+            item["source"] = ["turnId": turn]
+            return item
+        }
+        // Device 2026-11-22: a recovery page refreshed 21...40 with canonical
+        // turn ids while the grafted 1...20 kept the ids they had before the
+        // re-key. The repair page must replace them in place, without moving
+        // the live tail or the window bounds.
+        let held = try (1...40).map {
+            try decode(turnItem($0, turn: "old"), as: V2TimelineItem.self)
+        }
+        var rebuilt = V2SessionProjection(
+            snapshot: try snapshot(items: try (21...40).map {
+                try turnItem($0, turn: "new", revision: 2)
+            }, hasMore: true),
+            maximumItems: 1000)
+        #expect(rebuilt.mergeHeldWindow(held) == 20)
+        #expect(rebuilt.data.items.first { $0.orderSeq == 1 }?.turnId == "old")
+        #expect(rebuilt.isFollowingLatest)
+
+        let repair = V2SessionTimelinePage(
+            sessionId: "session",
+            items: try (1...20).map {
+                try decode(turnItem($0, turn: "new", revision: 2), as: V2TimelineItem.self)
+            },
+            nextSeq: 100, hasMore: false, serverTime: nil)
+        #expect(rebuilt.mergeRepairPage(repair) == 0)
+        #expect(rebuilt.data.items.map(\.orderSeq) == Array(1...40))
+        #expect(rebuilt.data.items.allSatisfy { $0.turnId == "new" })
+        #expect(rebuilt.isFollowingLatest)
+    }
+
     @Test func historyWindowKeepsTheVisibleAnchorAndTheNewestTail() throws {
         // Latest page 481...500; the reader is at 495 near the tail. One older
         // page arrives with the visible anchor at 495.

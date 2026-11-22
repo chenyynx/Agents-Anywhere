@@ -1389,6 +1389,8 @@ final class V2SessionRepository {
         entry.readVersion += 1
         entry.historyTask?.cancel()
         entry.historyTask = nil
+        entry.turnBoundaryRepairTask?.cancel()
+        entry.turnBoundaryRepairTask = nil
         entry.latestRefreshTask?.cancel()
         entry.latestRefreshTask = nil
         let version = entry.readVersion
@@ -1455,6 +1457,14 @@ final class V2SessionRepository {
             // replacement instead of silently collapsing them back.
             let heldRows = entry.projection?.data.items ?? []
             let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
+            // The snapshot refreshes its own page only. Held rows below the
+            // page are the ones a mass turn-id re-key can leave behind; the
+            // page's bottom declared turn is the turn that may straddle it.
+            let snapshotPageMinOrder = snapshot.timeline.items.first?.orderSeq
+            let heldRowsBelowPage = snapshotPageMinOrder.map { pageMin in
+                heldRows.contains { $0.orderSeq < pageMin }
+            } ?? false
+            let boundaryTurnID = snapshot.timeline.items.lazy.compactMap(\.turnId).first
             entry.projection = V2SessionProjection(snapshot: snapshot, maximumItems: policy.maximumTimelineItems, now: now)
             entry.projection?.graftCompleteRows(completeRows)
             // A recovery snapshot is the newest page, not the whole timeline:
@@ -1490,11 +1500,124 @@ final class V2SessionRepository {
             invalidateCatalogs(entry)
             entry.error = nil
             emit(entry)
+            if trigger == "recovery", heldRowsBelowPage,
+               let snapshotPageMinOrder, let boundaryTurnID {
+                scheduleTurnBoundaryRepair(
+                    entry,
+                    snapshotMinOrder: snapshotPageMinOrder,
+                    boundaryTurnID: boundaryTurnID,
+                    version: version)
+            }
             evict()
             return entry.projection!.data
         }
         entry.loadTask = task
         return try await task.value
+    }
+
+    /// How many pages one boundary repair may read. A single turn longer than
+    /// this is pathological; the remaining rows keep their old ids and stay
+    /// internally consistent within their own turn.
+    private static let turnBoundaryRepairPageLimit = 8
+
+    private func scheduleTurnBoundaryRepair(
+        _ entry: Entry,
+        snapshotMinOrder: Int,
+        boundaryTurnID: V2TurnID,
+        version: Int
+    ) {
+        entry.turnBoundaryRepairTask?.cancel()
+        let id = UUID()
+        entry.turnBoundaryRepairID = id
+        entry.turnBoundaryRepairTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if entry.turnBoundaryRepairID == id {
+                    entry.turnBoundaryRepairTask = nil
+                }
+            }
+            await self.repairTurnBoundary(
+                entry,
+                snapshotMinOrder: snapshotMinOrder,
+                boundaryTurnID: boundaryTurnID,
+                version: version
+            )
+        }
+    }
+
+    /// Re-read the held rows below a recovery snapshot's page.
+    ///
+    /// A recovery snapshot exists because the server rewrote more rows than
+    /// the event budget admits. Its page refreshes the newest rows; the rows
+    /// the merge grafted back below the page can still carry the turn ids
+    /// they had before a mass re-key, so one turn shows as two step groups.
+    /// The repair reads that range again, oldest page last, and stops once the
+    /// turn named at the page's bottom edge has ended (a page whose oldest
+    /// declared turn differs from it). The rows land through `mergeRepairPage`,
+    /// which supersedes the stale copies in place without moving the anchor —
+    /// this is maintenance, not a history visit.
+    private func repairTurnBoundary(
+        _ entry: Entry,
+        snapshotMinOrder: Int,
+        boundaryTurnID: V2TurnID,
+        version: Int
+    ) async {
+        var before = snapshotMinOrder
+        var pages = 0
+        var rows = 0
+        var stoppedAtTurnEnd = false
+        while pages < Self.turnBoundaryRepairPageLimit {
+            if Task.isCancelled { return }
+            guard isCurrent(entry), entry.readVersion == version,
+                  entry.projection != nil else { return }
+            do { try requireNetwork() } catch { return }
+            let page: V2SessionTimelinePage
+            do {
+                page = try await detail.loadOlderItems(
+                    sessionId: entry.id,
+                    beforeOrderSeq: before,
+                    limit: policy.networkPageSize,
+                    excludeAgentChildren: true,
+                    deferActivity: true)
+            } catch {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.recovery.turn_boundary_repair",
+                    sessionID: entry.id,
+                    detail: [
+                        "outcome": "failed",
+                        "pages": String(pages),
+                        "turn": boundaryTurnID,
+                    ],
+                    dedupe: false)
+                return
+            }
+            guard isCurrent(entry), entry.readVersion == version,
+                  let projection = entry.projection else { return }
+            guard !page.items.isEmpty else { break }
+            projection.mergeRepairPage(page)
+            pages += 1
+            rows += page.items.count
+            emit(entry)
+            guard let oldestDeclared = page.items.lazy.compactMap(\.turnId).first else { break }
+            if oldestDeclared != boundaryTurnID {
+                stoppedAtTurnEnd = true
+                break
+            }
+            guard let first = page.items.first?.orderSeq, first < before,
+                  page.hasMore else { break }
+            before = first
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.recovery.turn_boundary_repair",
+            sessionID: entry.id,
+            detail: [
+                "outcome": "ok",
+                "pages": String(pages),
+                "rows": String(rows),
+                "turn": boundaryTurnID,
+                "stoppedAtTurnEnd": stoppedAtTurnEnd ? "1" : "0",
+            ],
+            dedupe: false)
     }
 
     private func start(_ entry: Entry, catchUp: Bool = false) {
@@ -2298,6 +2421,7 @@ final class V2SessionRepository {
         stop(entry)
         entry.loadTask?.cancel()
         entry.historyTask?.cancel()
+        entry.turnBoundaryRepairTask?.cancel()
         entry.latestRefreshTask?.cancel()
         for observer in entry.observers.values { observer.finish() }
         entry.observers.removeAll()
@@ -2352,6 +2476,12 @@ private final class Entry {
     var observers: [UUID: AsyncStream<V2SessionObservation>.Continuation] = [:]
     var loadTask: Task<V2SessionData, Error>?
     var historyTask: Task<V2SessionData, Error>?
+    /// Maintenance read of the held range just below a recovery snapshot's
+    /// page: a mass re-key can leave rows outside that page with the turn ids
+    /// they had before, splitting one turn across the page boundary. Kept
+    /// separate from `historyTask` — it never moves the reading anchor.
+    var turnBoundaryRepairTask: Task<Void, Never>?
+    var turnBoundaryRepairID = UUID()
     /// A local-first latest page was applied and a network read is reconciling
     /// it in the background. Kept separate from `historyTask` so the instant
     /// local return does not make the caller wait on the network.

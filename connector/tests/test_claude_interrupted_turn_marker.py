@@ -170,7 +170,7 @@ def test_history_projection_marks_the_stopped_turns_last_main_row() -> None:
     assert len(flagged) == 1, [item.id for item in flagged]
     anchor = flagged[0]
     assert anchor.id == stable_tool_item_id(session, TOOL_USE_ID)
-    assert anchor.turn_id == _history_turn_id(SESSION_ID, PROMPT_UUID)
+    assert anchor.turn_id == _history_turn_id(PROMPT_UUID)
     # The flag is part of the hashed content, not free metadata, so the
     # server sees the row as changed and publishes it.
     assert anchor.content_hash == timeline_content_hash(
@@ -230,7 +230,7 @@ def test_history_projection_anchors_a_text_plus_tool_turn_on_the_tool_row() -> N
     flagged = _flagged(items)
     assert len(flagged) == 1, [item.id for item in flagged]
     assert flagged[0].id == stable_tool_item_id(session, TOOL_USE_ID)
-    assert flagged[0].turn_id == _history_turn_id(SESSION_ID, PROMPT_UUID)
+    assert flagged[0].turn_id == _history_turn_id(PROMPT_UUID)
 
 
 def test_history_projection_marks_a_text_only_turn_on_its_last_message() -> None:
@@ -252,7 +252,7 @@ def test_a_window_without_the_marker_uses_the_session_fact() -> None:
     """An incremental window can hold the rows but not the marker."""
 
     session = _session()
-    turn_id = _history_turn_id(SESSION_ID, PROMPT_UUID)
+    turn_id = _history_turn_id(PROMPT_UUID)
     messages = (
         _user(PROMPT_UUID, "run it"),
         _assistant_tool("assistant-tool"),
@@ -296,8 +296,8 @@ def test_history_projection_marks_only_the_interrupted_turn() -> None:
     flagged = _flagged(items)
     assert len(flagged) == 1
     assert flagged[0].id == stable_message_item_id(session, "msg_two")
-    assert flagged[0].turn_id == _history_turn_id(SESSION_ID, second_uuid)
-    assert flagged[0].turn_id != _history_turn_id(SESSION_ID, PROMPT_UUID)
+    assert flagged[0].turn_id == _history_turn_id(second_uuid)
+    assert flagged[0].turn_id != _history_turn_id(PROMPT_UUID)
 
 
 def test_live_user_stop_stamps_the_turn_before_the_history_sync() -> None:

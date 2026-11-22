@@ -958,8 +958,8 @@ class RawTranscriptScan:
     #: is published under a turn id no other row of the run carries (pp
     #: 2026-11-18: the card alone in another turn split one step run into
     #: three one-line rows). A ``scheduled@<line>`` seed is the anchor-less
-    #: fallback; the reader expands it to the session-scoped ``scheduled``
-    #: seed ``_history_turn_ids`` would have used.
+    #: fallback; the reader expands it to the ``scheduled:<line>`` seed
+    #: ``_history_turn_ids`` would have used (no session id in it).
     turn_seeds: Mapping[str, str] = field(default_factory=dict)
     #: Hidden user-row uuid -> its 0-based line in ``raw_lines``: the prompt
     #: rows the CLI persists for turns it injected on its own (a fired
@@ -1223,6 +1223,12 @@ def scan_raw_transcript(
                 # hidden user rows (continuation nudges, command caveats,
                 # image placeholders), whose text never equals an enqueue.
                 injected_prompt_rows[row_uuid] = line_index
+                # The next assistant row anchors this turn on its message id,
+                # exactly like the SDK walk's boundary and the live cast
+                # frame. Without it the raw walk keeps the previous user
+                # turn's seed, and an Agent card rebuilt from a dispatch row
+                # outside the visible chain lands on the wrong turn.
+                pending_scheduled = True
             # A persisted conversation row closes the queue window either
             # way: the queued prompt is now the row's own, or it was never a
             # prompt (a command/notice enqueue).

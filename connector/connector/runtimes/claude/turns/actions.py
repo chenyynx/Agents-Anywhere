@@ -132,7 +132,7 @@ class ClaudeTurnActionHandler:
             # the whole surface; nothing to converge with history).
             if command is None:
                 prompt_uuid: str | None = str(uuid4())
-                turn_id = _history_turn_id(session.session_id, prompt_uuid)
+                turn_id = _history_turn_id(prompt_uuid)
             else:
                 prompt_uuid = None
                 turn_id = f"turn_claude_{secrets.token_urlsafe(12)}"

@@ -782,7 +782,7 @@ def _history_items_from_messages(
         messages, raw_scan, window_origin_uuid=window_origin_uuid
     )
     if turn_ids is None:
-        turn_ids = _history_turn_ids(session, messages, raw_scan)
+        turn_ids = _history_turn_ids(messages, raw_scan)
     # A /compact rewrites the SDK chain: the dispatch of a still-open Agent
     # task can fall out of every message the view still returns, leaving its
     # terminal notice with no task -> card join. The raw transcript keeps the
@@ -839,8 +839,7 @@ def _history_items_from_messages(
             # is built from the same chain), kept as a hard fallback so a
             # future caller passing a foreign mapping never mints None ids.
             turn_id = _history_turn_id(
-                session.session_id,
-                _history_user_turn_seed(message) or f"{session.session_id}:initial",
+                _history_user_turn_seed(message) or "initial"
             )
         if is_interrupted_request_message(message):
             # The marker inherits the preceding prompt's turn id (synthetic
@@ -1525,20 +1524,17 @@ def _raw_scan_calls(
         if seed is not None and (turn_ids or {}).get(
             _history_turn_key(dispatch_row)
         ) is None:
-            call = replace(call, turn_id=_scan_turn_id(session, seed))
+            call = replace(call, turn_id=_scan_turn_id(seed))
         resolved[tool_use_id] = call
     return resolved
 
 
-def _scan_turn_id(session: ClaudeSession, seed: str) -> str:
+def _scan_turn_id(seed: str) -> str:
     """The turn id a raw-walk seed names, in ``_history_turn_ids``' format."""
 
     if seed.startswith("scheduled@"):
-        return _history_turn_id(
-            session.session_id,
-            f"{session.session_id}:scheduled:{seed.split('@', 1)[1]}",
-        )
-    return _history_turn_id(session.session_id, seed)
+        return _history_turn_id(f"scheduled:{seed.split('@', 1)[1]}")
+    return _history_turn_id(seed)
 
 
 def scan_agent_call_cards(
@@ -2044,12 +2040,11 @@ def _history_tool_call_context(
         # No chain-level mapping (raw-row rebuilds): derive the same ids from
         # the rows given, which is exactly the pre-v6 behaviour for a full
         # chain and a best-effort seed for a detached fragment.
-        turn_ids = _history_turn_ids(session, messages, None)
+        turn_ids = _history_turn_ids(messages, None)
     for message in messages:
         role = message_role(message)
         turn_id = turn_ids.get(_history_turn_key(message)) or _history_turn_id(
-            session.session_id,
-            _history_user_turn_seed(message) or f"{session.session_id}:initial",
+            _history_user_turn_seed(message) or "initial"
         )
         # Carried onto the call block so a rebase from this lookup (a window
         # whose tool_use frame falls outside it) rebuilds the same tool rows
@@ -2507,23 +2502,26 @@ def _sdk_session_metadata(session: Any) -> dict[str, Any]:
     return metadata
 
 
-def _history_turn_id(
-    session_scope: str | None,
-    turn_seed: str,
-) -> str:
+def _history_turn_id(turn_seed: str) -> str:
     """The one turn-id format both the live turn and history projection use.
 
-    ``session_scope`` is the AA session id, NOT the external Claude session
-    id. The live side mints a turn before the native session id exists (a new
-    session learns it from its first frame), so hashing the native id would
-    give the first turn of every new session a different id live and in
-    history. The AA id is stable on both sides and is the identity the
-    timeline itself is scoped to.
+    The input is the transcript-stable seed ALONE — the prompt's row uuid, the
+    first assistant message id of a user-less turn, or a raw-walk seed. Nothing
+    about the projection context may enter this hash: one native session is
+    reachable under two AA aliases (the platform session ``sess_<random>`` and
+    the discovery session ``sess_claude_<hash>``), the Server resolves a
+    discovery sync into the platform session by external id, and a hash that
+    included the alias flipped every row whenever the two writers alternated.
+    Measured on 2026-11-22: one connector restart re-keyed 56 sessions /
+    27,052 rows, and one turn kept two ids, splitting its step group. The
+    primary seeds are uuids (prompt uuid, transcript row uuid, API message
+    id); the rare fallbacks (``initial`` / ``turn-index:N`` / ``scheduled:L``)
+    are not unique across sessions, which is harmless because grouping is per
+    session, the Server treats the id as opaque, and item ids keep their own
+    scope.
     """
 
-    digest = hashlib.sha256(
-        f"{session_scope or 'unknown'}:{turn_seed}".encode()
-    ).hexdigest()[:24]
+    digest = hashlib.sha256(turn_seed.encode()).hexdigest()[:24]
     return f"turn_claude_{digest}"
 
 
@@ -2586,11 +2584,15 @@ def _history_assistant_turn_anchor(message: Any) -> str | None:
 
 
 def _history_turn_ids(
-    session: ClaudeSession,
     messages: tuple[Any, ...],
     scan: RawTranscriptScan | None,
 ) -> dict[str, str]:
     """Assign every message in ``messages`` the turn id its projection carries.
+
+    The walk is deliberately blind to the AA session: the seed of a turn is
+    transcript-stable, and the same transcript is projected under two session
+    aliases (platform + discovery). Taking no session here makes an
+    alias-dependent id impossible to reintroduce at the walk level.
 
     Computed over the chain the caller passes. The sync path passes the FULL
     visible chain even when it projects only an incremental window, because a
@@ -2646,22 +2648,16 @@ def _history_turn_ids(
             pending_scheduled = True
         elif role == "user" and text and not synthetic_control:
             turn_index += 1
-            turn_seed = _history_user_turn_seed(message) or (
-                f"{session.session_id}:{turn_index}"
-            )
+            turn_seed = _history_user_turn_seed(message) or f"turn-index:{turn_index}"
             pending_scheduled = False
         elif pending_scheduled and role == "assistant":
             turn_seed = _history_assistant_turn_anchor(message) or (
-                f"{session.session_id}:scheduled:{line}"
+                f"scheduled:{line}"
             )
             pending_scheduled = False
         if turn_seed is None:
-            turn_seed = _history_user_turn_seed(message) or (
-                f"{session.session_id}:initial"
-            )
-        turn_ids[_history_turn_key(message)] = _history_turn_id(
-            session.session_id, turn_seed
-        )
+            turn_seed = _history_user_turn_seed(message) or "initial"
+        turn_ids[_history_turn_key(message)] = _history_turn_id(turn_seed)
     return turn_ids
 
 

@@ -383,9 +383,9 @@ struct DeviceSessionCard: View {
                         AnthropiconView(name: "anthropicon.laptop", size: .small)
                             .foregroundStyle(connectionColor)
                         Text(connectionText)
-                            // Same CJK-vs-Latin stroke-weight match as the
-                            // device status label (pp 2026-11-23).
-                            .fontWeight(.medium)
+                            // 15 pt matches the Latin run's visual weight at
+                            // regular; the 13 pt device status keeps medium
+                            // (pp 2026-11-23 two-step feedback).
                             .foregroundStyle(connectionColor)
                         Text(verbatim: "·")
                             .foregroundStyle(DevicePageStyle.secondary(colorScheme))

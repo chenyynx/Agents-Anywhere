@@ -14,6 +14,7 @@ struct VoiceLabView: View {
     @State private var slosh = true
     @State private var reduceMotion = false
     @State private var showsDictation = false
+    @State private var showsCall = false
     @State private var useMic = false
     @State private var role: VoiceVisualizerRole = .user
     @State private var verticalOffset: Float = 0
@@ -26,32 +27,44 @@ struct VoiceLabView: View {
                     : Color(red: 0.976, green: 0.976, blue: 0.969))
                 .ignoresSafeArea()
 
-            VoiceVisualizerSurface(isDark: isDark,
-                                   reduceMotion: reduceMotion,
-                                   showSlosh: slosh,
-                                   thinking: thinking,
-                                   liveLevels: live,
-                                   role: role,
-                                   levelsProvider: useMic ? { mic.snapshot } : nil,
-                                   baseYOffset: verticalOffset)
-                .ignoresSafeArea()
+            if showsCall {
+                VoiceCallPreview(role: $role,
+                                 isDark: isDark,
+                                 levelsProvider: useMic ? { mic.snapshot } : nil,
+                                 onClose: {
+                                     withAnimation(.easeInOut(duration: 0.2)) {
+                                         showsCall = false
+                                     }
+                                 })
+                    .transition(.opacity)
+            } else {
+                VoiceVisualizerSurface(isDark: isDark,
+                                       reduceMotion: reduceMotion,
+                                       showSlosh: slosh,
+                                       thinking: thinking,
+                                       liveLevels: live,
+                                       role: role,
+                                       levelsProvider: useMic ? { mic.snapshot } : nil,
+                                       baseYOffset: verticalOffset)
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                header
-                Spacer()
-                if showsDictation {
-                    VoiceDictationBar(amplitude: mockLevel,
-                                      onCancel: { showsDictation = false },
-                                      onStop: { showsDictation = false },
-                                      onSend: { showsDictation = false })
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 20)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else {
-                    footer
+                VStack(spacing: 0) {
+                    header
+                    Spacer()
+                    if showsDictation {
+                        VoiceDictationBar(amplitude: mockLevel,
+                                          onCancel: { showsDictation = false },
+                                          onStop: { showsDictation = false },
+                                          onSend: { showsDictation = false })
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 20)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else {
+                        footer
+                    }
                 }
+                .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showsDictation)
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showsDictation)
         }
         .statusBarHidden(false)
         .onChange(of: useMic) { _, isOn in
@@ -116,6 +129,7 @@ struct VoiceLabView: View {
             Toggle("Thinking", isOn: $thinking)
             Toggle("显示 slosh 液体（输入框）", isOn: $slosh)
             Toggle("听写录音条（361×52）", isOn: $showsDictation)
+            Toggle("通话预览（面板边缘环）", isOn: $showsCall)
             Toggle("减少动态效果", isOn: $reduceMotion)
         }
         .font(.system(size: 14))

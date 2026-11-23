@@ -11,7 +11,12 @@ enum NotificationSettings {
     static let sessionSocketKey = "aa.keepalive.sessionSocket"
     static let foregroundKey = "aa.notifications.foreground"
 
-    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
+    /// On unless the user turned it off: a fresh install starts with
+    /// background notifications working, and the first launch asks the OS for
+    /// permission (activate -> requestAuthorization).
+    static var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+    }
     static var showsPreview: Bool {
         UserDefaults.standard.object(forKey: previewKey) as? Bool ?? true
     }

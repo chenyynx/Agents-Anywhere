@@ -4,7 +4,7 @@ import SwiftUI
 /// a notification; these switches control display only. Background
 /// keep-alive is unconditional while notifications are on.
 struct NotificationSettingsView: View {
-    @AppStorage(NotificationSettings.enabledKey) private var enabled = false
+    @AppStorage(NotificationSettings.enabledKey) private var enabled = true
     @AppStorage(NotificationSettings.previewKey) private var preview = true
     @AppStorage(NotificationSettings.sessionSocketKey) private var sessionSocket = false
     @AppStorage(NotificationSettings.foregroundKey) private var foreground = false

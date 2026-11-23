@@ -105,7 +105,7 @@ struct ChatComposerDock: View {
                 onCommands: { showsCommandMenu.toggle() },
                 onVoice: startDictation,
                 isDictating: dictating,
-                dictationTranscript: dictation.transcript,
+                isTranscribing: dictation.isTranscribing,
                 dictationAmplitude: dictation.amplitude,
                 onVoiceCancel: cancelDictation,
                 onVoiceFinish: finishDictation,
@@ -141,6 +141,11 @@ struct ChatComposerDock: View {
         }
         .onChange(of: draft.text) { _, _ in
             if speechError != nil { speechError = nil }
+        }
+        .onChange(of: dictation.isTranscribing) { _, transcribing in
+            if !transcribing, dictating, !dictation.isRecording {
+                dictating = false
+            }
         }
         .onChange(of: dictating) { _, isDictating in
             if !isDictating, pendingDictationSend {
@@ -238,17 +243,13 @@ struct ChatComposerDock: View {
     }
 
     private func finishDictation() {
+        // Keep the card up while the final transcript lands ("正在转写…").
         dictation.stop()
-        dictating = false
     }
 
     private func sendDictation() {
         dictation.stop()
-        // The composer (and its editor) is re-created when dictation ends, so
-        // commit on the next runloop instead of sending against a torn-down
-        // editor.
         pendingDictationSend = true
-        dictating = false
     }
 
     /// Commit the editor's text, then route it: a running turn enqueues, an idle

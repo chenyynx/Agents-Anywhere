@@ -19,6 +19,7 @@ final class VoiceDictationController: ObservableObject {
     }
 
     @Published private(set) var isRecording = false
+    @Published private(set) var isTranscribing = false
     @Published private(set) var status: Status = .idle
     @Published private(set) var transcript = ""
 
@@ -31,6 +32,7 @@ final class VoiceDictationController: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private var tapInstalled = false
     private var silenceTask: Task<Void, Never>?
+    private var transcribeTimeout: Task<Void, Never>?
     private var latestTranscript = ""
     private var lastSoundAt = Date()
     private var smoothedLevel: Float = 0
@@ -81,14 +83,27 @@ final class VoiceDictationController: ObservableObject {
         }
     }
 
+    /// Ends the take but keeps the engine alive briefly for the final result.
+    /// `isTranscribing` drives the official "正在转写…" label.
     func stop() {
-        finish(auto: false)
+        guard isRecording else { return }
+        isTranscribing = true
+        request?.endAudio()
+        transcribeTimeout?.cancel()
+        transcribeTimeout = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let self, self.isTranscribing else { return }
+            self.complete()
+        }
     }
 
     func cancel() {
         latestTranscript = ""
         transcript = ""
-        finish(auto: false)
+        transcribeTimeout?.cancel()
+        transcribeTimeout = nil
+        isTranscribing = false
+        complete()
     }
 
     private func begin() {
@@ -131,6 +146,7 @@ final class VoiceDictationController: ObservableObject {
             transcript = ""
             latestTranscript = ""
             smoothedLevel = 0
+            isTranscribing = false
             lock.lock()
             samples.removeAll()
             lock.unlock()
@@ -178,7 +194,7 @@ final class VoiceDictationController: ObservableObject {
                 onPartial?(text)
             }
             if result.isFinal {
-                finish(auto: true)
+                if isTranscribing { complete() } else { finish(auto: true) }
                 return
             }
         }
@@ -190,12 +206,12 @@ final class VoiceDictationController: ObservableObject {
                 // 1110 = "No speech detected": a normal empty take, not an
                 // attachment failure and not worth an alert.
                 if nsError.code == 1110 {
-                    finish(auto: true)
+                    if isTranscribing { complete() } else { finish(auto: true) }
                     return
                 }
             }
             status = .failed(error.localizedDescription)
-            finish(auto: true)
+            if isTranscribing { complete() } else { finish(auto: true) }
         }
     }
 
@@ -204,7 +220,7 @@ final class VoiceDictationController: ObservableObject {
         silenceTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 250_000_000)
-                guard let self, self.isRecording else { return }
+                guard let self, self.isRecording, !self.isTranscribing else { return }
                 if Date().timeIntervalSince(self.lastSoundAt) > 1.5,
                    !self.latestTranscript.isEmpty {
                     self.finish(auto: true)
@@ -215,12 +231,21 @@ final class VoiceDictationController: ObservableObject {
     }
 
     private func finish(auto: Bool) {
+        complete()
+        if auto {
+            DispatchQueue.main.async { [weak self] in self?.onAutoFinish?() }
+        }
+    }
+
+    private func complete() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isRecording else { return }
+            guard let self else { return }
+            self.transcribeTimeout?.cancel()
+            self.transcribeTimeout = nil
             self.teardown()
             self.isRecording = false
+            self.isTranscribing = false
             self.status = .idle
-            if auto { self.onAutoFinish?() }
         }
     }
 

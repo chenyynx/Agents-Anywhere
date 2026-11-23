@@ -19,6 +19,10 @@
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>拍摄照片并作为附件发送给 Agent。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>录制语音并实时转写为输入框文字。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>把语音实时转写为输入框文字。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>显示最近照片，并把选中的照片作为附件发送给 Agent。</string>
 	<key>NSAppTransportSecurity</key>

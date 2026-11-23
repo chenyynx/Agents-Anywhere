@@ -18,6 +18,16 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
+    /// Starts live dictation (mic button and the empty-draft voice key).
+    var onVoice: () -> Void = {}
+    /// While dictating the same box stays: the mic becomes X and the trailing
+    /// key becomes the stop square. No second recording bar is inserted.
+    var isDictating = false
+    var isTranscribing = false
+    var dictationAmplitude: (Double) -> Float = { _ in 0 }
+    var onVoiceCancel: () -> Void = {}
+    var onVoiceFinish: () -> Void = {}
+    var onVoiceSend: () -> Void = {}
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -43,6 +53,7 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
     @State private var sendFeedback = 0
+    @State private var dictationFeedback = 0
     /// The visible send key's frame and the bar's frame, in global space.
     /// The native `Menu` is drawn as an overlay OUTSIDE the glass bar and is
     /// placed back onto the key from these two measurements (see
@@ -68,30 +79,45 @@ struct ChatComposer: View {
         GlassEffectContainer(spacing: nil) {
             VStack(spacing: 0) {
                 if !draft.attachments.isEmpty { attachmentTray }
-                ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
+                ComposerLayout(expanded: expanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     HStack(spacing: 8) {
-                        Button(action: onOptions) {
-                            // Official add artwork (pp 2026-11-20); the metric
-                            // now carries the ink-tight point size.
-                            AppSymbol("anthropicon.add", size: controls.profile.plusSymbolSize)
-                                .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
-                                .frame(width: controls.touchTarget, height: controls.touchTarget)
-                                .background {
-                                    if controls.profile.plusStyle == .circle {
-                                        // Official chrome: 36 pt circle inside
-                                        // the 44 pt hit slot, #F0EFEC light /
-                                        // white 8% dark (round30 §3.3).
-                                        Circle()
-                                            .fill(AppTheme.composerControlFill(colorScheme))
-                                            .frame(width: controls.profile.plusCircleDiameter,
-                                                   height: controls.profile.plusCircleDiameter)
-                                    }
+                        Button(action: {
+                            if isDictating {
+                                dictationFeedback += 1
+                                onVoiceCancel()
+                            } else {
+                                onOptions()
+                            }
+                        }) {
+                            Group {
+                                if isDictating {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 16, weight: .medium))
+                                } else {
+                                    // Official add artwork (pp 2026-11-20); the
+                                    // metric carries the ink-tight point size.
+                                    AppSymbol("anthropicon.add", size: controls.profile.plusSymbolSize)
                                 }
-                                .contentShape(Circle())
+                            }
+                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                            .frame(width: controls.touchTarget, height: controls.touchTarget)
+                            .background {
+                                if controls.profile.plusStyle == .circle || isDictating {
+                                    // Official chrome: 36 pt circle inside the
+                                    // 44 pt hit slot, #F0EFEC light / white 8% dark.
+                                    Circle()
+                                        .fill(AppTheme.composerControlFill(colorScheme))
+                                        .frame(width: controls.profile.plusCircleDiameter,
+                                               height: controls.profile.plusCircleDiameter)
+                                }
+                            }
+                            .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(String(localized: "附件与对话选项"))
-                        .accessibilityIdentifier("chat.composer.options")
+                        .accessibilityLabel(isDictating ? String(localized: "取消语音输入")
+                                                        : String(localized: "附件与对话选项"))
+                        .accessibilityIdentifier(isDictating ? "chat.composer.voiceCancel"
+                                                             : "chat.composer.options")
                     }
 
                     ZStack(alignment: .topLeading) {
@@ -106,7 +132,8 @@ struct ChatComposer: View {
                             maximumHeight: maximumEditorHeight, onCommandSend: onSend,
                             expandAnimation: expandAnimation, onLongPaste: onLongPaste,
                             onEditorLimitReached: onEditorLimitReached,
-                            onOversizedDraft: onOversizedDraft)
+                            onOversizedDraft: onOversizedDraft,
+                            followsTextEnd: isDictating)
                     }
 
                     // The visible send key stays inside the bar; its native
@@ -123,32 +150,40 @@ struct ChatComposer: View {
                             $0.frame(in: .global)
                         } action: { sendSlotFrame = $0 }
 
-                    // Voice-input placeholder (pp 2026-11-20): the official
-                    // empty composer shows a mic inside a 36 pt chrome circle
-                    // left of the accent key. Voice input is not implemented
-                    // yet, so the tap does nothing for now.
-                    Button(action: {}) {
-                        // 19, not 16: the cluster's sizes are tuned against the
-                        // reference device, where @ScaledMetric shrinks glyphs
-                        // ~14% (the plus draws 13 pt ink from a 15.3 config,
-                        // matching the official 13). Official mic ink is
-                        // 14x16 pt; 19 renders 14.6x16.3 there (2026-11-20).
-                        AppSymbol("anthropicon.microphone", size: 19)
-                            .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
-                            .frame(width: controls.touchTarget, height: controls.touchTarget)
-                            .background {
-                                Circle()
-                                    .fill(AppTheme.composerControlFill(colorScheme))
-                                    .frame(width: controls.sendDiameter,
-                                           height: controls.sendDiameter)
+                    // Idle: voice input. Dictating: the same slot is the stop
+                    // square; the leading slot becomes X (cancel).
+                    Button(action: {
+                        dictationFeedback += 1
+                        if isDictating { onVoiceFinish() } else { onVoice() }
+                    }) {
+                        Group {
+                            if isDictating {
+                                // Same artwork and size as the composer's own
+                                // stop state, so the two squares are identical.
+                                AppSymbol("stop.fill", size: 18)
+                            } else {
+                                // Official mic ink is 14x16 pt; 19 renders
+                                // 14.6x16.3 at the reference device.
+                                AppSymbol("anthropicon.microphone", size: 19)
                             }
-                            .contentShape(Circle())
+                        }
+                        .foregroundStyle(AppTheme.composerControlGlyph(colorScheme))
+                        .frame(width: controls.touchTarget, height: controls.touchTarget)
+                        .background {
+                            Circle()
+                                .fill(AppTheme.composerControlFill(colorScheme))
+                                .frame(width: controls.sendDiameter,
+                                       height: controls.sendDiameter)
+                        }
+                        .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "语音输入"))
-                    .accessibilityIdentifier("chat.composer.voice")
+                    .accessibilityLabel(isDictating ? String(localized: "停止听写")
+                                                    : String(localized: "语音输入"))
+                    .accessibilityIdentifier(isDictating ? "chat.composer.voiceStop"
+                                                         : "chat.composer.voice")
 
-                    if showsCommands && !commandsHidden {
+                    if showsCommands && !commandsHidden && !isDictating {
                         Button(action: onCommands) {
                             // Official Skills artwork (pp 2026-11-19): the
                             // rounded sheet with a tag. Both secondary keys
@@ -170,7 +205,7 @@ struct ChatComposer: View {
                 }
             }
             .glassEffect(.regular.interactive(), in: RoundedRectangle(
-                cornerRadius: draft.isExpanded
+                cornerRadius: expanded
                     ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
                 style: .continuous))
             .glassEffectID("composer", in: glass)
@@ -181,49 +216,90 @@ struct ChatComposer: View {
         // label can sit exactly on the visible key.
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { barFrame = $0 }
         .overlay(alignment: .topLeading) { sendKeyMenu }
-        .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
+        .overlay(alignment: .bottom) {
+            if isDictating {
+                if isTranscribing {
+                    Text(String(localized: "正在转录....."))
+                        .font(.system(size: 13))
+                        // Official glyph core measures gray 63 (#3F3F3F).
+                        .foregroundStyle(Color(white: 63.0 / 255.0))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.leading, controls.expandedContentInset + controls.touchTarget + 8)
+                        .padding(.trailing, controls.expandedContentInset + controls.touchTarget * 2 + 8)
+                        .padding(.bottom, controls.expandedBottomInset + (controls.touchTarget - 16) / 2)
+                        .allowsHitTesting(false)
+                } else {
+                    VoiceWaveformView(amplitude: dictationAmplitude)
+                        .frame(height: 25)
+                        .padding(.leading, controls.expandedContentInset + controls.touchTarget + 8)
+                        .padding(.trailing, controls.expandedContentInset + controls.touchTarget * 2 + 8)
+                        .padding(.bottom, controls.expandedBottomInset + (controls.touchTarget - 25) / 2)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .padding(.horizontal, controls.horizontalInset(expanded: expanded))
         .padding(.top, controls.topMargin)
-        .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
-        .animation(expandAnimation, value: draft.isExpanded)
+        .padding(.bottom, controls.bottomMargin(expanded: expanded))
+        .animation(expandAnimation, value: expanded)
         // The composer is the only subtree that already re-evaluates on every
         // keystroke, including each Chinese IME marked-text update. Observing
         // the draft from the page root re-evaluated the whole conversation.
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
+        .sensoryFeedback(.selection, trigger: dictationFeedback)
     }
+
+    private var expanded: Bool { draft.isExpanded || isDictating }
 
     /// Idle composer with nothing sendable: the accent key wears the official
     /// voice-mode look — black 36 pt disk, white waveform — and swaps back to
     /// the send arrow (animated) as soon as the draft has content
     /// (pp 2026-11-20).
     private var showsVoiceKey: Bool {
-        affordance.shape == .send && !draft.hasSendableContent && !isBusy
+        affordance.shape == .send && !draft.hasSendableContent && !isBusy && !isDictating
     }
 
     /// The send/queue/stop key the bar draws. Display only: the overlay
     /// `sendKeyMenu` above it owns the tap and the long press.
     private var sendKey: some View {
-        // Voice glyph 21, not 15: same scaled-metric compensation as the mic
-        // — official waveform ink is 18x18 pt (2026-11-20).
-        AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
-                  size: showsVoiceKey ? 21 : accentSymbolSize)
-            .contentTransition(.symbolEffect(.replace))
-            // Official stop key: neutral chrome (light #F0EFEC / dark white
-            // 8%) with a black text100 square — only the send key wears the
-            // accent fill. The voice key is solid black with white glyph.
-            .foregroundStyle(showsVoiceKey
-                ? AnyShapeStyle(Color.white)
-                : AnyShapeStyle(isStopState
-                    ? AppTheme.composerControlGlyph(colorScheme)
-                    : sendGlyph))
-            .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-            .background((showsVoiceKey
-                ? Color.black
-                : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
-                .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42), in: Circle())
-            .frame(width: controls.touchTarget, height: controls.touchTarget)
-            .contentShape(Circle())
-            .animation(.snappy(duration: 0.2), value: showsVoiceKey)
+        Group {
+            if isDictating {
+                // Dictation always sends: the running session's stop/queue
+                // affordance must not turn this into a second stop square.
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+                    .background(sendFill, in: Circle())
+                    .frame(width: controls.touchTarget, height: controls.touchTarget)
+                    .contentShape(Circle())
+                    .opacity(draft.hasSendableContent ? 1 : 0.5)
+            } else {
+                // Voice glyph 21, not 15: same scaled-metric compensation as
+                // the mic — official waveform ink is 18x18 pt (2026-11-20).
+                AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
+                          size: showsVoiceKey ? 21 : accentSymbolSize)
+                    .contentTransition(.symbolEffect(.replace))
+                    // Official stop key: neutral chrome with a black square —
+                    // only the send key wears the accent fill. The voice key
+                    // is solid black with a white glyph.
+                    .foregroundStyle(showsVoiceKey
+                        ? AnyShapeStyle(Color.white)
+                        : AnyShapeStyle(isStopState
+                            ? AppTheme.composerControlGlyph(colorScheme)
+                            : sendGlyph))
+                    .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+                    .background((showsVoiceKey
+                        ? Color.black
+                        : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
+                        .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42),
+                        in: Circle())
+                    .frame(width: controls.touchTarget, height: controls.touchTarget)
+                    .contentShape(Circle())
+                    .animation(.snappy(duration: 0.2), value: showsVoiceKey)
+            }
+        }
     }
 
     /// The native menu the long press opens, anchored back onto the key.
@@ -256,6 +332,19 @@ struct ChatComposer: View {
                 .frame(width: sendSlotFrame.width, height: sendSlotFrame.height)
                 .contentShape(Circle())
         } primaryAction: {
+            // Dictating: the trailing key sends the live text.
+            if isDictating {
+                dictationFeedback += 1
+                onVoiceSend()
+                return
+            }
+            // Empty draft: the key is the official black voice key, so a tap
+            // starts live dictation instead of sending.
+            if showsVoiceKey {
+                dictationFeedback += 1
+                onVoice()
+                return
+            }
             // A gray key still opens this menu on a long press — the delivery
             // choice is a persisted setting, not an action — but it sends
             // nothing (pp 2026-11-18).
@@ -343,6 +432,7 @@ struct ChatComposer: View {
     }
 
     private var accentLabel: String {
+        if isDictating { return String(localized: "发送听写文字") }
         if showsVoiceKey { return String(localized: "语音输入") }
         switch affordance.shape {
         case .queueSend:

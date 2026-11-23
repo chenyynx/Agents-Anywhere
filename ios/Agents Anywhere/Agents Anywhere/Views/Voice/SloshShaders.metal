@@ -51,7 +51,7 @@ fragment float4 sloshFragmentShader(
     float2 p0  = float2(position.x, res.y - position.y);
     float  aspect = (res.x * 0.6) / res.y;          // 0.6 * w/h
     float2 halfExt = float2(aspect, 0.6);
-    float2 p     = ((p0 * 2.0 - res) * half) / res; // 0.6*(2p-res)/res.y
+    float2 p     = ((p0 * 2.0 - res) * halfExt) / res; // 0.6*(2p-res)/res.y
 
     // ---------- rounded-box SDF (bottom corners) ----------
     float  sideR = (p.x < 0.0) ? u.bottomLeftCornerRadius : u.bottomRightCornerRadius;

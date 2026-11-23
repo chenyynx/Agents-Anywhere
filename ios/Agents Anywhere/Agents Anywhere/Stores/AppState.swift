@@ -850,21 +850,31 @@ final class AppState {
         guard NotificationSettings.isEnabled else { return }
         notificationPollTask?.cancel()
         notificationPollTask = Task { @MainActor [weak self] in
+            // The server holds the request until a record outside this set
+            // appears. Sending it is what makes the wait long: a live turn
+            // emits dashboard events every second, and without `known` the
+            // server answered each one with the same unread record.
+            var known: [String] = []
             while !Task.isCancelled {
                 guard !Task.isCancelled, let self,
                       self.autoKeepAlive, self.isInBackground else { return }
                 do {
                     // The server holds this up to 25 s and answers the moment
-                    // a record exists: delivery within a second, two requests
-                    // a minute. The shared session's 30 s request timeout
-                    // leaves margin; foregrounding cancels the held request.
-                    let response = try await services.notificationAPI.notifications(wait: 25)
+                    // a new record exists: delivery within a second, two
+                    // requests a minute. The shared session's 30 s request
+                    // timeout leaves margin; foregrounding cancels the held
+                    // request.
+                    let response = try await services.notificationAPI.notifications(
+                        wait: 25,
+                        known: known
+                    )
                     guard !Task.isCancelled, self.autoKeepAlive,
                           self.isInBackground else { return }
                     ClientDiagnosticsLog.shared.record(
                         kind: "notification.longpoll",
                         detail: ["records": String(response.notifications.count)],
                         dedupe: false)
+                    known = response.notifications.map(\.id)
                     NotificationService.shared.handle(records: response.notifications)
                 } catch {
                     if Task.isCancelled { return }
@@ -921,6 +931,7 @@ final class AppState {
 
     func setAppInBackground(_ background: Bool) {
         isInBackground = background
+        NotificationService.shared.appInForeground = !background
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {

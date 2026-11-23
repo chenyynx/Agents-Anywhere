@@ -44,6 +44,11 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     private var activated = false
     /// The session on screen, kept current by `AppState.setVisibleSession`.
     var visibleSessionId: String?
+    /// Kept current by `AppState.setAppInBackground`. A record the foreground
+    /// rules suppress is not posted at all (rather than posted and hidden):
+    /// it stays unread on the server, so leaving the app lets the long poll
+    /// deliver it instead of the banner being swallowed forever.
+    var appInForeground = true
 
     func activate() {
         guard !activated else { return }
@@ -98,7 +103,27 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
             }
             return
         }
+        let foreground = appInForeground
         for record in records {
+            if foreground {
+                let isVisible = visibleSessionId.map { $0 == record.sessionId } ?? false
+                let allowed = NotificationSettings.foregroundEnabled && !isVisible
+                if !allowed {
+                    // Leave the id unposted: the record is still unread on the
+                    // server, so the background long poll delivers it if the
+                    // user leaves without reading. Dedupe keeps this log line
+                    // to one per record.
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.deferred",
+                        sessionID: record.sessionId,
+                        detail: [
+                            "id": record.id,
+                            "visible": isVisible ? "1" : "0",
+                        ],
+                        dedupe: true)
+                    continue
+                }
+            }
             post(record)
         }
     }

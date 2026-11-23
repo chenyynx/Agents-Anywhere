@@ -2449,10 +2449,23 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             case .inactive, .connecting, .connected, .reconnecting: return false
             }
         }()
+        let runtimeState = model.session.runtime.state
+        // A stale state still seals when it was written after the newest
+        // cached row; a row newer than the state is activity it never saw.
+        // This is the normal session-switch case: the finished turn's footer
+        // stays immediate, and only a turn that streamed after the state waits
+        // for the live read (pp 2026-11-24: every switch paid the 1–2 s wait).
+        let stateCoversRows: Bool = {
+            guard let runtimeState, !model.session.runtime.isFresh else { return true }
+            return model.timeline.rows.allSatisfy {
+                $0.value.updatedSeq <= runtimeState.updatedSeq
+            }
+        }()
         let runtimeStateKnown = TimelineTurnActions.footerRuntimeStateIsTrustworthy(
-            stateExists: model.session.runtime.state != nil,
+            stateExists: runtimeState != nil,
             isFresh: model.session.runtime.isFresh,
-            connectorOffline: connectorOffline)
+            connectorOffline: connectorOffline,
+            stateCoversRows: stateCoversRows)
         let suppressLatest = TimelineTurnActions.suppressesLatest(
             latestTurnOpen: latestTurnOpen,
             runtimeIsRunning: model.isRunning,
@@ -2511,13 +2524,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     turnActions, from: closedTurnActions,
                     groupIDs: Set(groupsByID.keys))
             }
-        } else if !model.session.hasNewerItems, runtimeStateKnown {
-            // Only the newest page, with a known runtime state, is a complete
-            // map of finished footers. Browsing older history suppresses the
-            // latest bucket, and an unknown state may have withheld a running
-            // turn that is not finished; capturing either would overwrite the
-            // map with one the restore path later trusts (review 2026-11-23;
-            // the state-unknown case reproduced on build 1541 at 22:04).
+        } else if !model.session.hasNewerItems, runtimeStateKnown,
+                  !model.timeline.rows.isEmpty {
+            // Only the newest page, with a trusted runtime state and actual
+            // rows, is a complete map of finished footers. Browsing older
+            // history suppresses the latest bucket; an unknown state may have
+            // withheld a running turn that is not finished; an empty first
+            // tick (session.open) has no footers at all. Capturing any of them
+            // would overwrite the map with one the restore path later trusts
+            // (review 2026-11-23; the state-unknown case reproduced on build
+            // 1541 at 22:04).
             closedTurnActions = turnActions
         }
 

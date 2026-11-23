@@ -146,8 +146,9 @@ struct ChatComposer: View {
                     Button(action: isDictating ? onVoiceFinish : onVoice) {
                         Group {
                             if isDictating {
-                                Image(systemName: "stop.fill")
-                                    .font(.system(size: 12, weight: .semibold))
+                                // Same artwork and size as the composer's own
+                                // stop state, so the two squares are identical.
+                                AppSymbol("stop.fill", size: 18)
                             } else {
                                 // Official mic ink is 14x16 pt; 19 renders
                                 // 14.6x16.3 at the reference device.

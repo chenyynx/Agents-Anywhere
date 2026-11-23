@@ -129,7 +129,7 @@ struct VoiceLabView: View {
             Toggle("Thinking", isOn: $thinking)
             Toggle("显示 slosh 液体（输入框）", isOn: $slosh)
             Toggle("听写录音条（361×52）", isOn: $showsDictation)
-            Toggle("通话预览（面板边缘环）", isOn: $showsCall)
+            Toggle("通话预览（实际尺寸）", isOn: $showsCall)
             Toggle("减少动态效果", isOn: $reduceMotion)
         }
         .font(.system(size: 14))

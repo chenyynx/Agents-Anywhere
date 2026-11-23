@@ -1,22 +1,19 @@
 import SwiftUI
 
-/// Lab-only call-shell preview.
+/// Lab-only call-shell preview at the real device size.
 ///
-/// The official screen recording (2026-11-23) shows two distinct visible
-/// layers, not one recoloured orb:
-/// - the user's voice lights a wide blue cloud at the bottom, above the
-///   surface the transcript sits on;
-/// - the agent's voice lights an orange ring around a near-full-screen cream
-///   panel: the visualizer runs behind the panel and only the feathered rim
-///   lets it through.
-/// The panel's opacity therefore follows the speaking role.
+/// The official reference frames (2026-11-23) show:
+/// - user: a wide bottom cloud that exists even at rest and drifts toward
+///   the centre/up with the voice;
+/// - agent: an orange band undulating along the left/right/bottom edges
+///   while the assistant speaks, centre clear.
+/// `VoiceAmbientGlow` draws those curves; this view supplies the real-size
+/// controls (64 pt mic, 44 pt row, official margins).
 struct VoiceCallPreview: View {
     @Binding var role: VoiceVisualizerRole
     var isDark: Bool
     var levelsProvider: (() -> [Float])?
     var onClose: () -> Void
-
-    @State private var panelOpacity: Double = 0.15
 
     private let cream = Color(red: 249.0 / 255, green: 249.0 / 255, blue: 247.0 / 255)
     private let endFill = Color(red: 27.0 / 255, green: 32.0 / 255, blue: 37.0 / 255)
@@ -24,23 +21,10 @@ struct VoiceCallPreview: View {
 
     var body: some View {
         ZStack {
-            VoiceVisualizerSurface(isDark: isDark,
-                                   reduceMotion: false,
-                                   showSlosh: false,
-                                   thinking: false,
-                                   liveLevels: true,
-                                   role: role,
-                                   levelsProvider: levelsProvider,
-                                   baseYOffset: -0.15)
+            (isDark ? Color(red: 0.082, green: 0.082, blue: 0.082) : cream)
                 .ignoresSafeArea()
 
-            // The blurred fill is the panel: solid in the middle, feathered
-            // at the rim so the glow reads as the official edge ring.
-            RoundedRectangle(cornerRadius: 44, style: .continuous)
-                .fill(cream)
-                .padding(4)
-                .blur(radius: 40)
-                .opacity(panelOpacity)
+            VoiceAmbientGlow(role: role, levelProvider: averageLevel)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -49,11 +33,14 @@ struct VoiceCallPreview: View {
                 controls
             }
         }
-        .onAppear { panelOpacity = role == .agent ? 1.0 : 0.15 }
-        .onChange(of: role) { _, newRole in
-            withAnimation(.easeInOut(duration: 0.35)) {
-                panelOpacity = newRole == .agent ? 1.0 : 0.15
-            }
+    }
+
+    private var averageLevel: (() -> Float)? {
+        guard let levelsProvider else { return nil }
+        return {
+            let bands = levelsProvider()
+            guard !bands.isEmpty else { return 0 }
+            return min(max(bands.reduce(0, +) / Float(bands.count), 0), 1)
         }
     }
 

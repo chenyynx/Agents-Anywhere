@@ -38,10 +38,29 @@ struct TimelineTurnAction: Equatable {
 /// tool steps. A turn opens when a new user message (pending or echoed)
 /// appears and closes only on an authoritative running→idle transition.
 /// The footer waits for that close, so it never hops to each newly finished
-/// reply segment while the turn is still streaming (pp 2026-11-14).
+/// reply segment while the turn is still streaming (pp 2026-11-14). A user
+/// row that loses its turn-start role later (the steer echo's `user` →
+/// `steeringUserMessage` correction) moves the key backwards and opens
+/// nothing; the finished turn keeps its footer.
 nonisolated struct TurnFooterGate: Equatable {
     private(set) var isOpen = false
     private var userKey: String?
+    /// The timeline position of `userKey` when it is a visible user row.
+    /// A key that moves backwards is not a new turn: it is the newest row
+    /// losing its turn-start role (a steer echo published first as an
+    /// ordinary user prompt and then corrected to `steeringUserMessage`). An
+    /// outgoing pending record has no position (nil). A same-position key
+    /// change is treated the same way; that relies on the live path never
+    /// publishing one user message under two item ids at one position (the
+    /// early-publish path fixes the id before the replay).
+    private var userKeyOrder: Int?
+    /// Whether the current userless episode is a corrected user row rather
+    /// than a genuinely bubble-less turn (a compaction or a scheduled wake).
+    /// The footer must still stay suppressed through an automatic compaction
+    /// inside that turn: closing on the compaction committed a streaming
+    /// reply's footer early, the 30 pt flash the compaction rule exists to
+    /// prevent (`aCompactionLeavesAUserOpenedTurnOpen`).
+    private var correctedFallback = false
     private var endsSeen = 0
     /// Whether the open state is anchored to a user bubble this client saw
     /// arrive, rather than to a runtime status alone. A compaction's command
@@ -94,7 +113,8 @@ nonisolated struct TurnFooterGate: Equatable {
     /// gate and hid the finished turn's footer — copy/share and the 30 pt
     /// action bar — for the whole compaction (pp 2026-11-15).
     mutating func update(userKey: String?, runtimeIsRunning: Bool,
-                         authoritativeTurnEnds: Int, isCompacting: Bool = false) -> Bool {
+                         authoritativeTurnEnds: Int, isCompacting: Bool = false,
+                         userKeyOrder: Int? = nil) -> Bool {
         let turnIsRunning = runtimeIsRunning && !isCompacting
         if self.userKey == nil {
             // First refresh: a restored in-flight turn stays open; a restored
@@ -103,18 +123,40 @@ nonisolated struct TurnFooterGate: Equatable {
             // this state to a user bubble, so only a bubble may later claim
             // it as a turn.
             self.userKey = userKey
+            self.userKeyOrder = userKeyOrder
             isOpen = turnIsRunning
             openedByTurn = false
             compactionEpisode = isCompacting
+            correctedFallback = false
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
         if userKey != self.userKey {
+            // A key that moves backwards is a correction, not a new turn: the
+            // newest user row stopped starting a turn (the steer echo's
+            // `user` → `steeringUserMessage` revision) and the fallback is
+            // the previous bubble. Opening on it suppressed the finished
+            // turn's footer until the next turn ended because the fallback
+            // still counts as "anchored to a user bubble", keeping the
+            // userless restore away (pp 2026-11-23: hosts 15 → 14 → 16).
+            var regressed = false
+            if let previousOrder = self.userKeyOrder, let nextOrder = userKeyOrder {
+                regressed = nextOrder <= previousOrder
+            }
             self.userKey = userKey
-            isOpen = true
-            openedByTurn = true
-            compactionEpisode = false
+            self.userKeyOrder = userKeyOrder
             endsSeen = authoritativeTurnEnds
+            if regressed {
+                isOpen = turnIsRunning
+                openedByTurn = false
+                compactionEpisode = false
+                correctedFallback = true
+            } else {
+                isOpen = true
+                openedByTurn = true
+                compactionEpisode = false
+                correctedFallback = false
+            }
             return isOpen
         }
         if authoritativeTurnEnds != endsSeen {
@@ -125,6 +167,7 @@ nonisolated struct TurnFooterGate: Equatable {
                 isOpen = false
                 openedByTurn = false
                 compactionEpisode = false
+                correctedFallback = false
             }
         }
         if !runtimeIsRunning {
@@ -146,7 +189,7 @@ nonisolated struct TurnFooterGate: Equatable {
         // episode belongs to the compaction, not to the latest turn. Closing
         // here also repairs a gate the compaction's own status reopened in
         // the window before its marker row reached the client.
-        if isCompacting, !openedByTurn {
+        if isCompacting, !openedByTurn, !correctedFallback {
             isOpen = false
             compactionEpisode = true
         }

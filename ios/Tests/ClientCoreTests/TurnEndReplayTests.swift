@@ -41,9 +41,11 @@ import Testing
         var closed: [String: TimelineTurnAction] = [:]
 
         mutating func refresh(groups: [ChatTimelineGroup], userKey: String?,
+                              userKeyOrder: Int? = nil,
                               running: Bool, ends: Int) -> [String: TimelineTurnAction] {
             let open = gate.update(userKey: userKey, runtimeIsRunning: running,
-                                   authoritativeTurnEnds: ends)
+                                   authoritativeTurnEnds: ends,
+                                   userKeyOrder: userKeyOrder)
             var actions = TimelineTurnActions.build(groups: groups,
                                                     suppressLatest: open && running)
             if open {
@@ -95,5 +97,51 @@ import Testing
 
         // The finished turn's footer must survive the wake.
         #expect(wake["reply-1"] != nil)
+    }
+
+    /// The 2026-11-23 report (`sess_RRBf0biiw2g6WQ`): a steer echo reaches
+    /// the timeline as an ordinary user row, then the same item is corrected
+    /// to a steering row while its next turn runs. The correction must not
+    /// take the finished turn's footer away (hosts 15 → 14 → 16 on device).
+    @Test func aCorrectedSteerEchoKeepsTheFinishedFooter() throws {
+        var steerValue = try itemObject(id: "steer", text: "steer")
+        steerValue["type"] = "message"
+        steerValue["role"] = "user"
+        steerValue["status"] = "done"
+        var steerSource = steerValue["source"] as? [String: Any] ?? [:]
+        steerSource["itemType"] = "steeringUserMessage"
+        steerValue["source"] = steerSource
+        let steeringRow = ChatTimelineRowModel(try decode(steerValue))
+
+        var replay = Replay()
+        // The turn settles; its footer is committed.
+        let finished = TimelineGrouping.groups(
+            try [row("user-0", role: "user", text: "earlier"),
+                 row("reply-0", role: "assistant", text: "done")],
+            interactionTargets: [])
+        let settled = replay.refresh(groups: finished, userKey: "user-0",
+                                     userKeyOrder: 10, running: false, ends: 1)
+        #expect(settled["reply-0"] != nil)
+
+        // The steer echo arrives first as an ordinary user row.
+        let asUser = TimelineGrouping.groups(
+            try [row("user-0", role: "user", text: "earlier"),
+                 row("reply-0", role: "assistant", text: "done"),
+                 row("steer", role: "user", text: "steer")],
+            interactionTargets: [])
+        let transient = replay.refresh(groups: asUser, userKey: "steer",
+                                       userKeyOrder: 30, running: false, ends: 1)
+        #expect(transient["reply-0"] != nil)
+
+        // The same item is corrected to a steering row; its next turn runs.
+        let corrected = TimelineGrouping.groups(
+            try [row("user-0", role: "user", text: "earlier"),
+                 row("reply-0", role: "assistant", text: "done"),
+                 steeringRow,
+                 row("reply-1", role: "assistant", text: "streaming")],
+            interactionTargets: [])
+        let running = replay.refresh(groups: corrected, userKey: "user-0",
+                                     userKeyOrder: 10, running: true, ends: 1)
+        #expect(running["reply-0"] != nil)
     }
 }

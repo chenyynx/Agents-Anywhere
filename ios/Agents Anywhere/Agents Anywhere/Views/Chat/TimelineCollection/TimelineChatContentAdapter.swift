@@ -314,6 +314,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
                                        pendingHasEcho: Bool, liveTurnGroupID: String?,
                                        latestUserRowID: String?,
+                                       latestUserOrder: Int?,
                                        groups: [ChatTimelineGroup],
                                        gateLiveUserTurn: Bool) {
         let status = model.session.runtime.state?.status.rawValue ?? "nil"
@@ -343,6 +344,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "active=\(activeIDs.joined(separator: ","))",
             "ignored=\(ignoredIDs.joined(separator: ","))",
             "lastUser=\(latestUserRowID ?? "nil")",
+            // The position makes a key regression (the steer correction that
+            // caused the 2026-11-23 footer drop) visible without replaying
+            // the timeline: a lower value than the previous line is the
+            // correction, not a new turn.
+            "lastUserOrder=\(latestUserOrder.map(String.init) ?? "nil")",
         ].joined(separator: " ")
         guard probe != lastFooterGateProbe else { return }
         lastFooterGateProbe = probe
@@ -2390,9 +2396,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         let submittingPendingID = model.timeline.pendingMessages.last {
             !$0.isSteer && TimelineTurnActions.opensTurn($0.delivery)
         }?.id
-        let latestUserRowID = model.timeline.rows.last(where: {
+        let latestUserRow = model.timeline.rows.last(where: {
             $0.value.startsVisibleTurn
-        })?.id
+        })
+        let latestUserRowID = latestUserRow?.id
         // A pending bubble whose echo row is already in the timeline is no
         // longer opening a new turn; it must not force the previous turn's
         // commit or the new turn's footer.
@@ -2411,7 +2418,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // running" and lose its footer for the whole compaction
             // (pp 2026-11-15: copy/share disappeared and the page jumped
             // twice by the 30 pt action bar).
-            isCompacting: liveTurnIsCompacting())
+            isCompacting: liveTurnIsCompacting(),
+            // A key that moves backwards is a row correcting its role (the
+            // steer echo's `user` → `steeringUserMessage` revision), not a
+            // new turn. Pending records have no position.
+            userKeyOrder: submittingPendingID == nil
+                ? latestUserRow?.value.orderSeq
+                : nil)
         // The live user turn's bucket keeps the bubble-only split so a
         // queued-send turn-id flap cannot commit a footer mid-turn. Only that
         // trailing bucket is live: everything before it is finished history
@@ -2431,6 +2444,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               pendingHasEcho: submittingPendingHasEcho,
                               liveTurnGroupID: liveTurnGroupID,
                               latestUserRowID: latestUserRowID,
+                              latestUserOrder: latestUserRow?.value.orderSeq,
                               groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
@@ -2473,7 +2487,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     turnActions, from: closedTurnActions,
                     groupIDs: Set(groupsByID.keys))
             }
-        } else {
+        } else if !model.session.hasNewerItems {
+            // Only the newest page is a complete map of finished footers.
+            // Browsing older history suppresses the latest bucket, so
+            // capturing here would overwrite the map with one that is
+            // missing its newest host; the restore path would then have
+            // nothing to give back when the reader returns (review
+            // 2026-11-23, code-inferred; no device reproduction).
             closedTurnActions = turnActions
         }
 

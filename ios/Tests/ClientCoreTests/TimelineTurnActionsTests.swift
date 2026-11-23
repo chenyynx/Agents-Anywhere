@@ -813,4 +813,71 @@ struct TurnFooterGateTests {
         let afterUserArrives = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
         #expect(!afterUserArrives)
     }
+
+    /// A steer echo can reach the timeline before the live steering row does:
+    /// the turn-end history scan publishes it as an ordinary user prompt and
+    /// a moment later the same item is corrected to `steeringUserMessage`.
+    /// The newest user key then falls back to the previous bubble. That
+    /// fallback is not a new turn — it is a userless episode, so the finished
+    /// turn's footer is restored from the closed state instead of staying
+    /// suppressed until the next turn ends (pp 2026-11-23, session
+    /// `sess_RRBf0biiw2g6WQ`: footer hosts 15 → 14 → 16).
+    @Test func aUserKeyThatFallsBackDoesNotReopenTheFinishedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true,
+                        authoritativeTurnEnds: 0, userKeyOrder: 10)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        // The steer echo arrives first as a normal user row.
+        let transient = gate.update(userKey: "steer", runtimeIsRunning: false,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 30)
+        #expect(transient)
+        // The same item is corrected to a steering row; the next turn runs.
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(corrected)
+        #expect(gate.isUserlessEpisode)
+        // The userless episode ends with the next authoritative end.
+        let afterNextEnd = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                       authoritativeTurnEnds: 2, userKeyOrder: 10)
+        #expect(!afterNextEnd)
+        #expect(!gate.isUserlessEpisode)
+    }
+
+    /// The same correction while the runtime is idle must not claim a turn is
+    /// in flight — the finished footer stays committed.
+    @Test func aUserKeyFallbackWhileIdleLeavesTheFinishedTurnClosed() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        _ = gate.update(userKey: "steer", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 30)
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(!corrected)
+    }
+
+    /// A corrected steer episode is userless for the footer restore, but it
+    /// is still a real user-initiated turn: an automatic compaction inside it
+    /// must not close the gate and commit the streaming reply's footer early
+    /// (the 30 pt flash `aCompactionLeavesAUserOpenedTurnOpen` rules out).
+    @Test func aCorrectionKeepsACompactionFromRevealingTheFooterEarly() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true,
+                        authoritativeTurnEnds: 0, userKeyOrder: 10)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        _ = gate.update(userKey: "steer", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 30)
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(corrected)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1,
+                                           isCompacting: true, userKeyOrder: 10)
+        #expect(duringCompaction)
+        let afterCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                          authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(afterCompaction)
+    }
 }

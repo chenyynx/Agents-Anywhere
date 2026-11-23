@@ -57,6 +57,8 @@ from connector.runtimes.claude.sdk.tasks import task_event_from_message
 from connector.runtimes.claude.timeline.agent_calls import (
     AGENT_CARD_TERMINAL_STATUSES,
     agent_task_overlay_for_event,
+    claude_agent_call_content,
+    complete_claude_agent_call_content,
     has_live_agent_tasks,
     is_async_agent_receipt,
     resolve_agent_card_status,
@@ -2199,3 +2201,90 @@ def test_main_thinking_touched_by_subagent_same_index_delta_stays_unparented() -
             await runtime.stop()
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# 4b. the background claim survives republication (2026-11-24)
+# --------------------------------------------------------------------------
+
+
+def test_background_claim_survives_every_republish() -> None:
+    """A card republished without the flag must still say it is backgrounded.
+
+    The nested dispatch input carries no ``run_in_background`` (the real wire
+    shape on pp's 2026-11-24 session), so the claim can only come from the
+    task event; every later publication — here the launch receipt — has to
+    keep it, or the client counts the still-running card as foreground
+    activity and withholds the finished turn's footer.
+    """
+
+    projector = ClaudeMessageProjector()
+    session = _session()
+    card_id = stable_tool_item_id(session, NESTED_TUID)
+
+    projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_NESTED_DISPATCH_TOOL_USE),
+    )
+    started = task_event_from_message(_parse(WIRE_NESTED_TASK_STARTED))
+    assert started is not None
+    overlay, status = agent_task_overlay_for_event(started)
+    assert overlay.backgrounded is True
+    row = projector.fold_agent_task_event(
+        session, tool_use_id=NESTED_TUID, overlay=overlay, status=status
+    )
+    assert row.id == card_id
+    assert row.content["runInBackground"] is True
+    agents = dict(row.content.get("agents") or {})
+    assert agents[NESTED_TASK_ID]["isBackgrounded"] is True
+
+    # The receipt's completion names only `status`; the merge keeps the claim
+    # on the agents entry and the overlay keeps the top-level field.
+    row = projector.tool_items_for_message(
+        session=session,
+        turn_id="turn-1",
+        message=_parse(WIRE_NESTED_DISPATCH_RECEIPT),
+    )[0]
+    assert row.id == card_id
+    assert row.content["runInBackground"] is True
+    agents = dict(row.content.get("agents") or {})
+    assert agents[NESTED_TASK_ID]["isBackgrounded"] is True
+
+
+def test_async_receipt_marks_the_rebuilt_content_backgrounded() -> None:
+    """A cold rebuild only has the transcript; the receipt text carries it.
+
+    Task events are not persisted, and the Agent tool input may omit
+    ``run_in_background`` — so after a connector restart the launch receipt
+    is the one durable proof that the dispatch was backgrounded.
+    """
+
+    call = claude_agent_call_content(
+        tool_use_id=NESTED_TUID,
+        tool_input={
+            "description": "Second opinion on alpha.txt",
+            "prompt": "Read .../run1/work/alpha.txt and ...",
+        },
+        parent_item_id=None,
+    )
+    completed = complete_claude_agent_call_content(
+        call,
+        output=LAUNCH_RECEIPT_TEXT,
+        result={},
+        is_error=False,
+        result_details={},
+        metadata={"toolUseId": NESTED_TUID},
+    )
+    assert completed.run_in_background is True
+
+    # A sync completion does not invent the claim.
+    sync = complete_claude_agent_call_content(
+        call,
+        output="The audit finished.",
+        result={},
+        is_error=False,
+        result_details={"status": "completed"},
+        metadata={"toolUseId": NESTED_TUID},
+    )
+    assert sync.run_in_background is not True

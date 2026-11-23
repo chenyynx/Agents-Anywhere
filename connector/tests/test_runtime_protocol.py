@@ -166,6 +166,38 @@ def test_complete_tool_content_preserves_concrete_kind(
     assert completed.metadata["outputText"] == "done"
 
 
+def test_completing_an_agent_call_keeps_agent_entry_extras() -> None:
+    """A receipt names only `status`; the entry's other keys must survive.
+
+    `isBackgrounded` is the claim the client's footer exemption reads. A
+    completion that replaced the whole agents map dropped it, and the card
+    then counted as foreground activity until a later publication restored
+    it (pp 2026-11-24: the finished turn's footer was withheld).
+    """
+
+    call = RuntimeAgentCall(
+        action="invoke",
+        title="Inspect repository",
+        description="Inspect repository",
+        agent_type="general-purpose",
+        prompt="Inspect the repository",
+        input={"prompt": "Inspect the repository"},
+        agents={"agent_1": {"status": "running", "isBackgrounded": True}},
+    ).to_timeline_content()
+
+    completed = complete_agent_call_content(
+        call,
+        output="Async agent launched successfully.",
+        result={},
+        is_error=False,
+        agents={"agent_1": {"status": "async_launched"}},
+    )
+
+    assert completed.agents == {
+        "agent_1": {"status": "async_launched", "isBackgrounded": True}
+    }
+
+
 def test_runtime_agent_call_serializes_and_completes_platform_content() -> None:
     call = RuntimeAgentCall(
         action="spawn",

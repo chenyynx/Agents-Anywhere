@@ -96,7 +96,7 @@ def complete_claude_agent_call_content(
     )
     model = _string(result_details.get("resolvedModel") or result_details.get("model"))
     status = _string(result_details.get("status"))
-    return complete_agent_call_content(
+    completed = complete_agent_call_content(
         call,
         output=output,
         result=result,
@@ -113,6 +113,16 @@ def complete_claude_agent_call_content(
         usage=_agent_call_usage(result_details),
         metadata=metadata,
     )
+    if not completed.run_in_background and is_async_agent_receipt(
+        result_details, output
+    ):
+        # The launch receipt is the one durable proof that this dispatch runs
+        # in the background. The transcript keeps the receipt text but not the
+        # SDK task events (`is_backgrounded`) and, in some sessions, not even
+        # `run_in_background` in the tool input — so a card rebuilt after a
+        # connector restart can only recover the claim from here.
+        return replace(completed, run_in_background=True)
+    return completed
 
 
 def _agent_call_usage(result: Mapping[str, Any]) -> Mapping[str, int]:
@@ -438,6 +448,16 @@ class ClaudeAgentTaskOverlay:
     prompt: str | None = None
     summary: str | None = None
     end_time: int | None = None
+    #: The dispatch declared itself backgrounded (``task_started``'s
+    #: ``is_backgrounded``). Task events are the only live carrier of this
+    #: fact — the transcript stores neither them nor, in every session, a
+    #: ``run_in_background`` in the Agent tool input (verified 2026-11-24 on
+    #: sess_2zXT: 18 Agent calls, none with the key) — so the overlay keeps it
+    #: and ``apply`` republishes it as the top-level ``run_in_background`` on
+    #: every fold. That is what makes the client's "wait for the child?"
+    #: exemption survive a card's later republication. Monotonic: once true it
+    #: is never cleared by a later event that does not carry the field.
+    backgrounded: bool | None = None
 
     def merge(self, other: ClaudeAgentTaskOverlay) -> None:
         for agent_id, entry in other.agents.items():
@@ -456,6 +476,8 @@ class ClaudeAgentTaskOverlay:
             self.summary = other.summary
         if other.end_time is not None:
             self.end_time = other.end_time
+        if other.backgrounded:
+            self.backgrounded = True
 
     def apply(self, content: AgentCallToolContent) -> AgentCallToolContent:
         metadata = dict(content.metadata)
@@ -476,6 +498,12 @@ class ClaudeAgentTaskOverlay:
             agents[agent_id] = (
                 {**existing, **entry} if isinstance(existing, Mapping) else dict(entry)
             )
+        run_in_background = content.run_in_background
+        if not run_in_background and self.backgrounded:
+            # The card was published by this fold, so the claim rides along
+            # even when the frame that triggered it (a receipt, a rebuilt
+            # transcript row) no longer carried the flag.
+            run_in_background = True
         return replace(
             content,
             # The dispatch input is authoritative when it named the agent or
@@ -485,6 +513,7 @@ class ClaudeAgentTaskOverlay:
             prompt=content.prompt or self.prompt,
             agents=agents,
             usage={**dict(content.usage), **self.usage},
+            run_in_background=run_in_background,
             metadata=metadata,
         )
 
@@ -588,6 +617,7 @@ def agent_task_overlay_for_event(
                 description=event.description,
                 agent_type=event.subagent_type,
                 prompt=event.prompt,
+                backgrounded=event.is_backgrounded,
             ),
             "running",
         )

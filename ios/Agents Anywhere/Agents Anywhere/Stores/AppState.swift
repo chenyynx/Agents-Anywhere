@@ -67,6 +67,14 @@ final class AppState {
     /// The product (not the Settings probe) started the keep-alive ladder for
     /// the current background window; only that instance is auto-stopped.
     @ObservationIgnored private var autoKeepAlive = false
+    /// Grace window after the last live work: the connector publishes the
+    /// idle state before the turn ledger row, and the notification lives on
+    /// the snapshot that carries the ledger. Stopping at the first idle would
+    /// cancel the dashboard before that snapshot arrives.
+    @ObservationIgnored private var keepAliveStopTask: Task<Void, Never>?
+    /// Safety net for a stalled dashboard push: while the ladder holds the
+    /// process, read the server's records directly every 10 s.
+    @ObservationIgnored private var notificationPollTask: Task<Void, Never>?
     @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
@@ -791,15 +799,33 @@ final class AppState {
         while !Task.isCancelled {
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
+                var loggedConnect = false
                 for try await snapshot in updates {
                     if Task.isCancelled || cachedServices !== services { return }
+                    if !loggedConnect {
+                        loggedConnect = true
+                        ClientDiagnosticsLog.shared.record(
+                            kind: "dashboard.ws.connect",
+                            detail: ["attempt": String(attempt)],
+                            dedupe: false)
+                    }
                     attempt = 0
                     applyDashboardSnapshot(snapshot)
+                }
+                if loggedConnect {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "dashboard.ws.disconnect",
+                        detail: ["reason": "closed"],
+                        dedupe: false)
                 }
             } catch {
                 if Task.isCancelled { return }
                 let failure = V2ClientFailure(error)
                 guard cachedServices === services else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "dashboard.ws.disconnect",
+                    detail: ["reason": failure.message],
+                    dedupe: false)
                 dashboardError = failure.message
                 if !failure.permitsAutomaticReconnect { return }
             }
@@ -819,6 +845,36 @@ final class AppState {
         evaluateBackgroundKeepAlive(snapshot)
     }
 
+    private func startNotificationPolling(services: V2ClientServices) {
+        guard NotificationSettings.isEnabled else { return }
+        notificationPollTask?.cancel()
+        notificationPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, let self,
+                      self.autoKeepAlive, self.isInBackground else { return }
+                do {
+                    let records = try await services.notificationAPI.notifications()
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.poll",
+                        detail: ["records": String(records.count)],
+                        dedupe: false)
+                    NotificationService.shared.handle(records: records)
+                } catch {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.poll",
+                        detail: ["error": "1"],
+                        dedupe: true)
+                }
+            }
+        }
+    }
+
+    private func stopNotificationPolling() {
+        notificationPollTask?.cancel()
+        notificationPollTask = nil
+    }
+
     /// The ladder starts with the turn (while in front) and ends only at the
     /// true terminal state: idle with no background work. A turn that ends
     /// while a background agent runs keeps the window open for its wake turn.
@@ -828,15 +884,31 @@ final class AppState {
             session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
         } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
         if hasLiveWork {
+            keepAliveStopTask?.cancel()
+            keepAliveStopTask = nil
             guard NotificationSettings.isEnabled,
                   NotificationSettings.keepAliveEnabled,
                   !KeepAliveCoordinator.shared.isOn else { return }
             KeepAliveCoordinator.shared.start()
             autoKeepAlive = true
-        } else if autoKeepAlive {
-            KeepAliveCoordinator.shared.stop()
-            autoKeepAlive = false
-            cancelDashboardUpdates()
+            if let services = cachedServices { startNotificationPolling(services: services) }
+        } else if autoKeepAlive, keepAliveStopTask == nil {
+            keepAliveStopTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self, self.autoKeepAlive,
+                      self.isInBackground else { return }
+                let live = self.sessions.contains { session in
+                    session.status.isTurnInFlight
+                        || (session.backgroundTasks ?? 0) > 0
+                } || (self.cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+                self.keepAliveStopTask = nil
+                guard !live else { return }
+                KeepAliveCoordinator.shared.stop()
+                self.autoKeepAlive = false
+                self.stopNotificationPolling()
+                self.cachedServices?.sessionRepository.suspend()
+                self.cancelDashboardUpdates()
+            }
         }
     }
 
@@ -864,15 +936,29 @@ final class AppState {
                 && NotificationSettings.keepAliveEnabled
                 && hasLiveWork
             if keepAlive {
+                keepAliveStopTask?.cancel()
+                keepAliveStopTask = nil
                 KeepAliveCoordinator.shared.start()
                 autoKeepAlive = true
+                if let services = cachedServices {
+                    startNotificationPolling(services: services)
+                }
             } else {
                 cancelDashboardUpdates()
             }
-            // Session sockets always close; only the dashboard channel stays
-            // up, and only while the ladder holds the process.
-            cachedServices?.sessionRepository.suspend()
+            // Keep the conversation the user is watching on the wire alongside
+            // the dashboard channel; every other session socket closes.
+            let keptSession: Set<V2SessionID>
+            if keepAlive, case let .session(id) = chatSelection {
+                keptSession = [id]
+            } else {
+                keptSession = []
+            }
+            cachedServices?.sessionRepository.suspend(keeping: keptSession)
         } else {
+            keepAliveStopTask?.cancel()
+            keepAliveStopTask = nil
+            stopNotificationPolling()
             if autoKeepAlive {
                 KeepAliveCoordinator.shared.stop()
                 autoKeepAlive = false

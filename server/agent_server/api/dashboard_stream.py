@@ -13,6 +13,7 @@ from agent_server.api.server_push_websocket import (
 from agent_server.core.device_runtime import DeviceRuntimeView
 from agent_server.core.utc import utc_now
 from agent_server.deps import (
+    current_user_id,
     get_rpc,
     get_session_runtime_state_cache,
     get_store,
@@ -104,6 +105,35 @@ async def _dashboard_snapshot(
         },
         "serverTime": utc_now(),
     }
+
+
+@router.get("/notifications")
+async def dashboard_notifications(
+    user_id: str = Depends(current_user_id),
+    db: Store = Depends(get_store),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+    runtime_state_cache: SessionRuntimeStateCache = Depends(
+        get_session_runtime_state_cache
+    ),
+) -> dict[str, Any]:
+    """Server-decided notification records, for the client's background poll.
+
+    The dashboard push is the primary channel; this read is the safety net for
+    a stalled websocket (a turn that ends while the app is backgrounded must
+    still surface). Same derivation, same ids — the client dedupes by id.
+    """
+
+    sessions = await db.list_session_inventory(user_id=user_id)
+    sessions = await project_session_meta_for_dashboard(
+        manager,
+        runtime_state_cache,
+        sessions,
+    )
+    notifications = await derive_dashboard_notifications(
+        sessions,
+        lambda session_id: _latest_assistant_text(db, session_id),
+    )
+    return {"notifications": notifications, "serverTime": utc_now()}
 
 
 @router.websocket("/ws")

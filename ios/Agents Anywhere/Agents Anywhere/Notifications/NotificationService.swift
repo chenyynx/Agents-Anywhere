@@ -35,6 +35,17 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         guard !activated else { return }
         activated = true
         center.delegate = self
+        center.getNotificationSettings { settings in
+            ClientDiagnosticsLog.shared.record(
+                kind: "notification.settings",
+                detail: [
+                    "enabled": NotificationSettings.isEnabled ? "1" : "0",
+                    "preview": NotificationSettings.showsPreview ? "1" : "0",
+                    "keepAlive": NotificationSettings.keepAliveEnabled ? "1" : "0",
+                    "authorization": String(settings.authorizationStatus.rawValue),
+                ],
+                dedupe: false)
+        }
         if NotificationSettings.isEnabled {
             requestAuthorization()
         }
@@ -48,8 +59,32 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     /// dashboard snapshot path, which is alive in the background only while
     /// the keep-alive ladder holds the process.
     func handle(snapshot: V2DashboardSnapshot) {
-        guard NotificationSettings.isEnabled else { return }
-        for record in snapshot.notifications ?? [] {
+        handle(records: snapshot.notifications ?? [])
+    }
+
+    /// The one display path: dashboard snapshots and the background poll both
+    /// feed the same records here. Dedupe is by record id.
+    func handle(records: [V2DashboardNotification]) {
+        if !records.isEmpty {
+            ClientDiagnosticsLog.shared.record(
+                kind: "notification.snapshot",
+                detail: [
+                    "records": String(records.count),
+                    "ids": records.map(\.id).joined(separator: ","),
+                    "enabled": NotificationSettings.isEnabled ? "1" : "0",
+                ],
+                dedupe: false)
+        }
+        guard NotificationSettings.isEnabled else {
+            if !records.isEmpty {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "notification.skipped",
+                    detail: ["reason": "disabled", "records": String(records.count)],
+                    dedupe: false)
+            }
+            return
+        }
+        for record in records {
             post(record)
         }
     }
@@ -90,13 +125,18 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Foreground: never banner on top of the app the user is already in; the
-    /// notification stays in Notification Center.
+    /// Show the banner in the foreground too (pp 2026-11-23): the completion
+    /// cue must not depend on whether the app happens to be in front when the
+    /// turn ends — a suppressed foreground banner reads as a lost notification.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        []
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.foreground",
+            detail: ["id": notification.request.identifier],
+            dedupe: false)
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(

@@ -76,6 +76,11 @@ nonisolated struct V2DashboardNotification: Decodable, Hashable, Identifiable {
     let createdAt: String?
 }
 
+nonisolated struct V2DashboardNotificationsResponse: Decodable, Hashable {
+    let notifications: [V2DashboardNotification]
+    let serverTime: String
+}
+
 nonisolated struct V2DashboardSnapshot: Decodable, Hashable {
     let type: String
     let connectors: [V2Connector]

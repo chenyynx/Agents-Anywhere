@@ -127,6 +127,9 @@ final class V2SessionRepository {
     private var lastKnownPins: [V2SessionID: Bool] = [:]
     private var accessCounter = 0
     private var suspended = false
+    /// Sessions whose socket survives `suspend()`: background keep-alive keeps
+    /// the conversation the user is watching connected, not just the dashboard.
+    private var suspendedKeptIDs: Set<V2SessionID> = []
     private(set) var network = V2NetworkStatus()
 
     init(
@@ -1324,13 +1327,18 @@ final class V2SessionRepository {
         }
     }
 
-    func suspend() {
+    func suspend(keeping kept: Set<V2SessionID> = []) {
         suspended = true
-        for entry in entries.values { stop(entry); emit(entry, persist: false) }
+        suspendedKeptIDs = kept
+        for entry in entries.values where !kept.contains(entry.id) {
+            stop(entry)
+            emit(entry, persist: false)
+        }
     }
 
     func resume() {
         suspended = false
+        suspendedKeptIDs.removeAll()
         for entry in entries.values { start(entry, catchUp: true) }
         // A window left behind while the app was away heals on resume even
         // when neither an opening nor a bottom trigger runs. Only observed
@@ -1631,7 +1639,9 @@ final class V2SessionRepository {
     }
 
     private func start(_ entry: Entry, catchUp: Bool = false) {
-        guard isCurrent(entry), !entry.model.isLocalCreation, !suspended, network.availability != .offline,
+        guard isCurrent(entry), !entry.model.isLocalCreation,
+              !suspended || suspendedKeptIDs.contains(entry.id),
+              network.availability != .offline,
               !entry.observers.isEmpty, entry.connectionTask == nil else { return }
         // Healing rides the observed lifecycle: it needs an entry someone is
         // looking at, and stop() ends both. It starts *after* the guards so an

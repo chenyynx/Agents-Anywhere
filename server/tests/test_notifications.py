@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
+import asyncio
+
 
 from agent_server.core.models import SessionView
 from agent_server.services.notifications import (
@@ -77,13 +78,14 @@ def test_preview_strips_markdown_and_truncates() -> None:
     assert len(text) <= 160
 
 
-@pytest.mark.asyncio
-async def test_derive_completed_record_uses_turn_scoped_id_and_preview() -> None:
+def test_derive_completed_record_uses_turn_scoped_id_and_preview() -> None:
     async def assistant_text(session_id: str) -> str:
         assert session_id == "sess_1"
         return "已经修好了，原因是页脚状态机。"
 
-    records = await derive_dashboard_notifications([_session()], assistant_text)
+    records = asyncio.run(
+        derive_dashboard_notifications([_session()], assistant_text)
+    )
     assert len(records) == 1
     record = records[0]
     assert record["id"] == "completed:sess_1:9"
@@ -92,14 +94,15 @@ async def test_derive_completed_record_uses_turn_scoped_id_and_preview() -> None
     assert record["deepLink"] == "agents-anywhere://session/sess_1"
 
 
-@pytest.mark.asyncio
-async def test_derive_skips_sessions_whose_work_is_still_running() -> None:
+def test_derive_skips_sessions_whose_work_is_still_running() -> None:
     async def assistant_text(_session_id: str) -> str:
         raise AssertionError("preview must not be read while background work runs")
 
     assert (
-        await derive_dashboard_notifications(
-            [_session(backgroundTasks=1)], assistant_text
+        asyncio.run(
+            derive_dashboard_notifications(
+                [_session(backgroundTasks=1)], assistant_text
+            )
         )
         == []
     )

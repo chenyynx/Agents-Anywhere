@@ -76,6 +76,10 @@ final class AppState {
     /// foreground; ids dedupe against anything already posted.
     @ObservationIgnored private var notificationCatchUpTask: Task<Void, Never>?
     @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
+    /// A notification tap that can arrive before the launch restore finishes.
+    /// Buffered so the saved selection cannot overwrite the tapped session
+    /// (OpenMinis `NotificationNavigationStore`); entries expire after 30 s.
+    @ObservationIgnored private var notificationTarget: (session: V2SessionID, at: Date)?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
     init() {
@@ -118,8 +122,10 @@ final class AppState {
         ) { [weak self] note in
             guard let sessionID = note.userInfo?["sessionId"] as? String,
                   !sessionID.isEmpty else { return }
-            Task { @MainActor [weak self] in
-                self?.chatSelection = .session(sessionID)
+            // The observer queue is the main queue: no extra Task hop, so the
+            // selection is written on this turn rather than the next one.
+            MainActor.assumeIsolated {
+                self?.openSessionFromNotification(sessionID)
             }
         }
         NotificationService.shared.activate()
@@ -149,7 +155,8 @@ final class AppState {
         serverURL = url
         if let profile = restoration.profile(server: url, token: token) {
             me = profile
-            chatSelection = restoration.selection(in: .init(serverURL: url, accountID: profile.userId))
+            chatSelection = preferredSelection(
+                restoration.selection(in: .init(serverURL: url, accountID: profile.userId)))
             if let services = makeV2Services() { await services.restoreCache(selection: chatSelection) }
         }
         guard epoch == authenticationEpoch else { return }
@@ -158,6 +165,40 @@ final class AppState {
         route = .signedIn
         startDashboardUpdates()
         beginAccountSynchronization()
+    }
+
+    /// Routes a notification tap to its session. A tap that arrives before the
+    /// launch restore is buffered so `preferredSelection` can keep it: on a
+    /// cold launch the saved selection is applied after the tap is delivered,
+    /// and without the buffer it overwrites the conversation the user asked
+    /// for. The tap itself lands on this main-queue turn (no extra Task hop).
+    private func openSessionFromNotification(_ sessionID: V2SessionID) {
+        let beforeRestore = route != .signedIn
+        if beforeRestore {
+            notificationTarget = (sessionID, Date())
+        }
+        chatSelection = .session(sessionID)
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.tap",
+            sessionID: sessionID,
+            detail: ["preRestore": beforeRestore ? "1" : "0"],
+            dedupe: false)
+    }
+
+    /// A fresh notification tap outranks the saved selection. The buffer is
+    /// one-shot and expires after 30 s so a stale tap cannot hijack a later
+    /// account change (OpenMinis `NotificationNavigationStore`).
+    private func preferredSelection(_ restored: ChatShellSelection) -> ChatShellSelection {
+        guard let target = notificationTarget else { return restored }
+        notificationTarget = nil
+        let age = Date().timeIntervalSince(target.at)
+        guard age <= 30 else { return restored }
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.tap.restore",
+            sessionID: target.session,
+            detail: ["ageSec": String(Int(age))],
+            dedupe: false)
+        return .session(target.session)
     }
 
     func retryServerConnection() async {
@@ -184,7 +225,8 @@ final class AppState {
                     guard !Task.isCancelled, authenticationEpoch == epoch, accountSyncID == id else { return }
                     let accountChanged = me?.userId != profile.userId
                     if accountChanged {
-                        chatSelection = restoration.selection(in: .init(serverURL: serverURL, accountID: profile.userId))
+                        chatSelection = preferredSelection(
+                            restoration.selection(in: .init(serverURL: serverURL, accountID: profile.userId)))
                     }
                     me = profile
                     if accountChanged, let services = makeV2Services() { await services.restoreCache(selection: chatSelection) }
@@ -754,6 +796,7 @@ final class AppState {
         cachedServicesTokenProvider?.update(nil)
         cachedServicesTokenProvider = nil
         chatSelection = .newSession; restoreConnectionError = nil
+        notificationTarget = nil
         visibleSessionID = nil
         NotificationService.shared.visibleSessionId = nil
         me = nil

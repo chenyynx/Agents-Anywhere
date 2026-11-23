@@ -29,6 +29,7 @@ struct DiagnosticsLogSettingsView: View {
     @State private var shareItems: [Any] = []
     @State private var showsShare = false
     @State private var confirmsClear = false
+    @State private var probeRunning = false
 
     var body: some View {
         SettingsScreen(title: String(localized: "Diagnostics log")) {
@@ -36,6 +37,28 @@ struct DiagnosticsLogSettingsView: View {
                 SettingsToggleRow(icon: "anthropicon.research",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
+            }
+
+            SettingsSection(footer: String(localized: "P0 probe: start a background task, send the app to the background, then reopen and read the keepalive.continued lines in today's log. Test only.")) {
+                Button {
+                    toggleProbe()
+                } label: {
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("timer", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                        Text(probeRunning
+                            ? String(localized: "End background task")
+                            : String(localized: "Test background task"))
+                            .font(SettingsStyle.text(16))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             SettingsSection(String(localized: "Log files")) {
@@ -102,6 +125,7 @@ struct DiagnosticsLogSettingsView: View {
         .task {
             reload()
             didLoad = true
+            probeRunning = ContinuedRun.shared.isRunning
         }
         .onChange(of: enabled) { _, isOn in
             if isOn {
@@ -127,6 +151,24 @@ struct DiagnosticsLogSettingsView: View {
         .sheet(isPresented: $showsShare) {
             DiagnosticsShareSheet(items: shareItems)
         }
+    }
+
+    /// P0 probe: a `true` from `begin` means `BGTaskScheduler.submit` accepted
+    /// the request; whether iOS actually starts the task is only visible in
+    /// the log (`keepalive.continued.started` / `.expired`).
+    private func toggleProbe() {
+        if probeRunning {
+            ContinuedRun.shared.end()
+            probeRunning = false
+        } else {
+            probeRunning = ContinuedRun.shared.begin(
+                subtitle: String(localized: "Background keep-alive probe"))
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "keepalive.probe.button",
+            detail: ["running": probeRunning ? "true" : "false"],
+            dedupe: false)
+        reload()
     }
 
     private func dayRow(_ day: DiagnosticsDay) -> some View {

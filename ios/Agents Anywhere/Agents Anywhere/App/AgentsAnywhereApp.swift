@@ -14,6 +14,9 @@ struct AgentsAnywhereApp: App {
         // One-time migration of the retired collection-timeline Bool into the
         // render-mode enum, before any view reads the mode.
         TimelineRenderModeSwitch.migrateIfNeeded()
+        // BackgroundTasks requires the launch handler before the app finishes
+        // launching (P0 probe; see Background/ContinuedRun.swift).
+        ContinuedRun.registerAtLaunch()
     }
 
     var body: some Scene {

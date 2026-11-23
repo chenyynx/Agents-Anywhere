@@ -1238,6 +1238,10 @@ jobs:
           # Prove the deployment-target patch landed in the shipped binary.
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" $APP/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" $APP/Info.plist
+          # P0: prove the background-task identifier expanded to the signed
+          # bundle id and the audio background mode survived packaging.
+          /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" $APP/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" $APP/Info.plist
           (cd /tmp/out && zip -qr "$GITHUB_WORKSPACE/agents-anywhere.ipa" Payload)
           ls -lh "$GITHUB_WORKSPACE/agents-anywhere.ipa"

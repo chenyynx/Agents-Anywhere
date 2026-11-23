@@ -34,6 +34,7 @@ wake frames in the L1 file.
 from __future__ import annotations
 
 import asyncio
+import copy
 from types import SimpleNamespace
 from typing import Any
 
@@ -2288,3 +2289,48 @@ def test_async_receipt_marks_the_rebuilt_content_backgrounded() -> None:
         metadata={"toolUseId": NESTED_TUID},
     )
     assert sync.run_in_background is not True
+
+
+def test_a_root_card_keeps_the_background_claim_after_the_receipt() -> None:
+    """The user-visible shape: a *root* card (the one the footer counts).
+
+    The dispatch input is stripped of ``run_in_background`` on purpose — this
+    is the real shape on pp's 2026-11-24 session — so the claim must come from
+    the task event and survive the receipt republication.
+    """
+
+    frame = copy.deepcopy(WIRE_DISPATCH_TOOL_USE)
+    frame["message"]["content"][0]["input"].pop("run_in_background", None)
+    projector = ClaudeMessageProjector()
+    session = _session()
+    card_id = stable_tool_item_id(session, DISPATCH_TUID)
+
+    projector.tool_items_for_message(
+        session=session, turn_id="turn-1", message=_parse(frame)
+    )
+    started = task_event_from_message(_parse(WIRE_TASK_STARTED))
+    assert started is not None
+    overlay, status = agent_task_overlay_for_event(started)
+    projector.fold_agent_task_event(
+        session, tool_use_id=DISPATCH_TUID, overlay=overlay, status=status
+    )
+    row = projector.tool_items_for_message(
+        session=session, turn_id="turn-1", message=_parse(WIRE_DISPATCH_RECEIPT)
+    )[0]
+    assert row.id == card_id
+    assert row.content["runInBackground"] is True
+    agents = dict(row.content.get("agents") or {})
+    assert agents[TASK_ID]["isBackgrounded"] is True
+
+
+def test_task_updated_patch_background_moves_the_card_to_background() -> None:
+    """CLI 2.1.330: a later move to the background arrives only in the patch."""
+
+    frame = copy.deepcopy(WIRE_TASK_UPDATED)
+    frame["patch"] = {"status": "running", "is_backgrounded": True}
+    event = task_event_from_message(_parse(frame))
+    assert event is not None
+    assert event.is_backgrounded is True
+    overlay, status = agent_task_overlay_for_event(event)
+    assert overlay.backgrounded is True
+    assert status == "running"

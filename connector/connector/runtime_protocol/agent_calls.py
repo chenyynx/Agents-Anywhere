@@ -93,6 +93,11 @@ def complete_agent_call_content(
     # `isBackgrounded` in particular, and the client's "wait for the agent?"
     # exemption reads exactly that (pp 2026-11-24: the finished turn's footer
     # was withheld until a later publication restored the flag).
+    #
+    # Defensive for now: every present caller passes an empty (or None) map
+    # and folds task state through `ClaudeAgentTaskOverlay.apply`, which does
+    # its own per-entry merge. An explicit `{}` therefore no longer clears the
+    # map; no caller wants that today, and a future one should say so.
     merged_agents: dict[str, Any] = {
         key: dict(value) if isinstance(value, Mapping) else value
         for key, value in completed.agents.items()

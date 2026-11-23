@@ -637,6 +637,11 @@ def agent_task_overlay_for_event(
             ClaudeAgentTaskOverlay(
                 agents={event.task_id: _terminal_agent_entry(event.status)},
                 end_time=event.end_time,
+                # A foreground agent the CLI moved to the background arrives
+                # here only in `patch.is_backgrounded`; the overlay's merge is
+                # monotonic, so a terminal update without the field keeps the
+                # claim a started frame already made.
+                backgrounded=event.is_backgrounded,
             ),
             agent_task_terminal_status(event.status) or "running",
         )

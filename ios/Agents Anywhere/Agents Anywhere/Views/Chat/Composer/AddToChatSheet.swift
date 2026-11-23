@@ -35,7 +35,7 @@ struct AddToChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
-    private enum Page: Hashable { case models, efforts, permissions }
+    private enum Page: Hashable { case models, efforts, permissions, connectors }
     private let tile: CGFloat = 100
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 28, style: .continuous)
@@ -93,8 +93,11 @@ struct AddToChatSheet: View {
                         }
                     }
                     card {
+                        // Chat-side entry reuses the shared connector screens
+                        // inside this sheet (official `Surface.chatComposer`);
+                        // it never routes through Settings.
                         row(icon: "anthropicon.connectors", title: String(localized: "连接器"),
-                            value: String(localized: "即将支持"), enabled: false) {}
+                            value: nil, enabled: true) { path.append(.connectors) }
                     }
                     takeoverCard
                     if !canAttach {
@@ -152,6 +155,7 @@ struct AddToChatSheet: View {
                         .navigationTitle(String(localized: "思考强度"))
                         .navigationBarTitleDisplayMode(.inline)
                 case .permissions: permissionsPage
+                case .connectors: ConnectorsSettingsView()
                 }
             }
         }

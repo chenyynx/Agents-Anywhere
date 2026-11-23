@@ -231,6 +231,10 @@ struct AccountSettingsSheet: View {
 
     private var connectionSection: some View {
         SettingsSection(String(localized: "Connection")) {
+            SettingsNavigationRow(icon: "anthropicon.connectors",
+                                  title: String(localized: "Connectors"),
+                                  destination: ConnectorsSettingsView())
+            SettingsRowDivider()
             SettingsNavigationRow(icon: "anthropicon.cloud",
                                   title: String(localized: "Server"),
                                   value: appState.serverURL?.host,

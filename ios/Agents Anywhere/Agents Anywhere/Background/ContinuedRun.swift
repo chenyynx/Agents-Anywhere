@@ -33,6 +33,9 @@ final class ContinuedRun {
     private var registered = false
     private var attemptedRegistration = false
     private(set) var isRunning = false
+    /// iOS ended the task before the app did; the coordinator degrades to the
+    /// silent-audio level.
+    var onExpired: (@MainActor () -> Void)?
 
     /// Called from `AgentsAnywhereApp.init`: BackgroundTasks takes a launch
     /// handler only before the app finishes launching.
@@ -136,6 +139,7 @@ final class ContinuedRun {
                     detail: ["identifier": self.identifier ?? "?"],
                     dedupe: false)
                 self.finish(success: false)
+                self.onExpired?()
             }
         }
         let startedAt = Date()

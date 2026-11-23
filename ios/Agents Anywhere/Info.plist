@@ -24,9 +24,14 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>location</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>拍摄照片并作为附件发送给 Agent。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>在后台保持连接以便及时收到任务通知。不会读取或上传你的位置。</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>在后台保持连接以便及时收到任务通知。不会读取或上传你的位置。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>显示最近照片，并把选中的照片作为附件发送给 Agent。</string>
 	<key>NSAppTransportSecurity</key>

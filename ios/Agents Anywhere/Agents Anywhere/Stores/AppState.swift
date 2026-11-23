@@ -854,7 +854,6 @@ final class AppState {
         notificationPollTask?.cancel()
         notificationPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
                 guard !Task.isCancelled, let self,
                       self.autoKeepAlive, self.isInBackground else { return }
                 do {
@@ -870,6 +869,10 @@ final class AppState {
                         detail: ["error": "1"],
                         dedupe: true)
                 }
+                // 3 s: a turn can end between polls, and the old 10 s window
+                // let a foreground return cancel the fetch before it ran
+                // (pp 2026-11-23: turn ended 21:21:44.8, return 21:21:54.2).
+                try? await Task.sleep(for: .seconds(3))
             }
         }
     }

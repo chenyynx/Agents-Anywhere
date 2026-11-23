@@ -132,7 +132,8 @@ struct ChatComposer: View {
                             maximumHeight: maximumEditorHeight, onCommandSend: onSend,
                             expandAnimation: expandAnimation, onLongPaste: onLongPaste,
                             onEditorLimitReached: onEditorLimitReached,
-                            onOversizedDraft: onOversizedDraft)
+                            onOversizedDraft: onOversizedDraft,
+                            followsTextEnd: isDictating)
                     }
 
                     // The visible send key stays inside the bar; its native

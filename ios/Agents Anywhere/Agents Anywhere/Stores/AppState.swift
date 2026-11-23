@@ -796,15 +796,33 @@ final class AppState {
         while !Task.isCancelled {
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
+                var loggedConnect = false
                 for try await snapshot in updates {
                     if Task.isCancelled || cachedServices !== services { return }
+                    if !loggedConnect {
+                        loggedConnect = true
+                        ClientDiagnosticsLog.shared.record(
+                            kind: "dashboard.ws.connect",
+                            detail: ["attempt": String(attempt)],
+                            dedupe: false)
+                    }
                     attempt = 0
                     applyDashboardSnapshot(snapshot)
+                }
+                if loggedConnect {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "dashboard.ws.disconnect",
+                        detail: ["reason": "closed"],
+                        dedupe: false)
                 }
             } catch {
                 if Task.isCancelled { return }
                 let failure = V2ClientFailure(error)
                 guard cachedServices === services else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "dashboard.ws.disconnect",
+                    detail: ["reason": failure.message],
+                    dedupe: false)
                 dashboardError = failure.message
                 if !failure.permitsAutomaticReconnect { return }
             }
@@ -853,6 +871,7 @@ final class AppState {
                 guard !live else { return }
                 KeepAliveCoordinator.shared.stop()
                 self.autoKeepAlive = false
+                self.cachedServices?.sessionRepository.suspend()
                 self.cancelDashboardUpdates()
             }
         }
@@ -889,9 +908,15 @@ final class AppState {
             } else {
                 cancelDashboardUpdates()
             }
-            // Session sockets always close; only the dashboard channel stays
-            // up, and only while the ladder holds the process.
-            cachedServices?.sessionRepository.suspend()
+            // Keep the conversation the user is watching on the wire alongside
+            // the dashboard channel; every other session socket closes.
+            let keptSession: Set<V2SessionID>
+            if keepAlive, case let .session(id) = chatSelection {
+                keptSession = [id]
+            } else {
+                keptSession = []
+            }
+            cachedServices?.sessionRepository.suspend(keeping: keptSession)
         } else {
             keepAliveStopTask?.cancel()
             keepAliveStopTask = nil

@@ -2621,7 +2621,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     coverage: coverage,
                     stateExists: runtimeState != nil,
                     runtimeStateSeq: runtimeState?.updatedSeq ?? 0,
-                    connection: model.session.connection)
+                    connection: self.model.session.connection)
             })
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is

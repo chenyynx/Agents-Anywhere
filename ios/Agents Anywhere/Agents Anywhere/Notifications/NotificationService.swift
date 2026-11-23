@@ -59,12 +59,18 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     /// dashboard snapshot path, which is alive in the background only while
     /// the keep-alive ladder holds the process.
     func handle(snapshot: V2DashboardSnapshot) {
-        let records = snapshot.notifications ?? []
+        handle(records: snapshot.notifications ?? [])
+    }
+
+    /// The one display path: dashboard snapshots and the background poll both
+    /// feed the same records here. Dedupe is by record id.
+    func handle(records: [V2DashboardNotification]) {
         if !records.isEmpty {
             ClientDiagnosticsLog.shared.record(
                 kind: "notification.snapshot",
                 detail: [
                     "records": String(records.count),
+                    "ids": records.map(\.id).joined(separator: ","),
                     "enabled": NotificationSettings.isEnabled ? "1" : "0",
                 ],
                 dedupe: false)

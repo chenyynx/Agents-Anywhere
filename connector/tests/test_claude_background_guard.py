@@ -470,20 +470,20 @@ def test_failed_turn_with_live_background_keeps_transport() -> None:
             assert connection.background.active_ids
 
             await client.incoming.put(_parse(WIRE_TASK_NOTIFICATION_COMPLETED))
-            await _wait_until(lambda: not connection.background.active_ids)
+            await _wait_until(lambda: connection.background.wake_owed())
 
             await runtime.start_turn("failguard", "native_timer", "after")
             await asyncio.wait_for(runtime._sessions["failguard"].active_task, 5)
             assert host.session_turn_ends[-1]["outcome"] == "completed"
-            # The context-window calibration (Stage A3) also ran, at the first
-            # idle moment the transport had — after "after", because the live
-            # background work of "hello"'s turn kept the probe away. It is not
-            # one of the user's prompts.
-            assert client.queries == [
-                "hello",
-                "after",
-                context_probe.CLAUDE_CONTEXT_PROMPT,
-            ]
+            # The context-window calibration (Stage A3) stays away: the
+            # terminal notification promised a wake reply and this fake never
+            # sends one, so the transport is not provably idle until
+            # WAKE_OWED_TIMEOUT_SECONDS expires (2026-11-24: a probe taken in
+            # that window would swallow the reply's opening frames). Neither
+            # prompt is a calibration — what this test pins is that the
+            # transport was reused, not what maintenance ran on it.
+            assert connection.background.wake_owed() is True
+            assert client.queries == ["hello", "after"]
             assert len(built) == 1, "the transport must be reused, not rebuilt"
         finally:
             await runtime.stop()

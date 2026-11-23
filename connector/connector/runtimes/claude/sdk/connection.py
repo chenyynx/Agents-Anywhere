@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -72,6 +72,12 @@ DEFERRED_EVENT_WORKER_TIMEOUT_SECONDS = 5.0
 #
 # Read at call time, so a test can shrink it without patching call sites.
 DECLINED_TERMINAL_GRACE_SECONDS = 30.0
+#: How long a maintenance response's yielded anchor hint stays usable. The
+#: hint is the message id of the first uninvited reply frame a maintenance
+#: response consumed before stepping aside; the next silence mint uses it as
+#: the turn's anchor. The bound keeps a hint from an abandoned window from
+#: re-keying a much later turn.
+DEFERRED_ANCHOR_TTL_SECONDS = 120.0
 LEGACY_RECONCILE_PROMPT = (
     "AA connection maintenance: call CronList exactly once to report the current "
     "scheduled task list, then stop. If needed, use ToolSearch to find CronList. "
@@ -80,6 +86,46 @@ LEGACY_RECONCILE_PROMPT = (
 RECONCILE_PROMPT = (
     f"{LEGACY_RECONCILE_PROMPT} End with exactly {RECONCILE_DONE_MARKER}."
 )
+
+
+def turn_anchor_from_frame(frame: Any) -> str | None:
+    """The transcript-stable id a live frame contributes as a turn anchor.
+
+    This is the live half of the turn-id contract; history reads the same
+    strings off the persisted rows (``reader._history_turn_ids``).
+
+    * ``message_start`` stream event: ``event.message.id``. It is the first
+      frame of the reply and already carries the id every persisted row of
+      that API message shares, so even the partial rows published before the
+      full ``assistant`` frame are keyed by the final id.
+    * full assistant frame: ``message_id`` (prefers the Anthropic
+      ``message.id``; the row uuid is the fallback).
+
+    A user frame contributes nothing on purpose: a turn cast by an injected
+    user frame (peer/channel message) has no AA user item, and history can
+    only anchor such a turn on its first assistant row as well. Anything
+    else has no anchor: the caller keeps the provisional id and binds on a
+    later frame (see ``drive_turn``).
+
+    Lives here (not in ``turns/lifecycle``) because a maintenance response
+    that steps aside must record the same anchor before the mint consumes it.
+    """
+
+    if frame is None:
+        return None
+    if is_stream_event(frame):
+        event = getattr(frame, "event", None)
+        if isinstance(event, Mapping):
+            payload = event.get("message")
+            if isinstance(payload, Mapping):
+                value = payload.get("id")
+                if isinstance(value, str) and value:
+                    return value
+        return None
+    if message_role(frame) != "assistant":
+        return None
+    value = message_id(frame)
+    return value if isinstance(value, str) and value else None
 
 
 def _is_wire_chrome(message: Any) -> bool:
@@ -458,6 +504,14 @@ class ClaudeConnection:
     closing: bool = False
     task_ids: set[str] = field(default_factory=set)
     background: ClaudeBackgroundTasks = field(default_factory=ClaudeBackgroundTasks)
+    #: The anchor a maintenance response saw but could not keep: the message id
+    #: of the first uninvited reply frame it consumed before stepping aside
+    #: (2026-11-24: the probe ate a wake reply's opening message, and the mint
+    #: that followed anchored on the second, splitting one turn into two step
+    #: groups). The next silence mint prefers it over the cast frame's own id.
+    #: TTL-bounded so an abandoned window cannot re-key a much later turn.
+    deferred_anchor_hint: str | None = None
+    deferred_anchor_at: float | None = None
     #: Whether THIS connection's initialize declared the per-task stop
     #: affordance. Recorded at build time from the declaration install's
     #: return value (red team F-A/F-C: the stop path reads the connection's
@@ -906,6 +960,42 @@ class ClaudeConnection:
         self.selected.clear()
         self._notify_turn_changed()
         return True
+
+    def note_deferred_anchor(self, message_id: str | None) -> None:
+        """Keep the earliest anchor an uninvited reply showed a maintenance
+        response, so the silence mint does not key the turn on a later frame."""
+
+        if not message_id:
+            return
+        now = time.monotonic()
+        if (
+            self.deferred_anchor_hint is not None
+            and self.deferred_anchor_at is not None
+            and now - self.deferred_anchor_at <= DEFERRED_ANCHOR_TTL_SECONDS
+        ):
+            return
+        self.deferred_anchor_hint = message_id
+        self.deferred_anchor_at = now
+
+    def deferred_anchor(
+        self,
+        *,
+        now: float | None = None,
+        ttl: float = DEFERRED_ANCHOR_TTL_SECONDS,
+    ) -> str | None:
+        """The recorded anchor, or ``None`` once its window has passed."""
+
+        if self.deferred_anchor_hint is None or self.deferred_anchor_at is None:
+            return None
+        current = time.monotonic() if now is None else now
+        if current - self.deferred_anchor_at > ttl:
+            self.clear_deferred_anchor()
+            return None
+        return self.deferred_anchor_hint
+
+    def clear_deferred_anchor(self) -> None:
+        self.deferred_anchor_hint = None
+        self.deferred_anchor_at = None
 
     async def prepare_approval(self) -> None:
         if self.current is None:

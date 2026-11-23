@@ -67,6 +67,11 @@ final class AppState {
     /// The product (not the Settings probe) started the keep-alive ladder for
     /// the current background window; only that instance is auto-stopped.
     @ObservationIgnored private var autoKeepAlive = false
+    /// Grace window after the last live work: the connector publishes the
+    /// idle state before the turn ledger row, and the notification lives on
+    /// the snapshot that carries the ledger. Stopping at the first idle would
+    /// cancel the dashboard before that snapshot arrives.
+    @ObservationIgnored private var keepAliveStopTask: Task<Void, Never>?
     @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
@@ -828,15 +833,28 @@ final class AppState {
             session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
         } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
         if hasLiveWork {
+            keepAliveStopTask?.cancel()
+            keepAliveStopTask = nil
             guard NotificationSettings.isEnabled,
                   NotificationSettings.keepAliveEnabled,
                   !KeepAliveCoordinator.shared.isOn else { return }
             KeepAliveCoordinator.shared.start()
             autoKeepAlive = true
-        } else if autoKeepAlive {
-            KeepAliveCoordinator.shared.stop()
-            autoKeepAlive = false
-            cancelDashboardUpdates()
+        } else if autoKeepAlive, keepAliveStopTask == nil {
+            keepAliveStopTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self, self.autoKeepAlive,
+                      self.isInBackground else { return }
+                let live = self.sessions.contains { session in
+                    session.status.isTurnInFlight
+                        || (session.backgroundTasks ?? 0) > 0
+                } || (self.cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+                self.keepAliveStopTask = nil
+                guard !live else { return }
+                KeepAliveCoordinator.shared.stop()
+                self.autoKeepAlive = false
+                self.cancelDashboardUpdates()
+            }
         }
     }
 
@@ -864,6 +882,8 @@ final class AppState {
                 && NotificationSettings.keepAliveEnabled
                 && hasLiveWork
             if keepAlive {
+                keepAliveStopTask?.cancel()
+                keepAliveStopTask = nil
                 KeepAliveCoordinator.shared.start()
                 autoKeepAlive = true
             } else {
@@ -873,6 +893,8 @@ final class AppState {
             // up, and only while the ladder holds the process.
             cachedServices?.sessionRepository.suspend()
         } else {
+            keepAliveStopTask?.cancel()
+            keepAliveStopTask = nil
             if autoKeepAlive {
                 KeepAliveCoordinator.shared.stop()
                 autoKeepAlive = false

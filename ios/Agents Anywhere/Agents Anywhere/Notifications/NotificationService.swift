@@ -35,6 +35,17 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         guard !activated else { return }
         activated = true
         center.delegate = self
+        center.getNotificationSettings { settings in
+            ClientDiagnosticsLog.shared.record(
+                kind: "notification.settings",
+                detail: [
+                    "enabled": NotificationSettings.isEnabled ? "1" : "0",
+                    "preview": NotificationSettings.showsPreview ? "1" : "0",
+                    "keepAlive": NotificationSettings.keepAliveEnabled ? "1" : "0",
+                    "authorization": String(settings.authorizationStatus.rawValue),
+                ],
+                dedupe: false)
+        }
         if NotificationSettings.isEnabled {
             requestAuthorization()
         }
@@ -48,8 +59,26 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     /// dashboard snapshot path, which is alive in the background only while
     /// the keep-alive ladder holds the process.
     func handle(snapshot: V2DashboardSnapshot) {
-        guard NotificationSettings.isEnabled else { return }
-        for record in snapshot.notifications ?? [] {
+        let records = snapshot.notifications ?? []
+        if !records.isEmpty {
+            ClientDiagnosticsLog.shared.record(
+                kind: "notification.snapshot",
+                detail: [
+                    "records": String(records.count),
+                    "enabled": NotificationSettings.isEnabled ? "1" : "0",
+                ],
+                dedupe: false)
+        }
+        guard NotificationSettings.isEnabled else {
+            if !records.isEmpty {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "notification.skipped",
+                    detail: ["reason": "disabled", "records": String(records.count)],
+                    dedupe: false)
+            }
+            return
+        }
+        for record in records {
             post(record)
         }
     }

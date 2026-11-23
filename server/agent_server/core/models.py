@@ -841,6 +841,10 @@ class SessionView(BaseModel):
     # while unrelated background work still runs; a no-text turn waits for its
     # wake turn. None on runtimes that do not report the fact.
     assistantText: bool | None = None
+    # The blocking notice this session is parked on (approval or user-input
+    # question). It is unique per request, so notification records use it as
+    # their identity: two approvals in one turn must not share an id.
+    noticeId: str | None = None
     takeover: bool
     pinned: bool = False
     pinnedAt: str | None = None

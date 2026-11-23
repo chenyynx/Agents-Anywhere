@@ -225,6 +225,9 @@ final class AppState {
                     guard !Task.isCancelled, authenticationEpoch == epoch, accountSyncID == id else { return }
                     let accountChanged = me?.userId != profile.userId
                     if accountChanged {
+                        // Old-account records must not point at sessions the
+                        // new account does not own.
+                        NotificationService.shared.reset()
                         chatSelection = preferredSelection(
                             restoration.selection(in: .init(serverURL: serverURL, accountID: profile.userId)))
                     }
@@ -798,7 +801,7 @@ final class AppState {
         chatSelection = .newSession; restoreConnectionError = nil
         notificationTarget = nil
         visibleSessionID = nil
-        NotificationService.shared.setVisibleSession(nil)
+        NotificationService.shared.reset()
         me = nil
         serverURL = nil
         connectors = []
@@ -917,7 +920,10 @@ final class AppState {
                         kind: "notification.longpoll",
                         detail: ["records": String(response.notifications.count)],
                         dedupe: false)
-                    known = response.notifications.map(\.id)
+                    // Bound the query string; an id dropped here only means
+                    // the server may resend that old record, which the
+                    // posted-id dedupe discards.
+                    known = Array(response.notifications.map(\.id).suffix(64))
                     NotificationService.shared.handle(records: response.notifications)
                 } catch {
                     if Task.isCancelled { return }
@@ -975,6 +981,7 @@ final class AppState {
     func setAppInBackground(_ background: Bool) {
         isInBackground = background
         NotificationService.shared.appInForeground = !background
+        if !background { NotificationService.shared.refreshAuthorization() }
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {
@@ -986,6 +993,7 @@ final class AppState {
             // still notifies. The dashboard websocket stays foreground-only;
             // the long-poll response carries what the reader needs.
             let keepAlive = NotificationSettings.isEnabled
+                && NotificationService.shared.authorizationGranted
             cancelDashboardUpdates()
             if keepAlive {
                 KeepAliveCoordinator.shared.start()

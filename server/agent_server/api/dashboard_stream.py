@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, WebSocket
+from fastapi import APIRouter, Depends, Query, WebSocket
 from starlette.requests import HTTPConnection
 
 from agent_server.api.server_push_websocket import (
@@ -107,22 +107,13 @@ async def _dashboard_snapshot(
     }
 
 
-@router.get("/notifications")
-async def dashboard_notifications(
-    user_id: str = Depends(current_user_id),
-    db: Store = Depends(get_store),
-    manager: ConnectorRpcManager = Depends(get_rpc),
-    runtime_state_cache: SessionRuntimeStateCache = Depends(
-        get_session_runtime_state_cache
-    ),
+async def _notification_payload(
+    *,
+    db: Store,
+    manager: ConnectorRpcManager,
+    runtime_state_cache: SessionRuntimeStateCache,
+    user_id: str,
 ) -> dict[str, Any]:
-    """Server-decided notification records, for the client's background poll.
-
-    The dashboard push is the primary channel; this read is the safety net for
-    a stalled websocket (a turn that ends while the app is backgrounded must
-    still surface). Same derivation, same ids — the client dedupes by id.
-    """
-
     sessions = await db.list_session_inventory(user_id=user_id)
     sessions = await project_session_meta_for_dashboard(
         manager,
@@ -133,7 +124,57 @@ async def dashboard_notifications(
         sessions,
         lambda session_id: _latest_assistant_text(db, session_id),
     )
-    return {"notifications": notifications, "serverTime": utc_now()}
+    return {
+        "notifications": notifications,
+        # The background reader paints the keep-alive lifecycle from these
+        # statuses; without them the client would need a second channel.
+        "sessions": [session.model_dump(mode="json") for session in sessions],
+        "serverTime": utc_now(),
+    }
+
+
+@router.get("/notifications")
+async def dashboard_notifications(
+    user_id: str = Depends(current_user_id),
+    db: Store = Depends(get_store),
+    manager: ConnectorRpcManager = Depends(get_rpc),
+    runtime_state_cache: SessionRuntimeStateCache = Depends(
+        get_session_runtime_state_cache
+    ),
+    broker: TimelineBroker = Depends(get_timeline_broker),
+    wait: int = Query(0, ge=0, le=25),
+) -> dict[str, Any]:
+    """Server-decided notification records, with optional long polling.
+
+    ``wait`` holds the request open until a dashboard invalidation arrives or
+    the wait expires, then answers with the fresh projection (records +
+    session statuses). The client re-requests immediately, so a record
+    surfaces within a second of being derived while the request rate stays at
+    a couple per minute. A cancelled request (app foregrounded, process gone)
+    unregisters its queue on the way out.
+    """
+
+    payload = await _notification_payload(
+        db=db,
+        manager=manager,
+        runtime_state_cache=runtime_state_cache,
+        user_id=user_id,
+    )
+    if wait > 0 and not payload["notifications"]:
+        queue = await broker.register_dashboard(user_id)
+        try:
+            await asyncio.wait_for(queue.get(), timeout=wait)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            await broker.unregister_dashboard(user_id, queue)
+        payload = await _notification_payload(
+            db=db,
+            manager=manager,
+            runtime_state_cache=runtime_state_cache,
+            user_id=user_id,
+        )
+    return payload
 
 
 @router.websocket("/ws")

@@ -7,6 +7,7 @@ struct NotificationSettingsView: View {
     @AppStorage(NotificationSettings.enabledKey) private var enabled = false
     @AppStorage(NotificationSettings.previewKey) private var preview = true
     @AppStorage(NotificationSettings.keepAliveKey) private var keepAlive = true
+    @AppStorage(NotificationSettings.sessionSocketKey) private var sessionSocket = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -27,6 +28,11 @@ struct NotificationSettingsView: View {
                                   title: String(localized: "Keep the connection in background"),
                                   isOn: $keepAlive,
                                   isEnabled: enabled)
+                SettingsRowDivider()
+                SettingsToggleRow(icon: "text.bubble",
+                                  title: String(localized: "Keep the session connected in background"),
+                                  isOn: $sessionSocket,
+                                  isEnabled: enabled && keepAlive)
             }
         }
         .onChange(of: enabled) { _, isOn in

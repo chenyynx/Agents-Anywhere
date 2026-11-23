@@ -5,6 +5,7 @@ enum NotificationSettings {
     static let enabledKey = "aa.notifications.enabled"
     static let previewKey = "aa.notifications.preview"
     static let keepAliveKey = "aa.keepalive.enabled"
+    static let sessionSocketKey = "aa.keepalive.sessionSocket"
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
     static var showsPreview: Bool {
@@ -12,6 +13,11 @@ enum NotificationSettings {
     }
     static var keepAliveEnabled: Bool {
         UserDefaults.standard.object(forKey: keepAliveKey) as? Bool ?? true
+    }
+    /// Keep the viewed session's socket across background (default off: the
+    /// background poll delivers notifications without it).
+    static var sessionSocketEnabled: Bool {
+        UserDefaults.standard.object(forKey: sessionSocketKey) as? Bool ?? false
     }
 }
 

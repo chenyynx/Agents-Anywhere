@@ -949,7 +949,8 @@ final class AppState {
             // Keep the conversation the user is watching on the wire alongside
             // the dashboard channel; every other session socket closes.
             let keptSession: Set<V2SessionID>
-            if keepAlive, case let .session(id) = chatSelection {
+            if keepAlive, NotificationSettings.sessionSocketEnabled,
+               case let .session(id) = chatSelection {
                 keptSession = [id]
             } else {
                 keptSession = []

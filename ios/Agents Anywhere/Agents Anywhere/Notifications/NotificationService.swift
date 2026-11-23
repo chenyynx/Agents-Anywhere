@@ -6,6 +6,7 @@ enum NotificationSettings {
     static let previewKey = "aa.notifications.preview"
     static let keepAliveKey = "aa.keepalive.enabled"
     static let sessionSocketKey = "aa.keepalive.sessionSocket"
+    static let foregroundKey = "aa.notifications.foreground"
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
     static var showsPreview: Bool {
@@ -18,6 +19,11 @@ enum NotificationSettings {
     /// background poll delivers notifications without it).
     static var sessionSocketEnabled: Bool {
         UserDefaults.standard.object(forKey: sessionSocketKey) as? Bool ?? false
+    }
+    /// Foreground banners for sessions other than the one on screen. Off by
+    /// default; the visible session never banners in the foreground.
+    static var foregroundEnabled: Bool {
+        UserDefaults.standard.object(forKey: foregroundKey) as? Bool ?? false
     }
 }
 
@@ -36,6 +42,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     private static let postedLimit = 256
     private let center = UNUserNotificationCenter.current()
     private var activated = false
+    /// The session on screen, kept current by `AppState.setVisibleSession`.
+    var visibleSessionId: String?
 
     func activate() {
         guard !activated else { return }
@@ -131,18 +139,31 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Show the banner in the foreground too (pp 2026-11-23): the completion
-    /// cue must not depend on whether the app happens to be in front when the
-    /// turn ends — a suppressed foreground banner reads as a lost notification.
+    /// Foreground presentation is a strict rule plus a setting:
+    /// - the conversation on screen never banners (the reply is already there);
+    /// - other sessions banner only when the foreground switch is on
+    ///   (default off).
+    /// Background presentation never consults this: the OS shows banners and
+    /// the turn-end cue must arrive.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        let sessionId = notification.request.content
+            .userInfo["sessionId"] as? String
+        let visible = visibleSessionId
+        let isVisible = visible != nil && sessionId == visible
+        let show = NotificationSettings.foregroundEnabled && !isVisible
         ClientDiagnosticsLog.shared.record(
             kind: "notification.foreground",
-            detail: ["id": notification.request.identifier],
+            detail: [
+                "id": notification.request.identifier,
+                "visible": isVisible ? "1" : "0",
+                "enabled": NotificationSettings.foregroundEnabled ? "1" : "0",
+                "show": show ? "1" : "0",
+            ],
             dedupe: false)
-        return [.banner, .list, .sound]
+        return show ? [.banner, .list, .sound] : []
     }
 
     func userNotificationCenter(

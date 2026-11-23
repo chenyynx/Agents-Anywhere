@@ -463,6 +463,7 @@ final class AppState {
     func setVisibleSession(_ sessionId: V2SessionID?) {
         guard route == .signedIn else { return }
         visibleSessionID = sessionId
+        NotificationService.shared.visibleSessionId = sessionId
         makeV2Services()?.sessionReads.setVisibleSession(sessionId?.hasPrefix("local:") == true ? nil : sessionId)
     }
 
@@ -758,6 +759,7 @@ final class AppState {
         cachedServicesTokenProvider = nil
         chatSelection = .newSession; restoreConnectionError = nil
         visibleSessionID = nil
+        NotificationService.shared.visibleSessionId = nil
         me = nil
         serverURL = nil
         connectors = []

@@ -157,13 +157,14 @@ final class VoiceVisualizerSceneModel {
             prevSlow[i] = s
         }
 
-        // Light keeps the wide ±1 spread; the dark branch narrows to ±0.6
-        // and P drops to 0.5 (0x101dd15e0's `cVar20 != 1` branch).
+        // Light keeps the wide ±1 spread; the dark branch narrows to ±0.6.
+        // The oval branch is the one that differs by dark mode; opacity does
+        // not (0x101dd15e0 field order: scale@0x28, opacity@0x2c, oval@0x30).
         let wide = !isDark
         let xBase: Float = wide ? -1.0 : -0.6
         let xSpread: Float = wide ? 2.0 : 1.2
-        let opacityBase: Float = wide ? 1.0 : 0.5
-        let opacitySlope: Float = wide ? 0.1 : 0.2
+        let ovalBase: Float = wide ? 1.0 : 0.5
+        let ovalSlope: Float = wide ? 0.1 : 0.2
 
         var bands: [VoiceVisualizerBand] = []
         bands.reserveCapacity(7)
@@ -185,8 +186,11 @@ final class VoiceVisualizerSceneModel {
 
             bands.append(.init(position: SIMD2(x, y),
                                scale: 0.3 + 0.65 * level,
-                               ovalRatio: 0.1 + 0.65 * level,
-                               opacity: max(opacityBase - level * opacitySlope, 0.05),
+                               // uVar22 = (0.3, 0.1); field 0x2c uses the 0.1
+                               // base and grows with the voice.
+                               opacity: 0.1 + 0.65 * level,
+                               // 0x30 = P − level·Q (light P=1/Q=0.1).
+                               ovalRatio: max(ovalBase - level * ovalSlope, 0.05),
                                ditherSeed: Float(i) * 0.37 + 1))
         }
         return bands
@@ -230,6 +234,8 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
 
     private var currentColor = VoiceVisualizerPalette.voice
     private var roleChangedAt: CFTimeInterval = 0
+    private var lastAudible: CFTimeInterval?
+    private var idleOpacity: Float = 0
 
     init?(device: MTLDevice, pixelFormat: MTLPixelFormat, tuning: VoiceVisualizerTuning) {
         guard let queue = device.makeCommandQueue(),
@@ -312,6 +318,16 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
                            : [Float](repeating: 0.32, count: 7))
         let bands = scene.update(dt: dt, levels: levels)
 
+        // Idle gate: the official view is blank before anyone speaks. After
+        // `settleWindow` without audio the whole band set fades to zero, and
+        // it snaps back when the voice returns.
+        let peak = levels.max() ?? 0
+        if peak > 0.04 { lastAudible = now }
+        let audible = lastAudible.map { now - $0 < scene.tuning.settleWindow } ?? false
+        let idleTarget: Float = audible ? 1 : 0
+        let idleTau = audible ? 0.05 : 0.25
+        idleOpacity += (idleTarget - idleOpacity) * Float(1 - exp(-dt / idleTau))
+
         // Role change: hold 0.3 s, then ease toward the new voice color
         // (roleColorDelay / colorTimeConstant, CANONICAL §4.2).
         if now - roleChangedAt > 0.3 {
@@ -366,7 +382,7 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
                 modelView: matrix,
                 baseColor: currentColor,
                 time: Float(now),
-                opacityFactor: band.opacity,
+                opacityFactor: band.opacity * idleOpacity,
                 ovalRatio: max(band.ovalRatio, 0.05),
                 ditherSeed: band.ditherSeed,
                 gradientFalloffFactor: scene.tuning.gradientFalloffFactor,

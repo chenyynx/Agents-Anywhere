@@ -12,10 +12,25 @@ import simd
 // MARK: - Palette
 
 enum VoiceVisualizerPalette {
-    /// Official voice tint: sRGB (0.42, 0.61, 0.80).
+    /// Official voice tint: sRGB (0.42, 0.61, 0.80) — the user's voice.
     static let voice = SIMD4<Float>(0.42, 0.61, 0.80, 1.0)
+    /// The agent's voice. Screenshot fit lands on the brand orange #D97757.
+    static let agent = SIMD4<Float>(0.851, 0.467, 0.341, 1.0)
     /// Brand accent used by the slosh liquid (spark / listening frames).
     static let accentBrand = SIMD3<Float>(0.851, 0.467, 0.341) // #D97757
+}
+
+/// Which side of the conversation is speaking; drives the orb color.
+enum VoiceVisualizerRole: Equatable, Hashable {
+    case user
+    case agent
+
+    var color: SIMD4<Float> {
+        switch self {
+        case .user: return VoiceVisualizerPalette.voice
+        case .agent: return VoiceVisualizerPalette.agent
+        }
+    }
 }
 
 // MARK: - Tuning (VisualizerBlobTuning)
@@ -103,8 +118,8 @@ final class VoiceVisualizerSceneModel {
     var isDark: Bool = false
     var reduceMotion: Bool = false
     var holdsStill: Bool = false
-    /// Mirrors the `unaff_x20[6]` branch: wider spread / stronger alpha.
-    var wideSpread: Bool = true
+    /// Extra vertical shift of the band cluster, in clip-space units.
+    var baseYOffset: Float = 0
 
     private var time: Double = 0
     private var fast = [Float](repeating: 0, count: 7)
@@ -134,47 +149,44 @@ final class VoiceVisualizerSceneModel {
         for i in 0..<7 {
             let input = levels.indices.contains(i) ? levels[i] : 0
             let f = (1 - aFast) * input + aFast * prevFast[i]
-            let s = aSlow * f + (1 - aSlow) * prevSlow[i]
+            // Official (0x101dd15e0): slow = a·slow_prev + (1−a)·fast.
+            let s = aSlow * prevSlow[i] + (1 - aSlow) * f
             fast[i] = f
             slow[i] = s
             prevFast[i] = f
             prevSlow[i] = s
         }
 
-        let t = holdsStill ? 0 : Float(time)
-        let xBasis: Float = wideSpread ? -1.0 : -0.6
-        let xSpread: Float = wideSpread ? 2.0 : 1.2
-        let alphaBase: Float = wideSpread ? 1.0 : 0.5
-        let baseY: Float = 0
+        // Light keeps the wide ±1 spread; the dark branch narrows to ±0.6
+        // and P drops to 0.5 (0x101dd15e0's `cVar20 != 1` branch).
+        let wide = !isDark
+        let xBase: Float = wide ? -1.0 : -0.6
+        let xSpread: Float = wide ? 2.0 : 1.2
+        let opacityBase: Float = wide ? 1.0 : 0.5
+        let opacitySlope: Float = wide ? 0.1 : 0.2
 
         var bands: [VoiceVisualizerBand] = []
         bands.reserveCapacity(7)
         for i in 0..<7 {
             let fi = Float(i)
+            let phi = fi * Float.pi
             let level = min(max(slow[i] / 0.75, 0), 1)
-            let phase = fi * Float.pi
 
-            let xOsc = sinf(phase * 0.6 + t * (fi * 0.07 + 0.4))
-            let xTime = sinf(t * 0.2 + fi * 1.3)
-            let yOsc = cosf(phase * 0.7 + t * (fi * 0.05 + 0.3))
-            let yTime = cosf(t * 0.15 + fi * 2.7)
-
-            let x = xBasis + (xSpread * fi) / 6
-                + xTime * 0.01
-                + (fi * 0.04 + 0.04) * xOsc
-            let y = baseY
-                + yTime * 0.015
-                + (fi * 0.004 + 0.04) * yOsc
-                + level * 0.02
-
-            let scale = 0.3 + 0.65 * level
-            let oval = 0.1 + 0.65 * level
-            let opacity = max(alphaBase - level * 0.5, 0.08)
+            // Exact layout constants from FUN_101dd15e0 (see CANONICAL §4.4).
+            let x = xBase + xSpread * fi / 6
+                + sinf(level * 0.2 + fi * 1.3) * 0.01
+                + (fi * 0.04 + 0.04) * sinf(phi * 0.6 + level * (fi * 0.07 + 0.4))
+            let y = baseYOffset
+                + cosf(level * 0.15 + fi * 2.7) * 0.015
+                + (fi * 0.004 + 0.07) * cosf(phi * 0.7 + level * (fi * 0.05 + 0.3))
+                // NDC +y is up; the official call glow sits lower, so the
+                // intensity offset pulls the cluster down.
+                - tuning.intensityYOffsetFactor * level
 
             bands.append(.init(position: SIMD2(x, y),
-                               scale: scale,
-                               ovalRatio: oval,
-                               opacity: opacity,
+                               scale: 0.3 + 0.65 * level,
+                               ovalRatio: 0.1 + 0.65 * level,
+                               opacity: max(opacityBase - level * opacitySlope, 0.05),
                                ditherSeed: Float(i) * 0.37 + 1))
         }
         return bands
@@ -201,10 +213,23 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
     var reduceMotion: Bool = false {
         didSet { scene.reduceMotion = reduceMotion }
     }
+    /// Extra downward shift of the band cluster, in clip-space units.
+    var baseYOffset: Float = 0 {
+        didSet { scene.baseYOffset = baseYOffset }
+    }
     var showSlosh: Bool = true
     var thinking: Bool = false
     var liveLevels: Bool = true
-    var color: SIMD4<Float> = VoiceVisualizerPalette.voice
+    /// When set, overrides the mock levels (microphone input).
+    var levelsProvider: (() -> [Float])?
+    var role: VoiceVisualizerRole = .user {
+        didSet {
+            if role != oldValue { roleChangedAt = CACurrentMediaTime() }
+        }
+    }
+
+    private var currentColor = VoiceVisualizerPalette.voice
+    private var roleChangedAt: CFTimeInterval = 0
 
     init?(device: MTLDevice, pixelFormat: MTLPixelFormat, tuning: VoiceVisualizerTuning) {
         guard let queue = device.makeCommandQueue(),
@@ -282,8 +307,18 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
         let dt = min(max(now - (lastTimestamp ?? now), 0), 2.0 / 60.0)
         lastTimestamp = now
 
-        let levels = liveLevels ? Self.mockLevels(time: now, thinking: thinking) : [Float](repeating: 0.32, count: 7)
+        let levels = levelsProvider?()
+            ?? (liveLevels ? Self.mockLevels(time: now, thinking: thinking)
+                           : [Float](repeating: 0.32, count: 7))
         let bands = scene.update(dt: dt, levels: levels)
+
+        // Role change: hold 0.3 s, then ease toward the new voice color
+        // (roleColorDelay / colorTimeConstant, CANONICAL §4.2).
+        if now - roleChangedAt > 0.3 {
+            let target = role.color
+            let k = Float(1 - exp(-dt / 0.06))
+            currentColor += (target - currentColor) * k
+        }
 
         guard let drawable = view.currentDrawable,
               let pass = view.currentRenderPassDescriptor,
@@ -292,7 +327,6 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
         else { return }
 
         let size = view.drawableSize
-        let aspect = Float(size.width / max(size.height, 1))
         let contentScale = Float(view.contentScaleFactor)
 
         // Slosh liquid (composer) behind the orb.
@@ -320,18 +354,19 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
         // Orb bands.
         encoder.setRenderPipelineState(orbPipeline)
         encoder.setVertexBuffer(quadBuffer, offset: 0, index: 0)
-        let opacity = isDark ? Float(0.5) : Float(0.75)
         for (index, band) in bands.enumerated() {
             var matrix = simd_float4x4(diagonal: SIMD4<Float>(1, 1, 1, 1))
-            // Quad-local [-1,1] -> clip: scale (with height-normalized x) and translate.
-            matrix.columns.0 = SIMD4(band.scale * (0.5 * aspect), 0, 0, 0)
-            matrix.columns.1 = SIMD4(0, band.scale * 0.5, 0, 0)
-            matrix.columns.3 = SIMD4(band.position.x * 0.5, band.position.y * 0.5, 0, 1)
+            // Official uniform build (0x101dd1c5c): uniform scale + (x, y)
+            // translation in clip space — no aspect correction, no 0.5 factor.
+            matrix.columns.0 = SIMD4(band.scale, 0, 0, 0)
+            matrix.columns.1 = SIMD4(0, band.scale, 0, 0)
+            matrix.columns.2 = SIMD4(0, 0, 1, 0)
+            matrix.columns.3 = SIMD4(band.position.x, band.position.y, 0, 1)
             var u = VoiceVisualizerUniforms(
                 modelView: matrix,
-                baseColor: color,
+                baseColor: currentColor,
                 time: Float(now),
-                opacityFactor: opacity * band.opacity,
+                opacityFactor: band.opacity,
                 ovalRatio: max(band.ovalRatio, 0.05),
                 ditherSeed: band.ditherSeed,
                 gradientFalloffFactor: scene.tuning.gradientFalloffFactor,
@@ -368,6 +403,9 @@ struct VoiceVisualizerSurface: UIViewRepresentable {
     var showSlosh: Bool
     var thinking: Bool
     var liveLevels: Bool
+    var role: VoiceVisualizerRole
+    var levelsProvider: (() -> [Float])?
+    var baseYOffset: Float = 0
 
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView()
@@ -389,6 +427,9 @@ struct VoiceVisualizerSurface: UIViewRepresentable {
             renderer.showSlosh = showSlosh
             renderer.thinking = thinking
             renderer.liveLevels = liveLevels
+            renderer.role = role
+            renderer.levelsProvider = levelsProvider
+            renderer.baseYOffset = baseYOffset
             context.coordinator.renderer = renderer
             view.delegate = renderer
         }
@@ -402,6 +443,9 @@ struct VoiceVisualizerSurface: UIViewRepresentable {
         renderer.showSlosh = showSlosh
         renderer.thinking = thinking
         renderer.liveLevels = liveLevels
+        renderer.role = role
+        renderer.levelsProvider = levelsProvider
+        renderer.baseYOffset = baseYOffset
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

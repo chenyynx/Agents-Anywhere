@@ -7,12 +7,16 @@ struct VoiceLabView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
 
+    @StateObject private var mic = VoiceMicrophoneMeter()
     @State private var forceDark = false
     @State private var live = true
     @State private var thinking = false
     @State private var slosh = true
     @State private var reduceMotion = false
     @State private var showsDictation = false
+    @State private var useMic = false
+    @State private var role: VoiceVisualizerRole = .user
+    @State private var verticalOffset: Float = 0
 
     private var isDark: Bool { forceDark || colorScheme == .dark }
 
@@ -26,7 +30,10 @@ struct VoiceLabView: View {
                                    reduceMotion: reduceMotion,
                                    showSlosh: slosh,
                                    thinking: thinking,
-                                   liveLevels: live)
+                                   liveLevels: live,
+                                   role: role,
+                                   levelsProvider: useMic ? { mic.snapshot } : nil,
+                                   baseYOffset: verticalOffset)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -47,6 +54,21 @@ struct VoiceLabView: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showsDictation)
         }
         .statusBarHidden(false)
+        .onChange(of: useMic) { _, isOn in
+            if isOn { mic.start() } else { mic.stop() }
+        }
+        .onDisappear { mic.stop() }
+    }
+
+    private var microphoneNote: String? {
+        switch mic.status {
+        case .denied:
+            return "麦克风权限被拒绝，回退到模拟电平"
+        case .failed(let message):
+            return "麦克风不可用：\(message)"
+        case .idle, .running:
+            return nil
+        }
     }
 
     private var header: some View {
@@ -72,6 +94,25 @@ struct VoiceLabView: View {
 
             Toggle("深色模式", isOn: $forceDark)
             Toggle("动态电平（模拟语音）", isOn: $live)
+            Toggle("麦克风（真实音量）", isOn: $useMic)
+            Picker("发声角色", selection: $role) {
+                Text("用户 · 蓝").tag(VoiceVisualizerRole.user)
+                Text("助手 · 橙").tag(VoiceVisualizerRole.agent)
+            }
+            .pickerStyle(.segmented)
+            HStack(spacing: 8) {
+                Text("垂直偏移")
+                Slider(value: $verticalOffset, in: -0.5...0.5)
+                Text(String(format: "%+.2f", verticalOffset))
+                    .monospacedDigit()
+                    .frame(width: 44, alignment: .trailing)
+            }
+            .font(.system(size: 13))
+            if useMic, let note = microphoneNote {
+                Text(note)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.orange)
+            }
             Toggle("Thinking", isOn: $thinking)
             Toggle("显示 slosh 液体（输入框）", isOn: $slosh)
             Toggle("听写录音条（361×52）", isOn: $showsDictation)
@@ -93,7 +134,7 @@ struct VoiceLabView: View {
     }
 
     private var footer: some View {
-        Text("orb = voiceVisualizer（#6B9CCC · 暗 0.5 / 亮 0.75）· 7 band · slosh = 品牌橙 #D97757")
+        Text("orb = 用户 #6B9CCC / 助手 #D97757 · 7 band（官方矩阵）· slosh = 品牌橙")
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)

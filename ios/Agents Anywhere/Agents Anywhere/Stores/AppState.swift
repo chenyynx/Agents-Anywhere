@@ -75,6 +75,10 @@ final class AppState {
     /// Safety net for a stalled dashboard push: while the ladder holds the
     /// process, read the server's records directly every 10 s.
     @ObservationIgnored private var notificationPollTask: Task<Void, Never>?
+    /// Foreground catch-up: a turn that ends just before the user returns can
+    /// miss the 10 s poll and the stopped socket. Re-read a few times on
+    /// foreground; ids dedupe against anything already posted.
+    @ObservationIgnored private var notificationCatchUpTask: Task<Void, Never>?
     @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
@@ -875,6 +879,32 @@ final class AppState {
         notificationPollTask = nil
     }
 
+    private func startForegroundNotificationCatchUp(services: V2ClientServices) {
+        guard NotificationSettings.isEnabled else { return }
+        notificationCatchUpTask?.cancel()
+        notificationCatchUpTask = Task { @MainActor [weak self] in
+            for delay in [0, 5, 15] {
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                guard !Task.isCancelled, self != nil else { return }
+                do {
+                    let records = try await services.notificationAPI.notifications()
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.catchup",
+                        detail: ["records": String(records.count)],
+                        dedupe: false)
+                    NotificationService.shared.handle(records: records)
+                } catch {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.catchup",
+                        detail: ["error": "1"],
+                        dedupe: true)
+                }
+            }
+        }
+    }
+
     /// The ladder starts with the turn (while in front) and ends only at the
     /// true terminal state: idle with no background work. A turn that ends
     /// while a background agent runs keeps the window open for its wake turn.
@@ -960,6 +990,9 @@ final class AppState {
             keepAliveStopTask?.cancel()
             keepAliveStopTask = nil
             stopNotificationPolling()
+            if let services = cachedServices {
+                startForegroundNotificationCatchUp(services: services)
+            }
             if autoKeepAlive {
                 KeepAliveCoordinator.shared.stop()
                 autoKeepAlive = false

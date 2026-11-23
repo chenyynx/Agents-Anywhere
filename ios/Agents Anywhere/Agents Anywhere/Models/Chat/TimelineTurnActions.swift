@@ -198,6 +198,46 @@ nonisolated struct TurnFooterGate: Equatable {
 }
 
 enum TimelineTurnActions {
+    /// Whether `build` must withhold the latest turn's footer for one refresh.
+    ///
+    /// A session view can open with its cached rows before the live runtime
+    /// state arrives (`state == nil`). The gate's first refresh cannot tell a
+    /// finished turn from one in flight, so committing the latest bucket then
+    /// stamps a streaming reply with a footer, and the running state's
+    /// userless restore keeps that wrong footer for the whole turn
+    /// (pp 2026-11-23 22:04, build 1541: gate started closed on `status=nil`,
+    /// the streaming reply's host was committed at 22:04:10.204 — hosts
+    /// 103→104 — and the running state restored it until the view reopened).
+    /// Suppress until the state is known; a finished turn's footer appears one
+    /// refresh later, when the state arrives.
+    static func suppressesLatest(latestTurnOpen: Bool, runtimeIsRunning: Bool,
+                                 hasNewerItems: Bool, runtimeStateKnown: Bool) -> Bool {
+        (latestTurnOpen && runtimeIsRunning) || hasNewerItems || !runtimeStateKnown
+    }
+
+    /// Whether a footer refresh may trust the runtime state to seal the
+    /// latest turn.
+    ///
+    /// A state that exists but was read before the current live facts landed
+    /// (background, socket loss, recovery) is just as unable to seal a
+    /// running turn as a missing one: it can show the previous turn's idle.
+    /// `isFresh` is the model's own "current live facts are applied" gate
+    /// (`V2SessionModel.update`), so a fresh state follows the same authority
+    /// as authoritative turn ends. A stale state is still enough to seal when
+    /// its `updatedSeq` covers every cached row: the state was written after
+    /// the newest visible row, so nothing arrived behind its back. That is the
+    /// normal session-switch case and keeps the finished turn's footer
+    /// immediate; only rows newer than the state (a turn that started or
+    /// streamed after it) force the 1–2 s wait for the live read. When the
+    /// connector is offline or failed there is no live read to wait for; the
+    /// last known layout wins as before, otherwise an offline session would
+    /// never regain its newest footer.
+    static func footerRuntimeStateIsTrustworthy(stateExists: Bool, isFresh: Bool,
+                                                connectorOffline: Bool,
+                                                stateCoversRows: Bool) -> Bool {
+        connectorOffline || (stateExists && (isFresh || stateCoversRows))
+    }
+
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
     ///

@@ -614,6 +614,56 @@ import Testing
         #expect(actions.isEmpty)
     }
 
+    /// An unknown runtime state is not "not running": a session view opens
+    /// with cached rows before the live state arrives, and committing the
+    /// latest bucket then stamps a streaming reply with a footer (pp
+    /// 2026-11-23 22:04, build 1541).
+    @Test func anUnknownRuntimeStateSuppressesTheLatestBucket() {
+        #expect(TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: false, runtimeIsRunning: false,
+            hasNewerItems: false, runtimeStateKnown: false))
+        #expect(!TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: false, runtimeIsRunning: false,
+            hasNewerItems: false, runtimeStateKnown: true))
+        #expect(TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: true, runtimeIsRunning: true,
+            hasNewerItems: false, runtimeStateKnown: true))
+        #expect(TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: false, runtimeIsRunning: false,
+            hasNewerItems: true, runtimeStateKnown: true))
+    }
+
+    /// Only a state read from the current live facts — or a stale state that
+    /// was written after every cached row — may seal the latest turn: a stale
+    /// idle can still show the previous turn, while a status newer than the
+    /// rows proves nothing arrived behind it. Offline/failed has no live read
+    /// to wait for, so the last known layout wins there.
+    @Test func onlyFreshOrRowCoveringRuntimeStateCanSealTheLatestTurn() {
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: true, connectorOffline: false,
+            stateCoversRows: false))
+        // A session switch with no activity after the state: no catch-up wait.
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false,
+            stateCoversRows: true))
+        // A row newer than the state: wait for the live read.
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false,
+            stateCoversRows: false))
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: true, connectorOffline: false,
+            stateCoversRows: true))
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: false, connectorOffline: false,
+            stateCoversRows: false))
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: false, connectorOffline: true,
+            stateCoversRows: false))
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: true,
+            stateCoversRows: false))
+    }
+
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.

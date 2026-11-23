@@ -21453,53 +21453,53 @@
         }
       }
     },
-    "Keep the session connected in background": {
+    "Keep the current session updating in background": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keep the session connected in background"
+            "value": "Keep the current session updating in background"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "后台保留会话连接"
+            "value": "后台实时更新当前会话"
           }
         }
       }
     },
-    "A local notification, not a remote push: it can arrive only while iOS keeps the app running. If background execution is unavailable, no notification is sent until the app opens again.": {
+    "A local notification, not a remote push: the app keeps its own background connection so one can arrive while iOS lets it run, falling back to silent audio or coarse location if needed (it never reads or sends your location). This does not depend on the session switch below. If background execution is unavailable, it waits until the app opens again.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A local notification, not a remote push: it can arrive only while iOS keeps the app running. If background execution is unavailable, no notification is sent until the app opens again."
+            "value": "A local notification, not a remote push: the app keeps its own background connection so one can arrive while iOS lets it run, falling back to silent audio or coarse location if needed (it never reads or sends your location). This does not depend on the session switch below. If background execution is unavailable, it waits until the app opens again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本地通知，不是远程推送：只有 iOS 让 App 继续运行时才能收到。后台执行不可用时，会在下次打开 App 前收不到通知。"
+            "value": "本地通知，不是远程推送。App 会在后台自行保持连接来接收，必要时用静音音频或粗定位兜底（不读取也不发送你的位置），不依赖下面的会话开关；iOS 结束后台执行时，会等你下次打开 App。"
           }
         }
       }
     },
-    "While the app is in the background it keeps a connection, so it can tell you when a reply is ready or an approval is waiting — including tasks that start after you leave. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location.": {
+    "This switch only keeps the conversation on screen updating while the app is in the background; notifications do not depend on it. Foreground notifications controls banners for other sessions while you are in the app.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "While the app is in the background it keeps a connection, so it can tell you when a reply is ready or an approval is waiting — including tasks that start after you leave. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location."
+            "value": "This switch only keeps the conversation on screen updating while the app is in the background; notifications do not depend on it. Foreground notifications controls banners for other sessions while you are in the app."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "App 在后台时会一直保持连接，即使任务是在你切到后台之后才开始，也能在回复完成或需要审批时通知你。iOS 可能提前结束它；之后会退回静音音频，再退回粗定位。App 不会读取或发送你的位置。"
+            "value": "此开关只影响后台期间当前会话的消息是否实时更新，不影响通知送达。“前台通知”控制你在 App 内时其他会话是否弹横幅。"
           }
         }
       }

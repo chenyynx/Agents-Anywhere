@@ -2432,8 +2432,45 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // whole build re-merged each finished turn with the scheduled turn
         // that followed it, so every send and every turn end toggled six
         // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
-        let suppressLatest = (latestTurnOpen && model.isRunning)
-            || model.session.hasNewerItems
+        // A session view can open with cached rows before the live runtime
+        // state arrives; "state unknown" is not "not running". Committing the
+        // latest bucket on that refresh stamps a streaming reply with a footer
+        // and seeds the closed snapshot with it, so the running state's
+        // userless restore keeps it for the whole turn (pp 2026-11-23 22:04,
+        // build 1541: gate closed at `status=nil`, hosts 103→104 at
+        // 22:04:10.204, gone only after the next view rebuild). A state that
+        // exists but predates the current live facts (background, socket
+        // loss, recovery) is equally untrusted; `isFresh` is the model's
+        // current-live-facts gate. Offline/failed has no live read to wait
+        // for, so the last known layout wins there.
+        let connectorOffline: Bool = {
+            switch model.session.connection {
+            case .offline, .failed: return true
+            case .inactive, .connecting, .connected, .reconnecting: return false
+            }
+        }()
+        let runtimeState = model.session.runtime.state
+        // A stale state still seals when it was written after the newest
+        // cached row; a row newer than the state is activity it never saw.
+        // This is the normal session-switch case: the finished turn's footer
+        // stays immediate, and only a turn that streamed after the state waits
+        // for the live read (pp 2026-11-24: every switch paid the 1–2 s wait).
+        let stateCoversRows: Bool = {
+            guard let runtimeState, !model.session.runtime.isFresh else { return true }
+            return model.timeline.rows.allSatisfy {
+                $0.value.updatedSeq <= runtimeState.updatedSeq
+            }
+        }()
+        let runtimeStateKnown = TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: runtimeState != nil,
+            isFresh: model.session.runtime.isFresh,
+            connectorOffline: connectorOffline,
+            stateCoversRows: stateCoversRows)
+        let suppressLatest = TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: latestTurnOpen,
+            runtimeIsRunning: model.isRunning,
+            hasNewerItems: model.session.hasNewerItems,
+            runtimeStateKnown: runtimeStateKnown)
         let liveTurnGroupID = TimelineTurnActions.resolveLiveTurnGroupID(
             isLiveUserTurn: turnFooterGate.isLiveUserTurn,
             hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
@@ -2487,13 +2524,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     turnActions, from: closedTurnActions,
                     groupIDs: Set(groupsByID.keys))
             }
-        } else if !model.session.hasNewerItems {
-            // Only the newest page is a complete map of finished footers.
-            // Browsing older history suppresses the latest bucket, so
-            // capturing here would overwrite the map with one that is
-            // missing its newest host; the restore path would then have
-            // nothing to give back when the reader returns (review
-            // 2026-11-23, code-inferred; no device reproduction).
+        } else if !model.session.hasNewerItems, runtimeStateKnown,
+                  !model.timeline.rows.isEmpty {
+            // Only the newest page, with a trusted runtime state and actual
+            // rows, is a complete map of finished footers. Browsing older
+            // history suppresses the latest bucket; an unknown state may have
+            // withheld a running turn that is not finished; an empty first
+            // tick (session.open) has no footers at all. Capturing any of them
+            // would overwrite the map with one the restore path later trusts
+            // (review 2026-11-23; the state-unknown case reproduced on build
+            // 1541 at 22:04).
             closedTurnActions = turnActions
         }
 

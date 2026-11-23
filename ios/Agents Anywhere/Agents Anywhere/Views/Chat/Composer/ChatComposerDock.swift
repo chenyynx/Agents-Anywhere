@@ -62,11 +62,16 @@ struct ChatComposerDock: View {
     @State private var picker: AttachmentPicker?
     @State private var photos: [PhotosPickerItem] = []
     @State private var attachmentError: String?
+    @State private var speechError: String?
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCamera = false
     @State private var pendingCamera = false
     @State private var editingAttachment: ChatAttachment?
+    @StateObject private var dictation = VoiceDictationController()
+    @State private var dictating = false
+    @State private var dictationBase = ""
+    @State private var pendingDictationSend = false
     @Environment(\.displayScale) private var displayScale
     @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
@@ -92,12 +97,19 @@ struct ChatComposerDock: View {
         VStack(spacing: 0) {
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
                 canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
-                placeholder: placeholder,
+                placeholder: speechError ?? placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
                 onOptions: presentOptions,
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
+                onVoice: startDictation,
+                isDictating: dictating,
+                isTranscribing: dictation.isTranscribing,
+                dictationAmplitude: dictation.amplitude,
+                onVoiceCancel: cancelDictation,
+                onVoiceFinish: finishDictation,
+                onVoiceSend: sendDictation,
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
                 onEditorLimitReached: {
@@ -114,6 +126,34 @@ struct ChatComposerDock: View {
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: dictating)
+        .onChange(of: dictation.status) { _, status in
+            switch status {
+            case .denied:
+                dictating = false
+                speechError = String(localized: "需要麦克风与语音识别权限")
+            case .failed(let message):
+                dictating = false
+                speechError = message
+            case .idle, .starting, .recording:
+                break
+            }
+        }
+        .onChange(of: draft.text) { _, _ in
+            if speechError != nil { speechError = nil }
+        }
+        .onChange(of: dictation.isTranscribing) { _, transcribing in
+            if !transcribing, dictating, !dictation.isRecording {
+                dictating = false
+            }
+        }
+        .onChange(of: dictating) { _, isDictating in
+            if !isDictating, pendingDictationSend {
+                pendingDictationSend = false
+                DispatchQueue.main.async { send() }
+            }
+        }
+        .onDisappear { dictation.stop() }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
         // The add-to-chat rows (permission/model) read from `settings`, which
         // only the catalog load fills; load once when the composer appears.
@@ -178,6 +218,38 @@ struct ChatComposerDock: View {
         .alert(String(localized: "无法添加附件"), isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
             Button(String(localized: "好"), role: .cancel) { attachmentError = nil }
         } message: { Text(attachmentError ?? "") }
+    }
+
+    // MARK: - Live dictation
+
+    private func startDictation() {
+        guard !dictating else { return }
+        speechError = nil
+        dictationBase = draft.text
+        dictating = true
+        dictation.onPartial = { text in
+            draft.text = dictationBase + text
+        }
+        dictation.onAutoFinish = {
+            dictating = false
+        }
+        dictation.start()
+    }
+
+    private func cancelDictation() {
+        dictation.cancel()
+        draft.text = dictationBase
+        dictating = false
+    }
+
+    private func finishDictation() {
+        // Keep the card up while the final transcript lands ("正在转录.....").
+        dictation.stop()
+    }
+
+    private func sendDictation() {
+        dictation.stop()
+        pendingDictationSend = true
     }
 
     /// Commit the editor's text, then route it: a running turn enqueues, an idle

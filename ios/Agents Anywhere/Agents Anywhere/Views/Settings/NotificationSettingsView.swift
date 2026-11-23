@@ -4,7 +4,7 @@ import SwiftUI
 /// a notification; these switches control display only. Background
 /// keep-alive is unconditional while notifications are on.
 struct NotificationSettingsView: View {
-    @AppStorage(NotificationSettings.enabledKey) private var enabled = false
+    @AppStorage(NotificationSettings.enabledKey) private var enabled = true
     @AppStorage(NotificationSettings.previewKey) private var preview = true
     @AppStorage(NotificationSettings.sessionSocketKey) private var sessionSocket = false
     @AppStorage(NotificationSettings.foregroundKey) private var foreground = false
@@ -12,7 +12,7 @@ struct NotificationSettingsView: View {
 
     var body: some View {
         SettingsScreen(title: String(localized: "Notifications")) {
-            SettingsSection(footer: String(localized: "A local notification, not a remote push: it can arrive only while iOS keeps the app running. If background execution is unavailable, no notification is sent until the app opens again.")) {
+            SettingsSection(footer: String(localized: "A local notification, not a remote push: the app keeps its own background connection so one can arrive while iOS lets it run, falling back to silent audio or coarse location if needed (it never reads or sends your location). This does not depend on the session switch below. If background execution is unavailable, it waits until the app opens again.")) {
                 SettingsToggleRow(icon: "text.bubble",
                                   title: String(localized: "Notifications"),
                                   isOn: $enabled)
@@ -23,9 +23,9 @@ struct NotificationSettingsView: View {
                                   isEnabled: enabled)
             }
 
-            SettingsSection(footer: String(localized: "While the app is in the background it keeps a connection, so it can tell you when a reply is ready or an approval is waiting — including tasks that start after you leave. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location.")) {
+            SettingsSection(footer: String(localized: "This switch only keeps the conversation on screen updating while the app is in the background; notifications do not depend on it. Foreground notifications controls banners for other sessions while you are in the app.")) {
                 SettingsToggleRow(icon: "text.bubble",
-                                  title: String(localized: "Keep the session connected in background"),
+                                  title: String(localized: "Keep the current session updating in background"),
                                   isOn: $sessionSocket,
                                   isEnabled: enabled)
                 SettingsRowDivider()

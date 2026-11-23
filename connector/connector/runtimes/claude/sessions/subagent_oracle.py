@@ -1008,6 +1008,18 @@ class RawTranscriptScan:
     tool_result_metadata: Mapping[str, Mapping[str, Any]] = field(
         default_factory=dict
     )
+    #: Lines where the walk opened a user-less turn: a ``<task-notification>``
+    #: row or a hidden fired prompt. Cleared by a compact boundary, exactly
+    #: like ``injected_prompt_rows`` — a pre-compact boundary must not anchor
+    #: the post-compact turn. The resolver that keys a live mint uses the
+    #: newest entry to know which turn the transcript's tail belongs to.
+    scheduled_boundary_lines: tuple[int, ...] = ()
+    #: The seeds of those user-less turns (the first assistant's ``message.id``,
+    #: or the row uuid / line-derived fallback). Membership is what tells the
+    #: resolver that the newest assistant row belongs to a scheduled turn
+    #: rather than to a real user prompt — a seed can be a row uuid in both
+    #: shapes, so the uuid alone cannot decide.
+    scheduled_turn_seeds: frozenset[str] = frozenset()
 
 
 def _transcript_row_prompt_text(row: Mapping[str, Any]) -> str | None:
@@ -1146,6 +1158,11 @@ def scan_raw_transcript(
     result_rows: dict[str, Mapping[str, Any]] = {}
     injected_prompt_rows: dict[str, int] = {}
     tool_result_metadata: dict[str, Mapping[str, Any]] = {}
+    # Every boundary line that opened a user-less turn, in row order (see
+    # ``RawTranscriptScan.scheduled_boundary_lines``).
+    scheduled_boundary_lines: list[int] = []
+    # Seeds of those turns (see ``RawTranscriptScan.scheduled_turn_seeds``).
+    scheduled_turn_seeds: set[str] = set()
     # Prompts the CLI queued since the last persisted conversation row. A
     # fired scheduled prompt is enqueued first and persisted right after as
     # the hidden user row; a real user prompt is enqueued and then persisted
@@ -1212,6 +1229,7 @@ def scan_raw_transcript(
             # the compaction continued, and live keeps the current turn. Only
             # boundaries from this compact generation may open a turn.
             injected_prompt_rows.clear()
+            scheduled_boundary_lines.clear()
             pending_scheduled = False
         elif row_type == "queue-operation" and row.get("operation") == "enqueue":
             queued = row.get("content")
@@ -1232,6 +1250,7 @@ def scan_raw_transcript(
                 # hidden user rows (continuation nudges, command caveats,
                 # image placeholders), whose text never equals an enqueue.
                 injected_prompt_rows[row_uuid] = line_index
+                scheduled_boundary_lines.append(line_index)
                 # The next assistant row anchors this turn on its message id,
                 # exactly like the SDK walk's boundary and the live cast
                 # frame. Without it the raw walk keeps the previous user
@@ -1246,6 +1265,7 @@ def scan_raw_transcript(
                 row_text = _transcript_row_prompt_text(row)
                 if row_type == "user" and row_text and "<task-notification>" in row_text:
                     pending_scheduled = True
+                    scheduled_boundary_lines.append(line_index)
                 elif (
                     row_type == "user"
                     and row.get("isMeta") is not True
@@ -1262,7 +1282,13 @@ def scan_raw_transcript(
                     native_id = (
                         _string(message.get("id")) if isinstance(message, Mapping) else None
                     )
-                    turn_seed = native_id or f"scheduled@{line_index}"
+                    # Same fallback chain as the SDK walk's
+                    # ``_history_assistant_turn_anchor``: the API message id,
+                    # then the transcript row uuid. Only a row with neither
+                    # falls back to the line-derived seed, which both walks
+                    # spell the same way.
+                    turn_seed = native_id or row_uuid or f"scheduled@{line_index}"
+                    scheduled_turn_seeds.add(turn_seed)
                     pending_scheduled = False
                 if (
                     row_type == "assistant"
@@ -1362,6 +1388,8 @@ def scan_raw_transcript(
         uuid_line_index=uuid_line_index,
         turn_seeds=turn_seeds,
         injected_prompt_rows=injected_prompt_rows,
+        scheduled_boundary_lines=tuple(scheduled_boundary_lines),
+        scheduled_turn_seeds=frozenset(scheduled_turn_seeds),
         tool_result_metadata=tool_result_metadata,
         dispatch_records={
             tool_use_id: (dispatch_rows[tool_use_id], result_rows.get(tool_use_id))

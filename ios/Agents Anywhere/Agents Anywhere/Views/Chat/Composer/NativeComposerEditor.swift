@@ -260,6 +260,9 @@ struct NativeComposerEditor: UIViewRepresentable {
     /// The draft itself is over the editor budget; repair it outside the view
     /// update. Never hand such a string to TextKit.
     var onOversizedDraft: (() -> Void)? = nil
+    /// Live dictation writes the draft from outside; the caret must follow the
+    /// end of the transcript instead of staying at the insertion point.
+    var followsTextEnd = false
 
     func makeUIView(context: Context) -> ComposerTextView {
         let view = ComposerTextView()
@@ -323,7 +326,10 @@ struct NativeComposerEditor: UIViewRepresentable {
             let selection = view.selectedRange
             view.text = draft.text
             let end = (draft.text as NSString).length
-            view.selectedRange = NSRange(location: min(selection.location, end), length: 0)
+            // Dictation replaces the draft from outside; keep the caret after
+            // the newest words instead of at the old insertion point.
+            let location = followsTextEnd ? end : min(selection.location, end)
+            view.selectedRange = NSRange(location: location, length: 0)
         }
         if draft.isFocused, !view.isFirstResponder {
             view.becomeFirstResponder()

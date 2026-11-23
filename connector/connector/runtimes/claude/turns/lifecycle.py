@@ -62,6 +62,7 @@ from connector.runtimes.claude.sdk.connection import (
     ClaudeConnection,
     ClaudeResponse,
     _is_wire_chrome,
+    turn_anchor_from_frame,
 )
 from connector.runtimes.claude.sdk.events import (
     ClaudeTerminalEvent,
@@ -84,6 +85,7 @@ from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
 from connector.runtimes.claude.sessions.reader import (
     _history_turn_id,
+    resolve_scheduled_turn_anchor,
     scan_agent_call_cards,
 )
 from connector.runtimes.claude.sessions.scheduled import ClaudeScheduledSessions
@@ -148,23 +150,13 @@ def _turn_anchor_from_frame(frame: Any) -> str | None:
     only anchor such a turn on its first assistant row as well. Anything
     else has no anchor: the caller keeps the provisional id and binds on a
     later frame (see ``drive_turn``).
+
+    The implementation lives in ``sdk.connection`` because a maintenance
+    response that steps aside records the same anchor; this alias keeps the
+    module-level name the tests and this file use.
     """
 
-    if frame is None:
-        return None
-    if is_stream_event(frame):
-        event = getattr(frame, "event", None)
-        if isinstance(event, Mapping):
-            payload = event.get("message")
-            if isinstance(payload, Mapping):
-                value = payload.get("id")
-                if isinstance(value, str) and value:
-                    return value
-        return None
-    if message_role(frame) != "assistant":
-        return None
-    value = message_id(frame)
-    return value if isinstance(value, str) and value else None
+    return turn_anchor_from_frame(frame)
 
 
 # The execution-lock circuit breaker (pp verdict, 2026-10-02, product-level):
@@ -178,6 +170,11 @@ def _turn_anchor_from_frame(frame: Any) -> str | None:
 # it at 30.002s regardless (production 17/17 firings), which retired the
 # transport, killed the host CLI and every subagent in it, and lost the reply.
 POLLED_TURN_WATCHDOG_SECONDS = 30.0
+#: Bound on the transcript read that resolves a user-less mint's anchor. The
+#: scan service caches by file version and shields the shared future, so a
+#: timeout never disturbs a concurrent sync; the mint simply falls back to the
+#: frame/hint anchor and the next history sync converges the rows.
+SCHEDULED_ANCHOR_RESOLVE_TIMEOUT_SECONDS = 1.0
 
 # The absolute ceiling for a turn that left the zero-content class. It exists
 # so the content gate cannot become "long turns never settle" — the red line
@@ -553,6 +550,12 @@ class ClaudeTurnRunner:
     #: first live row. Same gate as the user path, same best-effort contract.
     history_syncer: ClaudeHistorySyncer | None = None
     connections: dict[str, ClaudeConnection] = field(default_factory=dict, init=False)
+    #: The last user-less turn id minted per session. A new mint may never
+    #: reuse it: if the transcript resolver returns exactly this id, the scan
+    #: predates this turn's boundary (the CLI persisted the boundary after the
+    #: scan was taken) and adopting it would merge two scheduled turns —
+    #: strictly worse than the split it repairs.
+    last_scheduled_turn_ids: dict[str, str] = field(default_factory=dict, init=False)
     # Cron* bookkeeping handed over by a transport that was retired before its
     # replacement was built. `close()` drops the retired connection from
     # `connections`, so without this a breaker (or any failed turn) would
@@ -740,9 +743,69 @@ class ClaudeTurnRunner:
                     metadata={"source": "claude.scheduled.resume"},
                 )
 
+    async def _resolve_scheduled_turn_anchor(
+        self, session: ClaudeSession
+    ) -> str | None:
+        """The turn id the transcript says a user-less turn must carry.
+
+        Bounded and best-effort: a slow or unreadable transcript keeps today's
+        frame-based behavior, and the next history sync converges the rows.
+        Resolved OUTSIDE the execution lock — the scan is off the event loop
+        and must never make a starting turn wait behind it.
+        """
+
+        try:
+            return await asyncio.wait_for(
+                resolve_scheduled_turn_anchor(session),
+                timeout=SCHEDULED_ANCHOR_RESOLVE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.info(
+                "Claude turn anchor resolution timed out session_id={}",
+                session.session_id,
+            )
+            return None
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude turn anchor resolution failed session_id={}",
+                session.session_id,
+            )
+            return None
+
     async def scheduled_activity(
         self, session: ClaudeSession, response: ClaudeResponse
     ) -> None:
+        # Cheap early exit FIRST: this callback also runs for every user turn
+        # (the reader calls on_activity for any non-maintenance response), and
+        # a user turn must never pay for a transcript scan.
+        if self.stopping or response.execution is not None:
+            return
+        cast_frame = response.cast_frame
+        cast_anchor = _turn_anchor_from_frame(cast_frame)
+        # Only a mint cast by the reply's own frames may adopt the transcript
+        # anchor. A user-frame cast (peer/channel message) has no assistant
+        # anchor yet, and the newest scheduled turn in the transcript is then
+        # somebody else's — adopting it would merge two turns.
+        cast_is_reply = cast_anchor is not None or (
+            cast_frame is not None
+            and (
+                message_role(cast_frame) == "assistant"
+                or is_stream_event(cast_frame)
+            )
+        )
+        # Resolve the transcript truth before the lock: the cast frame is only
+        # what the reader happened to see. A frame consumed by a maintenance
+        # response (2026-11-24) or lost in a reconnect must not move the id.
+        #
+        # This await widens the pre-lock window by at most the resolve timeout
+        # (1 s): a user turn that starts inside it is queued behind this wake
+        # turn by the existing `queued_execution` path below — the same
+        # semantics as before, just a wider window.
+        resolved_anchor = (
+            await self._resolve_scheduled_turn_anchor(session)
+            if cast_is_reply
+            else None
+        )
         async with session.execution_lock:
             if self.stopping:
                 return
@@ -757,14 +820,62 @@ class ClaudeTurnRunner:
             # that message carries. If the cast frame is one that carries no
             # anchor, the turn keeps an opaque id and `drive_turn` binds it on
             # the first anchor-bearing frame instead.
-            anchor = _turn_anchor_from_frame(response.cast_frame)
-            execution = ClaudeExecution(
-                turn_id=(
-                    _history_turn_id(anchor)
-                    if anchor is not None
-                    else f"turn_claude_{secrets.token_urlsafe(12)}"
-                )
+            connection = response.connection
+            # The maintenance hint belongs to a reply, never to a peer-frame
+            # mint: adopting it there would attach the peer's turn to the
+            # swallowed reply's id.
+            hint_anchor = (
+                connection.deferred_anchor() if cast_is_reply else None
             )
+            if (
+                resolved_anchor is not None
+                and resolved_anchor
+                == self.last_scheduled_turn_ids.get(session.session_id)
+            ):
+                # A scan older than this turn's boundary would re-key the new
+                # turn onto the previous one — merging two turns is strictly
+                # worse than the split this resolver repairs. The frame anchor
+                # (or the maintenance hint) is the honest fallback.
+                logger.info(
+                    "Claude turn anchor resolution stale session_id={} "
+                    "turn_id={}",
+                    session.session_id,
+                    resolved_anchor,
+                )
+                resolved_anchor = None
+            anchor_source = "cast"
+            if hint_anchor is not None:
+                # A maintenance response yielded to this reply on THIS
+                # transport, so the hint names its first message by
+                # construction — stronger evidence than a disk scan whose
+                # boundary row may not be written yet (the stale-scan window
+                # below).
+                turn_id = _history_turn_id(hint_anchor)
+                anchor_source = "maintenance"
+            elif resolved_anchor is not None:
+                turn_id = resolved_anchor
+                anchor_source = "transcript"
+            elif cast_anchor is not None:
+                turn_id = _history_turn_id(cast_anchor)
+            else:
+                turn_id = f"turn_claude_{secrets.token_urlsafe(12)}"
+                anchor_source = "provisional"
+            if cast_anchor is not None and turn_id != _history_turn_id(cast_anchor):
+                logger.info(
+                    "Claude scheduled turn anchored on recorded truth "
+                    "session_id={} turn_id={} cast_anchor={} source={}",
+                    session.session_id,
+                    turn_id,
+                    cast_anchor,
+                    anchor_source,
+                )
+            if cast_is_reply:
+                # Only the reply itself consumes the maintenance window; a
+                # peer-frame mint says nothing about the wake reply still owed.
+                connection.clear_deferred_anchor()
+                connection.background.clear_wake_owed()
+            self.last_scheduled_turn_ids[session.session_id] = turn_id
+            execution = ClaudeExecution(turn_id=turn_id)
             session.execution = execution
             response.execution = execution
             try:
@@ -1174,6 +1285,12 @@ class ClaudeTurnRunner:
                     or connection.current is not None
                     or connection.pending is not None
                     or connection.background.active_ids
+                    # Same window as the calibration gate: the work is done
+                    # but its wake reply is still owed, so the transport is
+                    # not really idle. `reconcile_tasks` would hold the reader
+                    # (and the maintenance tool lock) across the reply.
+                    or connection.background.wake_owed()
+                    or connection.deferred_anchor() is not None
                     or not connection.reconcile_needed
                     or not connection.retained
                     or connection.reconciling
@@ -2945,6 +3062,14 @@ class ClaudeTurnRunner:
             and session.queued_execution is None
             and not connection.background.active_ids
             and not connection.task_ids
+            # The gap this gate could not see (2026-11-24): the work IS done,
+            # so `active_ids` is empty, and the CLI is about to send the wake
+            # reply nobody invited. A probe taken there holds the reader and
+            # swallows the reply's opening frames — the split step group.
+            and not connection.background.wake_owed()
+            # ...and the same holds right after a maintenance response had to
+            # yield to such a reply: the rest of it may still be streaming.
+            and connection.deferred_anchor() is None
         )
 
     def _calibration_settling(self, connection: ClaudeConnection) -> bool:
@@ -3286,8 +3411,21 @@ class ClaudeTurnRunner:
                     deferred_anchor = _turn_anchor_from_frame(message)
                     if deferred_anchor is not None:
                         if execution.published_items == 0:
-                            turn_id = _history_turn_id(deferred_anchor)
+                            # Bind to the transcript's anchor when it names one:
+                            # the frame in hand is the first anchor the reader
+                            # saw, which is not necessarily the first message of
+                            # the turn (a reconnect can join mid-message).
+                            resolved = await self._resolve_scheduled_turn_anchor(
+                                session
+                            )
+                            if resolved == self.last_scheduled_turn_ids.get(
+                                session.session_id
+                            ):
+                                # Same stale-scan guard as the mint path.
+                                resolved = None
+                            turn_id = resolved or _history_turn_id(deferred_anchor)
                             execution.turn_id = turn_id
+                            self.last_scheduled_turn_ids[session.session_id] = turn_id
                             turn_anchor_bound = True
                         elif not turn_bind_warned:
                             turn_bind_warned = True
@@ -3931,6 +4069,11 @@ class ClaudeTurnRunner:
                     and connection.retained
                     and not connection.reconciling
                     and not connection.background.active_ids
+                    # Same window as reconcile_after_background: a finished
+                    # task's wake reply may still be owed, so the transport
+                    # is not provably idle.
+                    and not connection.background.wake_owed()
+                    and connection.deferred_anchor() is None
                     and connection.pending is None
                     and not connection.closing
                     and not self.stopping

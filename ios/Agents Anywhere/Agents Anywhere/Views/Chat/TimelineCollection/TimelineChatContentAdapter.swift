@@ -2438,8 +2438,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // and seeds the closed snapshot with it, so the running state's
         // userless restore keeps it for the whole turn (pp 2026-11-23 22:04,
         // build 1541: gate closed at `status=nil`, hosts 103→104 at
-        // 22:04:10.204, gone only after the next view rebuild).
-        let runtimeStateKnown = model.session.runtime.state != nil
+        // 22:04:10.204, gone only after the next view rebuild). A state that
+        // exists but predates the current live facts (background, socket
+        // loss, recovery) is equally untrusted; `isFresh` is the model's
+        // current-live-facts gate. Offline/failed has no live read to wait
+        // for, so the last known layout wins there.
+        let connectorOffline: Bool = {
+            switch model.session.connection {
+            case .offline, .failed: return true
+            case .inactive, .connecting, .connected, .reconnecting: return false
+            }
+        }()
+        let runtimeStateKnown = TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: model.session.runtime.state != nil,
+            isFresh: model.session.runtime.isFresh,
+            connectorOffline: connectorOffline)
         let suppressLatest = TimelineTurnActions.suppressesLatest(
             latestTurnOpen: latestTurnOpen,
             runtimeIsRunning: model.isRunning,

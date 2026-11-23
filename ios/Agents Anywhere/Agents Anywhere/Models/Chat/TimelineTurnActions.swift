@@ -215,6 +215,22 @@ enum TimelineTurnActions {
         (latestTurnOpen && runtimeIsRunning) || hasNewerItems || !runtimeStateKnown
     }
 
+    /// Whether a footer refresh may trust the runtime state to seal the
+    /// latest turn.
+    ///
+    /// A state that exists but was read before the current live facts landed
+    /// (background, socket loss, recovery) is just as unable to seal a
+    /// running turn as a missing one: it can show the previous turn's idle.
+    /// `isFresh` is the model's own "current live facts are applied" gate
+    /// (`V2SessionModel.update`), so the seal follows the same authority as
+    /// authoritative turn ends. When the connector is offline or failed there
+    /// is no live read to wait for; the last known layout wins as before,
+    /// otherwise an offline session would never regain its newest footer.
+    static func footerRuntimeStateIsTrustworthy(stateExists: Bool, isFresh: Bool,
+                                                connectorOffline: Bool) -> Bool {
+        connectorOffline || (stateExists && isFresh)
+    }
+
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
     ///

@@ -633,6 +633,25 @@ import Testing
             hasNewerItems: true, runtimeStateKnown: true))
     }
 
+    /// Only a state read from the current live facts may seal the latest
+    /// turn: a present but stale state (background/socket loss/recovery) can
+    /// still show the previous idle. Offline/failed has no live read to wait
+    /// for, so the last known layout wins there.
+    @Test func onlyFreshRuntimeStateCanSealTheLatestTurn() {
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: true, connectorOffline: false))
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false))
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: true, connectorOffline: false))
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: false, connectorOffline: false))
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: false, isFresh: false, connectorOffline: true))
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: true))
+    }
+
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.

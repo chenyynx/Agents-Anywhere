@@ -1315,6 +1315,15 @@ final class V2SessionRepository {
         }
     }
 
+    /// A send that has not reached a terminal turn yet. Background keep-alive
+    /// uses this to cover the gap between "message sent" and "dashboard shows
+    /// the turn running".
+    var hasPendingOutbound: Bool {
+        entries.values.contains {
+            !$0.model.pendingMessages.isEmpty || !$0.model.sendQueue.items.isEmpty
+        }
+    }
+
     func suspend() {
         suspended = true
         for entry in entries.values { stop(entry); emit(entry, persist: false) }

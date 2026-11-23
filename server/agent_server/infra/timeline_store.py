@@ -605,6 +605,33 @@ class SqlTimelineStore:
             ).mappings().first()
         return TimelineItem.model_validate_json(row["payload_json"]) if row is not None else None
 
+    async def latest_assistant_item(
+        self, session_id: str
+    ) -> TimelineItem | None:
+        """Newest assistant message, for notification previews."""
+
+        async with self._engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    timeline_items.select()
+                    .where(
+                        timeline_items.c.session_id == session_id,
+                        timeline_items.c.role == "assistant",
+                    )
+                    .order_by(
+                        timeline_items.c.item_time.desc(),
+                        timeline_items.c.order_seq.desc(),
+                        timeline_items.c.updated_seq.desc(),
+                    )
+                    .limit(1)
+                )
+            ).mappings().first()
+        return (
+            TimelineItem.model_validate_json(row["payload_json"])
+            if row is not None
+            else None
+        )
+
     async def upsert_one(self, conn: AsyncConnection, item: TimelineItem) -> None:
         """Insert-or-update a single row by composite PK (session_id, id).
 

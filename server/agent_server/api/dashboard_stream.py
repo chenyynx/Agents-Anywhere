@@ -25,6 +25,7 @@ from agent_server.infra.ws_tickets import ClientWsTicketManager
 from agent_server.services.connector_presence import (
     with_effective_connector_statuses,
 )
+from agent_server.services.notifications import derive_dashboard_notifications
 from agent_server.services.session_meta_projection import (
     project_session_meta_for_dashboard,
 )
@@ -35,6 +36,14 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 def _get_ws_tickets(conn: HTTPConnection) -> ClientWsTicketManager:
     return conn.app.state.ws_tickets
+
+
+async def _latest_assistant_text(db: Store, session_id: str) -> str:
+    item = await db.timeline.latest_assistant_item(session_id)
+    if item is None or not isinstance(item.content, dict):
+        return ""
+    text = item.content.get("text")
+    return text if isinstance(text, str) else ""
 
 
 async def _dashboard_snapshot(
@@ -52,6 +61,10 @@ async def _dashboard_snapshot(
         runtime_state_cache,
         sessions,
     )
+    notifications = await derive_dashboard_notifications(
+        sessions,
+        lambda session_id: _latest_assistant_text(db, session_id),
+    )
     runtimes = await db.list_user_device_runtimes(user_id=user_id)
     return {
         "type": "dashboard.snapshot",
@@ -67,6 +80,9 @@ async def _dashboard_snapshot(
             session.model_dump(mode="json")
             for session in sessions
         ],
+        # Server-decided local-notification records (dedupe by id). APNs
+        # later consumes the same derivation.
+        "notifications": notifications,
         # Device pages render runtime lifecycle from this list, so a status
         # change reaches them without a manual refresh.
         "runtimes": [

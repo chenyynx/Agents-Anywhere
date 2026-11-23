@@ -224,6 +224,17 @@ switching a device filter or opening archives does not fetch another session lis
 An explicit HTTP refresh reads `/projects` and `/sessions/list` once each, alongside
 the connector list; it does not issue a request for every project or archive state.
 
+Session metadata carries `backgroundTasks` (live background agents/commands on the
+runtime). A turn that ends with this above zero is not the conversation's final
+reply. Each snapshot also carries `notifications`: server-decided local-notification
+records (`id`, `sessionId`, `type`, `title`, `preview`, `summary`, `deepLink`,
+`createdAt`); clients display each `id` once. A completion is derived only when
+`status == idle` **and** `backgroundTasks == 0`, so the turn that ends while a
+background task still runs stays quiet and the wake turn that reports it produces
+the single final notification. Approvals and errors notify regardless of background
+work. Remote push, when available, consumes the same derivation; the client never
+decides on its own.
+
 Project mutations refresh the shared project list. A session with an unknown or
 missing project binding also triggers a shared project refresh and remains visible
 under ungrouped sessions. Clients coalesce concurrent project reads and remember

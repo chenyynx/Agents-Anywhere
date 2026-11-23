@@ -64,6 +64,10 @@ final class AppState {
     @ObservationIgnored private var cachedServices: V2ClientServices?
     @ObservationIgnored private var cachedServicesTokenProvider: MutableAuthTokenProvider?
     @ObservationIgnored private var isInBackground = false
+    /// The product (not the Settings probe) started the keep-alive ladder for
+    /// the current background window; only that instance is auto-stopped.
+    @ObservationIgnored private var autoKeepAlive = false
+    @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
     init() {
@@ -99,6 +103,18 @@ final class AppState {
                 build, forKey: ClientDiagnosticsLog.lastBuildKey
             )
         }
+        openSessionObserver = NotificationCenter.default.addObserver(
+            forName: NotificationService.openSessionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let sessionID = note.userInfo?["sessionId"] as? String,
+                  !sessionID.isEmpty else { return }
+            Task { @MainActor [weak self] in
+                self?.chatSelection = .session(sessionID)
+            }
+        }
+        NotificationService.shared.activate()
         Task { await restoreSession() }
     }
 
@@ -799,6 +815,29 @@ final class AppState {
 
     private func applyDashboardSnapshot(_ snapshot: V2DashboardSnapshot) {
         cachedServices?.dashboardRepository.apply(snapshot)
+        NotificationService.shared.handle(snapshot: snapshot)
+        evaluateBackgroundKeepAlive(snapshot)
+    }
+
+    /// The ladder starts with the turn (while in front) and ends only at the
+    /// true terminal state: idle with no background work. A turn that ends
+    /// while a background agent runs keeps the window open for its wake turn.
+    private func evaluateBackgroundKeepAlive(_ snapshot: V2DashboardSnapshot) {
+        guard isInBackground else { return }
+        let hasLiveWork = snapshot.sessions.contains { session in
+            session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
+        } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+        if hasLiveWork {
+            guard NotificationSettings.isEnabled,
+                  NotificationSettings.keepAliveEnabled,
+                  !KeepAliveCoordinator.shared.isOn else { return }
+            KeepAliveCoordinator.shared.start()
+            autoKeepAlive = true
+        } else if autoKeepAlive {
+            KeepAliveCoordinator.shared.stop()
+            autoKeepAlive = false
+            cancelDashboardUpdates()
+        }
     }
 
     private func isAuthenticationFailure(_ error: Error) -> Bool {
@@ -818,9 +857,26 @@ final class AppState {
         if background {
             accountSyncID = UUID(); accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
             if let services = cachedServices { Task { await services.flushCache() } }
-            cancelDashboardUpdates()
+            let hasLiveWork = sessions.contains { session in
+                session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
+            } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+            let keepAlive = NotificationSettings.isEnabled
+                && NotificationSettings.keepAliveEnabled
+                && hasLiveWork
+            if keepAlive {
+                KeepAliveCoordinator.shared.start()
+                autoKeepAlive = true
+            } else {
+                cancelDashboardUpdates()
+            }
+            // Session sockets always close; only the dashboard channel stays
+            // up, and only while the ladder holds the process.
             cachedServices?.sessionRepository.suspend()
         } else {
+            if autoKeepAlive {
+                KeepAliveCoordinator.shared.stop()
+                autoKeepAlive = false
+            }
             cachedServices?.sessionRepository.resume()
             startDashboardUpdates()
             beginAccountSynchronization()

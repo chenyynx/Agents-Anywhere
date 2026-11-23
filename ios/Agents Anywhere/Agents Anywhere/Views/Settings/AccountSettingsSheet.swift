@@ -42,6 +42,7 @@ struct AccountSettingsSheet: View {
                 connectionSection
                 displaySection
                 composerSection
+                notificationsSection
                 sessionListSection
                 storageSection
                 supportSection
@@ -190,6 +191,14 @@ struct AccountSettingsSheet: View {
             SettingsNavigationRow(icon: "anthropicon.palette",
                                   title: String(localized: "链接与代码配色"),
                                   destination: CodeLinkColorSettingsView())
+        }
+    }
+
+    private var notificationsSection: some View {
+        SettingsSection(String(localized: "Notifications")) {
+            SettingsNavigationRow(icon: "text.bubble",
+                                  title: String(localized: "Notifications"),
+                                  destination: NotificationSettingsView())
         }
     }
 

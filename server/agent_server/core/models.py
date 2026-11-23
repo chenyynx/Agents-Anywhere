@@ -833,6 +833,9 @@ class SessionView(BaseModel):
     title: str | None = None
     cwd: str | None = None
     status: SessionStatus
+    # Live background work on the runtime (agents/commands). A turn that ends
+    # while this is above zero is not the conversation's final state.
+    backgroundTasks: int = 0
     takeover: bool
     pinned: bool = False
     pinnedAt: str | None = None

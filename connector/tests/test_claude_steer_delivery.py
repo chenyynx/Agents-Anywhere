@@ -29,11 +29,29 @@ from connector.runtimes.claude.domain.capabilities import (
     claude_session_capabilities,
 )
 from connector.runtimes.claude.domain.pending_messages import (
+    ClaudeClientMessageBinding,
     ClaudeHistoryUserMessage,
+    ClaudePendingClientMessageRegistry,
+    binding_to_mapping,
+    bindings_from_value,
+)
+from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
+from connector.runtimes.claude.sessions.reader import _history_items_from_messages
+from test_claude_history_compact import (
+    EXTERNAL_SESSION_ID as _HISTORY_EXTERNAL_SESSION_ID,
+    SESSION_ID as _HISTORY_SESSION_ID,
+    _CompactHistorySdk,
+    _SyncStateHost,
+    _message as _history_message,
+    _session as _history_session,
+    _syncer,
 )
 from test_claude_runtime import _RecordingHost, _runtime
 
 STEER = "STEER: say BANANA-42"
+#: The uuid the connector assigns a steer is the one the SDK replays in the
+#: transcript (`session.pending_steers` is keyed by it).
+STEER_ECHO_UUID = "4965e6b3-b91b-44db-b7bb-b97958ef3e9d"
 
 
 class _CancelQuery:
@@ -324,9 +342,230 @@ async def _test_claude_steer_registers_for_history_reconciliation() -> None:
         messages=(ClaudeHistoryUserMessage(native_message_id=steer_uuid, text=STEER),),
     )
     assert bindings[steer_uuid].client_message_id == "client_steer_hist"
+    # The binding remembers the row's type after `pending_steers` forgets it.
+    assert bindings[steer_uuid].steering is True
 
     client.steer_echo_allowed.set()
     await asyncio.wait_for(task, 10)
+
+
+def test_claude_steer_without_client_id_keeps_its_type_for_history() -> None:
+    asyncio.run(_test_claude_steer_without_client_id_keeps_its_type_for_history())
+
+
+async def _test_claude_steer_without_client_id_keeps_its_type_for_history() -> None:
+    """A steer with no client id still leaves a persistent steering bridge.
+
+    There is no optimistic bubble to bind, but the pre-assigned uuid is the
+    id the SDK replays; recording it as a steering bridge keeps a later
+    history rebase from flipping the row to an ordinary user prompt.
+    """
+
+    host = _RecordingHost()
+    client = _SteerClaudeClient()
+    runtime = _runtime(host=host, client=client)
+    started = await runtime.start_turn(
+        "sess_hist", "claude_session_0", "hello",
+        client_message_id="client_msg_hist",
+    )
+    assert started.ok is True
+    session = runtime._sessions["sess_hist"]
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(client.tool_running.wait(), 5)
+
+    steered = await runtime.steer_turn(
+        "sess_hist", "claude_session_0", STEER,
+        client_message_id=None,
+    )
+    assert steered.ok is True
+    steer_uuid = client.steer_uuid
+    assert steer_uuid is not None
+
+    bindings = runtime._pending_messages.match_history_messages(
+        session_id="sess_hist",
+        external_session_id=session.external_session_id,
+        messages=(
+            ClaudeHistoryUserMessage(native_message_id=steer_uuid, text=STEER),
+        ),
+    )
+    assert bindings[steer_uuid].client_message_id is None
+    assert bindings[steer_uuid].steering is True
+
+    client.steer_echo_allowed.set()
+    await asyncio.wait_for(task, 10)
+
+
+def test_history_projection_marks_a_pending_steer_as_a_steering_row() -> None:
+    """The transcript scan must type a pending steer like the live echo does.
+
+    The turn-end history sync reads the steer's user message from the
+    transcript before the queued steer starts its next turn. Publishing it as
+    an ordinary user prompt opens a turn on the client that never existed; the
+    live echo then corrects the same item to `steeringUserMessage` and the
+    correction retracts the finished turn's footer (pp 2026-11-23, session
+    `sess_RRBf0biiw2g6WQ`: hosts 15 → 14 → 16).
+    """
+
+    messages = (
+        _history_message("u1", "user", "hello"),
+        _history_message("a1", "assistant", "hi"),
+        _history_message(STEER_ECHO_UUID, "user", STEER),
+    )
+    items = _history_items_from_messages(
+        _history_session(),
+        messages,
+        steering_native_ids=frozenset({STEER_ECHO_UUID}),
+    )
+    by_text = {item.content["text"]: item for item in items}
+
+    steer = by_text[STEER]
+    assert steer.source.get("itemType") == "steeringUserMessage"
+    assert steer.source.get("event") == "claude.turn.steer"
+
+    plain = by_text["hello"]
+    assert plain.source.get("itemType") == "user"
+    assert plain.source.get("event") == "claude.history.user"
+
+
+def test_history_projection_keeps_a_read_steers_type_from_its_binding() -> None:
+    """A rebase after the steer was read must still type the row as steering.
+
+    ``take_steer`` drops the live registration when the echo is consumed; the
+    persisted client-message binding carries the flag instead, so a full
+    rebase (connector restart, compaction) cannot flip the row back to an
+    ordinary user prompt.
+    """
+
+    registry = ClaudePendingClientMessageRegistry("conn_test")
+    registry.register_live_message(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        client_message_id="client_steer_hist",
+        platform_item_id="platform_steer_hist",
+        text=STEER,
+        attachments=(),
+        steering=True,
+    )
+    matches = registry.match_history_messages(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        messages=(
+            ClaudeHistoryUserMessage(
+                native_message_id=STEER_ECHO_UUID,
+                text=STEER,
+            ),
+        ),
+    )
+
+    items = _history_items_from_messages(
+        _history_session(),
+        (_history_message(STEER_ECHO_UUID, "user", STEER),),
+        client_message_matches=matches,
+        steering_native_ids=frozenset(),
+    )
+    (steer,) = items
+    assert steer.source.get("itemType") == "steeringUserMessage"
+    assert steer.source.get("event") == "claude.turn.steer"
+    assert steer.source.get("clientMessageId") == "client_steer_hist"
+
+
+def test_history_projection_keeps_a_read_steers_type_from_the_native_bridge() -> None:
+    """A steer submitted without a client id keeps its type through a rebase.
+
+    There is no pending bubble to bind, so the pre-assigned uuid bridge
+    carries the steering flag instead.
+    """
+
+    registry = ClaudePendingClientMessageRegistry("conn_test")
+    registry.record_replayed_platform_id(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        native_message_id=STEER_ECHO_UUID,
+        platform_item_id="platform_steer_hist",
+        text=STEER,
+        attachments=(),
+        steering=True,
+    )
+    matches = registry.match_history_messages(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        messages=(
+            ClaudeHistoryUserMessage(
+                native_message_id=STEER_ECHO_UUID,
+                text=STEER,
+            ),
+        ),
+    )
+
+    items = _history_items_from_messages(
+        _history_session(),
+        (_history_message(STEER_ECHO_UUID, "user", STEER),),
+        client_message_matches=matches,
+    )
+    (steer,) = items
+    assert steer.source.get("itemType") == "steeringUserMessage"
+    assert steer.source.get("event") == "claude.turn.steer"
+
+
+def test_a_steer_binding_keeps_its_flag_across_persistence() -> None:
+    binding = ClaudeClientMessageBinding(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        client_message_id="client_steer_hist",
+        platform_item_id="platform_steer_hist",
+        text=STEER,
+        native_message_id=STEER_ECHO_UUID,
+        steering=True,
+    )
+    (restored,) = bindings_from_value([binding_to_mapping(binding)])
+    assert restored.steering is True
+
+    plain = ClaudeClientMessageBinding(
+        session_id=_HISTORY_SESSION_ID,
+        external_session_id=_HISTORY_EXTERNAL_SESSION_ID,
+        client_message_id="client_plain",
+        platform_item_id="platform_plain",
+        text="hello",
+    )
+    (plain_restored,) = bindings_from_value([binding_to_mapping(plain)])
+    assert plain_restored.steering is False
+
+
+def test_history_sync_marks_a_pending_steer_row() -> None:
+    asyncio.run(_test_history_sync_marks_a_pending_steer_row())
+
+
+async def _test_history_sync_marks_a_pending_steer_row() -> None:
+    """The sync's own wiring: live ``pending_steers`` reach the projector."""
+
+    sdk = _CompactHistorySdk(
+        [
+            _history_message("u1", "user", "hello"),
+            _history_message("a1", "assistant", "hi"),
+            _history_message(STEER_ECHO_UUID, "user", STEER),
+            _history_message("a2", "assistant", "after steer"),
+        ]
+    )
+    live = _history_session()
+    live.remember_steer(STEER_ECHO_UUID, STEER, "client_steer_hist")
+    syncer = _syncer(
+        host=_SyncStateHost(),
+        sdk=sdk,
+        session_store=ClaudeSessionStore({_HISTORY_SESSION_ID: live}),
+    )
+
+    prepared = await syncer.prepare_session_timeline_sync(
+        _HISTORY_SESSION_ID, _HISTORY_EXTERNAL_SESSION_ID
+    )
+    assert prepared is not None
+    assert prepared.snapshot is not None
+    by_text = {item.content.get("text"): item for item in prepared.snapshot.items}
+
+    steer = by_text[STEER]
+    assert steer.source.get("itemType") == "steeringUserMessage"
+    assert steer.source.get("event") == "claude.turn.steer"
+    assert by_text["hello"].source.get("itemType") == "user"
 
 
 def test_claude_steer_stopped_before_echo_leaves_no_row() -> None:

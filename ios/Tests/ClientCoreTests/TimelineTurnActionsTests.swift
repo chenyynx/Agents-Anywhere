@@ -367,6 +367,96 @@ import Testing
         #expect(fixed["second"] != nil)
     }
 
+    /// pp 2026-11-23 06:38: a background fork was still running when the user
+    /// sent. The live group must not park on the previous user bubble for a
+    /// row the footer build already ignores — doing so turned turn-id
+    /// splitting off, merged the bubble-less turns after the bubble and
+    /// blinked the earlier turn's footer (hosts 9 → 8 → 9; the send's bottom
+    /// follow ran 30 pt short, then a second +30 follow landed with the
+    /// echo).
+    @Test func aRunningBackgroundCardDoesNotParkTheLiveGroupOnTheOldBubble() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        row("wake", text: "Wake-up answer", turnId: "t2"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running", turnId: "t3"),
+                        row("second", text: "Second answer", turnId: "t3")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let resolved = TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: groups)
+        #expect(resolved == nil)
+        // With no parked live id the bubble-less turns keep their own footers
+        // while the background card is still running.
+        let actions = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false, hasPendingUserMessage: true,
+            liveTurnGroupID: resolved)
+        #expect(actions["first"] != nil)
+        #expect(actions["wake"] != nil)
+        #expect(actions["second"] != nil)
+
+        // A foreground running tool still keeps the queued-send protection.
+        let foreground = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 toolRow("bash", content: ["kind": "command", "command": "ls"],
+                         status: "running")],
+            interactionTargets: [])
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: foreground) == "user")
+
+        // The task-event shape (`agents[*].isBackgrounded`, the shape the real
+        // fork card carried) is the same exemption.
+        let flagged = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 toolRow("task",
+                         content: ["kind": "agent_call", "action": "invoke",
+                                   "agents": ["agent-1": ["status": "running",
+                                                          "isBackgrounded": true]]],
+                         status: "running")],
+            interactionTargets: [])
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: flagged) == nil)
+
+        // A running compaction marker is maintenance, not the turn's activity.
+        let compacting = TimelineGrouping.groups(
+            try [row("user", role: "user", text: "Question"),
+                 row("reply", text: "Answer"),
+                 compactRow("compact", state: "started", status: "running",
+                            turnId: "turn-compact")],
+            interactionTargets: [])
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: compacting) == nil)
+    }
+
+    /// The `timeline.footer.gate` ids must be the resolution's own inputs:
+    /// the grouping drops sub-agent child rows, so a probe scanning
+    /// `timeline.rows` could name a row the resolution never sees. `ignored`
+    /// names the exempt active row (the 2026-11-23 background fork) that
+    /// `active` cannot show.
+    @Test func footerProbeIDsFollowTheGroupingAndTheExemption() throws {
+        var child = try itemObject(id: "child")
+        child["type"] = "tool"; child["role"] = "assistant"; child["status"] = "running"
+        child["content"] = ["kind": "command", "command": "ls", "parentItemId": "task"]
+        let childRow = ChatTimelineRowModel(try decode(child))
+        let rows = try [row("user", role: "user", text: "Question"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "runInBackground": true],
+                                status: "running"),
+                        childRow]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        #expect(!groups.contains { group in group.rows.contains { $0.id == "child" } })
+        #expect(TimelineTurnActions.liveActivityRowIDs(
+            groups: groups, latestUserRowID: "user").isEmpty)
+        #expect(TimelineTurnActions.ignoredActivityRowIDs(
+            groups: groups, latestUserRowID: "user") == ["task"])
+    }
+
     /// A tool row with arbitrary content, for the background hand-off rows.
     private func toolRow(_ id: String, content: [String: Any],
                          status: String = "running", turnId: String? = nil) throws -> ChatTimelineRowModel {
@@ -722,5 +812,72 @@ struct TurnFooterGateTests {
         #expect(!first)
         let afterUserArrives = gate.update(userKey: "u1", runtimeIsRunning: false, authoritativeTurnEnds: 0)
         #expect(!afterUserArrives)
+    }
+
+    /// A steer echo can reach the timeline before the live steering row does:
+    /// the turn-end history scan publishes it as an ordinary user prompt and
+    /// a moment later the same item is corrected to `steeringUserMessage`.
+    /// The newest user key then falls back to the previous bubble. That
+    /// fallback is not a new turn — it is a userless episode, so the finished
+    /// turn's footer is restored from the closed state instead of staying
+    /// suppressed until the next turn ends (pp 2026-11-23, session
+    /// `sess_RRBf0biiw2g6WQ`: footer hosts 15 → 14 → 16).
+    @Test func aUserKeyThatFallsBackDoesNotReopenTheFinishedTurn() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true,
+                        authoritativeTurnEnds: 0, userKeyOrder: 10)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        // The steer echo arrives first as a normal user row.
+        let transient = gate.update(userKey: "steer", runtimeIsRunning: false,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 30)
+        #expect(transient)
+        // The same item is corrected to a steering row; the next turn runs.
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(corrected)
+        #expect(gate.isUserlessEpisode)
+        // The userless episode ends with the next authoritative end.
+        let afterNextEnd = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                       authoritativeTurnEnds: 2, userKeyOrder: 10)
+        #expect(!afterNextEnd)
+        #expect(!gate.isUserlessEpisode)
+    }
+
+    /// The same correction while the runtime is idle must not claim a turn is
+    /// in flight — the finished footer stays committed.
+    @Test func aUserKeyFallbackWhileIdleLeavesTheFinishedTurnClosed() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        _ = gate.update(userKey: "steer", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 30)
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: false,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(!corrected)
+    }
+
+    /// A corrected steer episode is userless for the footer restore, but it
+    /// is still a real user-initiated turn: an automatic compaction inside it
+    /// must not close the gate and commit the streaming reply's footer early
+    /// (the 30 pt flash `aCompactionLeavesAUserOpenedTurnOpen` rules out).
+    @Test func aCorrectionKeepsACompactionFromRevealingTheFooterEarly() {
+        var gate = TurnFooterGate()
+        _ = gate.update(userKey: "u1", runtimeIsRunning: true,
+                        authoritativeTurnEnds: 0, userKeyOrder: 10)
+        _ = gate.update(userKey: "u1", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 10)
+        _ = gate.update(userKey: "steer", runtimeIsRunning: false,
+                        authoritativeTurnEnds: 1, userKeyOrder: 30)
+        let corrected = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                    authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(corrected)
+        let duringCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                           authoritativeTurnEnds: 1,
+                                           isCompacting: true, userKeyOrder: 10)
+        #expect(duringCompaction)
+        let afterCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
+                                          authoritativeTurnEnds: 1, userKeyOrder: 10)
+        #expect(afterCompaction)
     }
 }

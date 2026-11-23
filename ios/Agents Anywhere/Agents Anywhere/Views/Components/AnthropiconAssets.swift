@@ -42,6 +42,7 @@ nonisolated enum AnthropiconAssets {
         "anthropicon.checklist": [size(14, 14), size(15, 15), size(18, 18)],
         "anthropicon.tasks": [size(14, 14), size(15, 16), size(18, 19)],
         "anthropicon.tool": [size(15, 13), size(17, 15), size(20, 18)],
+        "anthropicon.caretDown": [size(13, 8), size(15, 8), size(18, 10)],
         "anthropicon.caretRight": [size(8, 13), size(8, 15), size(10, 18)],
         "anthropicon.arrowDown": [size(11, 12), size(12, 13), size(14, 15)],
         "anthropicon.extendedThinking": [size(14, 14), size(16, 16), size(19, 19)],
@@ -61,6 +62,12 @@ nonisolated enum AnthropiconAssets {
         // the official `anthropicon-map.tsv` point sizes (100/200/300 dpi),
         // the same source as every other entry in this table.
         "anthropicon.listBullet": [size(13, 12), size(15, 14), size(18, 16)],
+        // Device card / session environment glyph. Official point sizes from
+        // `DATA/anthropicon-map.tsv` (15×11 / 17×13 / 20×15); the extracted SVG
+        // is from 1.261005.20 via carfile-go.
+        "anthropicon.laptop": [size(15, 11), size(17, 13), size(20, 15)],
+        // Official working-state arc (Code tab session row).
+        "anthropicon.spinner": [size(14, 14), size(16, 16), size(19, 19)],
         "anthropicon.fileAdd": [size(11, 15), size(13, 17), size(15, 20)],
         "anthropicon.agentSimple": [size(10, 10), size(11, 11), size(13, 13)],
         "anthropicon.wrench": [size(14, 14), size(16, 16), size(19, 19)],

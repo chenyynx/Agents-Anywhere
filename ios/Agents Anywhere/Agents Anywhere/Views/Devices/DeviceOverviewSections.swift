@@ -1,10 +1,8 @@
 import SwiftUI
 
-/// Device page sections now speak the same language as Settings: a 14 pt grey
-/// header with its actions on the right, then one white card (28 pt radius)
-/// whose rows use the settings row geometry (16 pt inset, 50 pt minimum,
-/// hairlines from the title column). The previous page followed Web/Android
-/// with uppercase labels and rows floating directly on the background.
+/// Section chrome for the card device page: a 15 pt grey header with its
+/// actions on the trailing edge, then the section's cards. Geometry and
+/// colours come from the official Code tab capture (see `DevicePageStyle`).
 struct DeviceSection<Actions: View, Content: View>: View {
     let title: String
     @ViewBuilder var actions: () -> Actions
@@ -22,14 +20,13 @@ struct DeviceSection<Actions: View, Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(SettingsStyle.text(14))
-                    .foregroundStyle(SettingsStyle.header(colorScheme))
+                    .font(SettingsStyle.text(15))
+                    .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                     .lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 actions()
             }
-            .padding(.horizontal, 2)
             .frame(minHeight: 30)
             content()
         }
@@ -37,10 +34,10 @@ struct DeviceSection<Actions: View, Content: View>: View {
     }
 }
 
-/// The settings card: white surface, 28 pt continuous radius, rows stacked
-/// without their own backgrounds.
+/// A grouped white surface for the Agents section. The browsing lists use one
+/// card per row (`DeviceDirectoryCard` / `DeviceSessionCard`); this container
+/// keeps the dense settings-style row stack for the configuration sheet.
 struct DeviceCard<Content: View>: View {
-    @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -48,9 +45,7 @@ struct DeviceCard<Content: View>: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SettingsStyle.card(colorScheme),
-                    in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius,
-                                         style: .continuous))
+        .deviceCardChrome()
     }
 }
 
@@ -66,6 +61,8 @@ struct DeviceRowDivider: View {
 /// Muted text used for loading and empty lists.
 struct DeviceEmptyText: View {
     let text: String
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         Text(text)
             .font(SettingsStyle.text(15))
@@ -74,71 +71,32 @@ struct DeviceEmptyText: View {
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
-
-    @Environment(\.colorScheme) private var colorScheme
 }
 
-/// Compact text action for section headers ("Select", "Archive all").
-struct DevicePillButton: View {
+/// An empty list as one card, matching the browsing cards around it.
+struct DeviceEmptyCard: View {
+    let text: String
+
+    var body: some View {
+        DeviceCard { DeviceEmptyText(text: text) }
+    }
+}
+
+/// Round section-header action ("create project", "rediscover agents").
+struct DeviceHeaderIconButton: View {
     let title: String
-    var isLoading = false
+    let symbol: String
     let action: () -> Void
-    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(SettingsStyle.text(13, weight: .medium))
-                .lineLimit(1)
-                .opacity(isLoading ? 0 : 1)
-                .overlay { if isLoading { ProgressView().controlSize(.mini) } }
-                .foregroundStyle(SettingsStyle.controlTint(colorScheme))
-                .frame(minHeight: 30)
+            AppSymbol(symbol, size: 16)
+                .foregroundStyle(AppTheme.text300(colorScheme))
+                .frame(width: 32, height: 32)
                 .contentShape(.rect)
-                .opacity(isEnabled ? 1 : 0.4)
         }
-        .buttonStyle(.plain)
-    }
-}
-
-/// Single-select tags (Active / Archived / All). Selected tags carry the app
-/// tint instead of a filled grey capsule.
-struct DeviceFilterTags<Value: Hashable & Identifiable>: View {
-    let values: [Value]
-    @Binding var selection: Value
-    let title: (Value) -> String
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(values) { value in
-                let selected = value == selection
-                Button { selection = value } label: {
-                    Text(title(value))
-                        .font(SettingsStyle.text(13, weight: selected ? .semibold : .regular))
-                        // A filter name never wraps or squeezes: at 13 pt the
-                        // narrow chip was breaking 「已归档」 onto two lines
-                        // (pp 2026-11-13). The row's ViewThatFits fallback moves
-                        // the scope menu instead of shrinking the tags.
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundStyle(selected
-                            ? SettingsStyle.controlTint(colorScheme)
-                            : SettingsStyle.secondary(colorScheme))
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 32)
-                        .background {
-                            if selected {
-                                Capsule().fill(SettingsStyle.controlTint(colorScheme).opacity(0.12))
-                            }
-                        }
-                        .contentShape(.capsule)
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
+        .buttonStyle(.plain).accessibilityLabel(title)
     }
 }
 
@@ -202,7 +160,7 @@ struct DeviceRowLabel: View {
     }
 }
 
-/// One settings-style row shell used by the device page's cards.
+/// One settings-style row shell used by the Agents card.
 struct DeviceCardRow<Content: View>: View {
     var minHeight: CGFloat = SettingsStyle.rowMinHeight
     var verticalPadding: CGFloat = 8

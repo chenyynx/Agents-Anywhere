@@ -305,14 +305,32 @@ class ClaudeTurnActionHandler:
             # pre-assigned uuid is the native id the SDK replays, so binding
             # it now lets history attach the client id.
             try:
-                self.runner.pending_messages.register_live_message(
-                    session_id=session.session_id,
-                    external_session_id=session.external_session_id,
-                    client_message_id=client_message_id,
-                    platform_item_id=stable_message_item_id(session, steer_uuid),
-                    text=content,
-                    attachments=attachment_mappings,
-                )
+                if client_message_id:
+                    self.runner.pending_messages.register_live_message(
+                        session_id=session.session_id,
+                        external_session_id=session.external_session_id,
+                        client_message_id=client_message_id,
+                        platform_item_id=stable_message_item_id(session, steer_uuid),
+                        text=content,
+                        attachments=attachment_mappings,
+                        # Keep the row's type through a history rebase after
+                        # the steer was read (the live registration is gone
+                        # then).
+                        steering=True,
+                    )
+                elif session.external_session_id is not None:
+                    # No optimistic bubble to retire, but the row still needs
+                    # its steering type to survive a later rebase: bridge the
+                    # pre-assigned uuid with the flag instead.
+                    self.runner.pending_messages.record_replayed_platform_id(
+                        session_id=session.session_id,
+                        external_session_id=session.external_session_id,
+                        native_message_id=steer_uuid,
+                        platform_item_id=stable_message_item_id(session, steer_uuid),
+                        text=content,
+                        attachments=attachment_mappings,
+                        steering=True,
+                    )
                 if session.external_session_id is not None:
                     self.runner.pending_messages.bind_live_native_message(
                         session_id=session.session_id,

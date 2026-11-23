@@ -38,10 +38,29 @@ struct TimelineTurnAction: Equatable {
 /// tool steps. A turn opens when a new user message (pending or echoed)
 /// appears and closes only on an authoritative running→idle transition.
 /// The footer waits for that close, so it never hops to each newly finished
-/// reply segment while the turn is still streaming (pp 2026-11-14).
+/// reply segment while the turn is still streaming (pp 2026-11-14). A user
+/// row that loses its turn-start role later (the steer echo's `user` →
+/// `steeringUserMessage` correction) moves the key backwards and opens
+/// nothing; the finished turn keeps its footer.
 nonisolated struct TurnFooterGate: Equatable {
     private(set) var isOpen = false
     private var userKey: String?
+    /// The timeline position of `userKey` when it is a visible user row.
+    /// A key that moves backwards is not a new turn: it is the newest row
+    /// losing its turn-start role (a steer echo published first as an
+    /// ordinary user prompt and then corrected to `steeringUserMessage`). An
+    /// outgoing pending record has no position (nil). A same-position key
+    /// change is treated the same way; that relies on the live path never
+    /// publishing one user message under two item ids at one position (the
+    /// early-publish path fixes the id before the replay).
+    private var userKeyOrder: Int?
+    /// Whether the current userless episode is a corrected user row rather
+    /// than a genuinely bubble-less turn (a compaction or a scheduled wake).
+    /// The footer must still stay suppressed through an automatic compaction
+    /// inside that turn: closing on the compaction committed a streaming
+    /// reply's footer early, the 30 pt flash the compaction rule exists to
+    /// prevent (`aCompactionLeavesAUserOpenedTurnOpen`).
+    private var correctedFallback = false
     private var endsSeen = 0
     /// Whether the open state is anchored to a user bubble this client saw
     /// arrive, rather than to a runtime status alone. A compaction's command
@@ -94,7 +113,8 @@ nonisolated struct TurnFooterGate: Equatable {
     /// gate and hid the finished turn's footer — copy/share and the 30 pt
     /// action bar — for the whole compaction (pp 2026-11-15).
     mutating func update(userKey: String?, runtimeIsRunning: Bool,
-                         authoritativeTurnEnds: Int, isCompacting: Bool = false) -> Bool {
+                         authoritativeTurnEnds: Int, isCompacting: Bool = false,
+                         userKeyOrder: Int? = nil) -> Bool {
         let turnIsRunning = runtimeIsRunning && !isCompacting
         if self.userKey == nil {
             // First refresh: a restored in-flight turn stays open; a restored
@@ -103,18 +123,40 @@ nonisolated struct TurnFooterGate: Equatable {
             // this state to a user bubble, so only a bubble may later claim
             // it as a turn.
             self.userKey = userKey
+            self.userKeyOrder = userKeyOrder
             isOpen = turnIsRunning
             openedByTurn = false
             compactionEpisode = isCompacting
+            correctedFallback = false
             endsSeen = authoritativeTurnEnds
             return isOpen
         }
         if userKey != self.userKey {
+            // A key that moves backwards is a correction, not a new turn: the
+            // newest user row stopped starting a turn (the steer echo's
+            // `user` → `steeringUserMessage` revision) and the fallback is
+            // the previous bubble. Opening on it suppressed the finished
+            // turn's footer until the next turn ended because the fallback
+            // still counts as "anchored to a user bubble", keeping the
+            // userless restore away (pp 2026-11-23: hosts 15 → 14 → 16).
+            var regressed = false
+            if let previousOrder = self.userKeyOrder, let nextOrder = userKeyOrder {
+                regressed = nextOrder <= previousOrder
+            }
             self.userKey = userKey
-            isOpen = true
-            openedByTurn = true
-            compactionEpisode = false
+            self.userKeyOrder = userKeyOrder
             endsSeen = authoritativeTurnEnds
+            if regressed {
+                isOpen = turnIsRunning
+                openedByTurn = false
+                compactionEpisode = false
+                correctedFallback = true
+            } else {
+                isOpen = true
+                openedByTurn = true
+                compactionEpisode = false
+                correctedFallback = false
+            }
             return isOpen
         }
         if authoritativeTurnEnds != endsSeen {
@@ -125,6 +167,7 @@ nonisolated struct TurnFooterGate: Equatable {
                 isOpen = false
                 openedByTurn = false
                 compactionEpisode = false
+                correctedFallback = false
             }
         }
         if !runtimeIsRunning {
@@ -146,7 +189,7 @@ nonisolated struct TurnFooterGate: Equatable {
         // episode belongs to the compaction, not to the latest turn. Closing
         // here also repairs a gate the compaction's own status reopened in
         // the window before its marker row reached the client.
-        if isCompacting, !openedByTurn {
+        if isCompacting, !openedByTurn, !correctedFallback {
             isOpen = false
             compactionEpisode = true
         }
@@ -280,11 +323,7 @@ enum TimelineTurnActions {
             // 2: 不等子代理). Foreground rows — including a foreground tool
             // that shares the same step group — still suppress
             // (`aRunningToolKeepsTheFooterClosed`).
-            let active = group.rows.contains {
-                $0.structure.status.isActive
-                    && !TimelineEntryPresentation.isCompactItem($0.value)
-                    && !isBackgroundHandoffRow($0.value)
-            }
+            let active = group.rows.contains { isLiveActivityRow($0.value) }
             hasActiveItems = hasActiveItems || active
         }
         // The pending user bubble already starts the next turn, even before its
@@ -307,6 +346,20 @@ enum TimelineTurnActions {
     /// while a turn waits for the reader to answer a question
     /// (`claude.ask_user_question`, codex `request_user_input`), so a status
     /// cannot tell the previous turn from the new one.
+    ///
+    /// "Active" here is the build's own predicate (`isLiveActivityRow`), not a
+    /// bare `status.isActive`: a background hand-off card stays `running` for
+    /// its whole background run and is deliberately not activity for the
+    /// footer, so it must not park the live group on the previous bubble
+    /// either. Counting it did exactly that when a background fork was still
+    /// running at send time, and the parked id merged the bubble-less turns
+    /// after the bubble until the echo landed (device 2026-11-23 06:38:
+    /// `timeline.footer.gate` liveGroup=set, `timeline.turn.footer` hosts
+    /// 9 → 8 → 9, the send's follow 30 pt short and a second +30 follow).
+    ///
+    /// The window spans every group after the bubble, not only the bubble's
+    /// own turn bucket: a foreground running row from a later, bubble-less
+    /// wake-up turn parks this group too (pre-existing; unchanged here).
     static func resolveLiveTurnGroupID(isLiveUserTurn: Bool,
                                        hasUnEchoedPending: Bool,
                                        latestUserRowID: String?,
@@ -322,9 +375,63 @@ enum TimelineTurnActions {
         // then belongs to the un-echoed new turn, which has no rows yet, and
         // protecting the old bubble would merge every turn after it.
         let liveRowsAfterBubble = groups[(bubbleIndex + 1)...].contains { group in
-            group.rows.contains { $0.structure.status.isActive }
+            group.rows.contains { isLiveActivityRow($0.value) }
         }
         return liveRowsAfterBubble ? groups[bubbleIndex].id : nil
+    }
+
+    /// The one "this row still marks work in flight" predicate.
+    ///
+    /// The footer build and the live-group resolution must agree, or a row one
+    /// of them deliberately ignores still parks the live group on an older
+    /// user bubble and turns turn-id splitting off for the trailing stretch.
+    /// A background hand-off card and a running compaction marker are not
+    /// activity: the first keeps running after its turn's reply finished
+    /// (pp 2026-11-18 需求 2: 不等子代理), the second is session maintenance
+    /// (pp 2026-11-15: copy/share vanished for the whole compaction).
+    static func isLiveActivityRow(_ item: V2TimelineItem) -> Bool {
+        item.status.isActive
+            && !TimelineEntryPresentation.isCompactItem(item)
+            && !isBackgroundHandoffRow(item)
+    }
+
+    /// The rows after the last visible user bubble that still count as live
+    /// activity, in timeline order — the exact input `resolveLiveTurnGroupID`
+    /// consults. The adapter's `timeline.footer.gate` probe reads this instead
+    /// of scanning `timeline.rows`, which also holds sub-agent child rows the
+    /// grouping drops: a probe id the resolution never sees reads as a
+    /// contradiction (device 2026-11-23 06:38 window review).
+    static func liveActivityRowIDs(groups: [ChatTimelineGroup],
+                                   latestUserRowID: String?,
+                                   limit: Int = 3) -> [String] {
+        rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
+            .filter { isLiveActivityRow($0.value) }
+            .prefix(limit)
+            .map(\.id)
+    }
+
+    /// The same window's rows that are `status.isActive` but deliberately not
+    /// activity (a background hand-off card or a running compaction marker).
+    /// They explain a send window that shows running rows while `liveGroup`
+    /// stays nil, and they name the card whose background flag a later wire
+    /// rewrite can drop — invisible to `liveActivityRowIDs` by design.
+    static func ignoredActivityRowIDs(groups: [ChatTimelineGroup],
+                                      latestUserRowID: String?,
+                                      limit: Int = 3) -> [String] {
+        rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
+            .filter { $0.value.status.isActive && !isLiveActivityRow($0.value) }
+            .prefix(limit)
+            .map(\.id)
+    }
+
+    private static func rowsAfterLastUserBubble(groups: [ChatTimelineGroup],
+                                                latestUserRowID: String?) -> [ChatTimelineRowModel] {
+        guard let latestUserRowID,
+              let bubbleIndex = groups.lastIndex(where: { group in
+                  group.rows.contains { $0.id == latestUserRowID }
+              })
+        else { return [] }
+        return groups[(bubbleIndex + 1)...].flatMap { $0.rows }
     }
 
     /// One row that hands the turn off to the background: a subagent dispatch

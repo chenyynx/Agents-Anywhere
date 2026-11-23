@@ -291,9 +291,14 @@ private struct MarkupCanvas: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    static func dismantleUIView(_ uiView: PKCanvasView, coordinator: Coordinator) {
+        coordinator.detachToolPicker()
+    }
+
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         var parent: MarkupCanvas
         private var toolPicker: PKToolPicker?
+        private weak var canvas: PKCanvasView?
 
         init(_ parent: MarkupCanvas) { self.parent = parent }
 
@@ -303,15 +308,33 @@ private struct MarkupCanvas: UIViewRepresentable {
         }
 
         func presentToolPickerIfNeeded(on canvas: PKCanvasView) {
-            guard toolPicker == nil, canvas.window != nil else { return }
-            let picker = PKToolPicker()
+            guard toolPicker == nil, let window = canvas.window else { return }
+            // `PKToolPicker` is one picker per window; a hand-made instance is
+            // not wired to any canvas. The canvas learns the picked tool (pen,
+            // colour, width, eraser) only as the picker's observer — Apple's
+            // sample does `shared(for:).addObserver(canvasView)`. Without it the
+            // canvas kept the red pen from `makeUIView` no matter what the
+            // reader picked in the floating picker (pp 2026-11-23).
+            guard let picker = PKToolPicker.shared(for: window) else { return }
+            self.canvas = canvas
             picker.setVisible(true, forFirstResponder: canvas)
+            picker.addObserver(canvas)
+            canvas.tool = picker.selectedTool
             canvas.becomeFirstResponder()
             toolPicker = picker
             DispatchQueue.main.async { [weak self, weak canvas] in
                 guard let self, let canvas else { return }
                 self.refreshUndoState(canvas)
             }
+        }
+
+        func detachToolPicker() {
+            if let canvas {
+                toolPicker?.removeObserver(canvas)
+                toolPicker?.setVisible(false, forFirstResponder: canvas)
+            }
+            toolPicker = nil
+            canvas = nil
         }
 
         func refreshUndoState(_ canvas: PKCanvasView) {

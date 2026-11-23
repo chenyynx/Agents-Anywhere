@@ -243,7 +243,7 @@ struct ChatComposerDock: View {
     }
 
     private func finishDictation() {
-        // Keep the card up while the final transcript lands ("正在转写…").
+        // Keep the card up while the final transcript lands ("正在转录.....").
         dictation.stop()
     }
 

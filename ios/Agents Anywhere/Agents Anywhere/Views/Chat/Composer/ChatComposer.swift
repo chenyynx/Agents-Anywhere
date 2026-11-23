@@ -53,6 +53,7 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
     @State private var sendFeedback = 0
+    @State private var dictationFeedback = 0
     /// The visible send key's frame and the bar's frame, in global space.
     /// The native `Menu` is drawn as an overlay OUTSIDE the glass bar and is
     /// placed back onto the key from these two measurements (see
@@ -80,7 +81,14 @@ struct ChatComposer: View {
                 if !draft.attachments.isEmpty { attachmentTray }
                 ComposerLayout(expanded: expanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     HStack(spacing: 8) {
-                        Button(action: isDictating ? onVoiceCancel : onOptions) {
+                        Button(action: {
+                            if isDictating {
+                                dictationFeedback += 1
+                                onVoiceCancel()
+                            } else {
+                                onOptions()
+                            }
+                        }) {
                             Group {
                                 if isDictating {
                                     Image(systemName: "xmark")
@@ -143,7 +151,10 @@ struct ChatComposer: View {
 
                     // Idle: voice input. Dictating: the same slot is the stop
                     // square; the leading slot becomes X (cancel).
-                    Button(action: isDictating ? onVoiceFinish : onVoice) {
+                    Button(action: {
+                        dictationFeedback += 1
+                        if isDictating { onVoiceFinish() } else { onVoice() }
+                    }) {
                         Group {
                             if isDictating {
                                 // Same artwork and size as the composer's own
@@ -207,9 +218,10 @@ struct ChatComposer: View {
         .overlay(alignment: .bottom) {
             if isDictating {
                 if isTranscribing {
-                    Text(String(localized: "正在转写…"))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    Text(String(localized: "正在转录....."))
+                        .font(.system(size: 13))
+                        // Official glyph core measures gray 63 (#3F3F3F).
+                        .foregroundStyle(Color(white: 63.0 / 255.0))
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.leading, controls.expandedContentInset + controls.touchTarget + 8)
                         .padding(.trailing, controls.expandedContentInset + controls.touchTarget * 2 + 8)
@@ -217,10 +229,10 @@ struct ChatComposer: View {
                         .allowsHitTesting(false)
                 } else {
                     VoiceWaveformView(amplitude: dictationAmplitude)
-                        .frame(height: 24)
+                        .frame(height: 25)
                         .padding(.leading, controls.expandedContentInset + controls.touchTarget + 8)
                         .padding(.trailing, controls.expandedContentInset + controls.touchTarget * 2 + 8)
-                        .padding(.bottom, controls.expandedBottomInset + (controls.touchTarget - 24) / 2)
+                        .padding(.bottom, controls.expandedBottomInset + (controls.touchTarget - 25) / 2)
                         .allowsHitTesting(false)
                 }
             }
@@ -234,6 +246,7 @@ struct ChatComposer: View {
         // the draft from the page root re-evaluated the whole conversation.
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
+        .sensoryFeedback(.selection, trigger: dictationFeedback)
     }
 
     private var expanded: Bool { draft.isExpanded || isDictating }
@@ -320,12 +333,14 @@ struct ChatComposer: View {
         } primaryAction: {
             // Dictating: the trailing key sends the live text.
             if isDictating {
+                dictationFeedback += 1
                 onVoiceSend()
                 return
             }
             // Empty draft: the key is the official black voice key, so a tap
             // starts live dictation instead of sending.
             if showsVoiceKey {
+                dictationFeedback += 1
                 onVoice()
                 return
             }

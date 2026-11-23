@@ -7,8 +7,7 @@ import Speech
 /// The official dictation target carries `needsLiveWords` + `onTranscript`
 /// into a `Binding<String>`, so partial words are written while the user is
 /// still speaking. Ending is explicit in the official state machine
-/// (`kept` / `send` / `discarded`); this controller adds a practical 1.5 s
-/// silence endpoint because the binary has no documented idle timeout.
+/// (`kept` / `send` / `discarded`); there is no silence auto-cancel.
 final class VoiceDictationController: ObservableObject {
     enum Status: Equatable {
         case idle
@@ -31,10 +30,8 @@ final class VoiceDictationController: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var tapInstalled = false
-    private var silenceTask: Task<Void, Never>?
     private var transcribeTimeout: Task<Void, Never>?
     private var latestTranscript = ""
-    private var lastSoundAt = Date()
     private var smoothedLevel: Float = 0
 
     private let lock = NSLock()
@@ -46,8 +43,16 @@ final class VoiceDictationController: ObservableObject {
         lock.lock()
         defer { lock.unlock() }
         guard let first = samples.first, let last = samples.last else { return 0 }
-        if time <= first.time { return first.level }
+        if time < first.time { return 0 }
+        // Peak-hold inside this 0.06 s cell: a syllable keeps its full height
+        // on the bar that represents it.
+        var peak: Float = 0
+        for sample in samples where sample.time > time - 0.06 && sample.time <= time + 0.005 {
+            peak = max(peak, sample.level)
+        }
+        if peak > 0 { return peak }
         if time >= last.time { return last.level }
+        // Gap fallback: interpolate between neighbours.
         var previous = first
         for sample in samples {
             if sample.time >= time {
@@ -84,7 +89,7 @@ final class VoiceDictationController: ObservableObject {
     }
 
     /// Ends the take but keeps the engine alive briefly for the final result.
-    /// `isTranscribing` drives the official "正在转写…" label.
+    /// `isTranscribing` drives the official "正在转录....." label.
     func stop() {
         guard isRecording else { return }
         isTranscribing = true
@@ -142,7 +147,6 @@ final class VoiceDictationController: ObservableObject {
                 DispatchQueue.main.async { self?.handle(result: result, error: error) }
             }
 
-            lastSoundAt = Date()
             transcript = ""
             latestTranscript = ""
             smoothedLevel = 0
@@ -152,7 +156,6 @@ final class VoiceDictationController: ObservableObject {
             lock.unlock()
             isRecording = true
             status = .recording
-            startSilenceMonitor()
         } catch {
             status = .failed(error.localizedDescription)
             teardown()
@@ -164,22 +167,20 @@ final class VoiceDictationController: ObservableObject {
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
 
-        var sum: Float = 0
+        var peak: Float = 0
         for index in 0..<count {
-            let sample = data[index]
-            sum += sample * sample
+            peak = max(peak, abs(data[index]))
         }
-        let rms = sqrtf(sum / Float(count))
-        let db = 20 * log10f(max(rms, 1e-7))
-        // -50…-10 dBFS → 0…1 covers normal speech with a visible range.
-        let raw = min(max((db + 50) / 40, 0), 1)
-        let follow: Float = raw > smoothedLevel ? 0.8 : 0.35
+        let db = 20 * log10f(max(peak, 1e-7))
+        // Peak envelope, -55…-10 dBFS: speech transients reach the top of the
+        // bar instead of being averaged away by RMS.
+        let raw = min(max((db + 55) / 45, 0), 1)
+        let follow: Float = raw > smoothedLevel ? 0.9 : 0.5
         smoothedLevel += (raw - smoothedLevel) * follow
         // Noise floor: a silent room must not make the waveform twitch.
         let gated: Float = smoothedLevel < 0.06 ? 0 : smoothedLevel
         // Gamma lifts the quiet half so syllables read as rhythm.
-        let level: Float = gated == 0 ? 0 : powf(gated, 0.7)
-        if level > 0.05 { lastSoundAt = Date() }
+        let level: Float = gated == 0 ? 0 : powf(gated, 0.65)
 
         let now = Date().timeIntervalSinceReferenceDate
         lock.lock()
@@ -218,21 +219,6 @@ final class VoiceDictationController: ObservableObject {
         }
     }
 
-    private func startSilenceMonitor() {
-        silenceTask?.cancel()
-        silenceTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                guard let self, self.isRecording, !self.isTranscribing else { return }
-                if Date().timeIntervalSince(self.lastSoundAt) > 1.5,
-                   !self.latestTranscript.isEmpty {
-                    self.finish(auto: true)
-                    return
-                }
-            }
-        }
-    }
-
     private func finish(auto: Bool) {
         complete()
         if auto {
@@ -253,8 +239,6 @@ final class VoiceDictationController: ObservableObject {
     }
 
     private func teardown() {
-        silenceTask?.cancel()
-        silenceTask = nil
         if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false

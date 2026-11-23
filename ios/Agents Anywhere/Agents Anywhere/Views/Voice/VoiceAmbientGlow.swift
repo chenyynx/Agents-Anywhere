@@ -106,36 +106,44 @@ struct VoiceAmbientGlow: View {
     private func drawAgent(context: inout GraphicsContext, size: CGSize, time: Double, level: Double) {
         let w = size.width
         let h = size.height
-        let strength = 0.15 + 0.65 * level
-        let edgeWidth = w * 0.18
-        let slices = 36
+        // Official border alpha is strong: at the edge the screenshot's
+        // r−b ≈ 80–90, i.e. an effective orange alpha near 0.6–0.7.
+        let strength = 0.35 + 0.65 * level
 
-        // Left and right edges, one thin horizontal slice at a time so the
-        // alpha can travel down the border as a wave.
+        // Three overlapping radial lobes per side. Centres sit just outside
+        // the screen, so only the inner half of each lobe shows as a soft
+        // border band; the lobes drift vertically to make the border breathe.
+        // They start around 45% screen height, matching the official frame
+        // where the top quarter has no orange.
         for side in 0..<2 {
-            let rectX: CGFloat = side == 0 ? 0 : w - edgeWidth
-            for slice in 0..<slices {
-                let y0 = h * CGFloat(slice) / CGFloat(slices)
-                let y1 = h * CGFloat(slice + 1) / CGFloat(slices)
-                let wave = 0.65 + 0.35 * sin(Double(y0) * 0.042 + time * 3.1 + Double(side) * 1.9 + level * 5)
+            let centreX: CGFloat = side == 0 ? -w * 0.02 : w * 1.02
+            for index in 0..<3 {
+                let fi = Double(index)
+                let sidePhase = Double(side) * 1.1
+                let y = h * (0.52 + 0.16 * fi)
+                    + h * 0.030 * sin(time * 1.6 + fi * 2.0 + sidePhase)
+                let rx = w * (0.30 + 0.03 * sin(time * 1.3 + fi))
+                let ry = h * (0.17 + 0.02 * cos(time * 1.1 + fi * 1.4))
+                let wave = 0.55 + 0.45 * sin(time * 2.3 + fi * 2.6 + sidePhase)
                 let alpha = strength * wave
-                let rect = CGRect(x: rectX, y: y0, width: edgeWidth, height: y1 - y0 + 0.6)
-                let start = side == 0 ? CGPoint(x: 0, y: 0) : CGPoint(x: w, y: 0)
-                let end = side == 0 ? CGPoint(x: edgeWidth, y: 0) : CGPoint(x: w - edgeWidth, y: 0)
-                context.fill(Path(rect), with: .linearGradient(
+                let rect = CGRect(x: centreX - rx, y: y - ry,
+                                  width: rx * 2, height: ry * 2)
+                context.fill(Path(ellipseIn: rect), with: .radialGradient(
                     Gradient(stops: [
                         .init(color: orange.opacity(alpha), location: 0),
-                        .init(color: orange.opacity(alpha * 0.45), location: 0.45),
+                        .init(color: orange.opacity(alpha * 0.5), location: 0.55),
                         .init(color: orange.opacity(0), location: 1)
                     ]),
-                    startPoint: start, endPoint: end))
+                    center: CGPoint(x: centreX, y: y),
+                    startRadius: 0,
+                    endRadius: max(rx, ry)))
             }
         }
 
-        // Bottom band, tied to the same undulation.
-        let topY = h * (0.90 - 0.05 * level)
+        // Bottom band, tied to the same voice level.
+        let topY = h * (0.88 - 0.04 * level)
         let bottom = CGRect(x: 0, y: topY, width: w, height: h - topY)
-        let bottomAlpha = 0.10 + 0.35 * level
+        let bottomAlpha = 0.18 + 0.38 * level
         context.fill(Path(bottom), with: .linearGradient(
             Gradient(stops: [
                 .init(color: orange.opacity(0), location: 0),

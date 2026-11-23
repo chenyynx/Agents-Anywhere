@@ -2432,8 +2432,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // whole build re-merged each finished turn with the scheduled turn
         // that followed it, so every send and every turn end toggled six
         // copy/share bars (pp 2026-11-16, b1279: footer hosts 94↔88).
-        let suppressLatest = (latestTurnOpen && model.isRunning)
-            || model.session.hasNewerItems
+        // A session view can open with cached rows before the live runtime
+        // state arrives; "state unknown" is not "not running". Committing the
+        // latest bucket on that refresh stamps a streaming reply with a footer
+        // and seeds the closed snapshot with it, so the running state's
+        // userless restore keeps it for the whole turn (pp 2026-11-23 22:04,
+        // build 1541: gate closed at `status=nil`, hosts 103→104 at
+        // 22:04:10.204, gone only after the next view rebuild).
+        let runtimeStateKnown = model.session.runtime.state != nil
+        let suppressLatest = TimelineTurnActions.suppressesLatest(
+            latestTurnOpen: latestTurnOpen,
+            runtimeIsRunning: model.isRunning,
+            hasNewerItems: model.session.hasNewerItems,
+            runtimeStateKnown: runtimeStateKnown)
         let liveTurnGroupID = TimelineTurnActions.resolveLiveTurnGroupID(
             isLiveUserTurn: turnFooterGate.isLiveUserTurn,
             hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
@@ -2487,13 +2498,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     turnActions, from: closedTurnActions,
                     groupIDs: Set(groupsByID.keys))
             }
-        } else if !model.session.hasNewerItems {
-            // Only the newest page is a complete map of finished footers.
-            // Browsing older history suppresses the latest bucket, so
-            // capturing here would overwrite the map with one that is
-            // missing its newest host; the restore path would then have
-            // nothing to give back when the reader returns (review
-            // 2026-11-23, code-inferred; no device reproduction).
+        } else if !model.session.hasNewerItems, runtimeStateKnown {
+            // Only the newest page, with a known runtime state, is a complete
+            // map of finished footers. Browsing older history suppresses the
+            // latest bucket, and an unknown state may have withheld a running
+            // turn that is not finished; capturing either would overwrite the
+            // map with one the restore path later trusts (review 2026-11-23;
+            // the state-unknown case reproduced on build 1541 at 22:04).
             closedTurnActions = turnActions
         }
 

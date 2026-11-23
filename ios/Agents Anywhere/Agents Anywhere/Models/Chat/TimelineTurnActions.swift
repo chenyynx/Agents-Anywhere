@@ -198,6 +198,23 @@ nonisolated struct TurnFooterGate: Equatable {
 }
 
 enum TimelineTurnActions {
+    /// Whether `build` must withhold the latest turn's footer for one refresh.
+    ///
+    /// A session view can open with its cached rows before the live runtime
+    /// state arrives (`state == nil`). The gate's first refresh cannot tell a
+    /// finished turn from one in flight, so committing the latest bucket then
+    /// stamps a streaming reply with a footer, and the running state's
+    /// userless restore keeps that wrong footer for the whole turn
+    /// (pp 2026-11-23 22:04, build 1541: gate started closed on `status=nil`,
+    /// the streaming reply's host was committed at 22:04:10.204 — hosts
+    /// 103→104 — and the running state restored it until the view reopened).
+    /// Suppress until the state is known; a finished turn's footer appears one
+    /// refresh later, when the state arrives.
+    static func suppressesLatest(latestTurnOpen: Bool, runtimeIsRunning: Bool,
+                                 hasNewerItems: Bool, runtimeStateKnown: Bool) -> Bool {
+        (latestTurnOpen && runtimeIsRunning) || hasNewerItems || !runtimeStateKnown
+    }
+
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
     ///

@@ -42,18 +42,22 @@ import Testing
 
         mutating func refresh(groups: [ChatTimelineGroup], userKey: String?,
                               userKeyOrder: Int? = nil,
+                              stateKnown: Bool = true,
                               running: Bool, ends: Int) -> [String: TimelineTurnAction] {
             let open = gate.update(userKey: userKey, runtimeIsRunning: running,
                                    authoritativeTurnEnds: ends,
                                    userKeyOrder: userKeyOrder)
-            var actions = TimelineTurnActions.build(groups: groups,
-                                                    suppressLatest: open && running)
+            var actions = TimelineTurnActions.build(
+                groups: groups,
+                suppressLatest: TimelineTurnActions.suppressesLatest(
+                    latestTurnOpen: open, runtimeIsRunning: running,
+                    hasNewerItems: false, runtimeStateKnown: stateKnown))
             if open {
                 if gate.isUserlessEpisode {
                     actions = TimelineTurnActions.restoringFinishedFooters(
                         actions, from: closed, groupIDs: Set(groups.map(\.id)))
                 }
-            } else {
+            } else if stateKnown {
                 closed = actions
             }
             return actions
@@ -143,5 +147,41 @@ import Testing
         let running = replay.refresh(groups: corrected, userKey: "user-0",
                                      userKeyOrder: 10, running: true, ends: 1)
         #expect(running["reply-0"] != nil)
+    }
+
+    /// 2026-11-23 22:04 (build 1541): switching back to the session rebuilt
+    /// the view with cached rows before the live runtime state arrived. The
+    /// new gate started closed on `status=nil`; committing the streaming
+    /// reply stamped it with a footer (hosts 103→104 at 22:04:10.204), and
+    /// the running state's userless restore kept it for the whole turn — it
+    /// only vanished when the next rebuild dropped the polluted closed map.
+    @Test func anUnknownStateOnOpenKeepsTheStreamingReplyUnsealed() throws {
+        let streaming = TimelineGrouping.groups(
+            try [row("user-0", role: "user", text: "earlier"),
+                 row("reply-0", role: "assistant", text: "done"),
+                 row("user-1", role: "user", text: "go"),
+                 row("reply-1", role: "assistant", text: "streaming")],
+            interactionTargets: [])
+        var replay = Replay()
+
+        // Cached rows arrive before the live state: unknown is not "idle".
+        let opened = replay.refresh(groups: streaming, userKey: "user-1",
+                                    userKeyOrder: 30, stateKnown: false,
+                                    running: false, ends: 1)
+        #expect(opened["reply-1"] == nil)
+        #expect(opened["reply-0"] != nil)
+
+        // The live state arrives running: the streaming reply stays unsealed.
+        let running = replay.refresh(groups: streaming, userKey: "user-1",
+                                     userKeyOrder: 30, stateKnown: true,
+                                     running: true, ends: 1)
+        #expect(running["reply-1"] == nil)
+        #expect(running["reply-0"] != nil)
+
+        // The turn ends: the footer appears on its final reply.
+        let ended = replay.refresh(groups: streaming, userKey: "user-1",
+                                   userKeyOrder: 30, stateKnown: true,
+                                   running: false, ends: 2)
+        #expect(ended["reply-1"] != nil)
     }
 }

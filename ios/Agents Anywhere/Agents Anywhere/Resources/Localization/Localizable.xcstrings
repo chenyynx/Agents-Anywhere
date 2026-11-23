@@ -21453,23 +21453,6 @@
         }
       }
     },
-    "Keep the connection in background": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keep the connection in background"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "后台保持连接"
-          }
-        }
-      }
-    },
     "Keep the session connected in background": {
       "extractionState": "manual",
       "localizations": {
@@ -21504,19 +21487,19 @@
         }
       }
     },
-    "While a turn runs, the app keeps a background connection so it can tell you when the reply is ready or an approval is waiting. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location.": {
+    "While the app is in the background it keeps a connection, so it can tell you when a reply is ready or an approval is waiting — including tasks that start after you leave. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "While a turn runs, the app keeps a background connection so it can tell you when the reply is ready or an approval is waiting. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location."
+            "value": "While the app is in the background it keeps a connection, so it can tell you when a reply is ready or an approval is waiting — including tasks that start after you leave. iOS may end that early; the app then falls back to silent audio, then coarse location. It never reads or sends your location."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "回合运行时，App 会在后台保持连接，以便在回复完成或需要审批时通知你。iOS 可能提前结束它；之后会退回静音音频，再退回粗定位。App 不会读取或发送你的位置。"
+            "value": "App 在后台时会一直保持连接，即使任务是在你切到后台之后才开始，也能在回复完成或需要审批时通知你。iOS 可能提前结束它；之后会退回静音音频，再退回粗定位。App 不会读取或发送你的位置。"
           }
         }
       }

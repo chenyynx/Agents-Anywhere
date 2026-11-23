@@ -1,19 +1,19 @@
 import Foundation
 import UserNotifications
 
+/// The only switches are the notification master switch and display choices.
+/// Background keep-alive has none: while notifications are on, going to the
+/// background starts the ladder and the long poll for the whole window
+/// (P3 常驻), so turns that begin after the user leaves still notify.
 enum NotificationSettings {
     static let enabledKey = "aa.notifications.enabled"
     static let previewKey = "aa.notifications.preview"
-    static let keepAliveKey = "aa.keepalive.enabled"
     static let sessionSocketKey = "aa.keepalive.sessionSocket"
     static let foregroundKey = "aa.notifications.foreground"
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
     static var showsPreview: Bool {
         UserDefaults.standard.object(forKey: previewKey) as? Bool ?? true
-    }
-    static var keepAliveEnabled: Bool {
-        UserDefaults.standard.object(forKey: keepAliveKey) as? Bool ?? true
     }
     /// Keep the viewed session's socket across background (default off: the
     /// background poll delivers notifications without it).
@@ -55,7 +55,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
                 detail: [
                     "enabled": NotificationSettings.isEnabled ? "1" : "0",
                     "preview": NotificationSettings.showsPreview ? "1" : "0",
-                    "keepAlive": NotificationSettings.keepAliveEnabled ? "1" : "0",
+                    "keepAlive": "always",
                     "authorization": String(settings.authorizationStatus.rawValue),
                 ],
                 dedupe: false)

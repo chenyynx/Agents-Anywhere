@@ -169,7 +169,9 @@ async def dashboard_notifications(
     foregrounded, process gone) unregisters its queue on the way out.
     """
 
-    known_ids = {item for item in known.split(",") if item}
+    # Bound the work a hostile or stale query can ask for; ids beyond the
+    # newest 128 only lose dedupe for records the client would discard anyway.
+    known_ids = {item for item in known.split(",")[-128:] if item}
 
     async def fresh_payload() -> dict[str, Any]:
         return await _notification_payload(

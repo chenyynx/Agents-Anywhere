@@ -9,6 +9,9 @@ keeps the v1 rollout migration-free; persistence arrives with APNs.
 Rules (kept in one place, mirrored by the client only as display logic):
 
 * ``waiting_approval`` — always notify.
+* ``waiting`` with a blocking ``noticeId`` — the runtime is parked on a
+  user-input question; always notify. A bare ``waiting`` (turn start) is not
+  a request.
 * ``error`` / ``blocked`` — always notify.
 * ``idle`` — notify when ``backgroundTasks == 0``, or when the finished turn
   published assistant text (``assistantText``). A text reply is final for the
@@ -17,6 +20,11 @@ Rules (kept in one place, mirrored by the client only as display logic):
   ``backgroundTasks == 0`` gate was protecting against.
 * Unread is ``latestTurnEndSeq > lastReadSeq`` — the same fact the session
   list paints as a dot.
+
+Approval and question records are identified by the blocking notice id rather
+than the turn-end sequence: one turn can ask more than once, and ``turn:seq``
+gave those requests the same id, so the client's dedupe dropped every prompt
+after the first.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ RECENT_WINDOW = timedelta(minutes=10)
 _SUMMARIES = {
     "completed": "回复已完成",
     "approval": "需要你的审批",
+    "question": "需要你的回答",
     "error": "任务出错了",
 }
 
@@ -74,6 +83,8 @@ def notification_kind(session: SessionView) -> str | None:
     background_tasks = max(0, int(session.backgroundTasks or 0))
     if session.status == "waiting_approval":
         return "approval"
+    if session.status == "waiting" and session.noticeId:
+        return "question"
     if session.status in ("error", "blocked"):
         return "error" if _is_recent(session.lastActivityAt or session.lastItemAt) else None
     if (
@@ -102,11 +113,19 @@ async def derive_dashboard_notifications(
         if kind is None:
             continue
         preview = ""
-        if kind == "completed":
+        if kind == "completed" and session.assistantText is not False:
+            # A turn that ended without text keeps the summary only: the
+            # latest assistant text in the timeline belongs to an earlier
+            # reply, and showing it would misrepresent this completion.
             preview = preview_text(await latest_assistant_text(session.id))
+        identity = (
+            session.noticeId
+            if kind in ("approval", "question") and session.noticeId
+            else str(session.latestTurnEndSeq)
+        )
         notifications.append(
             {
-                "id": f"{kind}:{session.id}:{session.latestTurnEndSeq}",
+                "id": f"{kind}:{session.id}:{identity}",
                 "sessionId": session.id,
                 "type": kind,
                 "title": session.title or "Agents Anywhere",

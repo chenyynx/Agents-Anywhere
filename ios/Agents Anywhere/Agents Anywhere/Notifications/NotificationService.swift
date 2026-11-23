@@ -54,12 +54,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     /// it stays unread on the server, so leaving the app lets the long poll
     /// deliver it instead of the banner being swallowed forever.
     var appInForeground = true
+    /// False only when the OS explicitly denies notifications. The background
+    /// keep-alive is pointless (and costly) when no banner can ever show.
+    private(set) var authorizationGranted = true
 
     func activate() {
         guard !activated else { return }
         activated = true
         center.delegate = self
-        center.getNotificationSettings { settings in
+        center.getNotificationSettings { [weak self] settings in
+            self?.authorizationGranted = settings.authorizationStatus != .denied
             ClientDiagnosticsLog.shared.record(
                 kind: "notification.settings",
                 detail: [
@@ -75,8 +79,28 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         }
     }
 
+    /// Account boundary: delivered and pending notifications belong to the
+    /// previous account and must not route into the new one. The dedupe ledger
+    /// is cleared with them, so a fresh account is never suppressed by an old
+    /// account's ids.
+    func reset() {
+        center.removeAllDeliveredNotifications()
+        center.removeAllPendingNotificationRequests()
+        UserDefaults.standard.removeObject(forKey: Self.postedKey)
+        knownRecords.removeAll()
+        visibleSessionId = nil
+    }
+
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    /// Re-read the OS decision (the user can change it in Settings while the
+    /// app is away). Called on every foreground.
+    func refreshAuthorization() {
+        center.getNotificationSettings { [weak self] settings in
+            self?.authorizationGranted = settings.authorizationStatus != .denied
+        }
     }
 
     /// Displays every record this device has not shown yet. Called from the

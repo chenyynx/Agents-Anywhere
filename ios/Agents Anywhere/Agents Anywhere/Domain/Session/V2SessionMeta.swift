@@ -24,6 +24,8 @@ nonisolated struct V2SessionMeta: Codable, Identifiable, Hashable {
     let title: String?
     let cwd: String?
     var status: V2RuntimeStatus
+    /// Live background agents/commands; a turn that ends above zero is not final.
+    var backgroundTasks: Int? = nil
     let takeover: Bool
     let connectorStatus: V2ConnectorPresence
     let pinned: Bool

@@ -20,6 +20,12 @@ async def project_session_meta_for_dashboard(
         projected = session.model_copy(update={"connectorStatus": connector_status})
         runtime_state = runtime_states.get(session.id)
         if runtime_state is not None:
+            try:
+                background_tasks = max(
+                    0, int(runtime_state.metadata.get("backgroundTasks", 0))
+                )
+            except (TypeError, ValueError):
+                background_tasks = 0
             projected = projected.model_copy(
                 update={
                     "externalSessionId": (
@@ -27,6 +33,7 @@ async def project_session_meta_for_dashboard(
                         or projected.externalSessionId
                     ),
                     "status": runtime_state.status,
+                    "backgroundTasks": background_tasks,
                 }
             )
         projected_sessions.append(projected)

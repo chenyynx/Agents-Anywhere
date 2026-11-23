@@ -266,6 +266,10 @@ def runtime_state_semantically_equal(
         and left.externalSessionId == right.externalSessionId
         and left.statusReason == right.statusReason
         and left.error == right.error
+        # Background work changing while the status stays idle must still
+        # publish: the dashboard's notification decision depends on it.
+        and left.metadata.get("backgroundTasks")
+        == right.metadata.get("backgroundTasks")
     )
 
 

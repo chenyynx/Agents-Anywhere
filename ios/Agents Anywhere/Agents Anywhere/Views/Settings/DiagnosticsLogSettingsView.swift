@@ -29,6 +29,7 @@ struct DiagnosticsLogSettingsView: View {
     @State private var shareItems: [Any] = []
     @State private var showsShare = false
     @State private var confirmsClear = false
+    @State private var keepAlive = KeepAliveCoordinator.shared
 
     var body: some View {
         SettingsScreen(title: String(localized: "Diagnostics log")) {
@@ -36,6 +37,52 @@ struct DiagnosticsLogSettingsView: View {
                 SettingsToggleRow(icon: "anthropicon.research",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
+            }
+
+            SettingsSection(footer: String(localized: "P0 probe: the keep-alive ladder runs continued processing → silent audio → coarse location. Start it, send the app to the background, then read the keepalive.* lines in today's log. Test only.")) {
+                SettingsRowContainer {
+                    HStack {
+                        Text(String(localized: "Keep-alive level"))
+                            .font(SettingsStyle.text(16))
+                            .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        Spacer(minLength: 8)
+                        Text(keepAlive.level.rawValue)
+                            .font(SettingsStyle.text(15))
+                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    }
+                }
+                SettingsRowDivider()
+                SettingsRowContainer {
+                    HStack {
+                        Text(String(localized: "Location permission"))
+                            .font(SettingsStyle.text(16))
+                            .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        Spacer(minLength: 8)
+                        Text(keepAlive.locationAuthorizationLabel)
+                            .font(SettingsStyle.text(15))
+                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    }
+                }
+                SettingsRowDivider()
+                Button {
+                    toggleKeepAlive()
+                } label: {
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("timer", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                        Text(keepAlive.isOn
+                            ? String(localized: "Stop keep-alive")
+                            : String(localized: "Start keep-alive"))
+                            .font(SettingsStyle.text(16))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             SettingsSection(String(localized: "Log files")) {
@@ -127,6 +174,21 @@ struct DiagnosticsLogSettingsView: View {
         .sheet(isPresented: $showsShare) {
             DiagnosticsShareSheet(items: shareItems)
         }
+    }
+
+    /// P0 probe: starts the ladder. The level the coordinator settles on (and
+    /// every transition below it) is what the diagnostics log records.
+    private func toggleKeepAlive() {
+        if keepAlive.isOn {
+            keepAlive.stop()
+        } else {
+            keepAlive.start()
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "keepalive.probe.button",
+            detail: ["level": keepAlive.level.rawValue],
+            dedupe: false)
+        reload()
     }
 
     private func dayRow(_ day: DiagnosticsDay) -> some View {

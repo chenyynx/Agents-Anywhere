@@ -1192,6 +1192,15 @@ class ClaudeTurnRunner:
                     return
                 await self.scheduled_sessions.save(session, connection.task_ids)
                 connection.arm_idle()
+                state = self.notifications.session_states.get(session.session_id)
+                await self.notifications.session_state.session_state_update(
+                    session,
+                    state.status if state is not None else "idle",
+                    metadata={
+                        "source": "claude.background.drained",
+                        "backgroundTasks": 0,
+                    },
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -4570,6 +4579,11 @@ class ClaudeTurnRunner:
                         terminal,
                         update_state=not queued,
                         publish=publish,
+                        background_tasks=(
+                            len(response.connection.background.active_ids)
+                            if response is not None
+                            else 0
+                        ),
                     )
                     if not queued:
                         # L3b: ask the connector to refresh this session's
@@ -4630,6 +4644,7 @@ class ClaudeTurnRunner:
         *,
         update_state: bool = True,
         publish: bool = True,
+        background_tasks: int = 0,
     ) -> None:
         # The runtime state is the turn-end signal every client paints from
         # (iOS: the copy/share footer and its completion cue). The ledger
@@ -4647,6 +4662,7 @@ class ClaudeTurnRunner:
         if terminal.status == "failed":
             metadata = {
                 "source": "claude.turn.failed",
+                "backgroundTasks": background_tasks,
                 **({"terminalReason": reason} if reason else {}),
             }
             # A failing state send must not cost the ledger row (unread,
@@ -4691,6 +4707,7 @@ class ClaudeTurnRunner:
             source = execution.interrupt_source or "claude.turn.interrupted"
         metadata = {
             "source": source,
+            "backgroundTasks": background_tasks,
             **({"terminalReason": reason} if reason else {}),
         }
         state_error: Exception | None = None

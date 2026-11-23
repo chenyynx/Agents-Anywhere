@@ -31,6 +31,8 @@ final class V2ClientServices {
     let interactions: V2RuntimeInteractionService
     let devicePairing: V2DevicePairingService
     let agentSetup: AgentSetupCoordinator
+    /// Direct read of the server's notification records (background poll).
+    var notificationAPI: V2NotificationAPI { V2NotificationAPI(transport: api.transport) }
     private var agentModels: [String: DeviceAgentModel] = [:]
     let deviceManagement: V2DeviceManagementService
     let workspaceFiles: V2WorkspaceFilesService

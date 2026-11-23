@@ -64,6 +64,22 @@ final class AppState {
     @ObservationIgnored private var cachedServices: V2ClientServices?
     @ObservationIgnored private var cachedServicesTokenProvider: MutableAuthTokenProvider?
     @ObservationIgnored private var isInBackground = false
+    /// The product (not the Settings probe) started the keep-alive ladder for
+    /// the current background window; only that instance is auto-stopped.
+    @ObservationIgnored private var autoKeepAlive = false
+    /// While the app is backgrounded the ladder and the long poll stay up for
+    /// the whole window (P3 常驻), so a turn that starts after the user leaves
+    /// still reaches them. The loop reads the server's records directly.
+    @ObservationIgnored private var notificationPollTask: Task<Void, Never>?
+    /// Foreground catch-up: a turn that ends just before the user returns can
+    /// miss the 10 s poll and the stopped socket. Re-read a few times on
+    /// foreground; ids dedupe against anything already posted.
+    @ObservationIgnored private var notificationCatchUpTask: Task<Void, Never>?
+    @ObservationIgnored private var openSessionObserver: NSObjectProtocol?
+    /// A notification tap that can arrive before the launch restore finishes.
+    /// Buffered so the saved selection cannot overwrite the tapped session
+    /// (OpenMinis `NotificationNavigationStore`); entries expire after 30 s.
+    @ObservationIgnored private var notificationTarget: (session: V2SessionID, at: Date)?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
     init() {
@@ -99,6 +115,20 @@ final class AppState {
                 build, forKey: ClientDiagnosticsLog.lastBuildKey
             )
         }
+        openSessionObserver = NotificationCenter.default.addObserver(
+            forName: NotificationService.openSessionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let sessionID = note.userInfo?["sessionId"] as? String,
+                  !sessionID.isEmpty else { return }
+            // The observer queue is the main queue: no extra Task hop, so the
+            // selection is written on this turn rather than the next one.
+            MainActor.assumeIsolated {
+                self?.openSessionFromNotification(sessionID)
+            }
+        }
+        NotificationService.shared.activate()
         Task { await restoreSession() }
     }
 
@@ -125,7 +155,8 @@ final class AppState {
         serverURL = url
         if let profile = restoration.profile(server: url, token: token) {
             me = profile
-            chatSelection = restoration.selection(in: .init(serverURL: url, accountID: profile.userId))
+            chatSelection = preferredSelection(
+                restoration.selection(in: .init(serverURL: url, accountID: profile.userId)))
             if let services = makeV2Services() { await services.restoreCache(selection: chatSelection) }
         }
         guard epoch == authenticationEpoch else { return }
@@ -134,6 +165,40 @@ final class AppState {
         route = .signedIn
         startDashboardUpdates()
         beginAccountSynchronization()
+    }
+
+    /// Routes a notification tap to its session. A tap that arrives before the
+    /// launch restore is buffered so `preferredSelection` can keep it: on a
+    /// cold launch the saved selection is applied after the tap is delivered,
+    /// and without the buffer it overwrites the conversation the user asked
+    /// for. The tap itself lands on this main-queue turn (no extra Task hop).
+    private func openSessionFromNotification(_ sessionID: V2SessionID) {
+        let beforeRestore = route != .signedIn
+        if beforeRestore {
+            notificationTarget = (sessionID, Date())
+        }
+        chatSelection = .session(sessionID)
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.tap",
+            sessionID: sessionID,
+            detail: ["preRestore": beforeRestore ? "1" : "0"],
+            dedupe: false)
+    }
+
+    /// A fresh notification tap outranks the saved selection. The buffer is
+    /// one-shot and expires after 30 s so a stale tap cannot hijack a later
+    /// account change (OpenMinis `NotificationNavigationStore`).
+    private func preferredSelection(_ restored: ChatShellSelection) -> ChatShellSelection {
+        guard let target = notificationTarget else { return restored }
+        notificationTarget = nil
+        let age = Date().timeIntervalSince(target.at)
+        guard age <= 30 else { return restored }
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.tap.restore",
+            sessionID: target.session,
+            detail: ["ageSec": String(Int(age))],
+            dedupe: false)
+        return .session(target.session)
     }
 
     func retryServerConnection() async {
@@ -160,7 +225,11 @@ final class AppState {
                     guard !Task.isCancelled, authenticationEpoch == epoch, accountSyncID == id else { return }
                     let accountChanged = me?.userId != profile.userId
                     if accountChanged {
-                        chatSelection = restoration.selection(in: .init(serverURL: serverURL, accountID: profile.userId))
+                        // Old-account records must not point at sessions the
+                        // new account does not own.
+                        NotificationService.shared.reset()
+                        chatSelection = preferredSelection(
+                            restoration.selection(in: .init(serverURL: serverURL, accountID: profile.userId)))
                     }
                     me = profile
                     if accountChanged, let services = makeV2Services() { await services.restoreCache(selection: chatSelection) }
@@ -435,6 +504,7 @@ final class AppState {
     func setVisibleSession(_ sessionId: V2SessionID?) {
         guard route == .signedIn else { return }
         visibleSessionID = sessionId
+        NotificationService.shared.setVisibleSession(sessionId)
         makeV2Services()?.sessionReads.setVisibleSession(sessionId?.hasPrefix("local:") == true ? nil : sessionId)
     }
 
@@ -729,7 +799,9 @@ final class AppState {
         cachedServicesTokenProvider?.update(nil)
         cachedServicesTokenProvider = nil
         chatSelection = .newSession; restoreConnectionError = nil
+        notificationTarget = nil
         visibleSessionID = nil
+        NotificationService.shared.reset()
         me = nil
         serverURL = nil
         connectors = []
@@ -775,15 +847,33 @@ final class AppState {
         while !Task.isCancelled {
             do {
                 let updates = try await services.dashboard.updates(clientId: dashboardClientId)
+                var loggedConnect = false
                 for try await snapshot in updates {
                     if Task.isCancelled || cachedServices !== services { return }
+                    if !loggedConnect {
+                        loggedConnect = true
+                        ClientDiagnosticsLog.shared.record(
+                            kind: "dashboard.ws.connect",
+                            detail: ["attempt": String(attempt)],
+                            dedupe: false)
+                    }
                     attempt = 0
                     applyDashboardSnapshot(snapshot)
+                }
+                if loggedConnect {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "dashboard.ws.disconnect",
+                        detail: ["reason": "closed"],
+                        dedupe: false)
                 }
             } catch {
                 if Task.isCancelled { return }
                 let failure = V2ClientFailure(error)
                 guard cachedServices === services else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "dashboard.ws.disconnect",
+                    detail: ["reason": failure.message],
+                    dedupe: false)
                 dashboardError = failure.message
                 if !failure.permitsAutomaticReconnect { return }
             }
@@ -799,6 +889,83 @@ final class AppState {
 
     private func applyDashboardSnapshot(_ snapshot: V2DashboardSnapshot) {
         cachedServices?.dashboardRepository.apply(snapshot)
+        NotificationService.shared.handle(snapshot: snapshot)
+    }
+
+    private func startNotificationLongPolling(services: V2ClientServices) {
+        guard NotificationSettings.isEnabled else { return }
+        notificationPollTask?.cancel()
+        notificationPollTask = Task { @MainActor [weak self] in
+            // The server holds the request until a record outside this set
+            // appears. Sending it is what makes the wait long: a live turn
+            // emits dashboard events every second, and without `known` the
+            // server answered each one with the same unread record.
+            var known: [String] = []
+            while !Task.isCancelled {
+                guard !Task.isCancelled, let self,
+                      self.autoKeepAlive, self.isInBackground else { return }
+                do {
+                    // The server holds this up to 25 s and answers the moment
+                    // a new record exists: delivery within a second, two
+                    // requests a minute. The shared session's 30 s request
+                    // timeout leaves margin; foregrounding cancels the held
+                    // request.
+                    let response = try await services.notificationAPI.notifications(
+                        wait: 25,
+                        known: known
+                    )
+                    guard !Task.isCancelled, self.autoKeepAlive,
+                          self.isInBackground else { return }
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.longpoll",
+                        detail: ["records": String(response.notifications.count)],
+                        dedupe: false)
+                    // Bound the query string; an id dropped here only means
+                    // the server may resend that old record, which the
+                    // posted-id dedupe discards.
+                    known = Array(response.notifications.map(\.id).suffix(64))
+                    NotificationService.shared.handle(records: response.notifications)
+                } catch {
+                    if Task.isCancelled { return }
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.longpoll",
+                        detail: ["error": "1"],
+                        dedupe: true)
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+        }
+    }
+
+    private func stopNotificationPolling() {
+        notificationPollTask?.cancel()
+        notificationPollTask = nil
+    }
+
+    private func startForegroundNotificationCatchUp(services: V2ClientServices) {
+        guard NotificationSettings.isEnabled else { return }
+        notificationCatchUpTask?.cancel()
+        notificationCatchUpTask = Task { @MainActor [weak self] in
+            for delay in [0, 5, 15] {
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                guard !Task.isCancelled, self != nil else { return }
+                do {
+                    let response = try await services.notificationAPI.notifications()
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.catchup",
+                        detail: ["records": String(response.notifications.count)],
+                        dedupe: false)
+                    NotificationService.shared.handle(records: response.notifications)
+                } catch {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.catchup",
+                        detail: ["error": "1"],
+                        dedupe: true)
+                }
+            }
+        }
     }
 
     private func isAuthenticationFailure(_ error: Error) -> Bool {
@@ -813,14 +980,47 @@ final class AppState {
 
     func setAppInBackground(_ background: Bool) {
         isInBackground = background
+        NotificationService.shared.appInForeground = !background
+        if !background { NotificationService.shared.refreshAuthorization() }
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {
             accountSyncID = UUID(); accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
             if let services = cachedServices { Task { await services.flushCache() } }
+            // P3 常驻: hold the ladder and the long poll for the whole
+            // background window, not only while a turn is live — a turn that
+            // starts after the user leaves (scheduled task, another device)
+            // still notifies. The dashboard websocket stays foreground-only;
+            // the long-poll response carries what the reader needs.
+            let keepAlive = NotificationSettings.isEnabled
+                && NotificationService.shared.authorizationGranted
             cancelDashboardUpdates()
-            cachedServices?.sessionRepository.suspend()
+            if keepAlive {
+                KeepAliveCoordinator.shared.start()
+                autoKeepAlive = true
+                if let services = cachedServices {
+                    startNotificationLongPolling(services: services)
+                }
+            }
+            // Keep the conversation the user is watching on the wire alongside
+            // the dashboard channel; every other session socket closes.
+            let keptSession: Set<V2SessionID>
+            if keepAlive, NotificationSettings.sessionSocketEnabled,
+               case let .session(id) = chatSelection {
+                keptSession = [id]
+            } else {
+                keptSession = []
+            }
+            cachedServices?.sessionRepository.suspend(keeping: keptSession)
         } else {
+            stopNotificationPolling()
+            if let services = cachedServices {
+                startForegroundNotificationCatchUp(services: services)
+            }
+            if autoKeepAlive {
+                KeepAliveCoordinator.shared.stop()
+                autoKeepAlive = false
+            }
             cachedServices?.sessionRepository.resume()
             startDashboardUpdates()
             beginAccountSynchronization()
@@ -875,7 +1075,12 @@ final class AppState {
             }
         }
         services.sessionReads.setVisibleSession(visibleSessionID?.hasPrefix("local:") == true ? nil : visibleSessionID)
-        if isInBackground { services.sessionRepository.suspend() }
+        if isInBackground {
+            services.sessionRepository.suspend()
+            // The scene can go to the background before the services exist
+            // (launch restore); P3 keeps the poll up for the whole window.
+            if autoKeepAlive { startNotificationLongPolling(services: services) }
+        }
         services.onConnectivityChange = { [weak self, weak services] status in
             guard let self, let services, self.cachedServices === services else { return }
             if status.availability == .offline {

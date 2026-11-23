@@ -52,6 +52,11 @@ class ClaudeExecution:
     # lives on the per-turn dataclass, so nothing leaks across turns.
     published_items: int = 0
     consumed_frames: int = 0
+    #: A main-chain assistant message with non-empty text reached the timeline.
+    #: Turn-end metadata carries it so the server can notify a reply that is
+    #: final even while unrelated background work (a long command) still runs;
+    #: a turn that ended without text keeps waiting for its wake turn.
+    published_assistant_text: bool = False
 
     @property
     def has_turn_content(self) -> bool:

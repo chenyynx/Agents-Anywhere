@@ -1192,6 +1192,15 @@ class ClaudeTurnRunner:
                     return
                 await self.scheduled_sessions.save(session, connection.task_ids)
                 connection.arm_idle()
+                state = self.notifications.session_states.get(session.session_id)
+                await self.notifications.session_state.session_state_update(
+                    session,
+                    state.status if state is not None else "idle",
+                    metadata={
+                        "source": "claude.background.drained",
+                        "backgroundTasks": 0,
+                    },
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -3705,6 +3714,8 @@ class ClaudeTurnRunner:
                             stream_accumulator=stream_accumulator,
                             counted=counts_this_frame,
                         )
+                        if emitted_final_assistant_content:
+                            execution.published_assistant_text = True
                     if declined_any and not unowned_terminal:
                         # The turn's verdict was NOT the frame it would have
                         # settled on: a leftover was declined, the read
@@ -3816,6 +3827,8 @@ class ClaudeTurnRunner:
                     # `assistant_usage` block above already guards exactly this
                     # way; the reset and the flag simply never got the guard.
                     emitted_final_assistant_content = True
+                    if (message_text(message) or "").strip():
+                        execution.published_assistant_text = True
                     # The final assistant frame ends the streamed message, so
                     # resetting is a boundary: close (and publish) any thinking
                     # block the message left open, rather than dropping it.
@@ -3852,14 +3865,15 @@ class ClaudeTurnRunner:
                 # worse failure than the one the protocol fixes. When a real
                 # reply did arrive, this branch is skipped and the leftover's
                 # text is never published at all.
-                await self._publish_result_text(
+                if await self._publish_result_text(
                     execution=execution,
                     session=session,
                     turn_id=turn_id,
                     message=declined_message,
                     stream_accumulator=stream_accumulator,
                     counted=False,
-                )
+                ):
+                    execution.published_assistant_text = True
             if terminal is None:
                 terminal = failed_terminal_event(
                     code="claude_stream_ended_without_result",
@@ -4570,6 +4584,12 @@ class ClaudeTurnRunner:
                         terminal,
                         update_state=not queued,
                         publish=publish,
+                        background_tasks=(
+                            len(response.connection.background.active_ids)
+                            if response is not None
+                            else 0
+                        ),
+                        assistant_text=execution.published_assistant_text,
                     )
                     if not queued:
                         # L3b: ask the connector to refresh this session's
@@ -4630,6 +4650,8 @@ class ClaudeTurnRunner:
         *,
         update_state: bool = True,
         publish: bool = True,
+        background_tasks: int = 0,
+        assistant_text: bool = False,
     ) -> None:
         # The runtime state is the turn-end signal every client paints from
         # (iOS: the copy/share footer and its completion cue). The ledger
@@ -4647,6 +4669,8 @@ class ClaudeTurnRunner:
         if terminal.status == "failed":
             metadata = {
                 "source": "claude.turn.failed",
+                "backgroundTasks": background_tasks,
+                "assistantText": assistant_text,
                 **({"terminalReason": reason} if reason else {}),
             }
             # A failing state send must not cost the ledger row (unread,
@@ -4691,6 +4715,8 @@ class ClaudeTurnRunner:
             source = execution.interrupt_source or "claude.turn.interrupted"
         metadata = {
             "source": source,
+            "backgroundTasks": background_tasks,
+            "assistantText": assistant_text,
             **({"terminalReason": reason} if reason else {}),
         }
         state_error: Exception | None = None

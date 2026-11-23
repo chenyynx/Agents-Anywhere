@@ -4242,11 +4242,15 @@ async def _test_claude_runtime_normalizes_interrupted_result_message() -> None:
     assert host.session_state_updates[-1]["metadata"] == {
         "source": "claude.turn.interrupted",
         "terminalReason": "aborted_streaming",
+        "backgroundTasks": 0,
+        "assistantText": False,
     }
     assert host.session_turn_ends[-1]["outcome"] == "interrupted"
     assert host.session_turn_ends[-1]["metadata"] == {
         "source": "claude.turn.interrupted",
         "terminalReason": "aborted_streaming",
+        "backgroundTasks": 0,
+        "assistantText": False,
     }
     assert host.lifecycle_events[-2:] == ["state:idle", "turn_end"]
 

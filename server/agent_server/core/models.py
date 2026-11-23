@@ -833,6 +833,18 @@ class SessionView(BaseModel):
     title: str | None = None
     cwd: str | None = None
     status: SessionStatus
+    # Live background work on the runtime (agents/commands). A turn that ends
+    # while this is above zero is not the conversation's final state.
+    backgroundTasks: int = 0
+    # Whether the finished turn published assistant text (Claude reports it in
+    # its terminal state metadata). A text reply is final for the user even
+    # while unrelated background work still runs; a no-text turn waits for its
+    # wake turn. None on runtimes that do not report the fact.
+    assistantText: bool | None = None
+    # The blocking notice this session is parked on (approval or user-input
+    # question). It is unique per request, so notification records use it as
+    # their identity: two approvals in one turn must not share an id.
+    noticeId: str | None = None
     takeover: bool
     pinned: bool = False
     pinnedAt: str | None = None

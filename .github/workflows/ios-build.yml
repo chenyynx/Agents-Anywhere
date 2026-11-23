@@ -36,6 +36,10 @@ on:
         description: "Also build the unsigned IPA for this branch"
         type: boolean
         default: false
+      bundle_id:
+        description: "Override PRODUCT_BUNDLE_IDENTIFIER for the unsigned IPA (empty = project default). P0: pass the cert id KSign signs with so BGTaskSchedulerPermittedIdentifiers matches."
+        required: false
+        default: ""
       timeline_autorun:
         description: "Run the 6b collection-timeline simulator gate"
         type: boolean
@@ -1205,6 +1209,16 @@ jobs:
         run: |
           set -o pipefail
           cd "ios/Agents Anywhere"
+          # P0: KSign re-signs with the certificate's App ID, rewriting
+          # CFBundleIdentifier. The build must carry the same id, otherwise
+          # BGTaskSchedulerPermittedIdentifiers expands from the wrong prefix
+          # and iOS refuses the task (observed 2026-11-23: signed bundle
+          # app.bronze6658.lychee6856 vs permitted com.agentsanywhere.app.run.*).
+          BUNDLE_ID_ARG=""
+          if [ -n "${{ inputs.bundle_id }}" ]; then
+            BUNDLE_ID_ARG="PRODUCT_BUNDLE_IDENTIFIER=${{ inputs.bundle_id }}"
+            echo "bundle id override: ${{ inputs.bundle_id }}"
+          fi
           xcodebuild build \
             -project "Agents Anywhere.xcodeproj" \
             -scheme "Agents Anywhere" \
@@ -1218,6 +1232,7 @@ jobs:
             SWIFT_COMPILATION_MODE=incremental \
             "OTHER_SWIFT_FLAGS=-Xfrontend -disable-batch-mode ${PROBE_FLAG}" \
             ${PROBE_STRIP} \
+            ${BUNDLE_ID_ARG} \
             -derivedDataPath build/DerivedData \
             2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
 
@@ -1238,6 +1253,10 @@ jobs:
           # Prove the deployment-target patch landed in the shipped binary.
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" $APP/Info.plist
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" $APP/Info.plist
+          # P0: prove the background-task identifier expanded to the signed
+          # bundle id and the audio background mode survived packaging.
+          /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" $APP/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" $APP/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" $APP/Info.plist
           (cd /tmp/out && zip -qr "$GITHUB_WORKSPACE/agents-anywhere.ipa" Payload)
           ls -lh "$GITHUB_WORKSPACE/agents-anywhere.ipa"

@@ -21418,6 +21418,210 @@
           }
         }
       }
+    },
+    "Notifications": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知"
+          }
+        }
+      }
+    },
+    "Show message preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show message preview"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示消息预览"
+          }
+        }
+      }
+    },
+    "Keep the current session updating in background": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep the current session updating in background"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台实时更新当前会话"
+          }
+        }
+      }
+    },
+    "A local notification, not a remote push: the app keeps its own background connection so one can arrive while iOS lets it run, falling back to silent audio or coarse location if needed (it never reads or sends your location). This does not depend on the session switch below. If background execution is unavailable, it waits until the app opens again.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A local notification, not a remote push: the app keeps its own background connection so one can arrive while iOS lets it run, falling back to silent audio or coarse location if needed (it never reads or sends your location). This does not depend on the session switch below. If background execution is unavailable, it waits until the app opens again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地通知，不是远程推送。App 会在后台自行保持连接来接收，必要时用静音音频或粗定位兜底（不读取也不发送你的位置），不依赖下面的会话开关；iOS 结束后台执行时，会等你下次打开 App。"
+          }
+        }
+      }
+    },
+    "This switch only keeps the conversation on screen updating while the app is in the background; notifications do not depend on it. Foreground notifications controls banners for other sessions while you are in the app.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This switch only keeps the conversation on screen updating while the app is in the background; notifications do not depend on it. Foreground notifications controls banners for other sessions while you are in the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此开关只影响后台期间当前会话的消息是否实时更新，不影响通知送达。“前台通知”控制你在 App 内时其他会话是否弹横幅。"
+          }
+        }
+      }
+    },
+    "P0 probe: the keep-alive ladder runs continued processing → silent audio → coarse location. Start it, send the app to the background, then read the keepalive.* lines in today's log. Test only.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "P0 probe: the keep-alive ladder runs continued processing → silent audio → coarse location. Start it, send the app to the background, then read the keepalive.* lines in today's log. Test only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "P0 探针：保活按 continued processing → 静音音频 → 粗定位 降级。启动后切到后台，再在今天的日志里看 keepalive.* 行。仅测试用。"
+          }
+        }
+      }
+    },
+    "Keep-alive level": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep-alive level"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保活级别"
+          }
+        }
+      }
+    },
+    "Location permission": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Location permission"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "定位权限"
+          }
+        }
+      }
+    },
+    "Start keep-alive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start keep-alive"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动保活"
+          }
+        }
+      }
+    },
+    "Stop keep-alive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop keep-alive"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止保活"
+          }
+        }
+      }
+    },
+    "Keeping the connection alive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeping the connection alive"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保持连接"
+          }
+        }
+      }
+    },
+    "Foreground notifications": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foreground notifications"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前台通知"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

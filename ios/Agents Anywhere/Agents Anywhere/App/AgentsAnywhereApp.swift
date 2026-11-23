@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct AgentsAnywhereApp: App {
+    /// Registers the notification delegate before the launch callback returns;
+    /// see `AppDelegate` for why a SwiftUI-owned registration is too late.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var appState = AppState()
     /// One photo library read model for the whole scene, like the official
     /// `PhotoLibraryAccess` in `ClaudeScene`; sheets then reuse its cache.
@@ -14,6 +17,9 @@ struct AgentsAnywhereApp: App {
         // One-time migration of the retired collection-timeline Bool into the
         // render-mode enum, before any view reads the mode.
         TimelineRenderModeSwitch.migrateIfNeeded()
+        // BackgroundTasks requires the launch handler before the app finishes
+        // launching (P0 probe; see Background/ContinuedRun.swift).
+        ContinuedRun.registerAtLaunch()
     }
 
     var body: some Scene {

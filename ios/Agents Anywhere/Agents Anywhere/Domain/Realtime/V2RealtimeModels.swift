@@ -62,11 +62,34 @@ nonisolated struct V2EventRecoveryResponse: Decodable, Hashable {
     let serverTime: String
 }
 
+/// One server-decided local-notification record. The server derives these
+/// from the session projection (background work, approvals, unread); the
+/// client only renders and dedupes them.
+nonisolated struct V2DashboardNotification: Decodable, Hashable, Identifiable {
+    let id: String
+    let sessionId: String
+    let type: String
+    let title: String
+    let preview: String?
+    let summary: String?
+    let deepLink: String?
+    let createdAt: String?
+}
+
+nonisolated struct V2DashboardNotificationsResponse: Decodable, Hashable {
+    let notifications: [V2DashboardNotification]
+    /// Present on servers that moved the background keep-alive decision here.
+    let sessions: [V2SessionMeta]?
+    let serverTime: String
+}
+
 nonisolated struct V2DashboardSnapshot: Decodable, Hashable {
     let type: String
     let connectors: [V2Connector]
     let projects: [V2Project]
     let sessionPages: V2DashboardSessionPages
     let sessions: [V2SessionMeta]
+    /// Optional so a build talking to an older server still decodes.
+    let notifications: [V2DashboardNotification]?
     let serverTime: String
 }

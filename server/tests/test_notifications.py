@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import asyncio
+import time
 
-
+from agent_server.api import dashboard_stream
 from agent_server.core.models import SessionView
 from agent_server.services.notifications import (
     derive_dashboard_notifications,
@@ -106,3 +107,115 @@ def test_derive_skips_sessions_whose_work_is_still_running() -> None:
         )
         == []
     )
+
+
+# --- Long-poll endpoint: wait on unseen records, not on any dashboard event ---
+
+
+def _payload(*ids: str) -> dict:
+    return {
+        "notifications": [{"id": item, "sessionId": "sess_1"} for item in ids],
+        "sessions": [],
+        "serverTime": "",
+    }
+
+
+class _FakeBroker:
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=8)
+        self.registered: list[str] = []
+        self.unregistered: list[str] = []
+
+    async def register_dashboard(self, user_id: str):
+        self.registered.append(user_id)
+        return self.queue
+
+    async def unregister_dashboard(self, user_id: str, queue) -> None:
+        self.unregistered.append(user_id)
+
+
+def test_has_unseen_compares_ids() -> None:
+    assert not dashboard_stream._has_unseen([{"id": "a"}], {"a"})
+    assert dashboard_stream._has_unseen([{"id": "a"}, {"id": "b"}], {"a"})
+    assert dashboard_stream._has_unseen([{"id": "a"}], set())
+
+
+def test_long_poll_wakes_and_returns_the_unseen_record(monkeypatch) -> None:
+    """A dashboard event must not answer with the same known set: the client
+    would re-request immediately and loop once a second while an unread
+    record stayed in the recent window. Only an unseen id may answer."""
+
+    calls = {"n": 0}
+
+    async def fake_payload(**_kwargs):
+        calls["n"] += 1
+        return _payload("a") if calls["n"] == 1 else _payload("a", "b")
+
+    monkeypatch.setattr(dashboard_stream, "_notification_payload", fake_payload)
+    broker = _FakeBroker()
+
+    async def run():
+        broker.queue.put_nowait("dashboard.changed")
+        return await dashboard_stream.dashboard_notifications(
+            user_id="u",
+            db=None,
+            manager=None,
+            runtime_state_cache=None,
+            broker=broker,
+            wait=25,
+            known="a",
+        )
+
+    started = time.monotonic()
+    payload = asyncio.run(run())
+    assert [item["id"] for item in payload["notifications"]] == ["a", "b"]
+    assert time.monotonic() - started < 1
+    assert calls["n"] == 2
+    assert broker.registered == ["u"]
+    assert broker.unregistered == ["u"]
+
+
+def test_long_poll_holds_while_every_record_is_known(monkeypatch) -> None:
+    async def fake_payload(**_kwargs):
+        return _payload("a")
+
+    monkeypatch.setattr(dashboard_stream, "_notification_payload", fake_payload)
+    broker = _FakeBroker()
+    started = time.monotonic()
+    payload = asyncio.run(
+        dashboard_stream.dashboard_notifications(
+            user_id="u",
+            db=None,
+            manager=None,
+            runtime_state_cache=None,
+            broker=broker,
+            wait=1,
+            known="a",
+        )
+    )
+    assert [item["id"] for item in payload["notifications"]] == ["a"]
+    assert time.monotonic() - started >= 0.9
+    assert broker.unregistered == ["u"]
+
+
+def test_long_poll_without_known_returns_immediately(monkeypatch) -> None:
+    async def fake_payload(**_kwargs):
+        return _payload("a")
+
+    monkeypatch.setattr(dashboard_stream, "_notification_payload", fake_payload)
+    broker = _FakeBroker()
+    started = time.monotonic()
+    payload = asyncio.run(
+        dashboard_stream.dashboard_notifications(
+            user_id="u",
+            db=None,
+            manager=None,
+            runtime_state_cache=None,
+            broker=broker,
+            wait=25,
+            known="",
+        )
+    )
+    assert [item["id"] for item in payload["notifications"]] == ["a"]
+    assert time.monotonic() - started < 1
+    assert broker.unregistered == ["u"]

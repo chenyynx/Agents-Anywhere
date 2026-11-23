@@ -133,6 +133,14 @@ async def _notification_payload(
     }
 
 
+def _has_unseen(
+    notifications: list[dict[str, Any]], known_ids: set[str]
+) -> bool:
+    """Whether the projection holds a record the caller has not seen."""
+
+    return any(record["id"] not in known_ids for record in notifications)
+
+
 @router.get("/notifications")
 async def dashboard_notifications(
     user_id: str = Depends(current_user_id),
@@ -143,37 +151,55 @@ async def dashboard_notifications(
     ),
     broker: TimelineBroker = Depends(get_timeline_broker),
     wait: int = Query(0, ge=0, le=25),
+    known: str = Query(
+        "",
+        description="Comma-separated record ids the client already holds",
+    ),
 ) -> dict[str, Any]:
     """Server-decided notification records, with optional long polling.
 
-    ``wait`` holds the request open until a dashboard invalidation arrives or
-    the wait expires, then answers with the fresh projection (records +
-    session statuses). The client re-requests immediately, so a record
-    surfaces within a second of being derived while the request rate stays at
-    a couple per minute. A cancelled request (app foregrounded, process gone)
-    unregisters its queue on the way out.
+    ``wait`` holds the request open until a record the client has not seen
+    (``known``) appears or the wait expires, then answers with the fresh
+    projection (records + session statuses). Waiting on *unseen* records
+    rather than on any dashboard event is what keeps the request rate at a
+    couple per minute: a live turn emits dashboard events every second, and
+    returning on those made the client re-request in a tight loop whenever an
+    unread record stayed in the recent window. Unknown ids (an old client, an
+    empty set) return immediately, as before. A cancelled request (app
+    foregrounded, process gone) unregisters its queue on the way out.
     """
 
-    payload = await _notification_payload(
-        db=db,
-        manager=manager,
-        runtime_state_cache=runtime_state_cache,
-        user_id=user_id,
-    )
-    if wait > 0 and not payload["notifications"]:
-        queue = await broker.register_dashboard(user_id)
-        try:
-            await asyncio.wait_for(queue.get(), timeout=wait)
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            await broker.unregister_dashboard(user_id, queue)
-        payload = await _notification_payload(
+    known_ids = {item for item in known.split(",") if item}
+
+    async def fresh_payload() -> dict[str, Any]:
+        return await _notification_payload(
             db=db,
             manager=manager,
             runtime_state_cache=runtime_state_cache,
             user_id=user_id,
         )
+
+    if wait <= 0:
+        return await fresh_payload()
+
+    # Register before the first read: a record derived while that read runs
+    # must wake this request instead of waiting out the full timeout.
+    queue = await broker.register_dashboard(user_id)
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        payload = await fresh_payload()
+        while not _has_unseen(payload["notifications"], known_ids):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            payload = await fresh_payload()
+    finally:
+        await broker.unregister_dashboard(user_id, queue)
     return payload
 
 

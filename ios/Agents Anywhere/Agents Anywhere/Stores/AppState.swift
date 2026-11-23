@@ -67,13 +67,9 @@ final class AppState {
     /// The product (not the Settings probe) started the keep-alive ladder for
     /// the current background window; only that instance is auto-stopped.
     @ObservationIgnored private var autoKeepAlive = false
-    /// Grace window after the last live work: the connector publishes the
-    /// idle state before the turn ledger row, and the notification lives on
-    /// the snapshot that carries the ledger. Stopping at the first idle would
-    /// cancel the dashboard before that snapshot arrives.
-    @ObservationIgnored private var keepAliveStopTask: Task<Void, Never>?
-    /// Safety net for a stalled dashboard push: while the ladder holds the
-    /// process, read the server's records directly every 10 s.
+    /// While the app is backgrounded the ladder and the long poll stay up for
+    /// the whole window (P3 常驻), so a turn that starts after the user leaves
+    /// still reaches them. The loop reads the server's records directly.
     @ObservationIgnored private var notificationPollTask: Task<Void, Never>?
     /// Foreground catch-up: a turn that ends just before the user returns can
     /// miss the 10 s poll and the stopped socket. Re-read a few times on
@@ -463,6 +459,7 @@ final class AppState {
     func setVisibleSession(_ sessionId: V2SessionID?) {
         guard route == .signedIn else { return }
         visibleSessionID = sessionId
+        NotificationService.shared.visibleSessionId = sessionId
         makeV2Services()?.sessionReads.setVisibleSession(sessionId?.hasPrefix("local:") == true ? nil : sessionId)
     }
 
@@ -758,6 +755,7 @@ final class AppState {
         cachedServicesTokenProvider = nil
         chatSelection = .newSession; restoreConnectionError = nil
         visibleSessionID = nil
+        NotificationService.shared.visibleSessionId = nil
         me = nil
         serverURL = nil
         connectors = []
@@ -852,23 +850,32 @@ final class AppState {
         guard NotificationSettings.isEnabled else { return }
         notificationPollTask?.cancel()
         notificationPollTask = Task { @MainActor [weak self] in
+            // The server holds the request until a record outside this set
+            // appears. Sending it is what makes the wait long: a live turn
+            // emits dashboard events every second, and without `known` the
+            // server answered each one with the same unread record.
+            var known: [String] = []
             while !Task.isCancelled {
                 guard !Task.isCancelled, let self,
                       self.autoKeepAlive, self.isInBackground else { return }
                 do {
                     // The server holds this up to 25 s and answers the moment
-                    // a record exists: delivery within a second, two requests
-                    // a minute. The shared session's 30 s request timeout
-                    // leaves margin; foregrounding cancels the held request.
-                    let response = try await services.notificationAPI.notifications(wait: 25)
+                    // a new record exists: delivery within a second, two
+                    // requests a minute. The shared session's 30 s request
+                    // timeout leaves margin; foregrounding cancels the held
+                    // request.
+                    let response = try await services.notificationAPI.notifications(
+                        wait: 25,
+                        known: known
+                    )
                     guard !Task.isCancelled, self.autoKeepAlive,
                           self.isInBackground else { return }
                     ClientDiagnosticsLog.shared.record(
                         kind: "notification.longpoll",
                         detail: ["records": String(response.notifications.count)],
                         dedupe: false)
+                    known = response.notifications.map(\.id)
                     NotificationService.shared.handle(records: response.notifications)
-                    self.evaluateKeepAlive(sessions: response.sessions ?? [])
                 } catch {
                     if Task.isCancelled { return }
                     ClientDiagnosticsLog.shared.record(
@@ -912,43 +919,6 @@ final class AppState {
         }
     }
 
-    /// The ladder starts with the turn (while in front) and ends only at the
-    /// true terminal state: idle with no background work. A turn that ends
-    /// while a background agent runs keeps the window open for its wake turn.
-    /// Statuses arrive with the long-poll response; the dashboard websocket is
-    /// closed in the background.
-    private func evaluateKeepAlive(sessions liveSessions: [V2SessionMeta]) {
-        guard isInBackground else { return }
-        let hasLiveWork = liveSessions.contains { session in
-            session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
-        } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
-        if hasLiveWork {
-            keepAliveStopTask?.cancel()
-            keepAliveStopTask = nil
-            guard NotificationSettings.isEnabled,
-                  NotificationSettings.keepAliveEnabled,
-                  !KeepAliveCoordinator.shared.isOn else { return }
-            KeepAliveCoordinator.shared.start()
-            autoKeepAlive = true
-            if let services = cachedServices { startNotificationLongPolling(services: services) }
-        } else if autoKeepAlive, keepAliveStopTask == nil {
-            keepAliveStopTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled, let self, self.autoKeepAlive,
-                      self.isInBackground else { return }
-                // A new turn cancels this task through the live branch of
-                // evaluateKeepAlive; the cached dashboard projection is stale
-                // in the background, so it must not re-check it here.
-                self.keepAliveStopTask = nil
-                KeepAliveCoordinator.shared.stop()
-                self.autoKeepAlive = false
-                self.stopNotificationPolling()
-                self.cachedServices?.sessionRepository.suspend()
-                self.cancelDashboardUpdates()
-            }
-        }
-    }
-
     private func isAuthenticationFailure(_ error: Error) -> Bool {
         guard case let APIClientError.server(status, _) = error else { return false }
         return status == 401 || status == 403
@@ -961,23 +931,20 @@ final class AppState {
 
     func setAppInBackground(_ background: Bool) {
         isInBackground = background
+        NotificationService.shared.appInForeground = !background
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {
             accountSyncID = UUID(); accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
             if let services = cachedServices { Task { await services.flushCache() } }
-            let hasLiveWork = sessions.contains { session in
-                session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
-            } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+            // P3 常驻: hold the ladder and the long poll for the whole
+            // background window, not only while a turn is live — a turn that
+            // starts after the user leaves (scheduled task, another device)
+            // still notifies. The dashboard websocket stays foreground-only;
+            // the long-poll response carries what the reader needs.
             let keepAlive = NotificationSettings.isEnabled
-                && NotificationSettings.keepAliveEnabled
-                && hasLiveWork
-            // The background reader makes its own decisions from the
-            // long-poll response; the dashboard websocket is foreground-only.
             cancelDashboardUpdates()
             if keepAlive {
-                keepAliveStopTask?.cancel()
-                keepAliveStopTask = nil
                 KeepAliveCoordinator.shared.start()
                 autoKeepAlive = true
                 if let services = cachedServices {
@@ -995,8 +962,6 @@ final class AppState {
             }
             cachedServices?.sessionRepository.suspend(keeping: keptSession)
         } else {
-            keepAliveStopTask?.cancel()
-            keepAliveStopTask = nil
             stopNotificationPolling()
             if let services = cachedServices {
                 startForegroundNotificationCatchUp(services: services)
@@ -1059,7 +1024,12 @@ final class AppState {
             }
         }
         services.sessionReads.setVisibleSession(visibleSessionID?.hasPrefix("local:") == true ? nil : visibleSessionID)
-        if isInBackground { services.sessionRepository.suspend() }
+        if isInBackground {
+            services.sessionRepository.suspend()
+            // The scene can go to the background before the services exist
+            // (launch restore); P3 keeps the poll up for the whole window.
+            if autoKeepAlive { startNotificationLongPolling(services: services) }
+        }
         services.onConnectivityChange = { [weak self, weak services] status in
             guard let self, let services, self.cachedServices === services else { return }
             if status.availability == .offline {

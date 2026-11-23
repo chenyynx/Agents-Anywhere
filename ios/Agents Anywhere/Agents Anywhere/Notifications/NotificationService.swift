@@ -1,23 +1,29 @@
 import Foundation
 import UserNotifications
 
+/// The only switches are the notification master switch and display choices.
+/// Background keep-alive has none: while notifications are on, going to the
+/// background starts the ladder and the long poll for the whole window
+/// (P3 常驻), so turns that begin after the user leaves still notify.
 enum NotificationSettings {
     static let enabledKey = "aa.notifications.enabled"
     static let previewKey = "aa.notifications.preview"
-    static let keepAliveKey = "aa.keepalive.enabled"
     static let sessionSocketKey = "aa.keepalive.sessionSocket"
+    static let foregroundKey = "aa.notifications.foreground"
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
     static var showsPreview: Bool {
         UserDefaults.standard.object(forKey: previewKey) as? Bool ?? true
     }
-    static var keepAliveEnabled: Bool {
-        UserDefaults.standard.object(forKey: keepAliveKey) as? Bool ?? true
-    }
     /// Keep the viewed session's socket across background (default off: the
     /// background poll delivers notifications without it).
     static var sessionSocketEnabled: Bool {
         UserDefaults.standard.object(forKey: sessionSocketKey) as? Bool ?? false
+    }
+    /// Foreground banners for sessions other than the one on screen. Off by
+    /// default; the visible session never banners in the foreground.
+    static var foregroundEnabled: Bool {
+        UserDefaults.standard.object(forKey: foregroundKey) as? Bool ?? false
     }
 }
 
@@ -36,6 +42,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     private static let postedLimit = 256
     private let center = UNUserNotificationCenter.current()
     private var activated = false
+    /// The session on screen, kept current by `AppState.setVisibleSession`.
+    var visibleSessionId: String?
+    /// Kept current by `AppState.setAppInBackground`. A record the foreground
+    /// rules suppress is not posted at all (rather than posted and hidden):
+    /// it stays unread on the server, so leaving the app lets the long poll
+    /// deliver it instead of the banner being swallowed forever.
+    var appInForeground = true
 
     func activate() {
         guard !activated else { return }
@@ -47,7 +60,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
                 detail: [
                     "enabled": NotificationSettings.isEnabled ? "1" : "0",
                     "preview": NotificationSettings.showsPreview ? "1" : "0",
-                    "keepAlive": NotificationSettings.keepAliveEnabled ? "1" : "0",
+                    "keepAlive": "always",
                     "authorization": String(settings.authorizationStatus.rawValue),
                 ],
                 dedupe: false)
@@ -90,7 +103,27 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
             }
             return
         }
+        let foreground = appInForeground
         for record in records {
+            if foreground {
+                let isVisible = visibleSessionId.map { $0 == record.sessionId } ?? false
+                let allowed = NotificationSettings.foregroundEnabled && !isVisible
+                if !allowed {
+                    // Leave the id unposted: the record is still unread on the
+                    // server, so the background long poll delivers it if the
+                    // user leaves without reading. Dedupe keeps this log line
+                    // to one per record.
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "notification.deferred",
+                        sessionID: record.sessionId,
+                        detail: [
+                            "id": record.id,
+                            "visible": isVisible ? "1" : "0",
+                        ],
+                        dedupe: true)
+                    continue
+                }
+            }
             post(record)
         }
     }
@@ -131,18 +164,31 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Show the banner in the foreground too (pp 2026-11-23): the completion
-    /// cue must not depend on whether the app happens to be in front when the
-    /// turn ends — a suppressed foreground banner reads as a lost notification.
+    /// Foreground presentation is a strict rule plus a setting:
+    /// - the conversation on screen never banners (the reply is already there);
+    /// - other sessions banner only when the foreground switch is on
+    ///   (default off).
+    /// Background presentation never consults this: the OS shows banners and
+    /// the turn-end cue must arrive.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        let sessionId = notification.request.content
+            .userInfo["sessionId"] as? String
+        let visible = visibleSessionId
+        let isVisible = visible != nil && sessionId == visible
+        let show = NotificationSettings.foregroundEnabled && !isVisible
         ClientDiagnosticsLog.shared.record(
             kind: "notification.foreground",
-            detail: ["id": notification.request.identifier],
+            detail: [
+                "id": notification.request.identifier,
+                "visible": isVisible ? "1" : "0",
+                "enabled": NotificationSettings.foregroundEnabled ? "1" : "0",
+                "show": show ? "1" : "0",
+            ],
             dedupe: false)
-        return [.banner, .list, .sound]
+        return show ? [.banner, .list, .sound] : []
     }
 
     func userNotificationCenter(

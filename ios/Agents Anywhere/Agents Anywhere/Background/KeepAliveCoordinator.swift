@@ -14,8 +14,8 @@ import Observation
 ///
 /// The ladder is explicit state, not implicit retries: every level change is
 /// written to the diagnostics log with its reason, and the Settings probe
-/// shows the current level. Product wiring (start on a live turn, stop at the
-/// terminal state) is P1; today only the probe drives it.
+/// shows the current level. The product starts it on every background entry
+/// and stops it on foreground (P3 常驻); the probe can drive it separately.
 @MainActor @Observable
 final class KeepAliveCoordinator {
     enum Level: String {

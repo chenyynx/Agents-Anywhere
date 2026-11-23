@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "killed"})
+
+#: How long a terminal task frame keeps maintenance off its transport.
+#:
+#: A terminal frame is the CLI's promise of a wake reply (the main agent is
+#: woken to report the finished task). The reply starts at an unknown latency
+#: after the frame — one production gap measured six seconds — and until its
+#: first frame arrives no "is anything live?" gate can see it. Maintenance
+#: taken in that gap holds the reader and swallows the reply's opening
+#: frames, which is how one turn got two ids on 2026-11-24 (sess_ddUX1KTcAEiFrw:
+#: the probe ate the first message, the live mint anchored on the second, the
+#: step run split in two). The bound only delays optimisation work
+#: (calibration, task reconciliation); a wake that never comes costs at most
+#: this much, never a user turn.
+WAKE_OWED_TIMEOUT_SECONDS = 120.0
 
 
 def _value(message: Any, name: str) -> Any:
@@ -56,6 +71,11 @@ class ClaudeBackgroundTasks:
     #: waiter checks `active_ids` itself first, so the pre-first-frame state
     #: is never mistaken for pending work.
     drained: asyncio.Event = field(default_factory=asyncio.Event)
+    #: When a terminal task frame promised a wake reply that has not landed
+    #: yet (monotonic; ``None`` = no reply owed). ``active_ids`` is already
+    #: empty here — the work IS done — so the ordinary gate sees an idle
+    #: transport while the CLI is about to send a frame nobody invited.
+    wake_owed_at: float | None = None
 
     def observed(self, message: Any) -> bool:
         """Observe one frame and keep the drain signal in step with it."""
@@ -79,6 +99,37 @@ class ClaudeBackgroundTasks:
 
         self.active_ids.discard(task_id)
         self._sync_drained()
+
+    def note_wake_owed(self, *, now: float | None = None) -> None:
+        """Record that a wake reply is now owed (a terminal task frame)."""
+
+        self.wake_owed_at = time.monotonic() if now is None else now
+
+    def clear_wake_owed(self) -> None:
+        """The reply landed: maintenance may borrow the transport again."""
+
+        self.wake_owed_at = None
+
+    def wake_owed(
+        self,
+        *,
+        now: float | None = None,
+        timeout: float = WAKE_OWED_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Whether an uninvited reply may still be in flight.
+
+        Expiry drops the flag rather than only reporting false: a wake the
+        CLI never produced must not pin maintenance off until the process
+        restarts.
+        """
+
+        if self.wake_owed_at is None:
+            return False
+        current = time.monotonic() if now is None else now
+        if current - self.wake_owed_at > timeout:
+            self.wake_owed_at = None
+            return False
+        return True
 
     def _sync_drained(self) -> None:
         if self.active_ids:
@@ -147,6 +198,17 @@ class ClaudeBackgroundTasks:
                 status = _value(_value(message, "data"), "status")
             if status in TERMINAL_STATUSES:
                 self.active_ids.discard(task_id)
+                # The notice is the shape the CLI emits when a finished task
+                # wakes the main agent, and the frame this window is built on.
+                # `task_updated` is deliberately NOT armed: the connector's
+                # deferred-reconciliation path drains the register with it and
+                # no reply is owed in that shape (tests pin it). Known
+                # residual: the SDK documents terminal statuses that surface
+                # only as `task_updated` (e.g. a stop); those wakes are not
+                # gated by this flag and rely on the maintenance response
+                # stepping aside at the first API frame.
+                if kind == "task_notification":
+                    self.note_wake_owed()
             elif isinstance(status, str):
                 self.active_ids.add(task_id)
         return True

@@ -1567,6 +1567,63 @@ def _scan_turn_id(seed: str) -> str:
     return _history_turn_id(seed)
 
 
+def scheduled_anchor_from_scan(scan: RawTranscriptScan | None) -> str | None:
+    """The turn id of the newest user-less turn, as the transcript records it.
+
+    A user-less (scheduled / background-wake) turn is anchored on the FIRST
+    assistant message after its boundary — the history rule. The live reader
+    normally sees that frame first and hashes the same id; this resolver is
+    the truth for the cases where it did not (a maintenance response consumed
+    the frame, a reconnect joined mid-turn). The raw walk already carries the
+    rule: ``turn_seeds`` maps each assistant row to the seed of its turn, a
+    scheduled turn's seed being the first assistant's ``message.id`` — with
+    the same fallbacks as the SDK walk (row uuid, then the line-derived
+    ``scheduled:<line>``).
+
+    Returns ``None`` when the newest turn is not user-less (the walk never
+    opened it as one) or when the transcript names no boundary/row yet — the
+    caller then keeps today's behavior.
+    """
+
+    if scan is None:
+        return None
+    boundary_lines = list(scan.scheduled_boundary_lines)
+    boundary_lines.extend(scan.injected_prompt_rows.values())
+    if not boundary_lines:
+        return None
+    boundary = max(boundary_lines)
+    latest_line: int | None = None
+    latest_seed: str | None = None
+    for row_uuid, line in scan.uuid_line_index.items():
+        if line <= boundary:
+            continue
+        seed = scan.turn_seeds.get(row_uuid)
+        if seed is None:
+            continue
+        if latest_line is None or line > latest_line:
+            latest_line, latest_seed = line, seed
+    if latest_seed is None:
+        return None
+    if latest_seed not in scan.scheduled_turn_seeds:
+        # The newest turn in the transcript is a real user prompt (the walk
+        # never opened it as user-less). A scheduled mint has no rows of its
+        # own yet, so it must not adopt that turn's id.
+        return None
+    return _scan_turn_id(latest_seed)
+
+
+async def resolve_scheduled_turn_anchor(session: ClaudeSession) -> str | None:
+    """Resolve a user-less mint's turn id from the transcript, off the loop.
+
+    The scan service caches by file version and single-flights per lane, so
+    the common case — a wake turn right after a settle sync — is a stat plus
+    the already-parsed scan, never a second full read.
+    """
+
+    scan = await _read_raw_transcript_scan_async(session, priority="foreground")
+    return scheduled_anchor_from_scan(scan)
+
+
 def scan_agent_call_cards(
     session: ClaudeSession,
     scan: RawTranscriptScan | None,

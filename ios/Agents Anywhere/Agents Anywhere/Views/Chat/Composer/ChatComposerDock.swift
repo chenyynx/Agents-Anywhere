@@ -95,54 +95,36 @@ struct ChatComposerDock: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if dictating {
-                // One box only: the recording pill replaces the composer.
-                // Live words sit above it as a caption, not a second field.
-                VStack(spacing: 8) {
-                    if !dictation.transcript.isEmpty {
-                        Text(dictation.transcript)
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 24)
-                            .transition(.opacity)
-                    }
-                    VoiceDictationBar(amplitude: dictation.amplitude,
-                                      onCancel: cancelDictation,
-                                      onStop: finishDictation,
-                                      onSend: sendDictation)
-                        .padding(.horizontal, 16)
-                }
-                .padding(.top, controls.topMargin)
-                .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else {
-                ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                    canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
-                    placeholder: speechError ?? placeholder,
-                    maximumEditorHeight: maximumEditorHeight, controls: controls,
-                    onSend: send, onStop: { Task { await onStop() } },
-                    onOptions: presentOptions,
-                    showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
-                    onCommands: { showsCommandMenu.toggle() },
-                    onVoice: startDictation,
-                    onDraftChange: onDraftChange,
-                    onLongPaste: convertLongPastedText,
-                    onEditorLimitReached: {
-                        attachmentError = String(localized: "内容过长，请分段输入或添加为文件。")
-                    },
-                    onOversizedDraft: repairOversizedDraft,
-                    onEditAttachment: presentImageEditor,
-                    affordance: affordance, onQueueSend: send)
-                    .contentShape(Rectangle())
-                    // K2 (round 1.1): the composer band owns vertical drags across
-                    // its whole frame — including the transparent margins around
-                    // the glass bar — so a swipe here can never fall through to
-                    // the timeline's interactive dismissal. Inner controls, the
-                    // editor and the command panel keep their own interactions.
-                    .composerKeyboardGesture(draft: draft, editor: editor)
-            }
+            ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
+                canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
+                placeholder: speechError ?? placeholder,
+                maximumEditorHeight: maximumEditorHeight, controls: controls,
+                onSend: send, onStop: { Task { await onStop() } },
+                onOptions: presentOptions,
+                showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
+                onCommands: { showsCommandMenu.toggle() },
+                onVoice: startDictation,
+                isDictating: dictating,
+                dictationTranscript: dictation.transcript,
+                dictationAmplitude: dictation.amplitude,
+                onVoiceCancel: cancelDictation,
+                onVoiceFinish: finishDictation,
+                onVoiceSend: sendDictation,
+                onDraftChange: onDraftChange,
+                onLongPaste: convertLongPastedText,
+                onEditorLimitReached: {
+                    attachmentError = String(localized: "内容过长，请分段输入或添加为文件。")
+                },
+                onOversizedDraft: repairOversizedDraft,
+                onEditAttachment: presentImageEditor,
+                affordance: affordance, onQueueSend: send)
+                .contentShape(Rectangle())
+                // K2 (round 1.1): the composer band owns vertical drags across
+                // its whole frame — including the transparent margins around
+                // the glass bar — so a swipe here can never fall through to
+                // the timeline's interactive dismissal. Inner controls, the
+                // editor and the command panel keep their own interactions.
+                .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: dictating)
         .onChange(of: dictation.status) { _, status in

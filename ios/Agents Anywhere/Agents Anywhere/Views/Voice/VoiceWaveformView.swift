@@ -35,8 +35,11 @@ struct VoiceWaveformView: View {
         guard size.width > 0, size.height > 0 else { return }
         let height = min(size.height, maxHeight)
         let count = Int(ceil(size.width / pitch)) + 1
-        // Sub-pitch phase: time mod 0.06 s, one pitch step per 0.06 s.
-        let phase = time.truncatingRemainder(dividingBy: 0.06) / 0.06
+        // 0.06 s sample grid: the phase moves every frame, but a bar's height
+        // stays fixed until the next sample enters from the right. Sampling
+        // the raw time made every bar flicker each frame (the "shaking").
+        let grid = floor(time / 0.06) * 0.06
+        let phase = (time - grid) / 0.06
         let startX = -CGFloat(phase) * pitch
         let last = Double(count - 1)
 
@@ -47,7 +50,7 @@ struct VoiceWaveformView: View {
             // Newest sample sits at the trailing edge; each bar samples one
             // 0.06 s further into the past as it moves left.
             let fromRight = last - Double(index)
-            let sample = amplitude(time - 0.06 * fromRight)
+            let sample = amplitude(grid - 0.06 * fromRight)
             let level = min(max(Double(sample), 0), 1)
 
             // fade = clamp(1 - min(pos, count-pos)/3, 0, 1); sqrt(1-fade²)

@@ -20,6 +20,14 @@ struct ChatComposer: View {
     var onCommands: () -> Void = {}
     /// Starts live dictation (mic button and the empty-draft voice key).
     var onVoice: () -> Void = {}
+    /// While dictating the same box stays: the mic becomes X and the trailing
+    /// key becomes the stop square. No second recording bar is inserted.
+    var isDictating = false
+    var dictationTranscript = ""
+    var dictationAmplitude: (Double) -> Float = { _ in 0 }
+    var onVoiceCancel: () -> Void = {}
+    var onVoiceFinish: () -> Void = {}
+    var onVoiceSend: () -> Void = {}
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -69,6 +77,8 @@ struct ChatComposer: View {
         // in a continuous rounded rectangle; it is not a solid/Material bar.
         GlassEffectContainer(spacing: nil) {
             VStack(spacing: 0) {
+                ZStack(alignment: .top) {
+                    VStack(spacing: 0) {
                 if !draft.attachments.isEmpty { attachmentTray }
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {
                     HStack(spacing: 8) {
@@ -170,10 +180,20 @@ struct ChatComposer: View {
                         .accessibilityIdentifier("chat.composer.commands")
                     }
                 }
+                    }
+                    .frame(height: isDictating ? CGFloat(82) : nil, alignment: .top)
+                    .clipped()
+                    .opacity(isDictating ? 0 : 1)
+                    .allowsHitTesting(!isDictating)
+
+                    if isDictating { dictationCard }
+                }
             }
             .glassEffect(.regular.interactive(), in: RoundedRectangle(
-                cornerRadius: draft.isExpanded
-                    ? controls.expandedCornerRadius : controls.collapsedCornerRadius,
+                cornerRadius: isDictating
+                    ? 26
+                    : (draft.isExpanded
+                        ? controls.expandedCornerRadius : controls.collapsedCornerRadius),
                 style: .continuous))
             .glassEffectID("composer", in: glass)
         }
@@ -182,16 +202,90 @@ struct ChatComposer: View {
         // (pp 2026-11-18 00:10). The bar is measured so the invisible menu
         // label can sit exactly on the visible key.
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { barFrame = $0 }
-        .overlay(alignment: .topLeading) { sendKeyMenu }
-        .padding(.horizontal, controls.horizontalInset(expanded: draft.isExpanded))
+        .overlay(alignment: .topLeading) {
+            if !isDictating { sendKeyMenu }
+        }
+        .padding(.horizontal, isDictating
+                 ? 7
+                 : controls.horizontalInset(expanded: draft.isExpanded))
         .padding(.top, controls.topMargin)
         .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
         .animation(expandAnimation, value: draft.isExpanded)
+        .animation(.snappy(duration: 0.2), value: isDictating)
         // The composer is the only subtree that already re-evaluates on every
         // keystroke, including each Chinese IME marked-text update. Observing
         // the draft from the page root re-evaluated the whole conversation.
         .onChange(of: draft.text) { _, _ in onDraftChange() }
         .onChange(of: draft.attachments) { _, _ in onDraftChange() }
+    }
+
+    /// One card, two rows: live transcript above, X/waveform/stop/send below.
+    /// The composer itself grows into this shape — no second input box.
+    private var dictationCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(dictationText)
+                .font(.system(size: 17))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+
+            HStack(spacing: 8) {
+                dictateButton(action: onVoiceCancel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(dictationInk)
+                }
+                VoiceWaveformView(amplitude: dictationAmplitude)
+                    .frame(maxWidth: .infinity)
+                dictateButton(action: onVoiceFinish) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(dictationInk)
+                }
+                dictateButton(action: onVoiceSend, fill: dictationSendFill) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
+        }
+        .frame(height: 82)
+    }
+
+    private var dictationText: String {
+        if !draft.text.isEmpty { return draft.text }
+        if !dictationTranscript.isEmpty { return dictationTranscript }
+        return placeholder
+    }
+
+    private var dictationInk: Color {
+        Color(red: 19.0 / 255, green: 19.0 / 255, blue: 19.0 / 255)
+    }
+
+    private var dictationControlFill: Color {
+        Color(red: 240.0 / 255, green: 239.0 / 255, blue: 236.0 / 255)
+    }
+
+    private var dictationSendFill: Color {
+        Color(red: 198.0 / 255, green: 96.0 / 255, blue: 63.0 / 255)
+    }
+
+    private func dictateButton<Label: View>(action: @escaping () -> Void,
+                                            fill: Color? = nil,
+                                            @ViewBuilder label: () -> Label) -> some View {
+        Button(action: action) {
+            label()
+                .frame(width: 36, height: 36)
+                .background(fill ?? dictationControlFill, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// Idle composer with nothing sendable: the accent key wears the official

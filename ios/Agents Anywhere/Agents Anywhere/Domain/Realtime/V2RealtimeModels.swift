@@ -78,6 +78,8 @@ nonisolated struct V2DashboardNotification: Decodable, Hashable, Identifiable {
 
 nonisolated struct V2DashboardNotificationsResponse: Decodable, Hashable {
     let notifications: [V2DashboardNotification]
+    /// Present on servers that moved the background keep-alive decision here.
+    let sessions: [V2SessionMeta]?
     let serverTime: String
 }
 

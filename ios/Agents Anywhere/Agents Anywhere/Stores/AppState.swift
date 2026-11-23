@@ -846,10 +846,9 @@ final class AppState {
     private func applyDashboardSnapshot(_ snapshot: V2DashboardSnapshot) {
         cachedServices?.dashboardRepository.apply(snapshot)
         NotificationService.shared.handle(snapshot: snapshot)
-        evaluateBackgroundKeepAlive(snapshot)
     }
 
-    private func startNotificationPolling(services: V2ClientServices) {
+    private func startNotificationLongPolling(services: V2ClientServices) {
         guard NotificationSettings.isEnabled else { return }
         notificationPollTask?.cancel()
         notificationPollTask = Task { @MainActor [weak self] in
@@ -857,22 +856,27 @@ final class AppState {
                 guard !Task.isCancelled, let self,
                       self.autoKeepAlive, self.isInBackground else { return }
                 do {
-                    let records = try await services.notificationAPI.notifications()
+                    // The server holds this up to 25 s and answers the moment
+                    // a record exists: delivery within a second, two requests
+                    // a minute. The shared session's 30 s request timeout
+                    // leaves margin; foregrounding cancels the held request.
+                    let response = try await services.notificationAPI.notifications(wait: 25)
+                    guard !Task.isCancelled, self.autoKeepAlive,
+                          self.isInBackground else { return }
                     ClientDiagnosticsLog.shared.record(
-                        kind: "notification.poll",
-                        detail: ["records": String(records.count)],
+                        kind: "notification.longpoll",
+                        detail: ["records": String(response.notifications.count)],
                         dedupe: false)
-                    NotificationService.shared.handle(records: records)
+                    NotificationService.shared.handle(records: response.notifications)
+                    self.evaluateKeepAlive(sessions: response.sessions ?? [])
                 } catch {
+                    if Task.isCancelled { return }
                     ClientDiagnosticsLog.shared.record(
-                        kind: "notification.poll",
+                        kind: "notification.longpoll",
                         detail: ["error": "1"],
                         dedupe: true)
+                    try? await Task.sleep(for: .seconds(1))
                 }
-                // 3 s: a turn can end between polls, and the old 10 s window
-                // let a foreground return cancel the fetch before it ran
-                // (pp 2026-11-23: turn ended 21:21:44.8, return 21:21:54.2).
-                try? await Task.sleep(for: .seconds(3))
             }
         }
     }
@@ -892,12 +896,12 @@ final class AppState {
                 }
                 guard !Task.isCancelled, self != nil else { return }
                 do {
-                    let records = try await services.notificationAPI.notifications()
+                    let response = try await services.notificationAPI.notifications()
                     ClientDiagnosticsLog.shared.record(
                         kind: "notification.catchup",
-                        detail: ["records": String(records.count)],
+                        detail: ["records": String(response.notifications.count)],
                         dedupe: false)
-                    NotificationService.shared.handle(records: records)
+                    NotificationService.shared.handle(records: response.notifications)
                 } catch {
                     ClientDiagnosticsLog.shared.record(
                         kind: "notification.catchup",
@@ -911,9 +915,11 @@ final class AppState {
     /// The ladder starts with the turn (while in front) and ends only at the
     /// true terminal state: idle with no background work. A turn that ends
     /// while a background agent runs keeps the window open for its wake turn.
-    private func evaluateBackgroundKeepAlive(_ snapshot: V2DashboardSnapshot) {
+    /// Statuses arrive with the long-poll response; the dashboard websocket is
+    /// closed in the background.
+    private func evaluateKeepAlive(sessions liveSessions: [V2SessionMeta]) {
         guard isInBackground else { return }
-        let hasLiveWork = snapshot.sessions.contains { session in
+        let hasLiveWork = liveSessions.contains { session in
             session.status.isTurnInFlight || (session.backgroundTasks ?? 0) > 0
         } || (cachedServices?.sessionRepository.hasPendingOutbound ?? false)
         if hasLiveWork {
@@ -924,18 +930,16 @@ final class AppState {
                   !KeepAliveCoordinator.shared.isOn else { return }
             KeepAliveCoordinator.shared.start()
             autoKeepAlive = true
-            if let services = cachedServices { startNotificationPolling(services: services) }
+            if let services = cachedServices { startNotificationLongPolling(services: services) }
         } else if autoKeepAlive, keepAliveStopTask == nil {
             keepAliveStopTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled, let self, self.autoKeepAlive,
                       self.isInBackground else { return }
-                let live = self.sessions.contains { session in
-                    session.status.isTurnInFlight
-                        || (session.backgroundTasks ?? 0) > 0
-                } || (self.cachedServices?.sessionRepository.hasPendingOutbound ?? false)
+                // A new turn cancels this task through the live branch of
+                // evaluateKeepAlive; the cached dashboard projection is stale
+                // in the background, so it must not re-check it here.
                 self.keepAliveStopTask = nil
-                guard !live else { return }
                 KeepAliveCoordinator.shared.stop()
                 self.autoKeepAlive = false
                 self.stopNotificationPolling()
@@ -968,16 +972,17 @@ final class AppState {
             let keepAlive = NotificationSettings.isEnabled
                 && NotificationSettings.keepAliveEnabled
                 && hasLiveWork
+            // The background reader makes its own decisions from the
+            // long-poll response; the dashboard websocket is foreground-only.
+            cancelDashboardUpdates()
             if keepAlive {
                 keepAliveStopTask?.cancel()
                 keepAliveStopTask = nil
                 KeepAliveCoordinator.shared.start()
                 autoKeepAlive = true
                 if let services = cachedServices {
-                    startNotificationPolling(services: services)
+                    startNotificationLongPolling(services: services)
                 }
-            } else {
-                cancelDashboardUpdates()
             }
             // Keep the conversation the user is watching on the wire alongside
             // the dashboard channel; every other session socket closes.

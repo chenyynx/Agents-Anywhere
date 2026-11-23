@@ -8,11 +8,18 @@ import Foundation
 nonisolated struct V2NotificationAPI {
     let transport: any HTTPTransport
 
-    func notifications() async throws -> [V2DashboardNotification] {
+    /// `wait > 0` asks the server to hold the request until a record appears
+    /// or the wait expires (long polling). The shared session's 30 s request
+    /// timeout leaves room for the server's 25 s cap.
+    func notifications(wait: Int = 0) async throws -> V2DashboardNotificationsResponse {
+        let query = wait > 0
+            ? [URLQueryItem(name: "wait", value: String(wait))]
+            : []
         let request = HTTPRequest<EmptyRequestBody, V2DashboardNotificationsResponse>(
             method: .get,
-            path: "/dashboard/notifications"
+            path: "/dashboard/notifications",
+            queryItems: query
         )
-        return try await transport.send(request).notifications
+        return try await transport.send(request)
     }
 }

@@ -29,6 +29,7 @@ struct DiagnosticsLogSettingsView: View {
     @State private var shareItems: [Any] = []
     @State private var showsShare = false
     @State private var confirmsClear = false
+    @State private var showsVoiceLab = false
 
     var body: some View {
         SettingsScreen(title: String(localized: "Diagnostics log")) {
@@ -84,6 +85,29 @@ struct DiagnosticsLogSettingsView: View {
                 .buttonStyle(.plain)
                 .disabled(days.isEmpty)
             }
+
+            SettingsSection(String(localized: "开发者")) {
+                Button { showsVoiceLab = true } label: {
+                    HStack(spacing: SettingsStyle.iconGap) {
+                        AppSymbol("anthropicon.voice", size: 18)
+                            .frame(width: SettingsStyle.iconFrame)
+                            .foregroundStyle(SettingsStyle.icon(colorScheme))
+                        Text(String(localized: "语音视觉实验室"))
+                            .font(SettingsStyle.text(16))
+                            .foregroundStyle(SettingsStyle.ink(colorScheme))
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+                    }
+                    .padding(.horizontal, SettingsStyle.rowPadding)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: SettingsStyle.rowMinHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.voiceLab")
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -126,6 +150,9 @@ struct DiagnosticsLogSettingsView: View {
         }
         .sheet(isPresented: $showsShare) {
             DiagnosticsShareSheet(items: shareItems)
+        }
+        .fullScreenCover(isPresented: $showsVoiceLab) {
+            VoiceLabView()
         }
     }
 

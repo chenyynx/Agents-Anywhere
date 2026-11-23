@@ -35,9 +35,7 @@ struct VoiceAmbientGlow: View {
 
     private func currentLevel(time: Double) -> Double {
         if let levelProvider {
-            let bands = levelProvider()
-            guard !bands.isEmpty else { return 0 }
-            return Double(min(max(bands.reduce(0, +) / Float(bands.count), 0), 1))
+            return Double(min(max(levelProvider(), 0), 1))
         }
         // Lab fallback so the preview still breathes without a microphone.
         return 0.30 + 0.18 * sin(time * 1.35)

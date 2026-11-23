@@ -24,26 +24,31 @@ struct VoiceVisualizerVaryings {
     float2 normalizedPosition;
 };
 
+struct VoiceVisualizerVertexIn {
+    float2 position [[attribute(0)]];
+};
+
 static inline float hash21(float2 p) {
     return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.546875);
 }
 
 vertex VoiceVisualizerVaryings voiceVisualizerVertexShader(
-    float2 position [[attribute(0)]],
+    VoiceVisualizerVertexIn in [[stage_in]],
     constant VoiceVisualizerUniforms &u [[buffer(1)]])
 {
     VoiceVisualizerVaryings out;
     // IR: modelView[0]*x + modelView[1]*y + modelView[3]
-    out.position = u.modelView * float4(position, 0.0, 1.0);
-    out.normalizedPosition = position * 0.5;
+    out.position = u.modelView * float4(in.position, 0.0, 1.0);
+    out.normalizedPosition = in.position * 0.5;
     return out;
 }
 
 fragment float4 voiceVisualizerFragmentShader(
-    float4 position [[position]],
-    float2 npos,                       // varying normalizedPosition
+    VoiceVisualizerVaryings in [[stage_in]],
     constant VoiceVisualizerUniforms &u [[buffer(1)]])
 {
+    float4 position = in.position;
+    float2 npos = in.normalizedPosition;
     // ---- radial falloff / edge ----
     float2 q = float2(npos.x / u.ovalRatio, npos.y);
     float  r = sqrt(dot(q, q));

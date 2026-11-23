@@ -119,13 +119,18 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
 
     // MARK: - UNUserNotificationCenterDelegate
 
-    /// Foreground: never banner on top of the app the user is already in; the
-    /// notification stays in Notification Center.
+    /// Show the banner in the foreground too (pp 2026-11-23): the completion
+    /// cue must not depend on whether the app happens to be in front when the
+    /// turn ends — a suppressed foreground banner reads as a lost notification.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        []
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.foreground",
+            detail: ["id": notification.request.identifier],
+            dedupe: false)
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(

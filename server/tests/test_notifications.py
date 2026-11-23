@@ -43,9 +43,25 @@ def test_idle_without_background_work_is_a_completion() -> None:
 
 
 def test_background_work_holds_the_completion() -> None:
-    """A turn that ends while an agent runs is not the final reply."""
+    """A turn that ends without text while an agent runs is not the final reply."""
 
     assert notification_kind(_session(backgroundTasks=1)) is None
+
+
+def test_text_reply_notifies_even_while_background_work_runs() -> None:
+    """A long background command must not swallow a reply the user can read."""
+
+    assert (
+        notification_kind(_session(backgroundTasks=1, assistantText=True))
+        == "completed"
+    )
+
+
+def test_no_text_turn_still_waits_for_its_wake_turn() -> None:
+    assert (
+        notification_kind(_session(backgroundTasks=1, assistantText=False))
+        is None
+    )
 
 
 def test_approval_ignores_background_work() -> None:

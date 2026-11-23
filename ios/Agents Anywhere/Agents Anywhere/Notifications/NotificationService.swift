@@ -43,7 +43,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     private let center = UNUserNotificationCenter.current()
     private var activated = false
     /// The session on screen, kept current by `AppState.setVisibleSession`.
-    var visibleSessionId: String?
+    private(set) var visibleSessionId: String?
+    /// Every record id this device has seen in a projection, with its session.
+    /// A record for the session on screen is consumed by id, so leaving the
+    /// app later cannot re-deliver a reply the user already read — the server
+    /// read marker is asynchronous and can still call it unread.
+    private var knownRecords: [String: String] = [:]
     /// Kept current by `AppState.setAppInBackground`. A record the foreground
     /// rules suppress is not posted at all (rather than posted and hidden):
     /// it stays unread on the server, so leaving the app lets the long poll
@@ -103,12 +108,21 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
             }
             return
         }
+        for record in records {
+            knownRecords[record.id] = record.sessionId
+        }
         let foreground = appInForeground
         for record in records {
             if foreground {
                 let isVisible = visibleSessionId.map { $0 == record.sessionId } ?? false
-                let allowed = NotificationSettings.foregroundEnabled && !isVisible
-                if !allowed {
+                if isVisible {
+                    // The reply is on screen. Consume the id: the server's
+                    // read marker may not have caught up, and the background
+                    // long poll must not deliver this record later.
+                    consume(record)
+                    continue
+                }
+                if !NotificationSettings.foregroundEnabled {
                     // Leave the id unposted: the record is still unread on the
                     // server, so the background long poll delivers it if the
                     // user leaves without reading. Dedupe keeps this log line
@@ -116,10 +130,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
                     ClientDiagnosticsLog.shared.record(
                         kind: "notification.deferred",
                         sessionID: record.sessionId,
-                        detail: [
-                            "id": record.id,
-                            "visible": isVisible ? "1" : "0",
-                        ],
+                        detail: ["id": record.id, "visible": "0"],
                         dedupe: true)
                     continue
                 }
@@ -128,10 +139,36 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         }
     }
 
+    /// The session on screen changed. Any record this device already knows for
+    /// it is consumed: the user has seen that conversation, so a later
+    /// background cannot surface it again.
+    func setVisibleSession(_ sessionId: String?) {
+        visibleSessionId = sessionId
+        guard let sessionId, appInForeground else { return }
+        for (id, owner) in knownRecords where owner == sessionId {
+            consume(id: id)
+        }
+    }
+
+    /// Records the id without scheduling anything: what it described is on
+    /// screen already.
+    private func consume(_ record: V2DashboardNotification) {
+        knownRecords[record.id] = record.sessionId
+        consume(id: record.id)
+    }
+
+    private func consume(id: String) {
+        guard !isPosted(id) else { return }
+        rememberPosted(id)
+        ClientDiagnosticsLog.shared.record(
+            kind: "notification.consumed",
+            sessionID: knownRecords[id],
+            detail: ["id": id, "reason": "visible"],
+            dedupe: true)
+    }
+
     private func post(_ record: V2DashboardNotification) {
-        let defaults = UserDefaults.standard
-        var posted = defaults.stringArray(forKey: Self.postedKey) ?? []
-        guard !posted.contains(record.id) else { return }
+        guard !isPosted(record.id) else { return }
 
         let content = UNMutableNotificationContent()
         content.title = record.title
@@ -150,16 +187,27 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         )
         center.add(request)
 
-        posted.append(record.id)
-        if posted.count > Self.postedLimit {
-            posted.removeFirst(posted.count - Self.postedLimit)
-        }
-        defaults.set(posted, forKey: Self.postedKey)
+        rememberPosted(record.id)
         ClientDiagnosticsLog.shared.record(
             kind: "notification.posted",
             sessionID: record.sessionId,
             detail: ["type": record.type, "id": record.id],
             dedupe: false)
+    }
+
+    private func isPosted(_ id: String) -> Bool {
+        (UserDefaults.standard.stringArray(forKey: Self.postedKey) ?? []).contains(id)
+    }
+
+    private func rememberPosted(_ id: String) {
+        let defaults = UserDefaults.standard
+        var posted = defaults.stringArray(forKey: Self.postedKey) ?? []
+        guard !posted.contains(id) else { return }
+        posted.append(id)
+        if posted.count > Self.postedLimit {
+            posted.removeFirst(posted.count - Self.postedLimit)
+        }
+        defaults.set(posted, forKey: Self.postedKey)
     }
 
     // MARK: - UNUserNotificationCenterDelegate

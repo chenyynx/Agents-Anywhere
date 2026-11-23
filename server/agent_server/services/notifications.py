@@ -10,9 +10,11 @@ Rules (kept in one place, mirrored by the client only as display logic):
 
 * ``waiting_approval`` — always notify.
 * ``error`` / ``blocked`` — always notify.
-* ``idle`` — notify only when ``backgroundTasks == 0``. A turn that ends while
-  a background agent/command still runs is not the final reply; the wake turn
-  that reports it produces the notification instead.
+* ``idle`` — notify when ``backgroundTasks == 0``, or when the finished turn
+  published assistant text (``assistantText``). A text reply is final for the
+  user even while unrelated background work still runs; a turn that ended
+  without text waits for its wake turn, which is what the old
+  ``backgroundTasks == 0`` gate was protecting against.
 * Unread is ``latestTurnEndSeq > lastReadSeq`` — the same fact the session
   list paints as a dot.
 """
@@ -76,7 +78,7 @@ def notification_kind(session: SessionView) -> str | None:
         return "error" if _is_recent(session.lastActivityAt or session.lastItemAt) else None
     if (
         session.status == "idle"
-        and background_tasks == 0
+        and (background_tasks == 0 or session.assistantText is True)
         and session.latestTurnEndSeq > session.lastReadSeq
         and _is_recent(session.lastActivityAt or session.lastItemAt)
     ):

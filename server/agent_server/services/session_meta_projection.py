@@ -26,6 +26,9 @@ async def project_session_meta_for_dashboard(
                 )
             except (TypeError, ValueError):
                 background_tasks = 0
+            assistant_text = runtime_state.metadata.get("assistantText")
+            if not isinstance(assistant_text, bool):
+                assistant_text = None
             projected = projected.model_copy(
                 update={
                     "externalSessionId": (
@@ -34,6 +37,7 @@ async def project_session_meta_for_dashboard(
                     ),
                     "status": runtime_state.status,
                     "backgroundTasks": background_tasks,
+                    "assistantText": assistant_text,
                 }
             )
         projected_sessions.append(projected)

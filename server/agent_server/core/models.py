@@ -836,6 +836,11 @@ class SessionView(BaseModel):
     # Live background work on the runtime (agents/commands). A turn that ends
     # while this is above zero is not the conversation's final state.
     backgroundTasks: int = 0
+    # Whether the finished turn published assistant text (Claude reports it in
+    # its terminal state metadata). A text reply is final for the user even
+    # while unrelated background work still runs; a no-text turn waits for its
+    # wake turn. None on runtimes that do not report the fact.
+    assistantText: bool | None = None
     takeover: bool
     pinned: bool = False
     pinnedAt: str | None = None

@@ -248,27 +248,43 @@ struct ChatComposer: View {
     /// The send/queue/stop key the bar draws. Display only: the overlay
     /// `sendKeyMenu` above it owns the tap and the long press.
     private var sendKey: some View {
-        // Voice glyph 21, not 15: same scaled-metric compensation as the mic
-        // — official waveform ink is 18x18 pt (2026-11-20).
-        AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
-                  size: showsVoiceKey ? 21 : accentSymbolSize)
-            .contentTransition(.symbolEffect(.replace))
-            // Official stop key: neutral chrome (light #F0EFEC / dark white
-            // 8%) with a black text100 square — only the send key wears the
-            // accent fill. The voice key is solid black with white glyph.
-            .foregroundStyle(showsVoiceKey
-                ? AnyShapeStyle(Color.white)
-                : AnyShapeStyle(isStopState
-                    ? AppTheme.composerControlGlyph(colorScheme)
-                    : sendGlyph))
-            .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-            .background((showsVoiceKey
-                ? Color.black
-                : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
-                .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42), in: Circle())
-            .frame(width: controls.touchTarget, height: controls.touchTarget)
-            .contentShape(Circle())
-            .animation(.snappy(duration: 0.2), value: showsVoiceKey)
+        Group {
+            if isDictating {
+                // Dictation always sends: the running session's stop/queue
+                // affordance must not turn this into a second stop square.
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+                    .background(sendFill, in: Circle())
+                    .frame(width: controls.touchTarget, height: controls.touchTarget)
+                    .contentShape(Circle())
+                    .opacity(draft.hasSendableContent ? 1 : 0.5)
+            } else {
+                // Voice glyph 21, not 15: same scaled-metric compensation as
+                // the mic — official waveform ink is 18x18 pt (2026-11-20).
+                AppSymbol(showsVoiceKey ? "anthropicon.voice" : accentSymbol,
+                          size: showsVoiceKey ? 21 : accentSymbolSize)
+                    .contentTransition(.symbolEffect(.replace))
+                    // Official stop key: neutral chrome with a black square —
+                    // only the send key wears the accent fill. The voice key
+                    // is solid black with a white glyph.
+                    .foregroundStyle(showsVoiceKey
+                        ? AnyShapeStyle(Color.white)
+                        : AnyShapeStyle(isStopState
+                            ? AppTheme.composerControlGlyph(colorScheme)
+                            : sendGlyph))
+                    .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+                    .background((showsVoiceKey
+                        ? Color.black
+                        : (isStopState ? AppTheme.composerControlFill(colorScheme) : sendFill))
+                        .opacity(showsVoiceKey || (sendEnabled && !isBusy) ? 1 : 0.42),
+                        in: Circle())
+                    .frame(width: controls.touchTarget, height: controls.touchTarget)
+                    .contentShape(Circle())
+                    .animation(.snappy(duration: 0.2), value: showsVoiceKey)
+            }
+        }
     }
 
     /// The native menu the long press opens, anchored back onto the key.

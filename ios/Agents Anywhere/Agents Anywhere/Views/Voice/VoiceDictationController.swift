@@ -171,11 +171,14 @@ final class VoiceDictationController: ObservableObject {
         }
         let rms = sqrtf(sum / Float(count))
         let db = 20 * log10f(max(rms, 1e-7))
-        let raw = min(max((db + 50) / 45, 0), 1)
-        let follow: Float = raw > smoothedLevel ? 0.55 : 0.18
+        // -50…-10 dBFS → 0…1 covers normal speech with a visible range.
+        let raw = min(max((db + 50) / 40, 0), 1)
+        let follow: Float = raw > smoothedLevel ? 0.8 : 0.35
         smoothedLevel += (raw - smoothedLevel) * follow
         // Noise floor: a silent room must not make the waveform twitch.
-        let level: Float = smoothedLevel < 0.06 ? 0 : smoothedLevel
+        let gated: Float = smoothedLevel < 0.06 ? 0 : smoothedLevel
+        // Gamma lifts the quiet half so syllables read as rhythm.
+        let level: Float = gated == 0 ? 0 : powf(gated, 0.7)
         if level > 0.05 { lastSoundAt = Date() }
 
         let now = Date().timeIntervalSinceReferenceDate

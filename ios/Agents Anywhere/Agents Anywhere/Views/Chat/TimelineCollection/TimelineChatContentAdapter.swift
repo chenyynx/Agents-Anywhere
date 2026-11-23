@@ -291,6 +291,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// Last gate snapshot written by `recordFooterGateProbe`; the probe only
     /// logs a change.
     private var lastFooterGateProbe: String?
+    /// Last `timeline.turn.footer.build` line; the probe only logs a change.
+    private var lastFooterBuildProbe: String?
+    /// Rows that were once seen as background dispatches while they stayed in
+    /// the window. The claim is not stable on the wire: a card rebuilt from
+    /// the transcript (or re-minted after a connector restart lost its
+    /// in-memory task overlay) carries no `agents[*].isBackgrounded`, and the
+    /// transcript's tool input may omit `runInBackground`; without this memory
+    /// the exemption flips back and a still-running card counts as activity,
+    /// withholding the finished turn's footer (pp 2026-11-24, sess_2zXT:
+    /// four background agents, footer absent for ~1 min until a later
+    /// publication carried the flag again). Monotonic for the row's window
+    /// life; pruned when the row leaves the window.
+    private var backgroundDispatchedItemIDs: Set<String> = []
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -316,23 +329,23 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                                        latestUserRowID: String?,
                                        latestUserOrder: Int?,
                                        groups: [ChatTimelineGroup],
-                                       gateLiveUserTurn: Bool) {
+                                       gateLiveUserTurn: Bool,
+                                       latchedBackgroundIDs: Set<String>) {
         let status = model.session.runtime.state?.status.rawValue ?? "nil"
-        // The resolution reads these rows only while a send awaits its echo;
-        // scanning in any other state would cost a full window walk per
-        // refresh for a decision the gate is not making. `ignored` names the
-        // exempt active row (background hand-off / compaction) that `active`
-        // cannot show — the 2026-11-23 fork stayed `running` yet sat in
-        // neither list before this field existed.
-        let sendWindow = pendingID != nil && !pendingHasEcho
-        let activeIDs: [String] = sendWindow
-            ? TimelineTurnActions.liveActivityRowIDs(
-                groups: groups, latestUserRowID: latestUserRowID)
-            : []
-        let ignoredIDs: [String] = sendWindow
-            ? TimelineTurnActions.ignoredActivityRowIDs(
-                groups: groups, latestUserRowID: latestUserRowID)
-            : []
+        // `ignored` names the exempt active row (background hand-off /
+        // sub-agent child / compaction) that `active` cannot show — the
+        // 2026-11-23 fork stayed `running` yet sat in neither list before
+        // this field existed. Both
+        // lists are collected on every refresh, not only in a send window:
+        // the 2026-11-24 missing footer was decided outside one, and without
+        // the ids the log could only say "suppressed". The walk is bounded by
+        // the groups after the last visible user bubble.
+        let activeIDs = TimelineTurnActions.liveActivityRowIDs(
+            groups: groups, latestUserRowID: latestUserRowID,
+            latchedBackgroundIDs: latchedBackgroundIDs)
+        let ignoredIDs = TimelineTurnActions.ignoredActivityRowIDs(
+            groups: groups, latestUserRowID: latestUserRowID,
+            latchedBackgroundIDs: latchedBackgroundIDs)
         let probe = [
             "suppress=\(suppressLatest ? 1 : 0)",
             "gate=\(gateLiveUserTurn ? 1 : 0)",
@@ -354,6 +367,67 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         lastFooterGateProbe = probe
         ClientDiagnosticsLog.shared.record(
             kind: "timeline.footer.gate",
+            sessionID: model.session.id,
+            detail: ["state": probe],
+            dedupe: false)
+    }
+
+    /// The footer build's own decision, one line per change (pp 2026-11-24).
+    ///
+    /// The gate probe names `suppressLatest`' inputs, but a footer can also be
+    /// withheld by `build`'s activity gate (`hasActiveItems`) while the state
+    /// looks trustworthy — the 2026-11-24 report had three refreshes with
+    /// `suppress=0` and no footer, and the log could not name the blocking
+    /// row. This line carries the coverage numbers that decide
+    /// `runtimeStateKnown`, the active row ids, the host the bucket would have
+    /// used, and whether the final commit wrote. Low frequency: only a change
+    /// is recorded.
+    private func noteFooterBuildReport(_ report: TimelineTurnActions.FooterBuildReport,
+                                       suppressLatest: Bool,
+                                       latestTurnOpen: Bool,
+                                       coverage: TimelineTurnActions.FooterStateCoverage,
+                                       stateExists: Bool,
+                                       runtimeStateSeq: Int,
+                                       connection: V2SessionConnectionState) {
+        // The change key deliberately omits the raw sequence numbers: a
+        // background subagent bumps `anyMax` on every child-row publish, and
+        // including it would turn this "one line per change" probe into a
+        // stream. The numbers still ride the written line, so the moment a
+        // decision changes has the exact coverage that produced it.
+        // `failed(String)` carries an associated message; the packed `state=`
+        // value is split on spaces, so only the stable case label goes in.
+        let connectionLabel: String = {
+            switch connection {
+            case .inactive: return "inactive"
+            case .connecting: return "connecting"
+            case .connected: return "connected"
+            case .reconnecting: return "reconnecting"
+            case .offline: return "offline"
+            case .failed: return "failed"
+            }
+        }()
+        let decision = [
+            "suppress=\(suppressLatest ? 1 : 0)",
+            "gate=\(latestTurnOpen ? 1 : 0)",
+            "running=\(model.isRunning ? 1 : 0)",
+            "newer=\(model.session.hasNewerItems ? 1 : 0)",
+            "fresh=\(model.session.runtime.isFresh ? 1 : 0)",
+            "conn=\(connectionLabel)",
+            "hasState=\(stateExists ? 1 : 0)",
+            "coversMain=\(coverage.coversMainRows ? 1 : 0)",
+            "active=\(report.activeItemIDs.joined(separator: ","))",
+            "hasActive=\(report.hasActiveItems ? 1 : 0)",
+            "end=\(report.endGroupID ?? "nil")",
+            "replies=\(report.replyCount)",
+            "changes=\(report.changeCount)",
+            "commit=\(report.committed ? 1 : 0)",
+        ].joined(separator: " ")
+        guard decision != lastFooterBuildProbe else { return }
+        lastFooterBuildProbe = decision
+        let probe = decision + " stateSeq=\(runtimeStateSeq)"
+            + " mainMax=\(coverage.maxMainSeq) anyMax=\(coverage.maxAnySeq)"
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.turn.footer.build",
             sessionID: model.session.id,
             detail: ["state": probe],
             dedupe: false)
@@ -2400,6 +2474,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             $0.value.startsVisibleTurn
         })
         let latestUserRowID = latestUserRow?.id
+        // A background dispatch can lose its flag on a later publication (a
+        // transcript rebuild, or a card re-minted after a connector restart
+        // lost its in-memory task overlay). Remember every row that ever
+        // proved it was a background hand-off for as long as it stays in the
+        // window, so the exemption cannot flip back and turn a still-running
+        // card into "activity" (pp 2026-11-24, sess_2zXT: the finished turn's
+        // footer stayed hidden for ~1 min with four background agents, then
+        // returned when a later publication carried the flag again). The fold
+        // is a pure function so `swift test` covers its wiring; the adapter
+        // itself is outside the ClientCore target.
+        backgroundDispatchedItemIDs = TimelineTurnActions.footerBackgroundLatch(
+            existing: backgroundDispatchedItemIDs,
+            rows: model.timeline.rows.lazy.map(\.value))
         // A pending bubble whose echo row is already in the timeline is no
         // longer opening a new turn; it must not force the previous turn's
         // commit or the new turn's footer.
@@ -2451,16 +2538,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         }()
         let runtimeState = model.session.runtime.state
         // A stale state still seals when it was written after the newest
-        // cached row; a row newer than the state is activity it never saw.
-        // This is the normal session-switch case: the finished turn's footer
-        // stays immediate, and only a turn that streamed after the state waits
-        // for the live read (pp 2026-11-24: every switch paid the 1–2 s wait).
-        let stateCoversRows: Bool = {
-            guard let runtimeState, !model.session.runtime.isFresh else { return true }
-            return model.timeline.rows.allSatisfy {
-                $0.value.updatedSeq <= runtimeState.updatedSeq
-            }
-        }()
+        // *main-agent* row; a main row newer than the state is activity it
+        // never saw. Sub-agent child rows are excluded: a background child
+        // keeps streaming after the main turn's idle state, so counting them
+        // made every switch into a session with background subagents pay the
+        // 1–2 s live-read wait again (pp 2026-11-24: the footer stayed hidden
+        // until the sync, and the only rows newer than the idle state were
+        // child rows of the four background agents).
+        let coverage = TimelineTurnActions.footerStateCoverage(
+            rows: model.timeline.rows.lazy.map(\.value),
+            stateSeq: runtimeState?.updatedSeq ?? 0)
+        // `footerRuntimeStateIsTrustworthy` already handles the missing state
+        // and the fresh state; only the stale-state coverage decision lives
+        // here.
+        let stateCoversRows = coverage.coversMainRows
         let runtimeStateKnown = TimelineTurnActions.footerRuntimeStateIsTrustworthy(
             stateExists: runtimeState != nil,
             isFresh: model.session.runtime.isFresh,
@@ -2475,7 +2566,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             isLiveUserTurn: turnFooterGate.isLiveUserTurn,
             hasUnEchoedPending: submittingPendingID != nil && !submittingPendingHasEcho,
             latestUserRowID: latestUserRowID,
-            groups: groups)
+            groups: groups,
+            latchedBackgroundIDs: backgroundDispatchedItemIDs)
         recordFooterGateProbe(suppressLatest: suppressLatest,
                               pendingID: submittingPendingID,
                               pendingHasEcho: submittingPendingHasEcho,
@@ -2483,7 +2575,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               latestUserRowID: latestUserRowID,
                               latestUserOrder: latestUserRow?.value.orderSeq,
                               groups: groups,
-                              gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
+                              gateLiveUserTurn: turnFooterGate.isLiveUserTurn,
+                              latchedBackgroundIDs: backgroundDispatchedItemIDs)
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2508,11 +2601,28 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // bubble-only split; history still splits, or the same wake-up
             // turn re-merges on every send (same day 11:09–11:25).
             liveTurnGroupID: liveTurnGroupID,
+            // Once a card proved it was a background dispatch, a later
+            // rewrite that drops the flag must not turn it back into activity
+            // (see `backgroundDispatchedItemIDs`).
+            latchedBackgroundIDs: backgroundDispatchedItemIDs,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
-            footerHostEligible: { stepGroupsByID[$0.id] == nil })
+            footerHostEligible: { stepGroupsByID[$0.id] == nil },
+            report: { report in
+                // One line per change: the decision inputs plus what the last
+                // bucket actually held. With the gate probe it turns a missing
+                // footer into a diagnosis instead of a row-count guess.
+                self.noteFooterBuildReport(
+                    report,
+                    suppressLatest: suppressLatest,
+                    latestTurnOpen: latestTurnOpen,
+                    coverage: coverage,
+                    stateExists: runtimeState != nil,
+                    runtimeStateSeq: runtimeState?.updatedSeq ?? 0,
+                    connection: model.session.connection)
+            })
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is
         // already finished, so the closed state's footers stay. Browsing an

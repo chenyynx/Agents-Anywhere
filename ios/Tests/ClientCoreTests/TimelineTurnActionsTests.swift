@@ -2,8 +2,8 @@ import Testing
 @testable import ClientCore
 
 @Suite @MainActor struct TimelineTurnActionsTests {
-    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done", turnId: String? = nil) throws -> ChatTimelineRowModel {
-        var value = try itemObject(id: id, text: text)
+    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done", turnId: String? = nil, seq: Int = 10) throws -> ChatTimelineRowModel {
+        var value = try itemObject(id: id, seq: seq, text: text)
         value["type"] = type; value["role"] = role; value["status"] = status
         if let turnId {
             var source = value["source"] as? [String: Any] ?? [:]
@@ -533,6 +533,219 @@ import Testing
             })
         #expect(actions["first"]?.copyText == "First answer")
         #expect(actions.count == 1)
+    }
+
+    /// A background subagent's child rows keep streaming after the main
+    /// turn's idle state (pp 2026-11-24: four agents kept publishing child
+    /// rows for the whole minute after the main reply). They belong to the
+    /// child's own run and must not veto the state's coverage; counting them
+    /// made every switch into such a session wait for a live read instead of
+    /// sealing the finished turn immediately.
+    @Test func aSubAgentChildRowNewerThanTheStateDoesNotBlockTheSeal() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message", role: "user"),
+                        timelineItem("reply", seq: 120, type: "message",
+                                     role: "assistant", status: "done"),
+                        timelineItem("child", seq: 900, type: "tool",
+                                     role: "assistant", parent: "task")]
+        let coverage = TimelineTurnActions.footerStateCoverage(rows: rows, stateSeq: 200)
+        #expect(coverage.maxMainSeq == 120)
+        #expect(coverage.maxAnySeq == 900)
+        #expect(coverage.coversMainRows)
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false,
+            stateCoversRows: coverage.coversMainRows))
+    }
+
+    /// A main-agent row newer than the stale state is activity it never saw
+    /// (the final reply can land after the idle frame): the seal keeps
+    /// waiting, exactly as the 2026-11-23 rule requires. This is the guard in
+    /// the other direction — it passes on the old all-rows rule too, so it
+    /// proves "not too permissive", not that the main-row narrowing works.
+    @Test func aMainRowNewerThanTheStateStillBlocksTheSeal() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message", role: "user"),
+                        timelineItem("reply", seq: 900, type: "message",
+                                     role: "assistant", status: "done")]
+        let coverage = TimelineTurnActions.footerStateCoverage(rows: rows, stateSeq: 200)
+        #expect(coverage.maxMainSeq == 900)
+        #expect(!coverage.coversMainRows)
+        #expect(!TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false,
+            stateCoversRows: coverage.coversMainRows))
+    }
+
+    /// Once a card proved it was a background dispatch, a later rebuild that
+    /// drops the flag (a transcript re-projection, or a card re-minted after a
+    /// connector restart lost its in-memory task overlay) must not turn the
+    /// still-running card back into activity: the latch keeps the exemption
+    /// and the finished turn keeps its footer (pp 2026-11-24: footer absent
+    /// ~1 min with four background agents, back only when a later publication
+    /// carried the flag again).
+    @Test func aLatchedBackgroundCardStaysExemptAfterTheWireDropsTheFlag() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke",
+                                          "agents": ["agent-1": ["status": "running"]]],
+                                status: "running", turnId: "t1")]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let hostEligible: (ChatTimelineGroup) -> Bool = { group in
+            !group.rows.contains { $0.structure.type == .tool }
+        }
+        // Without the latch the flagless card is activity and withholds the
+        // footer.
+        let unlatched = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false, footerHostEligible: hostEligible)
+        #expect(unlatched.isEmpty)
+        // The latch keeps the exemption after the flag disappears.
+        let latched = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latchedBackgroundIDs: ["task"], footerHostEligible: hostEligible)
+        #expect(latched["first"]?.copyText == "First answer")
+        #expect(latched.count == 1)
+        // The same latch feeds the live-group resolution and both probes; a
+        // flagless running card otherwise parks the group on the old bubble
+        // (2026-11-23 06:38) and reads as activity in diagnostics.
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: groups) == "user")
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: groups,
+            latchedBackgroundIDs: ["task"]) == nil)
+        #expect(TimelineTurnActions.liveActivityRowIDs(
+            groups: groups, latestUserRowID: "user") == ["task"])
+        #expect(TimelineTurnActions.liveActivityRowIDs(
+            groups: groups, latestUserRowID: "user",
+            latchedBackgroundIDs: ["task"]).isEmpty)
+        #expect(TimelineTurnActions.ignoredActivityRowIDs(
+            groups: groups, latestUserRowID: "user",
+            latchedBackgroundIDs: ["task"]) == ["task"])
+    }
+
+    /// The latch fold the adapter runs each refresh: active rows that prove a
+    /// background hand-off join it, rows that left the window are pruned, and
+    /// a flagless running card does not join.
+    @Test func theBackgroundLatchKeepsClaimsAndPrunesRowsThatLeftTheWindow() throws {
+        let claiming = try timelineItem(
+            "card", seq: 10, type: "tool", role: "assistant", status: "running",
+            content: ["kind": "agent_call", "action": "invoke",
+                      "agents": ["agent-1": ["status": "running",
+                                             "isBackgrounded": true]]])
+        let flagless = try timelineItem(
+            "flagless", seq: 11, type: "tool", role: "assistant", status: "running",
+            content: ["kind": "agent_call", "action": "invoke"])
+        // A terminal card keeps its claim only while the row still exists; a
+        // done row must not mint a new one either.
+        let doneClaim = try timelineItem(
+            "done-card", seq: 12, type: "tool", role: "assistant", status: "done",
+            content: ["kind": "agent_call", "action": "invoke",
+                      "agents": ["agent-2": ["status": "completed",
+                                             "isBackgrounded": true]]])
+        // `kept` is still in the window but its current revision lost the
+        // flag: the old claim must survive (the keep branch). The first claim
+        // has to come from the insert path, and `left-the-window` must be
+        // pruned.
+        let kept = try timelineItem(
+            "kept", seq: 9, type: "tool", role: "assistant", status: "running",
+            content: ["kind": "agent_call", "action": "invoke"])
+        let latched = TimelineTurnActions.footerBackgroundLatch(
+            existing: ["kept", "left-the-window"],
+            rows: [claiming, flagless, doneClaim, kept])
+        #expect(latched == ["card", "kept"])
+    }
+
+    /// The child-row exemption must not become "nothing blocks": a foreground
+    /// Agent card (parent nil) keeps suppressing the finished turn's footer
+    /// while it runs, even next to an active child interaction anchor, and it
+    /// still parks the live group on a queued send.
+    @Test func aForegroundAgentCardStillSuppressesNextToAnActiveChildAnchor() throws {
+        let card = try toolRow("task",
+                               content: ["kind": "agent_call", "action": "invoke"],
+                               status: "running", turnId: "t1")
+        var child = try itemObject(id: "question")
+        child["type"] = "tool"; child["role"] = "assistant"; child["status"] = "waiting_approval"
+        child["content"] = ["kind": "tool_call", "parentItemId": "task",
+                            "title": "Approve?"]
+        let anchor = ChatTimelineRowModel(try decode(child))
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        card, anchor]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: ["question"])
+        let actions = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            })
+        #expect(actions.isEmpty)
+        #expect(TimelineTurnActions.resolveLiveTurnGroupID(
+            isLiveUserTurn: true, hasUnEchoedPending: true,
+            latestUserRowID: "user", groups: groups) == "user")
+    }
+
+    /// The grouping keeps exactly one kind of sub-agent child row on purpose:
+    /// an interaction anchor (an approval/question card docks to it). It is
+    /// the child's activity, not the main turn's — a pending card on a
+    /// background subagent must not withhold the finished main turn's footer
+    /// (review of the 2026-11-24 fix: this is the one child row `build` sees).
+    @Test func aSubAgentChildInteractionAnchorDoesNotCountAsMainActivity() throws {
+        var child = try itemObject(id: "question")
+        child["type"] = "tool"; child["role"] = "assistant"; child["status"] = "waiting_approval"
+        child["content"] = ["kind": "tool_call", "parentItemId": "task",
+                            "title": "Approve?"]
+        let anchor = ChatTimelineRowModel(try decode(child))
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("reply", text: "First answer", turnId: "t1"),
+                        anchor]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: ["question"])
+        #expect(groups.contains { group in group.rows.contains { $0.id == "question" } })
+        #expect(TimelineTurnActions.liveActivityRowIDs(
+            groups: groups, latestUserRowID: "user").isEmpty)
+        #expect(TimelineTurnActions.ignoredActivityRowIDs(
+            groups: groups, latestUserRowID: "user") == ["question"])
+        // The anchor group is itself an eligible host, so the footer may land
+        // on it; what matters is that the child row did not withhold it.
+        let actions = TimelineTurnActions.build(groups: groups, suppressLatest: false)
+        #expect(actions.count == 1)
+        #expect(actions.values.first?.copyText == "First answer")
+    }
+
+    /// The diagnostics report names the row that withheld the footer, so a
+    /// device log with `suppress=0` and no footer (the 2026-11-24 report had
+    /// three such refreshes) is diagnosed in one line instead of guessed from
+    /// row counts.
+    @Test func theBuildReportNamesTheActiveRowThatWithheldTheFooter() throws {
+        let rows = try [row("user", role: "user", text: "Question", turnId: "t1"),
+                        row("first", text: "First answer", turnId: "t1"),
+                        toolRow("task",
+                                content: ["kind": "agent_call", "action": "invoke"],
+                                status: "running", turnId: "t1")]
+        var captured: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: false,
+            footerHostEligible: { group in
+                !group.rows.contains { $0.structure.type == .tool }
+            },
+            report: { captured = $0 })
+        #expect(captured?.hasActiveItems == true)
+        #expect(captured?.activeItemIDs == ["task"])
+        #expect(captured?.endGroupID == "first")
+        #expect(captured?.replyCount == 1)
+        #expect(captured?.committed == false)
+    }
+
+    /// A bare timeline item for the coverage tests: `seq` is the item's
+    /// `updatedSeq`, the number the runtime state is compared against.
+    private func timelineItem(_ id: String, seq: Int, type: String, role: String,
+                              status: String = "running",
+                              parent: String? = nil,
+                              content: [String: Any]? = nil) throws -> V2TimelineItem {
+        var value = try itemObject(id: id, seq: seq, text: "")
+        value["type"] = type; value["role"] = role; value["status"] = status
+        var payload: [String: Any] = content ?? ["kind": "command", "command": "ls"]
+        if let parent { payload["parentItemId"] = parent }
+        value["content"] = payload
+        return try decode(value)
     }
 
     /// 后台命令（runInBackground，比如监控）与后台子代理同等对待。

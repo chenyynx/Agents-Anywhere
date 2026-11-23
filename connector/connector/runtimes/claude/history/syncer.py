@@ -287,6 +287,22 @@ class ClaudeHistorySyncer:
             message for message in sync_messages if id(message) in visible_ids
         )
         live_session = self.session_store.get(session_id, external_session_id)
+        # Steers the runtime queued but has not read yet. The transcript scan
+        # runs between the prompt's turn end and the queued steer's own turn,
+        # so it sees the message before the live echo does; typing it as a
+        # user prompt opened a turn the client never had, and the echo's
+        # correction retracted the finished turn's footer (pp 2026-11-23).
+        # The copy is a C-level `frozenset` with no await inside, so a steer
+        # taken by a concurrently starting turn cannot tear it. The
+        # active-execution check above is an entry gate, not a lock: a turn
+        # can start during the history read, and then this set is empty. The
+        # persisted binding flag still identifies that row (review
+        # 2026-11-23).
+        steering_native_ids = (
+            frozenset(live_session.pending_steers)
+            if live_session is not None
+            else frozenset()
+        )
         session = _history_session(
             session_id,
             external_session_id,
@@ -361,6 +377,7 @@ class ClaudeHistorySyncer:
                 if not rebased and previous_cursor is not None
                 else None
             ),
+            steering_native_ids=steering_native_ids,
         )
         items = _rekey_turn_result_text(
             items, self.turn_result_text_items, session_id

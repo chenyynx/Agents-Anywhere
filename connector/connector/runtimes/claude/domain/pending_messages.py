@@ -28,6 +28,11 @@ class ClaudeClientMessageBinding:
     text: str
     attachments: tuple[Mapping[str, object], ...] = ()
     native_message_id: str | None = None
+    #: The message was submitted as a steer. Persisted with the binding so a
+    #: history rebase after the steer was read (``pending_steers`` no longer
+    #: knows it) still publishes the row as ``steeringUserMessage`` instead
+    #: of flipping it back to an ordinary user prompt (review 2026-11-23).
+    steering: bool = False
 
 
 class ClaudePendingClientMessageRegistry:
@@ -58,8 +63,13 @@ class ClaudePendingClientMessageRegistry:
         platform_item_id: str,
         text: str,
         attachments: tuple[Mapping[str, object], ...],
+        steering: bool = False,
     ) -> None:
-        """Record a live platform message until Claude exposes its native UUID."""
+        """Record a live platform message until Claude exposes its native UUID.
+
+        ``steering`` marks a steer: the history projection keeps that type
+        even after the steer is read and its live registration is gone.
+        """
 
         if not client_message_id:
             return
@@ -83,6 +93,7 @@ class ClaudePendingClientMessageRegistry:
                 platform_item_id=platform_item_id,
                 text=text,
                 attachments=tuple(dict(attachment) for attachment in attachments),
+                steering=steering,
             )
         )
         self.trim_pending(session_id=session_id)
@@ -309,6 +320,7 @@ class ClaudePendingClientMessageRegistry:
         platform_item_id: str,
         text: str,
         attachments: tuple[Mapping[str, object], ...] = (),
+        steering: bool = False,
     ) -> bool:
         """Record a native-to-platform bridge for a message without a client id.
 
@@ -316,7 +328,8 @@ class ClaudePendingClientMessageRegistry:
         arrives. When the message carries no client message id there is no
         pending binding to promote, so this bridge keeps history projection
         reusing the live item id instead of deriving a second one from the
-        replayed UUID.
+        replayed UUID. ``steering`` carries the same type memory a pending
+        steer's binding has, for a steer submitted without a client id.
         """
 
         self.load_external_session(external_session_id)
@@ -328,6 +341,7 @@ class ClaudePendingClientMessageRegistry:
             native_message_id=native_message_id,
             text=text,
             attachments=tuple(dict(attachment) for attachment in attachments),
+            steering=steering,
         )
         self._matched = [
             existing
@@ -529,6 +543,7 @@ def binding_to_mapping(binding: ClaudeClientMessageBinding) -> dict[str, Any]:
         "nativeMessageId": binding.native_message_id,
         "text": binding.text,
         "attachments": [dict(attachment) for attachment in binding.attachments],
+        "steering": binding.steering,
     }
 
 
@@ -558,6 +573,7 @@ def bindings_from_value(value: Any) -> tuple[ClaudeClientMessageBinding, ...]:
                 native_message_id=string_value(item.get("nativeMessageId")),
                 text=text,
                 attachments=attachments_from_value(item.get("attachments")),
+                steering=item.get("steering") is True,
             )
         )
     return tuple(bindings)

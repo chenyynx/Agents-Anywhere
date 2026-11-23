@@ -733,6 +733,7 @@ def _syncer(
     host: _SyncStateHost,
     sdk: _CompactHistorySdk,
     pending_messages: ClaudePendingClientMessageRegistry | None = None,
+    session_store: ClaudeSessionStore | None = None,
 ) -> ClaudeHistorySyncer:
     return ClaudeHistorySyncer(
         config=RuntimeConfig(
@@ -741,7 +742,9 @@ def _syncer(
             values={"environment": {}},
         ),
         host=host,
-        session_store=ClaudeSessionStore({}),
+        session_store=(
+            ClaudeSessionStore({}) if session_store is None else session_store
+        ),
         sdk_loader=lambda: sdk,
         cursor_store=ClaudeHistoryCursorStore(host),
         sync_states=ClaudeSessionSyncStateStore(host),

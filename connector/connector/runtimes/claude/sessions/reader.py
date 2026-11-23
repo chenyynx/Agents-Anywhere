@@ -761,6 +761,7 @@ def _history_items_from_messages(
     window_origin_uuid: str | None = None,
     turn_ids: Mapping[str, str] | None = None,
     interrupted_turns: set[str] | None = None,
+    steering_native_ids: frozenset[str] = frozenset(),
 ) -> tuple[RuntimeTimelineItem, ...]:
     """Project one transcript window into timeline items.
 
@@ -773,6 +774,13 @@ def _history_items_from_messages(
     incremental window can contain a stopped turn's last row without its
     marker; without this set the row would be republished unstamped and a
     concurrent live stamp would be lost.
+
+    ``steering_native_ids`` names the transcript user messages whose row is a
+    steer still queued for its turn (``ClaudeSession.pending_steers``). They
+    publish as ``steeringUserMessage`` so the history scan and the live echo
+    agree on the row's type; publishing one as an ordinary user prompt opened
+    a turn the client never had, and the live correction retracted the
+    finished turn's footer (pp 2026-11-23, session `sess_RRBf0biiw2g6WQ`).
     """
 
     if raw_scan is None and raw_lines:
@@ -887,14 +895,29 @@ def _history_items_from_messages(
             )
         )
         if keep_message_item:
+            # A steer the runtime wrote into the transcript: either still
+            # queued (`steering_native_ids`) or already read, in which case
+            # the persisted client-message binding remembers that it was a
+            # steer. The live echo publishes this item as a steering row;
+            # typing it as a user prompt here would flip the client's turn
+            # boundary twice (see the docstring).
+            is_steering = role == "user" and (
+                native_id in steering_native_ids
+                or (client_message is not None and client_message.steering)
+            )
             items.append(
                 projector.message_item(
                     session=session,
                     turn_id=turn_id,
                     role=role,
                     text=visible_text,
-                    event=f"claude.history.{role}",
+                    event=(
+                        "claude.turn.steer"
+                        if is_steering
+                        else f"claude.history.{role}"
+                    ),
                     native_item_id=native_id or f"history_{index}",
+                    native_item_type="steeringUserMessage" if is_steering else None,
                     item_id=(
                         client_message.platform_item_id
                         if client_message is not None

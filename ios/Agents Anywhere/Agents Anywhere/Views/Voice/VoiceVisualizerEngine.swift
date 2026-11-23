@@ -174,24 +174,33 @@ final class VoiceVisualizerSceneModel {
             let level = min(max(slow[i] / 0.75, 0), 1)
 
             // Exact layout constants from FUN_101dd15e0 (see CANONICAL §4.4).
-            let x = xBase + xSpread * fi / 6
-                + sinf(level * 0.2 + fi * 1.3) * 0.01
-                + (fi * 0.04 + 0.04) * sinf(phi * 0.6 + level * (fi * 0.07 + 0.4))
-            let y = baseYOffset
-                + cosf(level * 0.15 + fi * 2.7) * 0.015
-                + (fi * 0.004 + 0.07) * cosf(phi * 0.7 + level * (fi * 0.05 + 0.3))
-                // NDC +y is up; the official call glow sits lower, so the
-                // intensity offset pulls the cluster down.
+            let xOsc: Float = sinf(level * 0.2 + fi * 1.3)
+            let xWave: Float = sinf(phi * 0.6 + level * (fi * 0.07 + 0.4))
+            let xPos: Float = xBase
+                + xSpread * fi / 6
+                + xOsc * 0.01
+                + (fi * 0.04 + 0.04) * xWave
+
+            let yOsc: Float = cosf(level * 0.15 + fi * 2.7)
+            let yWave: Float = cosf(phi * 0.7 + level * (fi * 0.05 + 0.3))
+            // NDC +y is up; the official call glow sits lower, so the
+            // intensity offset pulls the cluster down.
+            let yPos: Float = baseYOffset
+                + yOsc * 0.015
+                + (fi * 0.004 + 0.07) * yWave
                 - tuning.intensityYOffsetFactor * level
 
-            bands.append(.init(position: SIMD2(x, y),
-                               scale: 0.3 + 0.65 * level,
-                               // uVar22 = (0.3, 0.1); field 0x2c uses the 0.1
-                               // base and grows with the voice.
-                               opacity: 0.1 + 0.65 * level,
-                               // 0x30 = P − level·Q (light P=1/Q=0.1).
-                               ovalRatio: max(ovalBase - level * ovalSlope, 0.05),
-                               ditherSeed: Float(i) * 0.37 + 1))
+            // uVar22 = (0.3, 0.1); field 0x2c uses the 0.1 base and grows
+            // with the voice; 0x30 = P − level·Q (light P=1/Q=0.1).
+            let bandScale: Float = 0.3 + 0.65 * level
+            let bandOpacity: Float = 0.1 + 0.65 * level
+            let bandOval: Float = max(ovalBase - level * ovalSlope, 0.05)
+            let band = VoiceVisualizerBand(position: SIMD2<Float>(xPos, yPos),
+                                           scale: bandScale,
+                                           ovalRatio: bandOval,
+                                           opacity: bandOpacity,
+                                           ditherSeed: Float(i) * 0.37 + 1)
+            bands.append(band)
         }
         return bands
     }

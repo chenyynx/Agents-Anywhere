@@ -67,6 +67,9 @@ struct ChatComposerDock: View {
     @State private var showsCamera = false
     @State private var pendingCamera = false
     @State private var editingAttachment: ChatAttachment?
+    @StateObject private var dictation = VoiceDictationController()
+    @State private var dictating = false
+    @State private var dictationBase = ""
     @Environment(\.displayScale) private var displayScale
     @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
@@ -90,6 +93,15 @@ struct ChatComposerDock: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if dictating {
+                VoiceDictationBar(amplitude: dictation.amplitude,
+                                  onCancel: cancelDictation,
+                                  onStop: finishDictation,
+                                  onSend: sendDictation)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
                 canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
                 placeholder: placeholder,
@@ -98,6 +110,7 @@ struct ChatComposerDock: View {
                 onOptions: presentOptions,
                 showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
                 onCommands: { showsCommandMenu.toggle() },
+                onVoice: startDictation,
                 onDraftChange: onDraftChange,
                 onLongPaste: convertLongPastedText,
                 onEditorLimitReached: {
@@ -114,6 +127,20 @@ struct ChatComposerDock: View {
                 // editor and the command panel keep their own interactions.
                 .composerKeyboardGesture(draft: draft, editor: editor)
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: dictating)
+        .onChange(of: dictation.status) { _, status in
+            switch status {
+            case .denied:
+                dictating = false
+                attachmentError = String(localized: "需要麦克风与语音识别权限")
+            case .failed(let message):
+                dictating = false
+                attachmentError = message
+            case .idle, .starting, .recording:
+                break
+            }
+        }
+        .onDisappear { dictation.stop() }
         .onChange(of: sessionChat?.optionsRequest) { _, _ in presentOptions() }
         // The add-to-chat rows (permission/model) read from `settings`, which
         // only the catalog load fills; load once when the composer appears.
@@ -178,6 +205,38 @@ struct ChatComposerDock: View {
         .alert(String(localized: "无法添加附件"), isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
             Button(String(localized: "好"), role: .cancel) { attachmentError = nil }
         } message: { Text(attachmentError ?? "") }
+    }
+
+    // MARK: - Live dictation
+
+    private func startDictation() {
+        guard !dictating else { return }
+        dictationBase = draft.text
+        dictating = true
+        dictation.onPartial = { text in
+            draft.text = dictationBase + text
+        }
+        dictation.onAutoFinish = {
+            dictating = false
+        }
+        dictation.start()
+    }
+
+    private func cancelDictation() {
+        dictation.cancel()
+        draft.text = dictationBase
+        dictating = false
+    }
+
+    private func finishDictation() {
+        dictation.stop()
+        dictating = false
+    }
+
+    private func sendDictation() {
+        dictation.stop()
+        dictating = false
+        send()
     }
 
     /// Commit the editor's text, then route it: a running turn enqueues, an idle

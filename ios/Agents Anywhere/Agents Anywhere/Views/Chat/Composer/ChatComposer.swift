@@ -18,6 +18,8 @@ struct ChatComposer: View {
     var showsCommands = false
     var commandsActive = false
     var onCommands: () -> Void = {}
+    /// Starts live dictation (mic button and the empty-draft voice key).
+    var onVoice: () -> Void = {}
     /// Reports draft mutations from this subtree only. Persisting the draft
     /// must not make the page root observe the editor's text.
     var onDraftChange: () -> Void = {}
@@ -127,7 +129,7 @@ struct ChatComposer: View {
                     // empty composer shows a mic inside a 36 pt chrome circle
                     // left of the accent key. Voice input is not implemented
                     // yet, so the tap does nothing for now.
-                    Button(action: {}) {
+                    Button(action: onVoice) {
                         // 19, not 16: the cluster's sizes are tuned against the
                         // reference device, where @ScaledMetric shrinks glyphs
                         // ~14% (the plus draws 13 pt ink from a 15.3 config,
@@ -256,6 +258,12 @@ struct ChatComposer: View {
                 .frame(width: sendSlotFrame.width, height: sendSlotFrame.height)
                 .contentShape(Circle())
         } primaryAction: {
+            // Empty draft: the key is the official black voice key, so a tap
+            // starts live dictation instead of sending.
+            if showsVoiceKey {
+                onVoice()
+                return
+            }
             // A gray key still opens this menu on a long press — the delivery
             // choice is a persisted setting, not an action — but it sends
             // nothing (pp 2026-11-18).

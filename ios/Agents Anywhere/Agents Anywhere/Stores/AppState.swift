@@ -1013,7 +1013,12 @@ final class AppState {
             }
         }
         services.sessionReads.setVisibleSession(visibleSessionID?.hasPrefix("local:") == true ? nil : visibleSessionID)
-        if isInBackground { services.sessionRepository.suspend() }
+        if isInBackground {
+            services.sessionRepository.suspend()
+            // The scene can go to the background before the services exist
+            // (launch restore); P3 keeps the poll up for the whole window.
+            if autoKeepAlive { startNotificationLongPolling(services: services) }
+        }
         services.onConnectivityChange = { [weak self, weak services] status in
             guard let self, let services, self.cachedServices === services else { return }
             if status.availability == .offline {

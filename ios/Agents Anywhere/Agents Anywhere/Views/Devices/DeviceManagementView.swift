@@ -4,6 +4,8 @@ import UIKit
 /// Native split views already own their safe area; the phone drawer supplies it.
 struct DeviceManagementView: View {
     let connector: V2Connector
+    /// Every connector in the account, for the top device row.
+    let connectors: [V2Connector]
     let allSessions: [V2SessionMeta]
     let projects: [V2Project]
     let agents: DeviceAgentModel
@@ -12,6 +14,7 @@ struct DeviceManagementView: View {
     let workspaceFilesService: V2WorkspaceFilesService
     let serverURL: URL
     let onMenu: () -> Void
+    let onOpenDevice: (V2ConnectorID) -> Void
     let onOpenSession: (V2SessionID) -> Void
     let onNewSession: (String?) -> Void
     let onNewProjectSession: (String) -> Void
@@ -23,7 +26,6 @@ struct DeviceManagementView: View {
     @State private var model = DeviceManagementModel()
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showsToolbarTitle = false
     @State private var toasts = ChatToastStore()
     @State private var isRenaming = false
     @State private var proposedName = ""
@@ -38,6 +40,7 @@ struct DeviceManagementView: View {
     @State private var editingProject: V2Project?
     @State private var pendingProject: V2Project?
     @State private var projectActionIsDeletion = false
+    @State private var showsAgents = false
     @State private var busy = false
     private var deviceProjects: [V2Project] {
         projects.filter { $0.connectorId == connector.id }.sorted {
@@ -55,9 +58,9 @@ struct DeviceManagementView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
-                    deviceCard
-                    DeviceAgentSection(model: agents, showsConnectionNotice: false) { report($0, source: "agents") }
+                VStack(alignment: .leading, spacing: 32) {
+                    deviceSection
+                    agentsSection
                     if showsSessionList {
                         DeviceWorkspaceList(workspaces: workspaceChoices, canReadFiles: canReadFiles,
                             onBrowse: { choosesDirectory = true }, onOpen: openWorkspace,
@@ -75,19 +78,18 @@ struct DeviceManagementView: View {
                             onArchive: { pendingProject = $0; projectActionIsDeletion = false },
                             onDelete: { pendingProject = $0; projectActionIsDeletion = true })
                     }
-                    DeviceSessionList(model: model, projects: deviceProjects, showsProjectNames: !showsSessionList, canManage: canManage,
-                        isWorking: busy || model.isArchiveActionRunning, onNewSession: { onNewSession(nil) },
+                    DeviceSessionList(model: model, projects: deviceProjects, deviceName: connector.name,
+                        showsProjectNames: !showsSessionList, canManage: canManage,
                         onOpen: selectSession,
                         onArchive: { performArchive([$0.id], archived: !$0.archived) },
                         onArchiveAll: { confirmsArchiveAll = true })
                     .id(DeviceSessionAnchor.id)
                 }
-                .padding(.top, 8).padding(.bottom, 24)
-                .modifier(ChatPageContentColumn())
+                .padding(.bottom, 64)
+                // Official Code tab insets cards by 16 pt; the shared default
+                // is 24 for the chat column (measured 2026-11-23).
+                .modifier(ChatPageContentColumn(horizontalInset: 16))
                 .background { ChatPageScrollEdge() }
-            }
-            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 56 } action: { _, scrolled in
-                withAnimation(.easeOut(duration: 0.15)) { showsToolbarTitle = scrolled }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,12 +99,14 @@ struct DeviceManagementView: View {
             .ignoresSafeArea())
         .scrollIndicators(.hidden).scrollEdgeEffectStyle(.soft, for: .all)
         .refreshable { await dashboard.refresh(); await agents.refresh() }
-        .modifier(ChatPageToolbar(title: showsToolbarTitle ? connector.name : "",
-            subtitle: showsToolbarTitle ? connectionDescription : nil, onMenu: onMenu))
+        .task(id: agents.connected) { await agents.refresh() }
+        // The device identity is persistent in the nav bar (pp 2026-11-23);
+        // it no longer waits for the first scroll.
+        .modifier(ChatPageToolbar(title: connector.name,
+            subtitle: connectionDescription, onMenu: onMenu))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button(String(localized: "New session"), systemImage: "square.and.pencil") { onNewSession(nil) }
                     Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = connector.id }
                     Divider()
                     Button(String(localized: "Rename device"), systemImage: "pencil") { proposedName = connector.name; isRenaming = true }.disabled(!canManage)
@@ -125,9 +129,35 @@ struct DeviceManagementView: View {
             ChatErrorToasts(store: toasts, isRetrying: dashboard.isLoading, onRetry: { _ in await dashboard.refresh() })
                 .padding(.top, 8)
         }
+        .overlay(alignment: .bottomTrailing) {
+            if !model.isSelectingSessions {
+                DeviceNewSessionFab { onNewSession(nil) }
+                    .padding(.trailing, DevicePageStyle.fabTrailing)
+                    .padding(.bottom, 2)
+            }
+        }
         .onChange(of: allSessions, initial: true) { _, values in model.updateSessions(connectorId: connector.id, allSessions: values) }
         .onChange(of: model.errorMessage, initial: true) { _, error in report(error, source: "device") }
         .onChange(of: dashboard.error, initial: true) { _, error in report(error, source: "sync") }
+        .onChange(of: agents.error, initial: true) { _, error in report(error, source: "agents") }
+        .sheet(isPresented: $showsAgents) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 28) {
+                        DeviceAgentSection(model: agents)
+                    }
+                    .padding(.horizontal, SettingsStyle.inset)
+                    .padding(.top, 10)
+                    .padding(.bottom, 40)
+                }
+                .scrollIndicators(.hidden)
+                .background(SettingsStyle.background(colorScheme).ignoresSafeArea())
+                .navigationTitle(connector.name)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { SheetCloseToolbar { showsAgents = false } }
+            }
+            .appSheetPresentation(.compact)
+        }
         .sheet(isPresented: $createsProject) { ProjectEditorSheet(repository: dashboard, connectorID: connector.id) }
         .sheet(item: $editingProject) { ProjectEditorSheet(repository: dashboard, project: $0) }
         .sheet(item: $selectedWorkspace) {
@@ -179,47 +209,36 @@ struct DeviceManagementView: View {
         }
     }
 
-    /// Device identity as a settings account card: icon, name, connection
-    /// state. The sections below are the page's content, like Settings.
-    private var deviceCard: some View {
-        HStack(spacing: 14) {
-            AppSymbol("server.rack", size: 19)
-                .foregroundStyle(SettingsStyle.icon(colorScheme))
-                .frame(width: 36, height: 36)
-                .background(SettingsStyle.background(colorScheme),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 0.5)
-                }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(connector.name)
-                    .font(SettingsStyle.text(16, weight: .semibold))
-                    .foregroundStyle(SettingsStyle.ink(colorScheme))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .accessibilityAddTraits(.isHeader)
-                HStack(spacing: 6) {
-                    if connector.status == .online {
-                        Circle().fill(Color.green).frame(width: 7, height: 7)
-                    } else {
-                        Circle().fill(SettingsStyle.secondary(colorScheme).opacity(0.4))
-                            .frame(width: 7, height: 7)
+    /// The official Code tab's first section: every device in the account as a
+    /// card, with the current one outlined. Tapping another card opens it.
+    private var deviceSection: some View {
+        DeviceSection(String(localized: "设备")) {
+            EmptyView()
+        } content: {
+            ScrollView(.horizontal) {
+                HStack(spacing: DevicePageStyle.cardGap) {
+                    ForEach(connectors) { item in
+                        DeviceIdentityCard(connector: item, isCurrent: item.id == connector.id) {
+                            guard item.id != connector.id else { return }
+                            onOpenDevice(item.id)
+                        }
                     }
-                    Text(connectionDescription)
-                        .lineLimit(1)
                 }
-                .font(SettingsStyle.text(15))
-                .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                .padding(.vertical, 2)
             }
-            Spacer(minLength: 0)
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled(true)
         }
-        .padding(.horizontal, SettingsStyle.rowPadding)
-        .padding(.vertical, 14)
-        .background(SettingsStyle.card(colorScheme),
-                    in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius,
-                                         style: .continuous))
-        .accessibilityElement(children: .combine)
+    }
+
+    /// Agents are configuration, not the page's browsing task; they keep a
+    /// one-line entry and open the full sheet.
+    private var agentsSection: some View {
+        DeviceSection(String(localized: "Agents")) {
+            AgentRediscoveryButton(model: agents)
+        } content: {
+            DeviceAgentsEntry(model: agents) { showsAgents = true }
+        }
     }
 
     private var connectionDescription: String {

@@ -169,7 +169,7 @@ struct AgentRediscoveryButton: View {
 
     var body: some View {
         Button { Task { await model.refresh(discover: true) } } label: {
-            AppSymbol("arrow.clockwise")
+            AppSymbol("anthropicon.arrowClockwise", size: 19)
                 .opacity(model.isLoading ? 0 : 1)
                 .overlay {
                     if model.isLoading { ProgressView().controlSize(.small).tint(.primary) }

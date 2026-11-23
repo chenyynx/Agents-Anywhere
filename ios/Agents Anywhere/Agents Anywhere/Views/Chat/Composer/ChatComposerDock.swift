@@ -62,6 +62,7 @@ struct ChatComposerDock: View {
     @State private var picker: AttachmentPicker?
     @State private var photos: [PhotosPickerItem] = []
     @State private var attachmentError: String?
+    @State private var speechError: String?
     @State private var isSending = false
     @State private var importCount = 0
     @State private var showsCamera = false
@@ -70,6 +71,7 @@ struct ChatComposerDock: View {
     @StateObject private var dictation = VoiceDictationController()
     @State private var dictating = false
     @State private var dictationBase = ""
+    @State private var pendingDictationSend = false
     @Environment(\.displayScale) private var displayScale
     @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
@@ -94,50 +96,74 @@ struct ChatComposerDock: View {
     var body: some View {
         VStack(spacing: 0) {
             if dictating {
-                VoiceDictationBar(amplitude: dictation.amplitude,
-                                  onCancel: cancelDictation,
-                                  onStop: finishDictation,
-                                  onSend: sendDictation)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                // One box only: the recording pill replaces the composer.
+                // Live words sit above it as a caption, not a second field.
+                VStack(spacing: 8) {
+                    if !dictation.transcript.isEmpty {
+                        Text(dictation.transcript)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 24)
+                            .transition(.opacity)
+                    }
+                    VoiceDictationBar(amplitude: dictation.amplitude,
+                                      onCancel: cancelDictation,
+                                      onStop: finishDictation,
+                                      onSend: sendDictation)
+                        .padding(.horizontal, 16)
+                }
+                .padding(.top, controls.topMargin)
+                .padding(.bottom, controls.bottomMargin(expanded: draft.isExpanded))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
+                    canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
+                    placeholder: speechError ?? placeholder,
+                    maximumEditorHeight: maximumEditorHeight, controls: controls,
+                    onSend: send, onStop: { Task { await onStop() } },
+                    onOptions: presentOptions,
+                    showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
+                    onCommands: { showsCommandMenu.toggle() },
+                    onVoice: startDictation,
+                    onDraftChange: onDraftChange,
+                    onLongPaste: convertLongPastedText,
+                    onEditorLimitReached: {
+                        attachmentError = String(localized: "内容过长，请分段输入或添加为文件。")
+                    },
+                    onOversizedDraft: repairOversizedDraft,
+                    onEditAttachment: presentImageEditor,
+                    affordance: affordance, onQueueSend: send)
+                    .contentShape(Rectangle())
+                    // K2 (round 1.1): the composer band owns vertical drags across
+                    // its whole frame — including the transparent margins around
+                    // the glass bar — so a swipe here can never fall through to
+                    // the timeline's interactive dismissal. Inner controls, the
+                    // editor and the command panel keep their own interactions.
+                    .composerKeyboardGesture(draft: draft, editor: editor)
             }
-            ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                canSend: canSend, isBusy: isBusy || isSending || importCount > 0,
-                placeholder: placeholder,
-                maximumEditorHeight: maximumEditorHeight, controls: controls,
-                onSend: send, onStop: { Task { await onStop() } },
-                onOptions: presentOptions,
-                showsCommands: sessionChat?.offersCommands == true, commandsActive: showsCommandMenu,
-                onCommands: { showsCommandMenu.toggle() },
-                onVoice: startDictation,
-                onDraftChange: onDraftChange,
-                onLongPaste: convertLongPastedText,
-                onEditorLimitReached: {
-                    attachmentError = String(localized: "内容过长，请分段输入或添加为文件。")
-                },
-                onOversizedDraft: repairOversizedDraft,
-                onEditAttachment: presentImageEditor,
-                affordance: affordance, onQueueSend: send)
-                .contentShape(Rectangle())
-                // K2 (round 1.1): the composer band owns vertical drags across
-                // its whole frame — including the transparent margins around
-                // the glass bar — so a swipe here can never fall through to
-                // the timeline's interactive dismissal. Inner controls, the
-                // editor and the command panel keep their own interactions.
-                .composerKeyboardGesture(draft: draft, editor: editor)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: dictating)
         .onChange(of: dictation.status) { _, status in
             switch status {
             case .denied:
                 dictating = false
-                attachmentError = String(localized: "需要麦克风与语音识别权限")
+                speechError = String(localized: "需要麦克风与语音识别权限")
             case .failed(let message):
                 dictating = false
-                attachmentError = message
+                speechError = message
             case .idle, .starting, .recording:
                 break
+            }
+        }
+        .onChange(of: draft.text) { _, _ in
+            if speechError != nil { speechError = nil }
+        }
+        .onChange(of: dictating) { _, isDictating in
+            if !isDictating, pendingDictationSend {
+                pendingDictationSend = false
+                DispatchQueue.main.async { send() }
             }
         }
         .onDisappear { dictation.stop() }
@@ -211,6 +237,7 @@ struct ChatComposerDock: View {
 
     private func startDictation() {
         guard !dictating else { return }
+        speechError = nil
         dictationBase = draft.text
         dictating = true
         dictation.onPartial = { text in
@@ -235,8 +262,11 @@ struct ChatComposerDock: View {
 
     private func sendDictation() {
         dictation.stop()
+        // The composer (and its editor) is re-created when dictation ends, so
+        // commit on the next runloop instead of sending against a torn-down
+        // editor.
+        pendingDictationSend = true
         dictating = false
-        send()
     }
 
     /// Commit the editor's text, then route it: a running turn enqueues, an idle

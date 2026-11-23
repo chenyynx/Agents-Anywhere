@@ -20,6 +20,7 @@ final class VoiceDictationController: ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var status: Status = .idle
+    @Published private(set) var transcript = ""
 
     var onPartial: ((String) -> Void)?
     var onAutoFinish: (() -> Void)?
@@ -32,6 +33,7 @@ final class VoiceDictationController: ObservableObject {
     private var silenceTask: Task<Void, Never>?
     private var latestTranscript = ""
     private var lastSoundAt = Date()
+    private var smoothedLevel: Float = 0
 
     private let lock = NSLock()
     private var samples: [(time: Double, level: Float)] = []
@@ -41,12 +43,20 @@ final class VoiceDictationController: ObservableObject {
     func amplitude(at time: Double) -> Float {
         lock.lock()
         defer { lock.unlock() }
-        guard let first = samples.first else { return 0 }
+        guard let first = samples.first, let last = samples.last else { return 0 }
         if time <= first.time { return first.level }
-        for sample in samples where sample.time >= time {
-            return sample.level
+        if time >= last.time { return last.level }
+        var previous = first
+        for sample in samples {
+            if sample.time >= time {
+                let span = sample.time - previous.time
+                if span <= 0 { return sample.level }
+                let progress = Float((time - previous.time) / span)
+                return previous.level + (sample.level - previous.level) * progress
+            }
+            previous = sample
         }
-        return samples.last?.level ?? 0
+        return last.level
     }
 
     func start() {
@@ -77,6 +87,7 @@ final class VoiceDictationController: ObservableObject {
 
     func cancel() {
         latestTranscript = ""
+        transcript = ""
         finish(auto: false)
     }
 
@@ -117,6 +128,12 @@ final class VoiceDictationController: ObservableObject {
             }
 
             lastSoundAt = Date()
+            transcript = ""
+            latestTranscript = ""
+            smoothedLevel = 0
+            lock.lock()
+            samples.removeAll()
+            lock.unlock()
             isRecording = true
             status = .recording
             startSilenceMonitor()
@@ -138,7 +155,11 @@ final class VoiceDictationController: ObservableObject {
         }
         let rms = sqrtf(sum / Float(count))
         let db = 20 * log10f(max(rms, 1e-7))
-        let level = min(max((db + 50) / 45, 0), 1)
+        let raw = min(max((db + 50) / 45, 0), 1)
+        let follow: Float = raw > smoothedLevel ? 0.55 : 0.18
+        smoothedLevel += (raw - smoothedLevel) * follow
+        // Noise floor: a silent room must not make the waveform twitch.
+        let level: Float = smoothedLevel < 0.06 ? 0 : smoothedLevel
         if level > 0.05 { lastSoundAt = Date() }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -153,6 +174,7 @@ final class VoiceDictationController: ObservableObject {
             let text = result.bestTranscription.formattedString
             if !text.isEmpty, text != latestTranscript {
                 latestTranscript = text
+                transcript = text
                 onPartial?(text)
             }
             if result.isFinal {
@@ -162,9 +184,15 @@ final class VoiceDictationController: ObservableObject {
         }
         if let error {
             let nsError = error as NSError
-            // 216 = cancelled by the system when the task is torn down.
-            if nsError.domain == "kAFAssistantErrorDomain", nsError.code == 216 {
-                return
+            if nsError.domain == "kAFAssistantErrorDomain" {
+                // 216 = cancelled when the task is torn down.
+                if nsError.code == 216 { return }
+                // 1110 = "No speech detected": a normal empty take, not an
+                // attachment failure and not worth an alert.
+                if nsError.code == 1110 {
+                    finish(auto: true)
+                    return
+                }
             }
             status = .failed(error.localizedDescription)
             finish(auto: true)

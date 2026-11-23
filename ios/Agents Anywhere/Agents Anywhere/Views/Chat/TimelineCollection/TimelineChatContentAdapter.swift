@@ -313,8 +313,25 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// normal session adds a handful of lines.
     private func recordFooterGateProbe(suppressLatest: Bool, pendingID: String?,
                                        pendingHasEcho: Bool, liveTurnGroupID: String?,
+                                       latestUserRowID: String?,
+                                       groups: [ChatTimelineGroup],
                                        gateLiveUserTurn: Bool) {
         let status = model.session.runtime.state?.status.rawValue ?? "nil"
+        // The resolution reads these rows only while a send awaits its echo;
+        // scanning in any other state would cost a full window walk per
+        // refresh for a decision the gate is not making. `ignored` names the
+        // exempt active row (background hand-off / compaction) that `active`
+        // cannot show — the 2026-11-23 fork stayed `running` yet sat in
+        // neither list before this field existed.
+        let sendWindow = pendingID != nil && !pendingHasEcho
+        let activeIDs: [String] = sendWindow
+            ? TimelineTurnActions.liveActivityRowIDs(
+                groups: groups, latestUserRowID: latestUserRowID)
+            : []
+        let ignoredIDs: [String] = sendWindow
+            ? TimelineTurnActions.ignoredActivityRowIDs(
+                groups: groups, latestUserRowID: latestUserRowID)
+            : []
         let probe = [
             "suppress=\(suppressLatest ? 1 : 0)",
             "gate=\(gateLiveUserTurn ? 1 : 0)",
@@ -323,6 +340,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "running=\(model.isRunning ? 1 : 0)",
             "status=\(status)",
             "liveGroup=\(liveTurnGroupID == nil ? "nil" : "set")",
+            "active=\(activeIDs.joined(separator: ","))",
+            "ignored=\(ignoredIDs.joined(separator: ","))",
+            "lastUser=\(latestUserRowID ?? "nil")",
         ].joined(separator: " ")
         guard probe != lastFooterGateProbe else { return }
         lastFooterGateProbe = probe
@@ -2410,6 +2430,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               pendingID: submittingPendingID,
                               pendingHasEcho: submittingPendingHasEcho,
                               liveTurnGroupID: liveTurnGroupID,
+                              latestUserRowID: latestUserRowID,
+                              groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn)
         var turnActions = TimelineTurnActions.build(
             groups: groups,

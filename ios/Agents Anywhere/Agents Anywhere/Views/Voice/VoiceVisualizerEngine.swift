@@ -128,8 +128,8 @@ final class VoiceVisualizerSceneModel {
     func update(dt: Double, levels: [Float]) -> [VoiceVisualizerBand] {
         time += dt
         let dtF = Float(dt)
-        let aFast = expf((2 * dtF) * -1.3581960 * .pi)
-        let aSlow = expf((2 * dtF) * -1.6477940 * .pi)
+        let aFast = expf((2 * dtF) * -1.3581960 * Float.pi)
+        let aSlow = expf((2 * dtF) * -1.6477940 * Float.pi)
 
         for i in 0..<7 {
             let input = levels.indices.contains(i) ? levels[i] : 0
@@ -152,7 +152,7 @@ final class VoiceVisualizerSceneModel {
         for i in 0..<7 {
             let fi = Float(i)
             let level = min(max(slow[i] / 0.75, 0), 1)
-            let phase = fi * .pi
+            let phase = fi * Float.pi
 
             let xOsc = sinf(phase * 0.6 + t * (fi * 0.07 + 0.4))
             let xTime = sinf(t * 0.2 + fi * 1.3)
@@ -184,15 +184,15 @@ final class VoiceVisualizerSceneModel {
 // MARK: - Renderer
 
 final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
-    private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
-    private let orbPipeline: MTLRenderPipelineState
-    private let sloshPipeline: MTLRenderPipelineState
-    private let quadBuffer: MTLBuffer
-    private let uniformBuffer: MTLBuffer
-    private let sloshUniformBuffer: MTLBuffer
+    private var device: MTLDevice!
+    private var commandQueue: MTLCommandQueue!
+    private var orbPipeline: MTLRenderPipelineState!
+    private var sloshPipeline: MTLRenderPipelineState!
+    private var quadBuffer: MTLBuffer!
+    private var uniformBuffer: MTLBuffer!
+    private var sloshUniformBuffer: MTLBuffer!
 
-    private let scene: VoiceVisualizerSceneModel
+    private var scene: VoiceVisualizerSceneModel!
     private var lastTimestamp: CFTimeInterval?
 
     var isDark: Bool = false {
@@ -293,6 +293,7 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
 
         let size = view.drawableSize
         let aspect = Float(size.width / max(size.height, 1))
+        let contentScale = Float(view.contentScaleFactor)
 
         // Slosh liquid (composer) behind the orb.
         if showSlosh {
@@ -302,8 +303,8 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
                 sinceUtteranceStart: 1.2,
                 envelope: 0.8,
                 level: 0.35,
-                bottomLeftCornerRadius: 26,
-                bottomRightCornerRadius: 26,
+                bottomLeftCornerRadius: 26 * contentScale,
+                bottomRightCornerRadius: 26 * contentScale,
                 darkModeDim: isDark ? 0.82 : 1.0,
                 reduceMotion: reduceMotion ? 1 : 0,
                 phase: Float(now) * 1.3,
@@ -321,7 +322,7 @@ final class VoiceVisualizerRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBuffer(quadBuffer, offset: 0, index: 0)
         let opacity = isDark ? Float(0.5) : Float(0.75)
         for (index, band) in bands.enumerated() {
-            var matrix = simd_float4x4(diagonal: SIMD4(1, 1, 1, 1))
+            var matrix = simd_float4x4(diagonal: SIMD4<Float>(1, 1, 1, 1))
             // Quad-local [-1,1] -> clip: scale (with height-normalized x) and translate.
             matrix.columns.0 = SIMD4(band.scale * (0.5 * aspect), 0, 0, 0)
             matrix.columns.1 = SIMD4(0, band.scale * 0.5, 0, 0)

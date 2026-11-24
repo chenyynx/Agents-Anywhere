@@ -37,6 +37,13 @@ final class TimelinePreferredHeightInvalidationContext: UICollectionViewLayoutIn
     var preferredHeight: CGFloat?
 }
 
+/// A height-only invalidation. It carries the item and the height the writer
+/// wants the frame to take, so `prepare` can move the prepared frames in place
+/// instead of rebuilding every attribute. Streaming frames land here.
+final class TimelineHeightInvalidationContext: UICollectionViewLayoutInvalidationContext {
+    var heights: [String: CGFloat] = [:]
+}
+
 /// Optional host capability: rows that follow the official hosted-cell
 /// contract. Kept out of `TimelineListLayoutHost` so a host without Code rows
 /// does not need a new method.
@@ -66,6 +73,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     private var attributesByIndex: [TimelineListLayoutAttributes] = []
     private var attributesByItemID: [String: TimelineListLayoutAttributes] = [:]
     private var lastLayoutWidth: CGFloat = 0
+    /// Height-only patches recorded by an invalidation outside an update
+    /// transaction. `prepare` applies them in place when the host's structure
+    /// revision has not moved; an update transaction always rebuilds.
+    private var pendingHeightPatches: [String: CGFloat] = [:]
+    private var lastStructureRevision = -1
     /// Previous snapshot's identity and keys, for longest-common-prefix reuse.
     private var isInsideUpdate = false
     private var insertionOwed: TimelineInsertionOwed?
@@ -139,6 +151,14 @@ final class TimelineListLayout: UICollectionViewLayout {
         // when the view returns to a width used earlier. The height tiers stay
         // as estimates; only the measured state is cleared.
         if widthChanged { heights.forgetMeasuredWidths() }
+        // A height-only invalidation (the per-frame streaming/reveal path)
+        // moves the prepared frames; it does not need the ~590-attribute
+        // rebuild below. The host's structure revision proves no apply landed
+        // since the last prepare, and an update transaction always rebuilds.
+        if !widthChanged, !isInsideUpdate, applyPendingHeightPatches(width: width) {
+            return
+        }
+        pendingHeightPatches.removeAll()
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
         var items: [TimelineListItem] = []
@@ -246,6 +266,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributesByItemID = byID
         contentHeight = next.last?.frame.maxY ?? 0
         lastLayoutWidth = width
+        lastStructureRevision = host.layoutStructureRevision
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
@@ -656,7 +677,10 @@ final class TimelineListLayout: UICollectionViewLayout {
                 source: probeSource)
         }
 #endif
-        let context = UICollectionViewLayoutInvalidationContext()
+        let context = TimelineHeightInvalidationContext()
+        if abs(contentSizeDelta) > 0.5 {
+            context.heights[itemID] = attributes.frame.height + contentSizeDelta
+        }
         context.invalidateItems(at: invalidatablePaths(by: attributes))
 #if DEBUG
         let traceBefore = collectionView.contentOffset.y
@@ -906,11 +930,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             keyboardTransition: state.keyboardTransition,
             suppressContentOffsetAdjustment: state.suppressContentOffsetAdjustment,
             hasCachedHeight: heights.isMeasured(itemID: itemID, width: key.width))
-        let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: invalidatablePaths(by: attributes))
+        let context = TimelineHeightInvalidationContext()
         if abs(delta) > 0.5 {
+            context.heights[itemID] = resolved
             context.contentSizeAdjustment = CGSize(width: 0, height: delta)
         }
+        context.invalidateItems(at: invalidatablePaths(by: attributes))
         if decision.height == .accept, let correction = decision.correction,
            !state.suppressContentOffsetAdjustment {
             context.contentOffsetAdjustment = CGPoint(x: 0, y: correction)
@@ -967,7 +992,58 @@ final class TimelineListLayout: UICollectionViewLayout {
         if let preferred = context as? TimelinePreferredHeightInvalidationContext {
             applySelfMeasuredHeight(from: preferred)
         }
+        // An update transaction keeps its own offset accounting; patches
+        // recorded inside one would apply against frames UIKit is about to
+        // replace. Those passes rebuild.
+        if let heightContext = context as? TimelineHeightInvalidationContext, !isInsideUpdate {
+            for (itemID, height) in heightContext.heights {
+                pendingHeightPatches[itemID] = height
+            }
+        }
         super.invalidateLayout(with: context)
+    }
+
+    /// Moves the prepared frames for height-only invalidations. Returns false
+    /// (and leaves the work to the full `prepare`) when the item list or the
+    /// width moved, or a patch does not describe a prepared row.
+    private func applyPendingHeightPatches(width: CGFloat) -> Bool {
+        guard let host,
+              !pendingHeightPatches.isEmpty,
+              lastLayoutWidth == width,
+              lastStructureRevision == host.layoutStructureRevision,
+              attributesByIndex.count == host.layoutItemCount else { return false }
+        var work: [(index: Int, height: CGFloat)] = []
+        work.reserveCapacity(pendingHeightPatches.count)
+        for (itemID, height) in pendingHeightPatches {
+            guard height.isFinite, height > 0,
+                  let attributes = attributesByItemID[itemID] else { return false }
+            let index = attributes.indexPath.item
+            guard attributesByIndex.indices.contains(index) else { return false }
+            work.append((index, height))
+        }
+        work.sort { $0.index < $1.index }
+        var totalDelta: CGFloat = 0
+        for patch in work {
+            let attributes = attributesByIndex[patch.index]
+            let delta = patch.height - attributes.frame.height
+            guard abs(delta) > 0.5 else { continue }
+            attributes.frame.size.height = patch.height
+            var index = patch.index + 1
+            while index < attributesByIndex.count {
+                attributesByIndex[index].frame.origin.y += delta
+                index += 1
+            }
+            contentHeight += delta
+            totalDelta += delta
+            if let item = attributes.item {
+                lastPreparedHeight[item.itemID] = patch.height
+            }
+        }
+        pendingHeightPatches.removeAll()
+        if abs(totalDelta) > 0.5 {
+            host.layoutDidChangeContentHeight(contentHeight)
+        }
+        return true
     }
 
     /// The cell fitted its real content for an unmeasured row. Write the
@@ -1136,7 +1212,7 @@ final class TimelineListLayout: UICollectionViewLayout {
     ) {
         guard !updates.isEmpty, let collectionView else { return }
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-        let context = existingContext ?? UICollectionViewLayoutInvalidationContext()
+        let context = existingContext ?? TimelineHeightInvalidationContext()
         var affected: Set<IndexPath> = []
         var offset: CGFloat = 0
         var contentSize: CGFloat = 0
@@ -1150,6 +1226,9 @@ final class TimelineListLayout: UICollectionViewLayout {
                                                              height: update.height)
             guard abs(update.contentSizeDelta) > 0.5 else { continue }
             changed = true
+            if let heightContext = context as? TimelineHeightInvalidationContext {
+                heightContext.heights[update.itemID] = update.height
+            }
             contentSize += update.contentSizeDelta
             if let offsetDelta = update.offsetDelta { offset += offsetDelta }
             affected.formUnion(cellUpdatesAffected(by: update.attributes))

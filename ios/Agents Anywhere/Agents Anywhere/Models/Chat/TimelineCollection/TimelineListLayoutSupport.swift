@@ -40,6 +40,10 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     /// target is only valid for the update that carries that page; earlier
     /// updates must not consume it.
     var layoutFirstRowID: String? { get }
+    /// Bumped by the host on every apply. A height-only invalidation that
+    /// arrives without a new revision may patch the prepared frames in
+    /// place; any apply (content or structure) forces the full prepare.
+    var layoutStructureRevision: Int { get }
     func layoutHeightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy

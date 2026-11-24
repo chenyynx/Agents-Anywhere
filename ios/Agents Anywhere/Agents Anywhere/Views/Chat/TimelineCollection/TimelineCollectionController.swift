@@ -40,6 +40,9 @@ final class TimelineCollectionController: UIViewController {
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
     private var currentItems: [TimelineListItem] = []
+    /// Bumped on every apply; the layout uses it to prove a height-only
+    /// invalidation arrived without a content/structure change.
+    private(set) var layoutStructureRevision = 0
     /// Anchor of the history page whose prepend target is installed. The
     /// projection is recomputed after the apply's measurement pass, because
     /// the budgeted pass at request time can leave rows on estimates.
@@ -1090,6 +1093,7 @@ final class TimelineCollectionController: UIViewController {
         var probeApplyReturnedAt: CFTimeInterval = 0
 #endif
         currentItems = items
+        layoutStructureRevision &+= 1
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
 #if AA_TIMELINE_PROBE

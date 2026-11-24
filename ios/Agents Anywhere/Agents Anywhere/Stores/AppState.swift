@@ -981,7 +981,12 @@ final class AppState {
     func setAppInBackground(_ background: Bool) {
         isInBackground = background
         NotificationService.shared.appInForeground = !background
-        if !background { NotificationService.shared.refreshAuthorization() }
+        if !background {
+            NotificationService.shared.refreshAuthorization()
+            // A banner delivered while the app was away for the conversation
+            // still on screen is stale now; the same consume path withdraws it.
+            NotificationService.shared.appDidBecomeForeground()
+        }
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {

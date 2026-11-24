@@ -44,6 +44,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     static let openSessionNotification = Notification.Name("aa.notification.openSession")
 
     private static let postedKey = "aa.notification.postedIds"
+    /// Ids this device delivered and has not withdrawn. A delivered banner
+    /// outlives the record: opening the conversation must remove it from the
+    /// Notification Center, not only stop a re-post (pp 2026-11-24: a
+    /// `completed` posted while another session was open stayed in the center
+    /// after the user read that conversation).
+    private static let deliveredKey = "aa.notification.deliveredIds"
     private static let postedLimit = 256
     private let center = UNUserNotificationCenter.current()
     private var activated = false
@@ -92,6 +98,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
         UserDefaults.standard.removeObject(forKey: Self.postedKey)
+        UserDefaults.standard.removeObject(forKey: Self.deliveredKey)
         knownRecords.removeAll()
         visibleSessionId = nil
     }
@@ -170,10 +177,21 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
 
     /// The session on screen changed. Any record this device already knows for
     /// it is consumed: the user has seen that conversation, so a later
-    /// background cannot surface it again.
+    /// background cannot surface it again, and a banner delivered while the
+    /// user was elsewhere is withdrawn.
     func setVisibleSession(_ sessionId: String?) {
         visibleSessionId = sessionId
-        guard let sessionId, appInForeground else { return }
+        consumeVisibleRecords()
+    }
+
+    /// The app came back to the foreground. The conversation already on screen
+    /// may have received a banner while the app was away; it is stale now.
+    func appDidBecomeForeground() {
+        consumeVisibleRecords()
+    }
+
+    private func consumeVisibleRecords() {
+        guard let sessionId = visibleSessionId, appInForeground else { return }
         for (id, owner) in knownRecords where owner == sessionId {
             consume(id: id)
         }
@@ -187,12 +205,18 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
     }
 
     private func consume(id: String) {
-        guard !isPosted(id) else { return }
-        rememberPosted(id)
+        let withdrawn = withdrawDelivered(id)
+        let firstConsume = !isPosted(id)
+        if firstConsume { rememberPosted(id) }
+        guard withdrawn || firstConsume else { return }
         ClientDiagnosticsLog.shared.record(
             kind: "notification.consumed",
             sessionID: knownRecords[id],
-            detail: ["id": id, "reason": "visible"],
+            detail: [
+                "id": id,
+                "reason": "visible",
+                "withdrawn": withdrawn ? "1" : "0",
+            ],
             dedupe: true)
     }
 
@@ -217,6 +241,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         center.add(request)
 
         rememberPosted(record.id)
+        rememberDelivered(record.id)
         ClientDiagnosticsLog.shared.record(
             kind: "notification.posted",
             sessionID: record.sessionId,
@@ -237,6 +262,31 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
             posted.removeFirst(posted.count - Self.postedLimit)
         }
         defaults.set(posted, forKey: Self.postedKey)
+    }
+
+    private func rememberDelivered(_ id: String) {
+        let defaults = UserDefaults.standard
+        var delivered = defaults.stringArray(forKey: Self.deliveredKey) ?? []
+        guard !delivered.contains(id) else { return }
+        delivered.append(id)
+        if delivered.count > Self.postedLimit {
+            delivered.removeFirst(delivered.count - Self.postedLimit)
+        }
+        defaults.set(delivered, forKey: Self.deliveredKey)
+    }
+
+    /// Drops a delivered banner from the Notification Center. Returns whether
+    /// this device had delivered it (so the caller can log the withdrawal
+    /// once). Removing an id the system already dismissed is harmless.
+    private func withdrawDelivered(_ id: String) -> Bool {
+        let defaults = UserDefaults.standard
+        var delivered = defaults.stringArray(forKey: Self.deliveredKey) ?? []
+        guard delivered.contains(id) else { return false }
+        delivered.removeAll { $0 == id }
+        defaults.set(delivered, forKey: Self.deliveredKey)
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+        center.removePendingNotificationRequests(withIdentifiers: [id])
+        return true
     }
 
     // MARK: - UNUserNotificationCenterDelegate

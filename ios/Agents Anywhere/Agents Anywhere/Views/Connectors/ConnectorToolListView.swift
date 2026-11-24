@@ -25,7 +25,7 @@ struct ConnectorToolListView: View {
             SettingsSection {
                 ForEach(Array(toolNames.enumerated()), id: \.offset) { index, name in
                     Text(verbatim: name)
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -42,15 +42,14 @@ struct ConnectorToolListView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
     /// Official hairlines sit 20 pt inside the card on both sides.
-    /// `SettingsRowDivider` exposes only its leading inset (trailing is fixed
-    /// at 14 pt), so the remaining 6 pt are added outside it.
     private var rowDivider: some View {
-        SettingsRowDivider(leading: ConnectorToolListMetrics.rowInset)
-            .padding(.trailing, ConnectorToolListMetrics.dividerTrailingExtra)
+        SettingsRowDivider(leading: ConnectorToolListMetrics.rowInset,
+                           trailing: ConnectorStyle.logoDividerTrailing)
     }
 }
 
@@ -62,9 +61,6 @@ private enum ConnectorToolListMetrics {
     /// on the bottom edge *inside* the row, so the 11-row card totals
     /// 11 × 49 = 539 pt (1617 px) like the capture.
     static let rowInset: CGFloat = 20
-    /// The official line ends 20 pt inside the card; `SettingsRowDivider`
-    /// already insets 14 pt, so 6 pt are added here.
-    static let dividerTrailingExtra: CGFloat = 6
 }
 
 /// The 11 Google Drive tool names captured on the official tools screen, in

@@ -74,6 +74,7 @@ struct AddCustomConnectorView: View {
                 }
                 .accessibilityLabel(Text(String(localized: "Close")))
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         .safeAreaInset(edge: .bottom) {
             submitBar
@@ -88,7 +89,9 @@ struct AddCustomConnectorView: View {
     /// copy (no card), matching the settings explanatory footers.
     private var intro: some View {
         Text(String(localized: "Connect directly to an MCP server by entering its URL."))
-            .font(ConnectorStyle.text(15))
+            // Official connector copy scale: body 15, supporting text 13
+            // (settings rows measure title 15 / subtitle 11).
+            .font(ConnectorStyle.text(13))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 4)
@@ -101,9 +104,10 @@ struct AddCustomConnectorView: View {
             SettingsRowContainer {
                 VStack(alignment: .leading, spacing: 5) {
                     fieldLabel(String(localized: "Name"))
-                    TextField(String(localized: "My connector"), text: $name)
+                    TextField(String(localized: "Name"), text: $name,
+                              prompt: promptText(String(localized: "My connector")))
                         .textFieldStyle(.plain)
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
@@ -115,9 +119,10 @@ struct AddCustomConnectorView: View {
             SettingsRowContainer {
                 VStack(alignment: .leading, spacing: 5) {
                     fieldLabel(String(localized: "URL"))
-                    TextField(String(localized: "https://mcp.example.com/sse"), text: $url)
+                    TextField(String(localized: "URL"), text: $url,
+                              prompt: promptText(String(localized: "https://mcp.example.com/sse")))
                         .textFieldStyle(.plain)
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .keyboardType(.URL)
                         .textContentType(.URL)
@@ -158,13 +163,16 @@ struct AddCustomConnectorView: View {
     /// same split the official settings capture uses for its 63×28 switch.
     private var requiresSignInRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+            // Same scale as the connector list rows: 15 pt title, 11 pt
+            // subtitle with a 15.6 pt line pitch.
+            VStack(alignment: .leading, spacing: 3.5) {
                 Text(String(localized: "Requires sign-in"))
-                    .font(ConnectorStyle.text(16))
+                    .font(ConnectorStyle.text(15))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(String(localized: "Turn on if this server needs you to authenticate. You can enter OAuth client details below."))
-                    .font(ConnectorStyle.text(15))
+                    .font(ConnectorStyle.text(11))
                     .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
@@ -189,13 +197,15 @@ struct AddCustomConnectorView: View {
                 fieldLabel(label)
                 Group {
                     if secure {
-                        SecureField(String(localized: "Optional"), text: text)
+                        SecureField(String(localized: "Optional"), text: text,
+                                    prompt: promptText(String(localized: "Optional")))
                     } else {
-                        TextField(String(localized: "Optional"), text: text)
+                        TextField(String(localized: "Optional"), text: text,
+                                  prompt: promptText(String(localized: "Optional")))
                     }
                 }
                 .textFieldStyle(.plain)
-                .font(ConnectorStyle.text(16))
+                .font(ConnectorStyle.text(15))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -209,6 +219,12 @@ struct AddCustomConnectorView: View {
         Text(title)
             .font(ConnectorStyle.text(13))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+    }
+
+    /// Placeholder ink uses the connector tertiary grey (#88877F), not the
+    /// system's colder placeholder tint.
+    private func promptText(_ text: String) -> Text {
+        Text(text).foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
     }
 
     private var warningBanner: some View {
@@ -243,8 +259,10 @@ struct AddCustomConnectorView: View {
     private var submitBar: some View {
         Button(action: submit) {
             ZStack {
+                // Same label scale as the measured official primary capsule
+                // (13 pt semibold, ink 24×11.7).
                 Text(String(localized: "Add connector"))
-                    .font(ConnectorStyle.text(16, weight: .semibold))
+                    .font(ConnectorStyle.text(13, weight: .semibold))
                     .opacity(isSubmitting ? 0 : 1)
                 if isSubmitting {
                     ProgressView()
@@ -253,7 +271,7 @@ struct AddCustomConnectorView: View {
             }
             .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
+            .frame(height: ConnectorStyle.actionHeight)
             .background(ConnectorStyle.actionFill(colorScheme), in: Capsule())
         }
         .buttonStyle(.plain)

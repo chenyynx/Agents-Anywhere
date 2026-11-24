@@ -49,14 +49,14 @@ struct ConnectorDetailView: View {
                     // Official header starts at x 36 (16 page inset + 20), in
                     // line with the section headers rather than the card text.
                     .padding(.leading, 20)
-                    // UNVERIFIED: distance from the sheet’s navigation bar;
-                    // the capture puts the name’s ink 176 pt from the top.
-                    .padding(.top, 34)
+                    // Official logo slot top 160.15 pt with the bar at 139.4.
+                    .padding(.top, 20.75)
                     .padding(.bottom, 4)
                 descriptionCard(content.description)
-                    .padding(.top, 24)
+                    .padding(.top, 26.5)
                 detailsSection(content)
-                    .padding(.top, 24)
+                    // Card bottom 408.7 → header box top 435.05.
+                    .padding(.top, 26.35)
                 toolsCard(toolCount: content.toolCount)
                     .padding(.top, 16)
             }
@@ -65,11 +65,10 @@ struct ConnectorDetailView: View {
         .overlay(alignment: .bottomTrailing) {
             ConnectorPrimaryButton(title: String(localized: "Connect"), action: onConnect)
                 .padding(.trailing, 24)
-                // The capture puts the capsule’s ink bottom on the home
-                // indicator boundary (y 818 of 852 pt), i.e. the bottom safe
-                // area, matching the verified device FAB overlay. 24 pt from
-                // the trailing edge.
-                .padding(.bottom, 2)
+                // Official capsule 302.7..369 × 779.3..818.3: 24 pt from the
+                // trailing edge and flush with the bottom safe area
+                // (852 − 818.3 = 33.7 ≈ the 34 pt inset).
+                .padding(.bottom, 0)
         }
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -77,6 +76,8 @@ struct ConnectorDetailView: View {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
                     .accessibilityLabel(Text(String(localized: "Back")))
             }
+            // One glass circle per key: hide the bar's shared background.
+            .sharedBackgroundVisibility(.hidden)
         }
         .navigationDestination(isPresented: $showsTools) {
             ConnectorToolListView(
@@ -87,21 +88,25 @@ struct ConnectorDetailView: View {
 
     private func directoryHeader(oneLiner: String) -> some View {
         HStack(alignment: .top, spacing: 5) {
-            ConnectorLogoView(source: data.logo, size: ConnectorStyle.logoSize)
-            VStack(alignment: .leading, spacing: 2) {
+            // Official header logo ink 21.7 pt wide inside the 28 pt slot
+            // (the settings rows draw 22.3 in a 24 pt slot).
+            ConnectorLogoView(source: data.logo, size: ConnectorStyle.logoSize,
+                              imageInset: 0.104)
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 5) {
                     Text(data.name)
                         .font(ConnectorStyle.text(16, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if data.isVerified { ConnectorVerifiedBadge() }
                 }
-                // The capture’s one-liner ink is ~11 pt tall (cap ~8 pt) and
-                // 198 pt wide — one step below the 15 pt row subtitles.
+                // Official one-liner ink 10.7 pt tall / 272.7 pt wide = 11 pt.
                 Text(oneLiner)
-                    .font(ConnectorStyle.text(12))
+                    .font(ConnectorStyle.text(11))
                     .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Official name ink sits 3 pt below the logo tile's top edge.
+            .padding(.top, 2)
             Spacer(minLength: 0)
         }
     }
@@ -123,7 +128,9 @@ struct ConnectorDetailView: View {
     }
 
     private func detailsSection(_ content: ConnectorDetailContent.Directory) -> some View {
-        SettingsSection(String(localized: "Details")) {
+        SettingsSection(String(localized: "Details"),
+                        headerFont: ConnectorStyle.text(13),
+                        headerSpacing: 10.35) {
             // Two groups keep each ViewBuilder block inside its ten-child
             // limit; Group adds no layout of its own.
             Group {
@@ -137,7 +144,7 @@ struct ConnectorDetailView: View {
                 detailDivider(leading: 20)
                 connectorURLRow(label: String(localized: "Connector URL"),
                                 url: content.connectorURL,
-                                minHeight: 67)
+                                minHeight: 66)
                 detailDivider(leading: 20)
                 textRow(label: String(localized: "Added"), value: content.added)
             }
@@ -158,12 +165,14 @@ struct ConnectorDetailView: View {
         } label: {
             SettingsRowContainer(minHeight: 50, verticalPadding: 12) {
                 HStack(spacing: 10) {
+                    // Official tools row: 15 pt label (ink 28.3×13), 13 pt
+                    // count (corpus 03-detail-gd-lower).
                     Text(String(localized: "Tools"))
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Spacer(minLength: 8)
                     Text(verbatim: "\(toolCount)")
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(13))
                         .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     chevron
                 }
@@ -183,11 +192,13 @@ struct ConnectorDetailView: View {
         // this keeps the shared screen’s 10 pt content inset.
         SettingsScreen(title: data.name) {
             VStack(alignment: .leading, spacing: 16) {
+                // Official banner top edge 145.0 (content origin 139.4).
                 ConnectorWarningBanner(text: content.warning)
+                    .padding(.top, 5.6)
                 card {
                     connectorURLRow(label: String(localized: "Connector URL"),
                                     url: content.connectorURL,
-                                    minHeight: 66)
+                                    minHeight: 67)
                 }
                 card {
                     // Display only: AA delegates tool permissions to each
@@ -196,7 +207,7 @@ struct ConnectorDetailView: View {
                     SettingsRowContainer(minHeight: 50, verticalPadding: 12) {
                         HStack(spacing: 10) {
                             Text(String(localized: "All tools"))
-                                .font(ConnectorStyle.text(16))
+                                .font(ConnectorStyle.text(15))
                                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                             Spacer(minLength: 8)
                         }
@@ -214,7 +225,9 @@ struct ConnectorDetailView: View {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
                     .accessibilityLabel(Text(String(localized: "Back")))
             }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .principal) {
+                // No glass pill behind the two-line title (official capture).
                 VStack(spacing: 0) {
                     Text(data.name)
                         .font(ConnectorStyle.text(22, weight: .semibold))
@@ -224,10 +237,12 @@ struct ConnectorDetailView: View {
                         .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
                 }
             }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .topBarTrailing) {
                 ConnectorCircleButton(symbol: "arrow.clockwise") { onRefresh() }
                     .accessibilityLabel(Text(String(localized: "Refresh")))
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -240,11 +255,11 @@ struct ConnectorDetailView: View {
                 }
                 // Display only — tools are listed by name; permissions follow
                 // the runtime's session-level setting and are not shown here.
-                SettingsRowContainer(minHeight: 54, verticalPadding: 15) {
+                SettingsRowContainer(minHeight: 53, verticalPadding: 14.5) {
                     HStack(spacing: 9) {
                         ConnectorLogoView(source: .letter(data.monogramLetter), size: 24)
                         Text(tool.name)
-                            .font(ConnectorStyle.text(16))
+                            .font(ConnectorStyle.text(15))
                             .foregroundStyle(SettingsStyle.ink(colorScheme))
                         Spacer(minLength: 8)
                     }
@@ -260,7 +275,7 @@ struct ConnectorDetailView: View {
                 SettingsRowContainer(minHeight: ConnectorStyle.rowHeight, verticalPadding: 12) {
                     HStack(spacing: 8) {
                         Text(String(localized: "Disconnect"))
-                            .font(ConnectorStyle.text(16))
+                            .font(ConnectorStyle.text(15))
                             .foregroundStyle(ConnectorStyle.dangerInk(colorScheme))
                         Spacer(minLength: 0)
                     }
@@ -280,16 +295,17 @@ struct ConnectorDetailView: View {
                         in: RoundedRectangle(cornerRadius: SettingsStyle.cardRadius, style: .continuous))
     }
 
-    /// One value row of the Details card: 16 pt label, 16 pt grey value.
+    /// One value row of the Details card: 15 pt label, 13 pt grey value
+    /// (official: 类别 ink 27.7×13.3, 通讯 24.7×11.3, 2026年3月 60×11.7).
     private func textRow(label: String, value: String) -> some View {
-        SettingsRowContainer(minHeight: ConnectorStyle.rowHeight, verticalPadding: 12) {
+        SettingsRowContainer(minHeight: 48, verticalPadding: 12) {
             HStack(spacing: 8) {
                 Text(label)
-                    .font(ConnectorStyle.text(16))
+                    .font(ConnectorStyle.text(15))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Spacer(minLength: 8)
                 Text(value)
-                    .font(ConnectorStyle.text(16))
+                    .font(ConnectorStyle.text(13))
                     .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     .lineLimit(1)
             }
@@ -305,19 +321,20 @@ struct ConnectorDetailView: View {
         Button {
             if let url { onOpenLink(url) }
         } label: {
-            SettingsRowContainer(minHeight: 54, verticalPadding: 12) {
+            SettingsRowContainer(minHeight: 53, verticalPadding: 12) {
                 HStack(spacing: 8) {
                     Text(label)
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                     Spacer(minLength: 8)
                     if let value {
                         Text(value)
-                            .font(ConnectorStyle.text(16))
-                            .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
+                            .font(ConnectorStyle.text(13))
+                            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                             .lineLimit(1)
                     }
-                    ConnectorSymbol(name: "anthropicon.arrowOutSquare", size: 17)
+                    // Official glyph ink 17.7×17.7 in link blue.
+                    ConnectorSymbol(name: "anthropicon.arrowOutSquare", size: 18)
                         .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                 }
             }
@@ -332,12 +349,14 @@ struct ConnectorDetailView: View {
     private func connectorURLRow(label: String, url: String, minHeight: CGFloat) -> some View {
         SettingsRowContainer(minHeight: minHeight, verticalPadding: 12) {
             HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
+                // Official label ink 630.7 and address ink 653: 22.3 pt pitch.
+                VStack(alignment: .leading, spacing: 5) {
                     Text(label)
-                        .font(ConnectorStyle.text(16))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
+                    // Official address ink 207.3×11.3 pt = 11.5 pt.
                     Text(url)
-                        .font(ConnectorStyle.text(12))
+                        .font(ConnectorStyle.text(11.5))
                         .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
                         .lineLimit(2)
                         .truncationMode(.middle)
@@ -461,6 +480,33 @@ nonisolated enum ConnectorDetailContent {
 // MARK: - Demo data
 
 extension ConnectorDetailData {
+    /// Gmail, transcribed from the 2026-11-24 official capture (1179×2556):
+    /// 作者 Google / 类别 通讯 / 登录 需要 / 添加时间 2026年3月, connector URL
+    /// `gmailmcp.googleapis.com`, seven-line description, 30 tools.
+    static let gmail = ConnectorDetailData(
+        name: "Gmail",
+        logo: .image("connector-logo-gmail"),
+        monogramLetter: "G",
+        isVerified: true,
+        content: .directory(ConnectorDetailContent.Directory(
+            oneLiner: "Draft replies, summarize threads, & search your inbox",
+            // Server-provided prose stays English in the Chinese UI, exactly
+            // as in the official capture.
+            description: "Connect Gmail to Claude to quickly find important emails and understand long conversations. Claude can search through your messages, read entire email threads to give you context, and help you stay on top of your inbox. Perfect for finding that message you remember sending, catching up on email chains you missed, or preparing for meetings.",
+            author: "Google",
+            authorURL: URL(string: "https://workspace.google.com/products/gmail/"),
+            category: String(localized: "Communication"),
+            signIn: String(localized: "Required"),
+            connectorURL: "https://gmailmcp.googleapis.com/mcp/v1",
+            added: String(localized: "March 2026"),
+            // The capture only shows the labels; targets are placeholders.
+            documentationURL: URL(string: "https://developers.google.com/workspace/gmail"),
+            supportURL: URL(string: "https://support.google.com/mail"),
+            privacyPolicyURL: URL(string: "https://policies.google.com/privacy"),
+            toolCount: 30
+        ))
+    )
+
     /// Google Drive, transcribed from `02-detail-gd-upper.png` /
     /// `03-detail-gd-lower.png`.
     static let googleDrive = ConnectorDetailData(
@@ -489,7 +535,7 @@ extension ConnectorDetailData {
     /// `07-detail-my-phone-custom.png`.
     static let myPhone = ConnectorDetailData(
         name: String(localized: "my phone"),
-        logo: .image("connector-logo-myphone"),
+        logo: .letter("M"),
         monogramLetter: "M",
         isVerified: false,
         content: .custom(ConnectorDetailContent.Custom(

@@ -38,6 +38,10 @@ struct ConnectorLogoView: View {
 
     let source: Source
     var size: CGFloat = ConnectorStyle.logoSize
+    /// Inset applied to bundled brand artwork. The official settings rows
+    /// draw the logo at 0.95 of the slot (measured 22.3 pt ink in a 24 pt
+    /// slot); directory rows keep the wider 0.08 inset.
+    var imageInset: CGFloat = 0.08
     var symbolTint: Color?
     @Environment(\.colorScheme) private var colorScheme
 
@@ -59,27 +63,32 @@ struct ConnectorLogoView: View {
                 monogram(letter: String(letter.prefix(1)).uppercased())
             case .image(let name):
                 // The exported artwork is edge-to-edge; the official rows sit
-                // ~80% ink inside the 28 pt slot.
+                // slightly inside the slot.
                 Image(name)
                     .resizable()
                     .scaledToFit()
-                    .padding(size * 0.08)
+                    .padding(size * imageInset)
             case .appIcon(let name):
-                // The exported CoreUI artwork is edge-to-edge (ink 50% of the
-                // canvas); the official render keeps the 40 pt white tile but
-                // draws the glyph at ~60% (measured 12 pt ink on 40 pt tile).
-                ZStack {
-                    RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                        .fill(.white)
-                    Image(name)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(size * 0.2)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: size * 0.225,
-                                            style: .continuous))
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.0 : 0.08),
-                        radius: 4, y: 2)
+                // Official device-tool tile: the artwork IS the 24 pt tile
+                // (white plate + glyph + red band at 40 units), so it is
+                // clipped to the squircle edge to edge, with a 1 px #BBBBBA
+                // edge and a soft shadow (measured 8 % dark at the edge,
+                // ~2.5 pt falloff, 1 pt down). The earlier 40 pt white plate
+                // underneath the artwork was 67 % too large.
+                Image(name)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * ConnectorStyle.appIconRadiusRatio,
+                                                style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * ConnectorStyle.appIconRadiusRatio,
+                                         style: .continuous)
+                            .strokeBorder(ConnectorStyle.appIconBorder(colorScheme),
+                                          lineWidth: ConnectorStyle.appIconBorderWidth)
+                    }
+                    .shadow(color: .black.opacity(colorScheme == .dark ? 0.0 : 0.16),
+                            radius: 3, y: 1)
             }
         }
         .frame(width: size, height: size)
@@ -91,11 +100,14 @@ struct ConnectorLogoView: View {
     }
 
     private func monogram(letter: String) -> some View {
+        // Official letter tile (“my phone”): white 24 pt square, 1 px #DDDDDD
+        // edge and a ~10.5 pt semibold letter (measured cap 7.7 pt).
         RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-            .fill(DevicePageStyle.tile(colorScheme))
+            .fill(SettingsStyle.card(colorScheme))
             .overlay {
                 RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                    .strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 1)
+                    .strokeBorder(ConnectorStyle.border(colorScheme),
+                                  lineWidth: ConnectorStyle.appIconBorderWidth)
             }
             .overlay {
                 Text(letter)
@@ -149,18 +161,20 @@ struct ConnectorCircleButton: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        // Same shape as the session page's circular toolbar key
+        // (`SubAgentToolbarButton`): a plain button whose label owns one
+        // system-glass circle. The host must hide the toolbar's shared
+        // background for this item (`.sharedBackgroundVisibility(.hidden)`) —
+        // without that the item renders two nested glass circles, which is
+        // exactly what the first build shipped.
         Button(action: action) {
             Image(systemName: symbol)
-                // Measured: official chevron ink 7.3×13.3 pt (23.6×12.3 pt
-                // at 3x) — 17 pt rendered 10.7×18.3 was too large.
-                .font(.system(size: 13, weight: .regular))
+                .font(.system(size: ConnectorStyle.circleGlyphSize(for: symbol), weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
+                .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
+                .glassEffect(.regular.interactive(), in: Circle())
         }
-        // Let the system draw the liquid-glass circle: `.glass` button style
-        // + circular border shape (no hand-built background/shape).
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.regular)
+        .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.4)
         .accessibilityLabel(Text(verbatim: symbol))
@@ -173,11 +187,13 @@ struct ConnectorCountCapsule: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        // Official capsule: 21.7 pt tall with 11 pt digits (ink 8 pt) and
+        // 8.65 pt side padding — the “30” pill measures 28.7 pt wide.
         Text(verbatim: "\(count)")
-            .font(ConnectorStyle.text(14, weight: .semibold))
+            .font(ConnectorStyle.text(11, weight: .semibold))
             .foregroundStyle(ConnectorStyle.accent(colorScheme))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 8.65)
+            .padding(.vertical, 4.3)
             .background(ConnectorStyle.countFill(colorScheme), in: Capsule())
     }
 }
@@ -204,30 +220,36 @@ struct ConnectorVerifiedBadge: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        // Official badge ink 10.7×9.3 pt (2026-11-24 capture); 13 pt rendered
+        // 14×14 and read one step too large.
         Image(systemName: "checkmark.seal")
-            .font(.system(size: 13, weight: .regular))
+            .font(.system(size: 10.5, weight: .regular))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             .accessibilityLabel(Text("Anthropic verified"))
     }
 }
 
 /// Yellow banner: “此连接器未经 Anthropic 验证”.
+///
+/// Official geometry (07-detail-my-phone-custom.png): 360.7 × 47.7 pt card,
+/// 24 pt radius, leading 14 pt to a 20 pt triangle, 15 pt gap, 13 pt text
+/// (ink 11.3) in #734500 on #F9DCA4.
 struct ConnectorWarningBanner: View {
     let text: String
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 15) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 17, weight: .regular))
+                .font(.system(size: 20, weight: .regular))
             Text(text)
-                .font(ConnectorStyle.text(15))
+                .font(ConnectorStyle.text(13))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .foregroundStyle(ConnectorStyle.warningInk(colorScheme))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 15.7)
         .background(ConnectorStyle.warningFill(colorScheme),
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
@@ -274,16 +296,19 @@ struct ConnectorPrimaryButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(ConnectorStyle.text(16, weight: .semibold))
-                .padding(.horizontal, 22)
+                // Official capsule label: ink 24×11.7 pt = 13 pt semibold.
+                .font(ConnectorStyle.text(13, weight: .semibold))
+                .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
+                // Official capsule measures 66.7 × 39.3 pt for “连接” (13 pt
+                // label = 26 pt wide → 20.3 pt side padding), flat #252524
+                // fill (sampled 37/37/37 across the interior).
+                // `.glassProminent` added the system's own padding and
+                // rendered 100.7 × 54.7 — 50 % too big.
+                .padding(.horizontal, 20.3)
                 .frame(height: ConnectorStyle.actionHeight)
+                .background(ConnectorStyle.actionFill(colorScheme), in: Capsule())
         }
-        // Official “连接” is a prominent liquid-glass capsule, not a flat
-        // black pill (same treatment as AppGlassButton.prominent).
-        .buttonStyle(.glassProminent)
-        .buttonBorderShape(.capsule)
-        .tint(ConnectorStyle.actionFill(colorScheme))
-        .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
+        .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
     }

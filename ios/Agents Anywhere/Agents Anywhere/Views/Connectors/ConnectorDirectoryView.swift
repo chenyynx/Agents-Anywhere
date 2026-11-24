@@ -33,7 +33,8 @@ struct ConnectorDirectoryView: View {
                 let rows = entries
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 {
-                        SettingsRowDivider(leading: ConnectorStyle.logoDividerLeading)
+                        SettingsRowDivider(leading: ConnectorStyle.logoDividerLeading,
+                                           trailing: ConnectorStyle.logoDividerTrailing)
                     }
                     Button {
                         selectedEntry = entry
@@ -62,9 +63,11 @@ struct ConnectorDirectoryView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "xmark") { dismiss() }
             }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .topBarTrailing) {
                 sortMenu
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -94,7 +97,8 @@ struct ConnectorDirectoryView: View {
             }
         } label: {
             Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 16, weight: .regular))
+                .font(.system(size: ConnectorStyle.circleGlyphSize(for: "arrow.up.arrow.down"),
+                              weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
                 .glassEffect(.regular.interactive(), in: Circle())
@@ -132,6 +136,7 @@ extension ConnectorDirectoryView {
     /// to a minimal directory entry so every row still opens a detail screen.
     fileprivate func detailData(for entry: ConnectorDirectoryEntry) -> ConnectorDetailData {
         if entry.id == "google-drive" { return ConnectorDetailData.googleDrive }
+        if entry.id == "gmail" { return ConnectorDetailData.gmail }
         return ConnectorDetailData(
             name: entry.name,
             logo: entry.logo,

@@ -22099,6 +22099,23 @@
         }
       }
     },
+    "Communication": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Communication"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通讯"
+          }
+        }
+      }
+    },
     "Category": {
       "extractionState": "manual",
       "localizations": {

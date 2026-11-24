@@ -28,17 +28,40 @@ nonisolated enum ConnectorStyle {
     /// Leading tile on the settings list rows (location / calendar / reminders).
     static let iconTile: CGFloat = 36
     static let iconTileRadius: CGFloat = 10
+    /// The official device-tool tile measures 24×24 pt (bbox 29.7 with its
+    /// shadow), drawn edge to edge from the full-bleed icon artwork — not a
+    /// 40 pt white plate.
+    static let deviceIconSize: CGFloat = 24
+    /// Server-row logo slot: 24 pt, same centre line as the device tiles.
+    static let serverLogoSize: CGFloat = 24
+    /// Corner radius of the app-icon tile (0.225 × 24 = 5.4 pt).
+    static let appIconRadiusRatio: CGFloat = 0.225
+    /// Official tile edge reads #BBBBBA — a 1 px line at 3x (1/3 pt).
+    static let appIconBorderWidth: CGFloat = 1.0 / 3.0
     /// One settings row (measured 146.7 px = 48.9 pt on the official captures).
     static let rowHeight: CGFloat = 49
     /// Hairline start for connector rows: 16 inset + 28 logo + 13 gap.
     static let dividerLeading: CGFloat = 57
     /// Floating search field in the directory.
     static let searchHeight: CGFloat = 44
-    /// Circular toolbar keys (back / add / refresh / sort). The detail capture
-    /// measures a 44 pt back disc; the settings keys read 40–42 pt.
-    static let circleKey: CGFloat = 42
-    /// Primary black capsule (“连接”), ink measured 66.7×39 pt.
-    static let actionHeight: CGFloat = 40
+    /// Circular toolbar keys (back / add / refresh / sort). The official disc
+    /// measures 44.5 pt including its 1 px rim, the same 44 pt content height
+    /// the session page's toolbar button uses — one glass circle per key, no
+    /// extra shared toolbar background behind it.
+    static let circleKey: CGFloat = 44
+    /// SF Symbol point size per key, fitted to the ink measured in the
+    /// 2026-11-24 captures (chevron 7.3×13.3, plus 16.7×16.7,
+    /// xmark 14.7×14.7, refresh 18×17.3, sort 17.7×17.7).
+    static func circleGlyphSize(for symbol: String) -> CGFloat {
+        switch symbol {
+        case "chevron.left", "chevron.right": return 16
+        case "xmark": return 18.5
+        case "arrow.clockwise", "arrow.up.arrow.down": return 20
+        default: return 17
+        }
+    }
+    /// Primary black capsule: the official “连接” measures 66.7 × 39.3 pt.
+    static let actionHeight: CGFloat = 39.3
 
     // MARK: Colours
 
@@ -104,12 +127,38 @@ nonisolated enum ConnectorStyle {
                         : .white
     }
 
-    /// Disclosure chevrons: official #C7C7C5 (the light grey in the capture),
+    /// Disclosure chevrons inside directory / detail cards: official #C7C7C5,
     /// not the 58%-black secondary text colour.
     static func chevron(_ scheme: ColorScheme) -> Color {
         scheme == .dark
             ? Color.white.opacity(0.30)
             : Color(red: 0xC7 / 255.0, green: 0xC7 / 255.0, blue: 0xC5 / 255.0)
+    }
+
+    /// Disclosure chevrons on the settings list rows (device tools and
+    /// servers) are a full step darker than the directory ones: #888781 in
+    /// the 2026-11-24 capture. Dark value projected.
+    static func rowChevron(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.45)
+            : Color(red: 0x88 / 255.0, green: 0x87 / 255.0, blue: 0x81 / 255.0)
+    }
+
+    /// “连接” label and its external-link glyph on server rows: #7A7974
+    /// (the section-header grey), not the accent blue. Dark projected.
+    static func connectLabel(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.55)
+            : Color(red: 0x7A / 255.0, green: 0x79 / 255.0, blue: 0x74 / 255.0)
+    }
+
+    /// Edge of the device-tool app-icon tile. The official tile draws a 1 px
+    /// line that samples #BBBBBA; a 0.69-white stroke over the white tile
+    /// lands on the same value at 3x. Dark projected.
+    static func appIconBorder(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.22)
+            : Color(red: 0xB0 / 255.0, green: 0xB0 / 255.0, blue: 0xAF / 255.0)
     }
 
     /// Trailing values on device-tool rows (“已允许 / 读取和写入”).
@@ -143,11 +192,13 @@ nonisolated enum ConnectorStyle {
                         : Color(red: 0xF3 / 255.0, green: 0xF3 / 255.0, blue: 0xF3 / 255.0)
     }
 
-    /// Hairline start that clears a leading logo. Measured: the row text
-    /// column starts at 70 pt from the screen edge = 18 inset + 28 logo +
-    /// 8 gap, so the in-card hairline offset is 54.
-    static let logoDividerLeading: CGFloat = 54
-    /// Directory / logo row: the text column is aligned at 70 pt on screen.
+    /// Hairline start that clears the leading icon slot. Measured on the
+    /// 2026-11-24 captures: the divider and the row text both start at 68 pt
+    /// on screen = 16 inset + 18 row padding + 28 icon slot + 6 gap.
+    static let logoDividerLeading: CGFloat = 52
+    /// Hairline end: the official divider stops 20 pt short of the card edge.
+    static let logoDividerTrailing: CGFloat = 20
+    /// Directory / logo row: the text column is aligned at 68 pt on screen.
     static let logoRowPadding: CGFloat = 18
     static let logoRowGap: CGFloat = 6
 

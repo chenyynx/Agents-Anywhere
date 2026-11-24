@@ -49,6 +49,7 @@ struct ConnectorPermissionPickerView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
             }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -62,7 +63,7 @@ struct ConnectorPermissionPickerView: View {
         } label: {
             HStack(spacing: 8) {
                 Text(option.title)
-                    .font(ConnectorStyle.text(16))
+                    .font(ConnectorStyle.text(15))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                     .lineLimit(1)
                 Spacer(minLength: 8)

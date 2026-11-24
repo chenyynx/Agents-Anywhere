@@ -87,6 +87,11 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
+    /// First measurements parked while the reader scrolls (never-displayed
+    /// rows above the viewport). Kept apart from `deferredHeights` so the pull
+    /// corrections keep their settle ordering; these are promoted as soon as
+    /// the row nears the viewport and flushed when the gesture ends.
+    private var parkedFirstMeasures: [String: DeferredHeight] = [:]
     /// Per-frame reveal heights for streaming rows. Display-only: never
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
@@ -270,6 +275,7 @@ final class TimelineListLayout: UICollectionViewLayout {
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
+        parkedFirstMeasures = parkedFirstMeasures.filter { byID[$0.key] != nil }
         streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
         lastAppliedHeight = lastAppliedHeight.filter { byID[$0.key] != nil }
         if abs(previousHeight - contentHeight) > 0.5 {
@@ -1085,6 +1091,21 @@ final class TimelineListLayout: UICollectionViewLayout {
             debugSelfMeasureHeights.removeFirst(debugSelfMeasureHeights.count - 64)
         }
 #endif
+        // A never-displayed row above the viewport has no visible stake in
+        // this pass; applying it would shift every row below and re-lay the
+        // reader's band (77 such corrections in 33 s of coasting, probe
+        // 2026-11-25). Park it; the scroll callbacks promote it when it nears
+        // the viewport and flush the rest when the gesture ends.
+        let browsing = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
+        if TimelineOffscreenMeasureDeferral.shouldPark(
+            isBrowsing: browsing.isTracking || browsing.isDecelerating,
+            isInsideUpdate: isInsideUpdate,
+            hasEverBeenDisplayed: heights.hasEverBeenDisplayed(itemID),
+            cellMaxY: attributes.frame.maxY,
+            viewportTop: viewportTop) {
+            parkedFirstMeasures[itemID] = DeferredHeight(key: key, height: measured)
+            return
+        }
         let delta = measured - displayedHeight(for: itemID, key: key, attributes: attributes)
         lastAppliedHeight[itemID] = AppliedHeight(key: key, height: measured)
         if abs(delta) <= 0.5 {
@@ -1129,10 +1150,62 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
     }
 
+    /// Apply parked first measurements whose row is approaching the viewport,
+    /// before the row can become visible. Cheap when nothing is parked; the
+    /// controller calls it from every scroll callback.
+    func promoteDeferredHeightsNearViewport() {
+        guard !parkedFirstMeasures.isEmpty, let collectionView else { return }
+        let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        let rect = CGRect(x: 0,
+                          y: top - collectionView.bounds.height,
+                          width: collectionView.bounds.width,
+                          height: collectionView.bounds.height * 3)
+        var updates: [HeightUpdate] = []
+        var promoted: [String] = []
+        for (itemID, deferred) in parkedFirstMeasures {
+            guard let attributes = attributesByItemID[itemID],
+                  attributes.frame.intersects(rect),
+                  heights.currentKey(for: itemID) == deferred.key else { continue }
+            let delta = deferred.height
+                - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
+            promoted.append(itemID)
+            guard abs(delta) > 0.5 else { continue }
+            let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
+                delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: top)
+            updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
+                height: deferred.height, attributes: attributes,
+                offsetDelta: offset, contentSizeDelta: delta, source: "promoted"))
+        }
+        for itemID in promoted { parkedFirstMeasures.removeValue(forKey: itemID) }
+        if !updates.isEmpty { applyHeightUpdates(updates) }
+    }
+
+    /// Apply everything still parked. Called when the gesture really ends;
+    /// drag-end into deceleration keeps parking until deceleration ends.
+    func flushDeferredHeights() {
+        guard !parkedFirstMeasures.isEmpty else { return }
+        var updates: [HeightUpdate] = []
+        for (itemID, deferred) in parkedFirstMeasures {
+            guard heights.currentKey(for: itemID) == deferred.key,
+                  let attributes = attributesByItemID[itemID] else { continue }
+            let delta = deferred.height
+                - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
+            guard abs(delta) > 0.5 else { continue }
+            let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
+                delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: viewportTop)
+            updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
+                height: deferred.height, attributes: attributes,
+                offsetDelta: offset, contentSizeDelta: delta, source: "flushed"))
+        }
+        parkedFirstMeasures.removeAll()
+        if !updates.isEmpty { applyHeightUpdates(updates) }
+    }
+
     /// Navigation suspension: parked corrections belong to the old viewport.
     func cancelBrowsingCorrections() {
         deferral.cancel()
         deferredHeights.removeAll()
+        parkedFirstMeasures.removeAll()
         heightOwedToUpdate = nil
         insertionOwed?.cancel()
         insertionOwed = nil

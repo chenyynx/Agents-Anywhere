@@ -3641,6 +3641,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probePublish = CACurrentMediaTime()
 #endif
         publishViewport()
+        // Parked first measurements (rows above the viewport that have never
+        // been on screen) come back as soon as their row approaches the
+        // viewport, so the reader never sees a parked height.
+        layout.promoteDeferredHeightsNearViewport()
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("didScroll.publish", since: probePublish)
         let probeAnchor = CACurrentMediaTime()
@@ -3679,6 +3683,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probeLayout = CACurrentMediaTime()
 #endif
         layout.noteDragDidEnd(willDecelerate: decelerate)
+        if !decelerate { layout.flushDeferredHeights() }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("endDragging.layout", since: probeLayout)
         let probeSchedule = CACurrentMediaTime()
@@ -3726,6 +3731,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probeLayout = CACurrentMediaTime()
 #endif
         layout.noteDecelerationDidEnd()
+        layout.flushDeferredHeights()
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("endDecel.layout", since: probeLayout)
         let probeSchedule = CACurrentMediaTime()

@@ -1261,8 +1261,25 @@ class ClaudeConnection:
                     # share the wire shape — so the cut can only ever be per
                     # session, never per frame. It is re-derived on every frame
                     # so both readers below see the same current duty state.
+                    #
+                    # A wake reply that is still OWED counts as unsolicited
+                    # work even though its task already left `active_ids`: the
+                    # terminal `task_notification` drains the register and arms
+                    # the debt (2026-11-24). Without it, a prompt the user sent
+                    # in that gap (the CLI has not read it yet — the wake reply
+                    # runs first) is the only pending, so the wake reply's
+                    # frames were routed into the human execution: it completed
+                    # on the wake reply (`turn_claude_541215`), the human reply
+                    # then minted as a scheduled turn and bound to the wake
+                    # turn's transcript anchor (`ac343032`), and every row of
+                    # the two turns crossed ids. The Server's `latestTurnId`
+                    # consequently named the other turn, so the device footer
+                    # disappeared and reappeared on both replies
+                    # (sess_jmi-WmutmwHyzw, 2026-11-24 23:53:40–51).
                     hosts_unsolicited_work = bool(
-                        self.task_ids or self.background.active_ids
+                        self.task_ids
+                        or self.background.active_ids
+                        or self.background.wake_owed()
                     )
                     if self.pending is not None and (
                         self.pending.user_id is None

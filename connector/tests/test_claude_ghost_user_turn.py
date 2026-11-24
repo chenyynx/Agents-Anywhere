@@ -36,6 +36,7 @@ T1-c  echo missing + a bare non-failed terminal-> promotes the pending (not
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
@@ -50,6 +51,8 @@ from test_claude_runtime import (
 
 from connector.runtimes.claude.sdk import connection as connection_module
 from connector.runtimes.claude.sdk.connection import ClaudeConnection
+from connector.runtimes.claude.sessions.reader import _history_turn_id
+from connector.runtimes.claude.turns import lifecycle
 from connector.runtimes.claude.turns.lifecycle import STALE_COMPLETION_REASON
 
 # A bare success result — no origin, nothing for the chrome gate to know. The
@@ -362,6 +365,136 @@ def test_t1c_bare_terminal_promotes_the_pending_instead_of_being_absorbed(
             assert runner.foreign_terminal_frames == 1
             assert runner.stale_completion_downgrades == 1
             assert host.session_state_updates[-1]["status"] == "idle"
+            assert session.execution is None
+            assert connection.current is None
+            assert connection.pending is None
+        finally:
+            await runtime.stop()
+
+    asyncio.run(run())
+
+
+class _WakeBeforeQueuedPromptClient(_ScheduledClaudeClient):
+    """Turn 2+: a background task's wake reply precedes the queued prompt.
+
+    The CLI processes the injected task notification first (that is the wake
+    reply), and only then reads the prompt the user sent in the same window.
+    The first frame at silence is therefore the wake reply's assistant
+    message — it belongs to an uninvited turn, not to the pending human one.
+    """
+
+    armed = False
+
+    async def query(self, prompt: Any) -> None:
+        if isinstance(prompt, str):
+            await super().query(prompt)
+            return
+        async for message in prompt:
+            content = message["message"]["content"]
+            self.prompt_uuids.append(message["uuid"])
+            if not self.armed:
+                await self.incoming.put(
+                    UserMessage(uuid=message["uuid"], content=content)
+                )
+                await self.reply(f"reply:{content}")
+                continue
+            await self.incoming.put(
+                AssistantMessage(
+                    uuid="row_wake_reply",
+                    message_id="msg_wake_reply",
+                    session_id=self.native_id,
+                    content=[{"type": "text", "text": "wake reply"}],
+                )
+            )
+            await self.incoming.put(
+                SimpleNamespace(type="result", session_id=self.native_id)
+            )
+            # The queued prompt is read after the wake turn settles.
+            await self.incoming.put(
+                UserMessage(uuid=message["uuid"], content=content)
+            )
+            await self.reply(f"reply:{content}")
+
+
+async def _no_transcript_anchor(_session: Any) -> str | None:
+    return None
+
+
+def test_wake_owed_reply_does_not_settle_a_pending_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-11-24 23:53:40（sess_jmi-WmutmwHyzw）: the wake reply crossed ids.
+
+    The user's "行" started a turn while the CLI's background-watcher wake
+    reply was in flight. `active_ids` was already empty (the terminal
+    `task_notification` drained it), so the old partition saw no unsolicited
+    work: the human execution consumed the wake reply's frames and completed
+    on it with the human turn id, and the human reply was later minted as a
+    scheduled turn on the wake turn's transcript anchor. Rows, turn ends and
+    `latestTurnId` were cross-keyed and the device footer hopped between the
+    two replies.
+
+    The wake debt (`wake_owed`) must count as unsolicited work: the first
+    silent frame mints the wake turn, and the echo then promotes the pending
+    human turn to its own reply.
+    """
+
+    async def run() -> None:
+        client = _WakeBeforeQueuedPromptClient()
+        host = _RecordingHost()
+        runtime = _runtime_with(host, _single_client_factory(client))
+        try:
+            first = await runtime.start_turn("ghost_wake", None, "hello")
+            session = runtime._sessions["ghost_wake"]
+            await asyncio.wait_for(session.active_task, 5)
+            assert _ends(host, _turn_id_of(first))[-1]["outcome"] == "completed"
+
+            connection = runtime._turns.runner.connections["ghost_wake"]
+            # No assistant row exists yet, so the transcript scan cannot name
+            # the wake turn; the cast frame's own id is the live anchor.
+            monkeypatch.setattr(
+                lifecycle, "resolve_scheduled_turn_anchor", _no_transcript_anchor
+            )
+            connection.background.note_wake_owed()
+
+            client.armed = True
+            async with _SelectSpy() as spy:
+                second = await runtime.start_turn(
+                    "ghost_wake", client.native_id, "again"
+                )
+                human_id = _turn_id_of(second)
+                await asyncio.wait_for(session.active_task, 5)
+
+            wake_id = _history_turn_id("msg_wake_reply")
+            assert wake_id != human_id
+            mints = spy.mints()
+            assert len(mints) == 1, (
+                "a wake reply owed at silence must mint its own turn instead "
+                "of being routed into the pending human execution"
+            )
+            assert any(event["from_pending"] for event in spy.promotions()), (
+                "the prompt echo must still promote the human pending"
+            )
+            wake_rows = [
+                item
+                for item in host.timeline_item_upserts
+                if item.role == "assistant"
+                and "wake reply" in str(item.content.get("text"))
+            ]
+            human_rows = [
+                item
+                for item in host.timeline_item_upserts
+                if item.role == "assistant"
+                and "reply:again" in str(item.content.get("text"))
+            ]
+            assert wake_rows and all(item.turn_id == wake_id for item in wake_rows), (
+                "the wake reply must stay on the wake turn"
+            )
+            assert human_rows and all(
+                item.turn_id == human_id for item in human_rows
+            ), "the human reply must stay on the human turn"
+            assert _ends(host, wake_id)[-1]["outcome"] == "completed"
+            assert _ends(host, human_id)[-1]["outcome"] == "completed"
             assert session.execution is None
             assert connection.current is None
             assert connection.pending is None

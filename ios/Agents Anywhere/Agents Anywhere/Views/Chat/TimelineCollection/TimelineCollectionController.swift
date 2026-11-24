@@ -1044,11 +1044,41 @@ final class TimelineCollectionController: UIViewController {
         TimelineProbeStore.shared.noteStage(
             "apply.postMeasure", seconds: probeSnapshotStart - probePostMeasureStart)
 #endif
-        var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
-        snapshot.appendSections([.main])
-        snapshot.appendItems(items)
+        // A stream tick changes one row's content but not the item list. The
+        // committed snapshot already holds exactly these identifiers, so ask
+        // it for those items and reconfigure the changed rows instead of
+        // rebuilding a ~590-item snapshot and letting the data source diff it
+        // again (the 2026-11-08 probe measured 19 ms for one such apply).
+        // Any structural change — a prepend, a window replacement, a prompt
+        // or tail identity move — keeps the full rebuild below.
         let existingChanges = items.filter { oldIDs.contains($0) && reconfigure.contains($0) }
-        if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        let structureUnchanged = !windowReplaced
+            && !isHistoryPage
+            && !applyingHistoryPage
+            && oldItems.count == items.count
+            && oldItems == items
+        var snapshot: NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>
+        if structureUnchanged {
+            let committed = dataSource.snapshot()
+            if committed.itemIdentifiers == items {
+                snapshot = committed
+                if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+            } else {
+                snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
+                snapshot.appendSections([.main])
+                snapshot.appendItems(items)
+                if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+            }
+        } else {
+            snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
+            snapshot.appendSections([.main])
+            snapshot.appendItems(items)
+            if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.snapshotBuild", seconds: CACurrentMediaTime() - probeSnapshotStart)
+#endif
         // The height a row displayed under the content this apply replaces. A
         // cell fit equal to it is the previous content, not the new height:
         // the hosting body updates on a later layout pass.

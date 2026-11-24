@@ -942,6 +942,20 @@ final class TimelineCollectionController: UIViewController {
         let measurementTop = viewport.offsetY + viewport.topInset
         let measurementSkipAbove = measurementTop
             - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+        // A first layout or a window replacement leaves most rows without
+        // attributes; a mid-list insertion or a stream tick leaves only a
+        // few. Tail-only measurement is for the former. The latter keeps the
+        // old "measure anything without a height" rule: a row inserted above
+        // the viewport still needs its real height before the reader scrolls
+        // to it (the autorun seed fixture asserts exactly that).
+        var attributeLessCount = 0
+        for item in items where layout.attributes(for: item.itemID) == nil {
+            attributeLessCount += 1
+        }
+        let openingLayout = attributeLessCount > max(48, items.count / 2)
+        let measurementTailLimit = openingLayout
+            ? TimelineSynchronousMeasurementSelection.openingTailLimit
+            : items.count
 #if AA_TIMELINE_PROBE
         let probeHeightKeyStart = CACurrentMediaTime()
 #endif
@@ -965,7 +979,8 @@ final class TimelineCollectionController: UIViewController {
                 itemCount: items.count,
                 needsMeasurement: needsMeasurement,
                 attributesMaxY: layout.attributes(for: item.itemID)?.frame.maxY,
-                skipAbove: measurementSkipAbove) {
+                skipAbove: measurementSkipAbove,
+                tailLimit: measurementTailLimit) {
                 toMeasure.append(item)
             }
         }

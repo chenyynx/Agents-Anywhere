@@ -52,6 +52,14 @@ import Testing
         #expect(selected(count: 1, maxY: { _ in 100 }, skipAbove: 100) == [0])
     }
 
+    /// A mid-list insertion leaves only a few attribute-less rows. The
+    /// controller passes the item count as the limit there, so an inserted
+    /// row above the viewport is measured before the reader scrolls to it
+    /// (the autorun seed fixture asserts that ordering).
+    @Test func nonOpeningPassKeepsMeasuringEveryAttributeLessRow() {
+        #expect(selected(count: 100, tailLimit: 100) == Array(0..<100))
+    }
+
     /// Rows with attributes never fall back to the tail rule: the tail is a
     /// first-layout fallback, not an extra allowance after one exists.
     @Test func attributeRowsOutsideTheTailStillUseTheViewportRule() {

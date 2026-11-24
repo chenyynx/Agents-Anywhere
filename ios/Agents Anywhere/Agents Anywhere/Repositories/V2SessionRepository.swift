@@ -2158,7 +2158,7 @@ final class V2SessionRepository {
         guard entry.projection?.data.state == nil else { return nil }
         let token = UUID()
         entry.liveStatePrefetchID = token
-        let task = Task { [weak self, weak entry] in
+        let task = Task<V2RuntimeState?, Never> { [weak self, weak entry] in
             guard let self, let entry else { return nil }
             defer {
                 if entry.liveStatePrefetchID == token { entry.liveStatePrefetchTask = nil }
@@ -2193,10 +2193,10 @@ final class V2SessionRepository {
     /// footer build see the finished turn.
     private func applyPrefetchedState(_ entry: Entry) {
         guard let state = entry.prefetchedState else { return }
-        guard let projection = entry.projection else { return }
+        guard entry.projection != nil else { return }
         entry.prefetchedState = nil
-        guard projection.data.state == nil else { return }
-        projection.applyState(state)
+        guard entry.projection?.data.state == nil else { return }
+        entry.projection?.applyState(state)
         emit(entry)
     }
 

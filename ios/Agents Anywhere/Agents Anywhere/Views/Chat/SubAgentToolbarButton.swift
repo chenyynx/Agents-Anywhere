@@ -11,6 +11,12 @@ import SwiftUI
 /// circle carries only the mark, so the count and phase stay in the
 /// accessibility value instead of the visible chrome.
 ///
+/// pp 2026-11-24 replaced the in-house canvas mark with the official
+/// ai-agents artwork pp sent (badge + two eyes + the second agent's arc on the
+/// left). It ships as a template SVG asset, so the ink still follows
+/// `text300` / failure red; the artwork is static and only the button's
+/// entrance spring animates.
+///
 /// The ink is the navigation bar's own `text300`, the same ink as the sidebar
 /// mark beside it (pp 2026-11-18: 子代理图标颜色也换成这颜色), and turns the
 /// tool-row failure red (`CodePageTheme.failureGlyphFailedColor`, pp's
@@ -31,6 +37,13 @@ struct SubAgentToolbarButton: View {
     /// circle is the same size.
     private let diameter: CGFloat = 44
 
+    /// The mark's badge keeps the 21.44 pt outer diameter the previous canvas
+    /// mark used (the navigation ring beside it is 21.5 pt). The ai-agents
+    /// artwork's viewBox is 14.3367 × 10.4267, so that height yields 29.5 pt
+    /// of width for the second agent's arc on the left.
+    private let markHeight: CGFloat = 21.44
+    private var markWidth: CGFloat { markHeight * (14.3367 / 10.4267) }
+
     private var tint: Color {
         state.hasFailure
             ? CodePageTheme.failureGlyphFailedColor.resolved(for: colorScheme)
@@ -39,7 +52,11 @@ struct SubAgentToolbarButton: View {
 
     var body: some View {
         Button(action: onOpen) {
-            SubAgentMark(size: 24, tint: tint)
+            Image("aa-SubAgentAgents")
+                .resizable()
+                .scaledToFit()
+                .frame(width: markWidth, height: markHeight)
+                .foregroundStyle(tint)
                 .frame(width: diameter, height: diameter)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .opacity(hasEntered ? 1 : 0)
@@ -81,28 +98,27 @@ struct SubAgentToolbarSlot: View {
     }
 }
 
-/// The mark: the badge circle and two eye strokes, traced 1:1 from the SVG pp
-/// sent (24-unit design space, round caps/joins), with the eyes driven by
-/// `SubAgentMarkMotion`.
+/// The running card's mark, read from the official running card's Lottie
+/// (`grok-subagent-running.json`, 24-unit design space): an 18-unit badge ring
+/// at 2 units stroke and two 2 × 5 eye bars, with both eyes driven by
+/// `SubAgentMarkMotion` (saccade + blink). The toolbar entry no longer uses
+/// this mark — it draws the ai-agents SVG asset above.
 ///
 /// The outline never moves. Each eye glides with the saccade and closes
-/// vertically around its own midpoint (the same centre-scaling blobatar's
-/// idle used), so the blink collapses the stroke toward a short dash instead
-/// of shrinking it toward a corner.
+/// vertically around its own midpoint, so the blink collapses the bar toward a
+/// short dash instead of shrinking it toward a corner.
 struct SubAgentMark: View {
-    /// The square the mark is drawn into, in points. 24 pt is the SVG's own
-    /// design space at 1:1, which puts the badge's outer diameter at 21.44 pt
-    /// — the context ring's own 21.5 pt (pp 2026-11-18: 子代理图标大小跟圆环
-    /// 保持一致).
+    /// The square the mark is drawn into, in points. 24 pt is the Lottie's own
+    /// design space at 1:1, so the 18-unit ring plus its 2-unit stroke puts the
+    /// badge's outer diameter at 20 pt.
     var size: CGFloat = 24
     /// The SVG's `currentColor`: one ink for the whole mark.
     var tint: Color = .primary
 
-    /// The stroke in design units. The source SVG draws at 2, but the toolbar
-    /// renders at the weight of the official navigation mark beside it (pp
-    /// 2026-11-18: 比这图标粗): `anthropicon.menu`'s bars are 0.9 units on an
-    /// 18×15 artwork → 1.44 pt. Shape stays the SVG's.
-    private let strokeWidth: CGFloat = 1.44
+    /// The stroke in design units. The official running card's Lottie draws
+    /// its badge ring at 2 units in this same 24-unit space, so the card mark
+    /// matches that weight.
+    private let strokeWidth: CGFloat = 2
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let motion = SubAgentMarkMotion()
@@ -132,45 +148,42 @@ struct SubAgentMark: View {
                 layer.translateBy(x: eye.center.x, y: eye.center.y)
                 layer.scaleBy(x: 1, y: frame.blink)
                 layer.translateBy(x: -eye.center.x, y: -eye.center.y)
-                layer.stroke(eye.path, with: .color(tint), style: style)
+                layer.fill(eye.path, with: .color(tint))
             }
         }
     }
 
-    /// The badge outline, transcribed verbatim from the SVG's `M`/`C`
-    /// commands so the silhouette stays identical to the design source.
+    /// The badge ring: the Lottie's 18-unit ellipse (radius 9) around the
+    /// 24-unit canvas centre.
     private static let outline: Path = {
         var p = Path()
-        p.move(to: CGPoint(x: 12, y: 2))
-        p.addCurve(to: CGPoint(x: 22, y: 12),
-                   control1: CGPoint(x: 17.5228, y: 2),
-                   control2: CGPoint(x: 22, y: 6.47715))
-        p.addCurve(to: CGPoint(x: 12, y: 22),
-                   control1: CGPoint(x: 22, y: 17.5228),
-                   control2: CGPoint(x: 17.5228, y: 22))
-        p.addCurve(to: CGPoint(x: 2, y: 12),
-                   control1: CGPoint(x: 6.47715, y: 22),
-                   control2: CGPoint(x: 2, y: 17.5228))
-        p.addCurve(to: CGPoint(x: 12, y: 2),
-                   control1: CGPoint(x: 2, y: 6.47715),
-                   control2: CGPoint(x: 6.47715, y: 2))
+        p.move(to: CGPoint(x: 12, y: 3))
+        p.addCurve(to: CGPoint(x: 21, y: 12),
+                   control1: CGPoint(x: 16.97056, y: 3),
+                   control2: CGPoint(x: 21, y: 7.02944))
+        p.addCurve(to: CGPoint(x: 12, y: 21),
+                   control1: CGPoint(x: 21, y: 16.97056),
+                   control2: CGPoint(x: 16.97056, y: 21))
+        p.addCurve(to: CGPoint(x: 3, y: 12),
+                   control1: CGPoint(x: 7.02944, y: 21),
+                   control2: CGPoint(x: 3, y: 16.97056))
+        p.addCurve(to: CGPoint(x: 12, y: 3),
+                   control1: CGPoint(x: 3, y: 7.02944),
+                   control2: CGPoint(x: 7.02944, y: 3))
         p.closeSubpath()
         return p
     }()
 
-    /// The two eye strokes, transcribed verbatim from the SVG's second path
-    /// (split at its `M`), each with the midpoint the blink scales around.
+    /// The two eye bars from the Lottie's `Left Eye` / `Right Eye` layers: 2 × 5
+    /// rects centred at (11, 10.5) and (16, 10.5), each with the midpoint the
+    /// blink scales around.
     private static let eyes: [Eye] = {
-        func eye(_ start: CGPoint, _ end: CGPoint) -> Eye {
-            var path = Path()
-            path.move(to: start)
-            path.addLine(to: end)
-            return Eye(path: path,
-                       center: CGPoint(x: (start.x + end.x) / 2,
-                                       y: (start.y + end.y) / 2))
+        func bar(_ center: CGPoint) -> Eye {
+            Eye(path: Path(CGRect(x: center.x - 1, y: center.y - 2.5,
+                                  width: 2, height: 5)),
+                center: center)
         }
-        return [eye(CGPoint(x: 12, y: 7.60279), CGPoint(x: 12.4521, y: 10.5685)),
-                eye(CGPoint(x: 15.9543, y: 7), CGPoint(x: 16.4064, y: 9.96574))]
+        return [bar(CGPoint(x: 11, y: 10.5)), bar(CGPoint(x: 16, y: 10.5))]
     }()
 
     private struct Eye {

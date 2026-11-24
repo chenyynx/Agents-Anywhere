@@ -49,6 +49,14 @@ struct SubAgentPanelSheet: View {
     @State private var liveStepGroups = TimelineLiveStepGroups()
     /// A tapped step group pushes the same detail sheet the chat timeline uses.
     @State private var stepGroupDetail: CodeStepGroupDetailRequest?
+    /// Silent pagination at the top of the detail (pp 2026-11-24): the manual
+    /// 「加载更早的活动」 button is gone, matching Grok's windowed transcript.
+    /// The cap and cooldown stop one long drag from chain-fetching a page per
+    /// scroll event.
+    @State private var autoLoadedOlderPages = 0
+    @State private var lastAutoLoadAt = Date.distantPast
+    private static let maxAutoLoadedOlderPages = 5
+    private static let autoLoadCooldown: TimeInterval = 0.6
     /// The floating stop capsule matches the chat page's SubAgent capsule
     /// (41 pt tall, 15 pt side padding, 13 pt label); its tap target keeps 44.
     @ScaledMetric(relativeTo: .footnote) private var capsuleHeight: CGFloat = 41
@@ -159,11 +167,30 @@ struct SubAgentPanelSheet: View {
     /// Only a main-only window needs the on-demand read; a normal one already
     /// carries the child rows in `chat.timeline.rows`.
     private func activateActivity() {
+        // A new card (or a new presentation) starts a fresh auto-load budget
+        // and clears the cooldown, so its first reach-to-top can page at once.
+        autoLoadedOlderPages = 0
+        lastAutoLoadAt = .distantPast
         guard chat.session.windowExcludesAgentChildren, let card = selectedCard else { return }
         activity.activate(cardID: card.id,
             lineageIDs: SubAgentProgress.lineageIDs(of: card, in: window))
         // The lineage just changed; hand over this card's live rows at once.
         activity.updateWindow(childRows: liveActivityChildRows)
+    }
+
+    /// The silent 「load older」: when the reader reaches the top of the detail,
+    /// ask the store for one more page. `activity.loadOlder` already guards the
+    /// phase, `hasMore` and an in-flight request; the cap and cooldown here
+    /// keep a single drag from fetching page after page.
+    private func autoLoadOlderIfNeeded(_ card: SubAgentCard) {
+        guard autoLoadedOlderPages < Self.maxAutoLoadedOlderPages,
+              Date().timeIntervalSince(lastAutoLoadAt) >= Self.autoLoadCooldown,
+              activity.phase == .loaded, activity.hasMore else { return }
+        let rows = activityRows(of: card, in: activityItems)
+        guard let oldest = rows.first?.value.orderSeq else { return }
+        autoLoadedOlderPages += 1
+        lastAutoLoadAt = Date()
+        activity.loadOlder(beforeOrderSeq: oldest)
     }
 
     /// The identity set of the window rows belonging to the shown card. The
@@ -223,6 +250,14 @@ struct SubAgentPanelSheet: View {
             }
             .overlay(alignment: .bottom) {
                 stopPills(card).padding(.bottom, 12)
+            }
+            // Reaching the transcript's top asks for one older page; the
+            // helper owns the phase/hasMore guards and the page cap.
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y <= 32
+            } action: { wasAtTop, isAtTop in
+                guard isAtTop, !wasAtTop else { return }
+                autoLoadOlderIfNeeded(card)
             }
         }
         // The chat page's own page colour (#F9F9F7 / #151515); the list uses
@@ -373,28 +408,16 @@ struct SubAgentPanelSheet: View {
         // An empty, settled read renders nothing here (the not-loaded notice
         // already speaks for it); an empty VStack would still eat the outer
         // stack's spacing.
-        if !rows.isEmpty || hasActivityStatus(rows: rows) {
+        if !rows.isEmpty || hasActivityStatus() {
             VStack(alignment: .leading, spacing: 8) {
                 // The on-demand read's own state (C3). Only a main-only window
                 // ever leaves `.idle`: a normal window already holds the rows.
                 switch activity.phase {
                 case .loading:
                     loadingRow(String(localized: "正在加载子代理活动…"))
-                case .loadingOlder:
-                    loadingRow(String(localized: "正在加载更早的活动…"))
                 case .failed(let message):
                     activityFailure(message)
-                case .loaded:
-                    if activity.hasMore, let oldest = rows.first?.value.orderSeq {
-                        Button(String(localized: "加载更早的活动")) {
-                            activity.loadOlder(beforeOrderSeq: oldest)
-                        }
-                        .font(.footnote.weight(.medium))
-                        .frame(minHeight: 32)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tint)
-                    }
-                case .idle, .unsupported, .offline:
+                case .loadingOlder, .loaded, .idle, .unsupported, .offline:
                     EmptyView()
                 }
                 if !rows.isEmpty {
@@ -501,11 +524,10 @@ struct SubAgentPanelSheet: View {
         publishLiveStepGroups(card)
     }
 
-    private func hasActivityStatus(rows: [ChatTimelineRowModel]) -> Bool {
+    private func hasActivityStatus() -> Bool {
         switch activity.phase {
-        case .loading, .loadingOlder, .failed: return true
-        case .loaded: return activity.hasMore && rows.first != nil
-        case .idle, .unsupported, .offline: return false
+        case .loading, .failed: return true
+        case .loadingOlder, .loaded, .idle, .unsupported, .offline: return false
         }
     }
 

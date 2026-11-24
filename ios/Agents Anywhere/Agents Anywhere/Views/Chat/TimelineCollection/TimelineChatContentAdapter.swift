@@ -1241,6 +1241,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// on the hosting path for the rest of the turn. Flipping engines mid-stream
     /// would be a visible jump.
     private var streamingFallbacks: Set<String> = []
+    /// Row ids whose wire row currently carries live streaming text. Fed by
+    /// `updateCodeStreaming`, which already walks the rendered groups; the
+    /// refresh used to scan every held row (~2,900) for this flag, 12.6 ms per
+    /// stream tick on the 2026-11-25 probe.
+    private var liveStreamingRowIDs: Set<String> = []
 
     /// The TextKit path only takes a static assistant message: one row, no
     /// fold, no inline notice, no attachments, no streaming. A turn footer is
@@ -1692,8 +1697,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowsByID[row.id] = row
             }
         }
+        var liveStreaming: Set<String> = []
         for (rowID, row) in rowsByID {
             if row.value.isStreamingText {
+                liveStreaming.insert(rowID)
                 // A row that streams again must not keep an old completion
                 // snapshot; the live publisher is the only source now.
                 codeCompletedStreamingTexts.removeValue(forKey: rowID)
@@ -1725,6 +1732,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 codeStreamingPublishers.removeValue(forKey: rowID)
             }
         }
+        liveStreamingRowIDs = liveStreaming
         // A row that left the timeline (history page swap, recovery) stops
         // being fed immediately.
         codeStreamingPublishers = codeStreamingPublishers.filter { rowsByID[$0.key] != nil }
@@ -2759,8 +2767,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
         let streamingNow = ProcessInfo.processInfo.systemUptime
-        let presentRowIDs = Set(model.timeline.rows.map(\.id))
-        rendererRevealOwnership.prune(keeping: presentRowIDs)
+        // Only ownership needs the full present set. When nothing is owned —
+        // the Code page's normal state — the ~2,900-row id set is dead work on
+        // every stream tick.
+        if !rendererRevealOwnership.activeRowIDs.isEmpty {
+            rendererRevealOwnership.prune(keeping: Set(model.timeline.rows.map(\.id)))
+        }
         for rowID in Array(rendererRevealOwnership.activeRowIDs) {
             guard let timeline = revealTimelines[rowID], timeline.total > 0 else { continue }
             if timeline.shownThrough(at: streamingNow) < timeline.total {
@@ -2771,18 +2783,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             revealCaughtUpAt[rowID] = caught
             if streamingNow - caught > 1.5 { rendererRevealOwnership.finish(rowID) }
         }
-        let streamingRowIDs = Set(model.timeline.rows.compactMap { row -> String? in
-            if row.value.isStreamingText || rendererRevealOwnership.isActive(row.id) {
-                return row.id
-            }
-            // A done row whose cursor is still behind the received text keeps
-            // its document and builder until the reveal hands back.
-            if let timeline = revealTimelines[row.id], timeline.total > 0,
-               timeline.shownThrough(at: streamingNow) < timeline.total {
-                return row.id
-            }
-            return nil
-        })
+        // Same set the full scan used to build, from the sources that already
+        // know it: live wire text rows (fed above), owned rows, publishers,
+        // and reveal cursors still behind their received text.
+        var streamingRowIDs = liveStreamingRowIDs
+        streamingRowIDs.formUnion(rendererRevealOwnership.activeRowIDs)
+        streamingRowIDs.formUnion(codeStreamingPublishers.keys)
+        for (rowID, timeline) in revealTimelines
+        where timeline.total > 0 && timeline.shownThrough(at: streamingNow) < timeline.total {
+            streamingRowIDs.insert(rowID)
+        }
         streamingDocuments = streamingDocuments.filter { streamingRowIDs.contains($0.key) }
         streamingBuilders = streamingBuilders.filter { streamingRowIDs.contains($0.key) }
         streamingFallbacks.formIntersection(streamingRowIDs)

@@ -347,6 +347,18 @@ final class V2SessionRepository {
             }
         }
         entry.restoredEmptyWindow = false
+        let restoredOrderConflict = entry.restoredOrderConflict
+        entry.restoredOrderConflict = false
+        if restoredOrderConflict, !entry.model.isLocalCreation,
+           network.availability != .offline {
+            // The archive held two rows at one orderSeq (a server order repair
+            // landed after it was written). One bounded snapshot replaces the
+            // stale order with the Server's; the local window has already been
+            // presented by `load`, so this read never delays the first paint.
+            // The held rows must not be grafted back: when the repair did not
+            // bump a row's version, the supersede tie keeps the stale order.
+            return try await refresh(sessionId: sessionId, graftHeldRows: false)
+        }
         // A window cached before this client knew about `deferActivity` holds
         // complete rows (more bytes, no summaries). One
         // latest page re-reads it deferred; a negative echo (an old server, or
@@ -479,6 +491,11 @@ final class V2SessionRepository {
         // was simply empty from birth does not qualify.
         entry.restoredEmptyWindow = saved.items.isEmpty
             && (archive.hasOlderItems || saved.localHasOlderRows)
+        // A duplicate orderSeq in the archive cannot describe the Server's
+        // timeline (order is keyed uniquely): it is a copy written before an
+        // order repair. `open` replaces it with one authoritative read.
+        entry.restoredOrderConflict = TimelineDiagnostics.hasDuplicateOrder(
+            items: saved.items)
         entry.projection?.settleEmptyWindow()
         entry.projection?.setLocalOlderAvailable(saved.localHasOlderRows)
         // A failure that outlived the process is still on record: the ring is
@@ -542,8 +559,12 @@ final class V2SessionRepository {
         }
     }
 
-    /// Explicit refresh replaces the aggregate and then re-establishes live recovery.
-    func refresh(sessionId: V2SessionID) async throws -> V2SessionData {
+    /// Explicit refresh replaces the aggregate and then re-establishes live
+    /// recovery. `graftHeldRows` is false for the one repair case where the
+    /// held rows' *order* is the damaged part (see the open-time duplicate
+    /// order branch): a supersede tie would otherwise keep the stale order.
+    func refresh(sessionId: V2SessionID,
+                 graftHeldRows: Bool = true) async throws -> V2SessionData {
         // A holder that captured the creation's local id before the bind still
         // reads the renamed entry (see `resolvedID`).
         let sessionId = resolvedID(sessionId)
@@ -565,7 +586,8 @@ final class V2SessionRepository {
         entry.historyTask?.cancel()
         entry.historyTask = nil
         defer { if isCurrent(entry) { start(entry) } }
-        return try await hydrate(entry, trigger: "refresh")
+        return try await hydrate(entry, trigger: "refresh",
+                                 graftHeldRows: graftHeldRows)
     }
 
     func loadOlder(sessionId: V2SessionID, limit: Int? = nil,
@@ -1402,7 +1424,8 @@ final class V2SessionRepository {
         for entry in old { dispose(entry) }
     }
 
-    private func hydrate(_ entry: Entry, trigger: String = "load") async throws -> V2SessionData {
+    private func hydrate(_ entry: Entry, trigger: String = "load",
+                         graftHeldRows: Bool = true) async throws -> V2SessionData {
         if let task = entry.loadTask { return try await task.value }
         entry.readVersion += 1
         entry.historyTask?.cancel()
@@ -1473,8 +1496,10 @@ final class V2SessionRepository {
             // protect rows the reader already completed; the deferred snapshot
             // carries summaries for them. Carry those rows across the
             // replacement instead of silently collapsing them back.
-            let heldRows = entry.projection?.data.items ?? []
-            let completeRows = entry.projection?.data.items.filter { !$0.isDeferred } ?? []
+            let heldRows = graftHeldRows ? (entry.projection?.data.items ?? []) : []
+            let completeRows = graftHeldRows
+                ? (entry.projection?.data.items.filter { !$0.isDeferred } ?? [])
+                : []
             // The snapshot refreshes its own page only. Held rows below the
             // page are the ones a mass turn-id re-key can leave behind; the
             // page's bottom declared turn is the turn that may straddle it.
@@ -2560,6 +2585,10 @@ private final class Entry {
     /// The local store restored this session's metadata but none of its rows
     /// (cache eviction). `open` answers it with the bounded snapshot.
     var restoredEmptyWindow = false
+    /// The restored archive carried two rows at one `orderSeq`. The Server
+    /// never returns that; the copy predates an order repair. `open` re-reads
+    /// the authoritative window once and clears the flag.
+    var restoredOrderConflict = false
     /// Rotation key so a finishing fill only clears its own registration
     /// (a stop + observe can replace the task before its defer runs).
     var latestFillID = UUID()

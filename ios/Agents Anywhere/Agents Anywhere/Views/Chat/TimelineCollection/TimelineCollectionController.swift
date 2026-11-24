@@ -159,6 +159,12 @@ final class TimelineCollectionController: UIViewController {
     private var flightProbeHeightChanges = 0
     private var flightProbeArmedAt: CFTimeInterval = 0
     private var flightProbeLink: CADisplayLink?
+    /// `timeline.mover` scroll entries fire on every layout correction and on
+    /// every coasting tick (device: 31–50/s bursts in `log.burst`). One sample
+    /// per second still names the correction; later ticks are counted and
+    /// reported with the next sample.
+    private var lastMoverScrollLogAt: CFTimeInterval = 0
+    private var coalescedMoverScrolls = 0
     private var didStartAnchorDriver = false
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
@@ -410,6 +416,20 @@ final class TimelineCollectionController: UIViewController {
                     self.setFlightProbe(merged["spring"] == "fly")
                 } else if action == "arrived" {
                     self.setFlightProbe(false)
+                }
+                if action == "scroll" {
+                    // A coasting tick can fire 50 times a second; keep one
+                    // sample per second and name how many it coalesced.
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if now - self.lastMoverScrollLogAt < 1 {
+                        self.coalescedMoverScrolls += 1
+                        return
+                    }
+                    self.lastMoverScrollLogAt = now
+                    if self.coalescedMoverScrolls > 0 {
+                        merged["coalesced"] = String(self.coalescedMoverScrolls)
+                        self.coalescedMoverScrolls = 0
+                    }
                 }
                 ClientDiagnosticsLog.shared.record(
                     kind: "timeline.mover",

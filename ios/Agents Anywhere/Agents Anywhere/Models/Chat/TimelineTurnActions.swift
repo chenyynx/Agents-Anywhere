@@ -322,11 +322,23 @@ enum TimelineTurnActions {
     /// its meta did, leaving `latestTurnId` one turn behind. The previous
     /// rule deliberately shows the last known footer offline, so a mismatch
     /// returns nil (fallback) rather than false; a match still seals.
+    ///
+    /// `stateCoversMain` is the same proof from the runtime state: a state
+    /// written after every visible main row, on a known, non-running runtime
+    /// (`suppressLatest` false) that says idle, means the bucket on screen is
+    /// over — the recorded id is merely late. The Server writes the ledger
+    /// after the state (it waits on the timeline write fence), and the device
+    /// measured 0.4–1.2 s of a finished reply without its footer
+    /// (pp 2026-11-24 23:52:52.4 state idle, 23:52:53.65 footer). Returning
+    /// nil hands the decision back to the runtime-state rule. When the state
+    /// cannot cover the rows, a newer bucket is one the state never saw and
+    /// the veto stands.
     static func latestTurnSeal(bucketTurnID: V2TurnID?,
                                bucketMaxMainSeq: Int,
                                latestTurnId: V2TurnID?,
                                latestTurnEndSeq: Int,
-                               connectorOffline: Bool = false) -> Bool? {
+                               connectorOffline: Bool = false,
+                               stateCoversMain: Bool = false) -> Bool? {
         guard let latestTurnId = latestTurnId, let bucketTurnID = bucketTurnID else {
             return nil
         }
@@ -336,6 +348,7 @@ enum TimelineTurnActions {
         // some writers, so this only proves *older* buckets; the latest turn
         // is decided by the id match above.
         if bucketMaxMainSeq > 0, bucketMaxMainSeq <= latestTurnEndSeq { return true }
+        if stateCoversMain { return nil }
         return false
     }
 
@@ -397,6 +410,7 @@ enum TimelineTurnActions {
                       latestTurnId: V2TurnID? = nil,
                       latestTurnEndSeq: Int = 0,
                       connectorOffline: Bool = false,
+                      stateCoversMain: Bool = false,
                       hasNewerItems: Bool = false,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
                       report: ((FooterBuildReport) -> Void)? = nil)
@@ -560,7 +574,8 @@ enum TimelineTurnActions {
                              bucketMaxMainSeq: finalBucketMaxMainSeq,
                              latestTurnId: latestTurnId,
                              latestTurnEndSeq: latestTurnEndSeq,
-                             connectorOffline: connectorOffline)
+                             connectorOffline: connectorOffline,
+                             stateCoversMain: stateCoversMain)
         // The durable id decides when it can; the runtime-state gate (and a
         // pending outgoing bubble) stays the fallback for old servers and
         // runtimes that declare no turn ids.

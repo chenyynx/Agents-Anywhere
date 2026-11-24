@@ -42,6 +42,20 @@ nonisolated enum TimelineDiagnostics {
         ]
     }
 
+    /// Whether a held window carries two rows at one `orderSeq`.
+    ///
+    /// The Server keys timeline order uniquely, so a duplicate can only come
+    /// from a stale local copy (an archive written before a server-side order
+    /// repair). The repository uses this to re-read the authoritative window
+    /// once instead of serving the damaged order.
+    static func hasDuplicateOrder(items: [V2TimelineItem]) -> Bool {
+        var seen = Set<Int>()
+        for item in items {
+            if !seen.insert(item.orderSeq).inserted { return true }
+        }
+        return false
+    }
+
     /// Duplicate and non-positive `orderSeq` values in a held window.
     static func validateOrder(
         sessionID: String,

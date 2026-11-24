@@ -882,6 +882,20 @@ class ClaudeTurnRunner:
             execution = ClaudeExecution(turn_id=turn_id)
             session.execution = execution
             response.execution = execution
+            if session.queued_execution is not None:
+                # The wake reply was minted while a user prompt waits on the
+                # same transport (the prompt was sent in the gap between the
+                # task notification and this reply). The user execution is
+                # parked and restored when this turn settles; without this
+                # line the device diagnosis had to reconstruct the two
+                # crossed turn ids from row ids (2026-11-24 23:53).
+                logger.info(
+                    "Claude scheduled turn minted while a user turn waits "
+                    "session_id={} turn_id={} queued_turn_id={}",
+                    session.session_id,
+                    execution.turn_id,
+                    session.queued_execution.turn_id,
+                )
             try:
                 await self.notifications.session_state.session_state_update(
                     session,

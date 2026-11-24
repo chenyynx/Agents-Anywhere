@@ -107,6 +107,20 @@ private func recordedKinds(_ log: ClientDiagnosticsLog) -> [String] {
         #expect(missing["userUnrendered"] == "1")
     }
 
+    @Test func duplicateOrderIsDetectedForTheRepairPath() throws {
+        let unique = [
+            try diagnosticsItem(id: "a", order: 1),
+            try diagnosticsItem(id: "b", order: 2),
+        ]
+        #expect(!TimelineDiagnostics.hasDuplicateOrder(items: unique))
+        let duplicate = [
+            try diagnosticsItem(id: "a", order: 1),
+            try diagnosticsItem(id: "b", order: 1),
+        ]
+        #expect(TimelineDiagnostics.hasDuplicateOrder(items: duplicate))
+        #expect(!TimelineDiagnostics.hasDuplicateOrder(items: []))
+    }
+
     @Test func healthyWindowRecordsNothing() throws {
         let log = diagnosticsLog()
         let user = try diagnosticsItem(id: "user", order: 1, role: "user")

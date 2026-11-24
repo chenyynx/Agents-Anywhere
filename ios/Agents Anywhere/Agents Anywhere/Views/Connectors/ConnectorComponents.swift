@@ -161,18 +161,15 @@ struct ConnectorCircleButton: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        // Same shape as the session page's circular toolbar key
-        // (`SubAgentToolbarButton`): a plain button whose label owns one
-        // system-glass circle. The host must hide the toolbar's shared
-        // background for this item (`.sharedBackgroundVisibility(.hidden)`) —
-        // without that the item renders two nested glass circles, which is
-        // exactly what the first build shipped.
+        // Plain bar button: the toolbar draws the one system glass circle
+        // (44 pt) and animates it. Drawing our own `.glassEffect` here made
+        // the item clip its scale-back at the bar's 44 pt bounds, and hiding
+        // the shared background on top of it produced the double circle the
+        // first build shipped.
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: ConnectorStyle.circleGlyphSize(for: symbol), weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
-                .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .glassEffect(.regular.interactive(), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -205,11 +202,11 @@ struct ConnectorTag: View {
 
     var body: some View {
         Text(text)
-            .font(ConnectorStyle.text(13))
+            // Official tag: pill 46 × 20.7 pt, text ink 28.3 × 9.0 = 10 pt.
+            .font(ConnectorStyle.text(10))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
-            .padding(.horizontal, 9)
-            // Official capsule measures ~28 pt tall.
-            .padding(.vertical, 5.5)
+            .padding(.horizontal, 8.8)
+            .padding(.vertical, 4.1)
             .background(ConnectorStyle.tagFill(colorScheme), in: Capsule())
     }
 }
@@ -239,17 +236,22 @@ struct ConnectorWarningBanner: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 15) {
+        HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 20, weight: .regular))
             Text(text)
-                .font(ConnectorStyle.text(13))
+                // Official monoAux token (13 × 0.9 = 11.5; the capture reads
+                // 11.3) with the official 1.56× paragraph pitch.
+                .font(ConnectorStyle.text(ConnectorStyle.textMonoAux))
+                .lineSpacing(ConnectorStyle.paragraphLeading(ConnectorStyle.textMonoAux))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .foregroundStyle(ConnectorStyle.warningInk(colorScheme))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 15.7)
+        // Official banner: text ink starts 60.3 (16 inset + 22.9 icon box +
+        // 6 gap) and the card is 47.7 tall = 23.9 icon line + 2 × 12.05.
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12.05)
         .background(ConnectorStyle.warningFill(colorScheme),
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
@@ -300,13 +302,15 @@ struct ConnectorPrimaryButton: View {
                 .font(ConnectorStyle.text(13, weight: .semibold))
                 .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
                 // Official capsule measures 66.7 × 39.3 pt for “连接” (13 pt
-                // label = 26 pt wide → 20.3 pt side padding), flat #252524
-                // fill (sampled 37/37/37 across the interior).
-                // `.glassProminent` added the system's own padding and
-                // rendered 100.7 × 54.7 — 50 % too big.
+                // label = 26 pt wide → 20.3 pt side padding). The material is
+                // **system liquid glass** tinted dark (sampled #252524): the
+                // capsule keeps our exact frame so the button stays
+                // 66.7 × 39.3 — `.glassProminent` added the system's own
+                // padding and rendered 100.7 × 54.7, 50 % too big.
                 .padding(.horizontal, 20.3)
                 .frame(height: ConnectorStyle.actionHeight)
-                .background(ConnectorStyle.actionFill(colorScheme), in: Capsule())
+                .glassEffect(.regular.tint(ConnectorStyle.actionGlassTint(colorScheme)).interactive(),
+                             in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -358,7 +362,7 @@ struct ConnectorCardRow<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(title)
-                        .font(ConnectorStyle.text(14))
+                        .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .lineLimit(1)
                     if showsVerified { ConnectorVerifiedBadge() }
@@ -366,12 +370,14 @@ struct ConnectorCardRow<Trailing: View>: View {
                 }
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(ConnectorStyle.text(12))
+                        // Official subtitle 11 pt (same string measures
+                        // 197.3 pt wide vs our 214.7 at 12).
+                        .font(ConnectorStyle.text(11))
                         .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
-                        // Official two-line rows measure 103 pt vs 68.7 for
-                        // one line: the description keeps a 20 pt line gap.
-                        .lineSpacing(20)
+                        // Official two-line rows are 85 pt vs 69 for one:
+                        // one extra 11 pt line + 2.5 pt leading.
+                        .lineSpacing(2.5)
                 }
             }
             Spacer(minLength: 8)
@@ -379,14 +385,15 @@ struct ConnectorCardRow<Trailing: View>: View {
             if showsChevron {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(ConnectorStyle.chevron(colorScheme))
+                    .foregroundStyle(ConnectorStyle.rowChevron(colorScheme))
                     // Official chevron right edge sits 27 pt from the card
                     // edge (row padding 18 + 7 extra).
                     .padding(.trailing, 7)
             }
         }
         .padding(.horizontal, ConnectorStyle.logoRowPadding)
-        .padding(.vertical, 11)
+        // Official one-line row 69 pt, two-line 85 pt (17.25 + 34.5 block).
+        .padding(.vertical, 17.25)
         .frame(minHeight: rowMinHeight)
         .contentShape(Rectangle())
     }

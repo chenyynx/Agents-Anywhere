@@ -68,16 +68,19 @@ struct ConnectorsSettingsView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
             }
-            // Both keys draw their own system-glass circle; the bar's shared
-            // background would draw a second one behind them.
-            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .topBarTrailing) {
                 addMenu
             }
-            .sharedBackgroundVisibility(.hidden)
         }
-        .navigationDestination(isPresented: $showsDirectory) {
-            ConnectorDirectoryView()
+        // The official directory opens as a sheet stacked over this one
+        // (1179×2556 capture: the parent's rounded edge peeks 10 pt above),
+        // not as a push inside the same sheet.
+        .sheet(isPresented: $showsDirectory) {
+            NavigationStack {
+                ConnectorDirectoryView()
+            }
+            // The official stacked sheet shows no drag indicator.
+            .presentationDragIndicator(.hidden)
         }
         .navigationDestination(item: $route) { route in
             switch route {
@@ -256,11 +259,10 @@ struct ConnectorsSettingsView: View {
                 Label(String(localized: "Add custom connector"), systemImage: "plus")
             }
         } label: {
+            // Glyph only — the toolbar's shared glass renders the circle.
             Image(systemName: "plus")
                 .font(.system(size: 17, weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
-                .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .glassEffect(.regular.interactive(), in: Circle())
         }
         .accessibilityLabel(Text(String(localized: "Add")))
     }

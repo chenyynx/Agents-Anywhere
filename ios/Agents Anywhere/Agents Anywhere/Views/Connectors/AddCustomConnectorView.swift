@@ -74,7 +74,6 @@ struct AddCustomConnectorView: View {
                 }
                 .accessibilityLabel(Text(String(localized: "Close")))
             }
-            .sharedBackgroundVisibility(.hidden)
         }
         .safeAreaInset(edge: .bottom) {
             submitBar
@@ -89,9 +88,8 @@ struct AddCustomConnectorView: View {
     /// copy (no card), matching the settings explanatory footers.
     private var intro: some View {
         Text(String(localized: "Connect directly to an MCP server by entering its URL."))
-            // Official connector copy scale: body 15, supporting text 13
-            // (settings rows measure title 15 / subtitle 11).
-            .font(ConnectorStyle.text(13))
+            // Official monoAux token (13 × 0.9 = 11.5).
+            .font(ConnectorStyle.text(ConnectorStyle.textMonoAux))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 4)
@@ -107,7 +105,7 @@ struct AddCustomConnectorView: View {
                     TextField(String(localized: "Name"), text: $name,
                               prompt: promptText(String(localized: "My connector")))
                         .textFieldStyle(.plain)
-                        .font(ConnectorStyle.text(15))
+                        .font(ConnectorStyle.text(ConnectorStyle.textBody))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
@@ -122,7 +120,7 @@ struct AddCustomConnectorView: View {
                     TextField(String(localized: "URL"), text: $url,
                               prompt: promptText(String(localized: "https://mcp.example.com/sse")))
                         .textFieldStyle(.plain)
-                        .font(ConnectorStyle.text(15))
+                        .font(ConnectorStyle.text(ConnectorStyle.textBody))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .keyboardType(.URL)
                         .textContentType(.URL)
@@ -167,12 +165,13 @@ struct AddCustomConnectorView: View {
             // subtitle with a 15.6 pt line pitch.
             VStack(alignment: .leading, spacing: 3.5) {
                 Text(String(localized: "Requires sign-in"))
-                    .font(ConnectorStyle.text(15))
+                    .font(ConnectorStyle.text(ConnectorStyle.textBody))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(String(localized: "Turn on if this server needs you to authenticate. You can enter OAuth client details below."))
-                    .font(ConnectorStyle.text(11))
+                    .font(ConnectorStyle.text(ConnectorStyle.textMonoAux))
                     .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
-                    .lineSpacing(2)
+                    // Official paragraphs run at 1.56× the font size.
+                    .lineSpacing(ConnectorStyle.paragraphLeading(ConnectorStyle.textMonoAux))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
@@ -205,7 +204,7 @@ struct AddCustomConnectorView: View {
                     }
                 }
                 .textFieldStyle(.plain)
-                .font(ConnectorStyle.text(15))
+                .font(ConnectorStyle.text(ConnectorStyle.textBody))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -217,7 +216,7 @@ struct AddCustomConnectorView: View {
 
     private func fieldLabel(_ title: String) -> some View {
         Text(title)
-            .font(ConnectorStyle.text(13))
+            .font(ConnectorStyle.text(ConnectorStyle.textMonoAux))
             .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
     }
 
@@ -262,7 +261,7 @@ struct AddCustomConnectorView: View {
                 // Same label scale as the measured official primary capsule
                 // (13 pt semibold, ink 24×11.7).
                 Text(String(localized: "Add connector"))
-                    .font(ConnectorStyle.text(13, weight: .semibold))
+                    .font(ConnectorStyle.text(ConnectorStyle.textMono, weight: .semibold))
                     .opacity(isSubmitting ? 0 : 1)
                 if isSubmitting {
                     ProgressView()
@@ -272,7 +271,10 @@ struct AddCustomConnectorView: View {
             .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
             .frame(maxWidth: .infinity)
             .frame(height: ConnectorStyle.actionHeight)
-            .background(ConnectorStyle.actionFill(colorScheme), in: Capsule())
+            // Same system liquid-glass material as the floating connector
+            // capsule (dark tint, system-drawn).
+            .glassEffect(.regular.tint(ConnectorStyle.actionGlassTint(colorScheme)).interactive(),
+                         in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(!isSubmitEnabled)

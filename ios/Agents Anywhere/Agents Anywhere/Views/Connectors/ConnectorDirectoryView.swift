@@ -44,9 +44,9 @@ struct ConnectorDirectoryView: View {
                                          tag: entry.tag,
                                          showsVerified: true,
                                          subtitle: entry.subtitle,
-                                         // Official single-line row: 160 px =
-                                         // 53 pt; taller rows grow naturally.
-                                         rowMinHeight: 68)
+                                         // Official one-line row 69 pt,
+                                         // two-line 85 pt.
+                                         rowMinHeight: 69)
                     }
                     .buttonStyle(.plain)
                 }
@@ -63,11 +63,9 @@ struct ConnectorDirectoryView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "xmark") { dismiss() }
             }
-            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .topBarTrailing) {
                 sortMenu
             }
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -100,8 +98,6 @@ struct ConnectorDirectoryView: View {
                 .font(.system(size: ConnectorStyle.circleGlyphSize(for: "arrow.up.arrow.down"),
                               weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
-                .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .glassEffect(.regular.interactive(), in: Circle())
         }
         .accessibilityLabel(Text(String(localized: "Sort and filter connectors")))
     }

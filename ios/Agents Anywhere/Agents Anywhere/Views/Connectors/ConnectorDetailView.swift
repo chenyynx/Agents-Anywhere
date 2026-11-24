@@ -76,8 +76,6 @@ struct ConnectorDetailView: View {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
                     .accessibilityLabel(Text(String(localized: "Back")))
             }
-            // One glass circle per key: hide the bar's shared background.
-            .sharedBackgroundVisibility(.hidden)
         }
         .navigationDestination(isPresented: $showsTools) {
             ConnectorToolListView(
@@ -188,8 +186,8 @@ struct ConnectorDetailView: View {
     // MARK: - Custom shape (“my phone” capture)
 
     private func customScreen(_ content: ConnectorDetailContent.Custom) -> some View {
-        // UNVERIFIED: the banner sits ~17 pt under the sheet’s navigation bar;
-        // this keeps the shared screen’s 10 pt content inset.
+        // Official capture: banner top edge 145.0 with the bar content at
+        // 139.4 (5.6 pt inset).
         SettingsScreen(title: data.name) {
             VStack(alignment: .leading, spacing: 16) {
                 // Official banner top edge 145.0 (content origin 139.4).
@@ -201,15 +199,21 @@ struct ConnectorDetailView: View {
                                     minHeight: 67)
                 }
                 card {
-                    // Display only: AA delegates tool permissions to each
-                    // runtime, so the official “Always allow” value and the
-                    // permission picker are intentionally not reproduced.
+                    // Read-only value per the AA decision that tool
+                    // permissions follow the runtime's session mode; the
+                    // official row shows the value and a chevron.
                     SettingsRowContainer(minHeight: 50, verticalPadding: 12) {
                         HStack(spacing: 10) {
                             Text(String(localized: "All tools"))
                                 .font(ConnectorStyle.text(15))
                                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                             Spacer(minLength: 8)
+                            // Official row carries the read-only value and a
+                            // chevron (ink 54×12 at 14 pt, gap 16).
+                            Text(String(localized: "Always allow"))
+                                .font(ConnectorStyle.text(14))
+                                .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                            customRowChevron(leading: 6)
                         }
                     }
                     .padding(.horizontal, 4)
@@ -225,15 +229,16 @@ struct ConnectorDetailView: View {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
                     .accessibilityLabel(Text(String(localized: "Back")))
             }
-            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .principal) {
                 // No glass pill behind the two-line title (official capture).
                 VStack(spacing: 0) {
+                    // Official custom-page title ink 16.0 / 77.7 wide =
+                    // 17 pt (not the 22 pt directory-detail title).
                     Text(data.name)
-                        .font(ConnectorStyle.text(22, weight: .semibold))
+                        .font(ConnectorStyle.text(17, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Text(String(localized: "Custom"))
-                        .font(ConnectorStyle.text(13))
+                        .font(ConnectorStyle.text(12))
                         .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
                 }
             }
@@ -242,7 +247,6 @@ struct ConnectorDetailView: View {
                 ConnectorCircleButton(symbol: "arrow.clockwise") { onRefresh() }
                     .accessibilityLabel(Text(String(localized: "Refresh")))
             }
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -262,6 +266,10 @@ struct ConnectorDetailView: View {
                             .font(ConnectorStyle.text(15))
                             .foregroundStyle(SettingsStyle.ink(colorScheme))
                         Spacer(minLength: 8)
+                        Text(String(localized: "Always allow"))
+                            .font(ConnectorStyle.text(14))
+                            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                        customRowChevron(leading: 7)
                     }
                 }
                 .padding(.horizontal, 4)
@@ -285,6 +293,19 @@ struct ConnectorDetailView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// Display-only permission affordance on the custom connector page:
+    /// #888781 chevron 13 pt semibold, 16 pt clear of the value, 7 pt in from
+    /// the row's trailing edge (official my-phone capture).
+    private func customRowChevron(leading: CGFloat) -> some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ConnectorStyle.rowChevron(colorScheme))
+            // The row's HStack spacing adds 10 (all-tools) or 9 (tool rows);
+            // the official value→chevron ink gap is 16.
+            .padding(.leading, leading)
+            .padding(.trailing, 7)
     }
 
     // MARK: - Shared pieces
@@ -354,22 +375,30 @@ struct ConnectorDetailView: View {
                     Text(label)
                         .font(ConnectorStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
-                    // Official address ink 207.3×11.3 pt = 11.5 pt.
+                    // Official address: 11 pt, secondary grey #52514E (the
+                    // custom page reads #52514E too, not the tertiary grey).
                     Text(url)
-                        .font(ConnectorStyle.text(11.5))
-                        .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
+                        .font(ConnectorStyle.text(11))
+                        .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
-                Button(action: onCopyURL) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
+                // Only shown when there is an address to copy (demo entries
+                // without roster data carry an empty URL).
+                if !url.isEmpty {
+                    Button(action: onCopyURL) {
+                        // Official glyph is two rounded squares
+                        // (square.on.square), ink 13.7×13.7, right edge
+                        // 23.3 pt from the card edge.
+                        Image(systemName: "square.on.square")
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 .accessibilityLabel(Text(String(localized: "Copy URL")))
             }
         }

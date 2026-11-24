@@ -11,6 +11,28 @@ import SwiftUI
 nonisolated enum ConnectorStyle {
     // MARK: Typography
 
+    // MARK: Official typography tokens
+
+    /// The app's `Typography` presets, read from the binary
+    /// (`DATA/tokens.json` in the RE corpus, tier EVIDENCE):
+    ///   body 17 pt / line 27.2 (dynamic `.body`),
+    ///   mono 15 pt / line 24 (dynamic `.footnote`),
+    ///   monoAux 13 pt / line 20.8.
+    /// The 2026-11-24 device captures render them at ~0.9× (pp's system text
+    /// size): body 15.3, mono 13.5, monoAux 11.7. Converter screens with no
+    /// capture of their own (the custom-connector form) take these values;
+    /// screens with a capture keep the pixel-measured size where the two
+    /// differ by more than half a point.
+    static let textBody: CGFloat = 15.3
+    static let textMono: CGFloat = 13.5
+    static let textMonoAux: CGFloat = 11.5
+    /// Official paragraphs run at ~1.56× the font size (Gmail description:
+    /// 21 pt pitch at 13.5 pt = mono 24/15); our face renders 1.25×, so
+    /// multi-line blocks add 0.31× the size as leading.
+    static func paragraphLeading(_ size: CGFloat) -> CGFloat {
+        (size * 0.31 * 10).rounded() / 10
+    }
+
     /// Fixed-size official face for the connector screens.
     ///
     /// `SettingsStyle.text` scales with Dynamic Type (`relativeTo: .body`);
@@ -54,9 +76,12 @@ nonisolated enum ConnectorStyle {
     /// xmark 14.7×14.7, refresh 18×17.3, sort 17.7×17.7).
     static func circleGlyphSize(for symbol: String) -> CGFloat {
         switch symbol {
-        case "chevron.left", "chevron.right": return 16
-        case "xmark": return 18.5
-        case "arrow.clockwise", "arrow.up.arrow.down": return 20
+        // b1564 rendered 9.3×15.3 at 16 pt; the official back chevron is
+        // 7.3×13.3.
+        case "chevron.left", "chevron.right": return 14
+        case "xmark": return 15.5
+        case "arrow.clockwise": return 20
+        case "arrow.up.arrow.down": return 17
         default: return 17
         }
     }
@@ -120,6 +145,15 @@ nonisolated enum ConnectorStyle {
         scheme == .dark
             ? Color(red: 0xF9 / 255.0, green: 0xF9 / 255.0, blue: 0xF8 / 255.0)
             : Color(red: 0x25 / 255.0, green: 0x25 / 255.0, blue: 0x24 / 255.0)
+    }
+
+    /// Tint for the primary capsule's system glass: dark in light mode,
+    /// light in dark mode, so the material samples #252524 over the paper
+    /// background like the official capture.
+    static func actionGlassTint(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0xE8 / 255.0, green: 0xE8 / 255.0, blue: 0xE6 / 255.0)
+            : Color(red: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x1D / 255.0)
     }
 
     static func actionLabel(_ scheme: ColorScheme) -> Color {

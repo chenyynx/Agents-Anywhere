@@ -42,7 +42,6 @@ struct ConnectorToolListView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
             }
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 

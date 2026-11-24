@@ -32,9 +32,14 @@ struct ConnectorPermissionPickerView: View {
     }
 
     var body: some View {
-        SettingsScreen(title: title) {
+        // Official geometry: header ink 157.3 (content origin 155.3), card
+        // top 181.3, rows 48/49/50 — the page starts 16 pt lower than the
+        // settings-standard topPadding and the header is the fixed 13 pt face.
+        SettingsScreen(title: title, topPadding: 26) {
             ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                SettingsSection(group.title) {
+                SettingsSection(group.title,
+                                headerFont: ConnectorStyle.text(13),
+                                headerSpacing: 10) {
                     ForEach(Array(group.options.enumerated()), id: \.element.id) { optionIndex, option in
                         optionRow(option, groupIndex: index)
                             .overlay(alignment: .bottom) {
@@ -49,7 +54,6 @@ struct ConnectorPermissionPickerView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ConnectorCircleButton(symbol: "chevron.left") { dismiss() }
             }
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -72,8 +76,10 @@ struct ConnectorPermissionPickerView: View {
                     // dark value is projected by `ConnectorStyle`.
                     // UNVERIFIED: symbol point size inferred from the measured
                     // 36 px (12×12 pt) checkmark ink box.
+                    // Official checkmark ink 12×11.7 (ours at 15 pt read
+                    // 13×12.7).
                     Image(systemName: "checkmark")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(ConnectorStyle.accent(colorScheme))
                         .accessibilityHidden(true)
                 }

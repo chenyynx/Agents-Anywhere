@@ -933,13 +933,19 @@ final class TimelineCollectionController: UIViewController {
         // reader keeps its estimate until it can be seen. Without this, the
         // next ordinary apply (a stream tick) synchronously measures every
         // unmeasured row of the history page it just prepended.
+        //
+        // A first layout has no attributes, so the rule has no position to
+        // compare. Measuring every attribute-less row there would pay the
+        // whole history's text layout before the first frame (588 items,
+        // ~0.8 s on the 2026-11-24 device log); measure only the tail the
+        // opening lands on and leave the rest to the pending pass.
         let measurementTop = viewport.offsetY + viewport.topInset
         let measurementSkipAbove = measurementTop
             - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
 #if AA_TIMELINE_PROBE
         let probeHeightKeyStart = CACurrentMediaTime()
 #endif
-        for item in items {
+        for (index, item) in items.enumerated() {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
                 // Install the key before the snapshot applies. A hosted cell
@@ -952,11 +958,14 @@ final class TimelineCollectionController: UIViewController {
                 hostedFallbackFirstSeenAt[item.itemID] = nil
                 reconfigure.insert(item)
             }
-            if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
-                if let attributes = layout.attributes(for: item.itemID),
-                   attributes.frame.maxY < measurementSkipAbove {
-                    continue
-                }
+            let needsMeasurement = changed.contains(item)
+                || !layout.heights.hasMeasuredOrPrecalcHeight(for: key)
+            if TimelineSynchronousMeasurementSelection.shouldMeasure(
+                index: index,
+                itemCount: items.count,
+                needsMeasurement: needsMeasurement,
+                attributesMaxY: layout.attributes(for: item.itemID)?.frame.maxY,
+                skipAbove: measurementSkipAbove) {
                 toMeasure.append(item)
             }
         }

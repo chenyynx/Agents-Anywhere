@@ -33,6 +33,12 @@ from connector.server.runtime_storage import RuntimeStorageManager
 BackendNotifier = Callable[[str, dict[str, Any]], Awaitable[None]]
 AttachmentDownloader = Callable[[str, str], Awaitable[tuple[bytes, str, str]]]
 
+#: Additive flag on ``session.turnEnded``: the Connector also publishes the
+#: history sync's ``lastTurnId``, so the Server may persist the live turn id as
+#: the session's durable latest turn. A 2.2.0 Connector does not send it; the
+#: Server then keeps the field empty and clients fall back to the old rule.
+TURN_END_CONTRACT_VERSION = 1
+
 
 class ConnectorRuntimeHost(RuntimeHostClient):
     """Map Agent Runtime Protocol host calls onto current connector notifications."""
@@ -60,7 +66,9 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         self._runtime_kv = None
         # L3b: set by the connector client once the sync runner exists. Bound in
         # `prepare_runtime_host` copies, so every runtime sees it.
-        self.turn_settled_sink: Callable[[str | None, str, str | None], None] | None = None
+        self.turn_settled_sink: (
+            Callable[[str | None, str, str | None, str | None], None] | None
+        ) = None
         self._runtime_id: str | None = None
 
     async def prepare_runtime_host(self, runtime_id: str) -> ConnectorRuntimeHost:
@@ -90,6 +98,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         """L3b: hand the settle signal to the sync runner, and return at once.
 
@@ -102,7 +111,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         if sink is None:
             return
         try:
-            sink(self._runtime_id, session_id, external_session_id)
+            sink(self._runtime_id, session_id, external_session_id, turn_id)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "turn settle sync request failed session_id={}",
@@ -212,6 +221,7 @@ class ConnectorRuntimeHost(RuntimeHostClient):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: Mapping[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         instance_metadata = dict(metadata or {})
         payload: dict[str, Any] = {
@@ -222,6 +232,9 @@ class ConnectorRuntimeHost(RuntimeHostClient):
             "turnId": turn_id,
             "outcome": outcome,
             "metadata": instance_metadata,
+            "turnEndContract": (
+                TURN_END_CONTRACT_VERSION if turn_end_contract else None
+            ),
         }
         await self._notify_server("session.turnEnded", _drop_none(payload))
 
@@ -509,6 +522,10 @@ def _timeline_source_payload(item: RuntimeTimelineItem) -> dict[str, Any]:
             # clients decode `source.turnId` (the interrupted-turn marker
             # dedupes by it), but this serializer used to drop it — every
             # stored row lost the turn boundary the connector had declared.
+            # Read only the declared source: Claude and Codex put the id in
+            # `TimelineSource.turn_id`; DSH does not, and inventing one from
+            # the top-level field would change its live rows but not its
+            # durable/itemUpsert rows (that path keeps only `source.turnId`).
             "turnId": source.get("turnId"),
             "itemId": source.get("itemId") or item.id,
             "itemType": source.get("itemType") or source.get("rawType"),

@@ -1632,7 +1632,9 @@ async def _exercise_runtime_sync_uses_runtime_timeline_hook_when_available() -> 
             self,
             session_id: str,
             external_session_id: str | None = None,
+            base_turn_id: str | None = None,
         ) -> PreparedSessionTimelineSync | None:
+            _ = base_turn_id
             self.calls.append(
                 (
                     "session.prepareTimeline",
@@ -1839,8 +1841,9 @@ async def _exercise_runtime_sync_continues_after_single_session_ingest_failure()
             self,
             session_id: str,
             external_session_id: str | None = None,
+            base_turn_id: str | None = None,
         ) -> PreparedSessionTimelineSync | None:
-            _ = external_session_id
+            _ = external_session_id, base_turn_id
             self.calls.append(("session.prepareTimeline", {"sessionId": session_id}))
 
             async def commit() -> None:
@@ -3511,6 +3514,92 @@ def test_reconnect_recovers_an_unchanged_polling_session_once():
     asyncio.run(run())
 
 
+def test_settle_sync_forwards_the_live_turn_id_as_the_base():
+    """The settle's live id is the Server's proof for a re-key.
+
+    Dropping it made every failing shape fall back to "no base", where the
+    Server must reject the deterministic id and the live id stays behind.
+    """
+
+    async def run():
+        bases: list[str | None] = []
+
+        class Runtime(FakeAgentRuntime):
+            async def list_sessions(self, **kwargs):
+                return (
+                    SessionMeta(
+                        session_id="session",
+                        external_session_id="external",
+                        runtime="codex",
+                        metadata={"sync": {"changed": True, "requires_timeline_sync": True}},
+                    ),
+                )
+
+            async def prepare_session_timeline_sync(
+                self, session_id, external_session_id=None, base_turn_id=None
+            ):
+                bases.append(base_turn_id)
+                return PreparedSessionTimelineSync(snapshot=None, commit=None)
+
+        runner = RuntimeSyncRunner(
+            config=_client().config,
+            supervisor=FakeRuntimeSupervisor(Runtime()),
+            host=RecordingRuntimeHost(),
+            preferences_reader=dict,
+            send_notification=unused_notification_sender,
+            ingest_notifications=_noop,
+        )
+        runner._settled_turn_ids[("codex", "session")] = "turn_live"
+        await runner._sync_settled_session_once("codex", "session")
+        assert bases == ["turn_live"]
+
+    asyncio.run(run())
+
+
+def test_settle_lookup_uses_the_complete_inventory_past_page_one():
+    """A settle must not depend on the session happening to be in page one."""
+
+    async def run():
+        prepared: list[str] = []
+
+        class Runtime(FakeAgentRuntime):
+            async def list_sessions(self, **kwargs):
+                return ()
+
+            async def list_complete_session_inventory(self, **kwargs):
+                return (
+                    SessionMeta(
+                        session_id="late-session",
+                        external_session_id="late-external",
+                        runtime="codex",
+                        metadata={"sync": {"changed": True, "requires_timeline_sync": True}},
+                    ),
+                )
+
+            async def prepare_session_timeline_sync(
+                self, session_id, external_session_id=None, base_turn_id=None
+            ):
+                prepared.append(session_id)
+                return PreparedSessionTimelineSync(snapshot=None, commit=None)
+
+        runner = RuntimeSyncRunner(
+            config=_client().config,
+            supervisor=FakeRuntimeSupervisor(Runtime()),
+            host=RecordingRuntimeHost(),
+            preferences_reader=dict,
+            send_notification=unused_notification_sender,
+            ingest_notifications=_noop,
+        )
+        await runner._sync_settled_session_once("codex", "late-session")
+        assert prepared == ["late-session"]
+
+    asyncio.run(run())
+
+
+async def _noop(notifications):
+    _ = notifications
+
+
 def test_failed_session_does_not_repeat_successful_recovery_but_changes_still_sync():
     from collections import Counter
     from unittest.mock import AsyncMock
@@ -3527,7 +3616,10 @@ def test_failed_session_does_not_repeat_successful_recovery_but_changes_still_sy
                     metadata={"sync": {"changed": self.changed and id == "healthy", "requires_timeline_sync": self.changed and id == "healthy"}})
                     for id in ["healthy", "broken"])
 
-            async def prepare_session_timeline_sync(self, id, external):
+            async def prepare_session_timeline_sync(
+                self, id, external, base_turn_id=None
+            ):
+                _ = base_turn_id
                 reads[id] += 1
                 if id == "broken" and self.broken:
                     raise RuntimeError("invalid paginated history lineage: cycle detected")
@@ -3570,7 +3662,8 @@ def test_active_recovery_does_not_commit_a_deferred_timeline_replacement():
             async def get_session_state(self, *args):
                 return SessionState(session_id="session", external_session_id="external", runtime="codex", status="running" if self.active else "idle")
 
-            async def prepare_session_timeline_sync(self, *args):
+            async def prepare_session_timeline_sync(self, *args, **kwargs):
+                _ = args, kwargs
                 return PreparedSessionTimelineSync(
                     snapshot=RuntimeTimelineSnapshot(session_id="session", external_session_id="external",
                                                      runtime="codex", items=(), complete=True), commit=commit)

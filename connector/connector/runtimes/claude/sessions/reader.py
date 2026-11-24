@@ -2778,6 +2778,100 @@ def _history_turn_ids(
     return turn_ids
 
 
+#: Stop reasons that mean the assistant is waiting for something and the turn
+#: is still moving. Any other non-empty reason is terminal: the wire vocabulary
+#: differs across providers/routers (``end_turn``/``stop``/``max_tokens``), and
+#: blacklisting the known open ones is safer than whitelisting one provider's
+#: terminal spelling. A missing reason (a streaming/partial row) is open too.
+_OPEN_ASSISTANT_STOP_REASONS = frozenset(
+    {"tool_use", "pause_turn", "tool_calls", "function_call"}
+)
+
+
+def _assistant_stop_reason(message: Any) -> str | None:
+    """The API stop reason on either message shape the reader sees.
+
+    The transcript reader returns ``SessionMessage`` objects whose payload is
+    the raw API message dict (``message.stop_reason``); the live SDK's
+    ``AssistantMessage`` carries the field directly. Reading only the
+    attribute silently made every real history turn look unfinished.
+    """
+
+    inner = getattr(message, "message", None)
+    if isinstance(inner, Mapping):
+        value = inner.get("stop_reason")
+        if isinstance(value, str):
+            return value
+    value = getattr(message, "stop_reason", None)
+    return value if isinstance(value, str) else None
+
+
+def turn_completion(
+    messages: Sequence[Any],
+    turn_ids: Mapping[str, str],
+    ended_turn_ids: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str | None, str | None]:
+    """Return ``(last completed turn id, last visible turn id)``.
+
+    ``completed`` is the newest turn whose final assistant response carries a
+    terminal ``stop_reason``; a turn ending in ``tool_use``/``pause_turn`` or a
+    user prompt with no reply leaves the previous turn as the last completed
+    one. A turn the CLI itself marked stopped (``ended_turn_ids``, the
+    ``[Request interrupted by user]`` marker) is ended even when its final
+    assistant reason is still open: the user's stop is the terminal fact, and
+    the partial reply is exactly what the footer must let them copy.
+
+    ``visible`` is the turn of the last projected message, so the caller can
+    tell whether that completed turn is the transcript's last turn or an
+    earlier one (the sync must not declare a *different*, still-open turn
+    ended by publishing its live id).
+    """
+
+    order: list[str] = []
+    final_stop_reason: dict[str, str | None] = {}
+    visible: str | None = None
+    for message in messages:
+        turn_id = turn_ids.get(_history_turn_key(message))
+        if turn_id is not None:
+            visible = turn_id
+            if turn_id not in final_stop_reason:
+                order.append(turn_id)
+                final_stop_reason[turn_id] = None
+        if message_role(message) != "assistant" or turn_id is None:
+            continue
+        # The turn's *final* assistant decides; an intermediate end_turn
+        # followed by a tool_use in the same turn still leaves the turn open.
+        final_stop_reason[turn_id] = _assistant_stop_reason(message)
+    completed: str | None = None
+    for turn_id in reversed(order):
+        reason = final_stop_reason.get(turn_id)
+        if (reason and reason not in _OPEN_ASSISTANT_STOP_REASONS) or (
+            turn_id in ended_turn_ids
+        ):
+            completed = turn_id
+            break
+    return completed, visible
+
+
+def turn_has_assistant_reply(
+    messages: Sequence[Any],
+    turn_ids: Mapping[str, str],
+    turn_id: str,
+) -> bool:
+    """Whether ``turn_id`` produced any assistant row in this chain.
+
+    Used by the sync's conservative fallback: a completed earlier turn may be
+    published when the last visible turn is only a dangling user prompt, but
+    never when it holds an assistant reply that has not been declared ended.
+    """
+
+    return any(
+        message_role(message) == "assistant"
+        and turn_ids.get(_history_turn_key(message)) == turn_id
+        for message in messages
+    )
+
+
 def interrupted_turn_ids_from_messages(
     messages: Sequence[Any],
     turn_ids: Mapping[str, str],

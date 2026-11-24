@@ -74,6 +74,10 @@ class SessionView(_ProtocolSnapshotExtensionModel):
     unread: bool = False
     lastReadSeq: int = 0
     latestTurnEndSeq: int = 0
+    # The Runtime turn id of the last ended turn. Additive: older servers omit
+    # it and older clients ignore it; the client falls back to the runtime-state
+    # rule when it is absent.
+    latestTurnId: str | None = None
     lastSyncedAt: str | None = None
     sourceObservedAt: str | None = None
     lastActivityAt: str | None = None

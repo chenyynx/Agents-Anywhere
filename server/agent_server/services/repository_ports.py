@@ -411,8 +411,18 @@ class ConnectorNotificationRepository(
         self,
         *,
         session_id: str,
+        turn_id: str | None = None,
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
+    ) -> SessionView: ...
+
+    async def record_session_latest_turn_id(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        base_turn_id: str | None = None,
+        allow_rebased: bool = False,
     ) -> SessionView: ...
 
     async def update_connector_preferences(

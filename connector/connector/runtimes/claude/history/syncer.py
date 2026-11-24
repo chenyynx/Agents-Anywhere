@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import asyncer
 
@@ -33,9 +34,13 @@ from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.reader import (
     _history_items_from_messages,
     _history_tool_call_context,
+    _history_turn_id,
     _history_turn_ids,
     _match_history_client_messages,
     interrupted_turn_ids_from_messages,
+    turn_completion,
+    turn_has_assistant_reply,
+    _raw_transcript_path,
     _read_raw_transcript_scan_async,
     _sdk_session_metadata,
     _session_title,
@@ -55,6 +60,86 @@ from connector.runtimes.claude.sessions.sync_state import (
 # user's message indefinitely. A timed-out attempt publishes nothing and marks
 # nothing, so the turn-end sync retries the same rebase later.
 FIRST_SYNC_TIMEOUT_SECONDS = 15.0
+
+
+def provisional_anchor_key(session_id: str) -> str:
+    """Sync-state key for a provisional scheduled turn's live -> history map."""
+
+    return f"claude/turn-anchor/{session_id}"
+
+
+def _transcript_signature(path: Path | None) -> tuple[int, int] | None:
+    """Cheap growth/mtime proof that a transcript did not move during a read."""
+
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _live_turn_native_ids(
+    session: ClaudeSession | None,
+    live_turn_id: str,
+) -> list[str]:
+    """Native ids of the live turn's first assistant message, in anchor order.
+
+    The history anchor prefers the API message id (``nativeMessageId``) and
+    falls back to the row uuid (``nativeItemId``). The live session still holds
+    the turn's rows under its provisional id, so this is the bridge between
+    the two id spaces when no transcript read is available (connector restart
+    before the settle sync) or when the read must be matched to the settled
+    turn.
+    """
+
+    if session is None:
+        return []
+    items = [
+        item
+        for item in session.timeline_items.values()
+        if item.turn_id == live_turn_id
+    ]
+    items.sort(key=lambda item: item.order_seq)
+    for item in items:
+        if item.type != "message" or item.role != "assistant":
+            continue
+        values: list[str] = []
+        for key in ("nativeMessageId", "nativeItemId"):
+            value = item.source.get(key)
+            if isinstance(value, str) and value:
+                values.append(value)
+        return values
+    return []
+
+
+def _live_turn_history_ids(
+    session: ClaudeSession | None,
+    live_turn_id: str,
+) -> set[str]:
+    """The transcript turn ids the live turn's rows would anchor on.
+
+    The caller intersects this with the turn ids actually present in the read:
+    a non-empty match proves the read includes the settled turn, while an
+    empty one means the read predates it and its previous completed turn must
+    not be published.
+    """
+
+    return {
+        _history_turn_id(value)
+        for value in _live_turn_native_ids(session, live_turn_id)
+    }
+
+
+def live_turn_history_id(
+    session: ClaudeSession | None,
+    live_turn_id: str,
+) -> str | None:
+    """The preferred transcript id for a provisional live turn, if known."""
+
+    values = _live_turn_native_ids(session, live_turn_id)
+    return _history_turn_id(values[0]) if values else None
 
 
 @dataclass(slots=True)
@@ -174,6 +259,7 @@ class ClaudeHistorySyncer:
         self,
         session_id: str,
         external_session_id: str | None,
+        base_turn_id: str | None = None,
     ) -> PreparedSessionTimelineSync | None:
         if external_session_id is None:
             snapshot = self.session_store.snapshot(session_id=session_id)
@@ -196,6 +282,17 @@ class ClaudeHistorySyncer:
         pending_session_sync = self.sync_states.pending_for(external_session_id)
 
         local_session = self.session_store.get(session_id, external_session_id)
+        # A transcript write during this read means a turn may have ended after
+        # the snapshot was taken. Keep the rows, but never let the stale
+        # lastTurnId replace the Server's newer live id.
+        transcript_path = None
+        if (
+            local_session is not None
+            and getattr(local_session, "cwd", None)
+            and getattr(local_session, "external_session_id", None)
+        ):
+            transcript_path = _raw_transcript_path(local_session)
+        transcript_before = _transcript_signature(transcript_path)
         if local_session is not None and local_session.active_turn_id is not None:
             logger.debug(
                 "Claude history sync skipped active session session_id={} external_session_id={}",
@@ -331,6 +428,157 @@ class ClaudeHistorySyncer:
         # starts mid-turn must reproduce the seed the full import used, or the
         # same row would be re-keyed with a different turn id on every sync.
         turn_ids = _history_turn_ids(visible_messages, raw_scan)
+        # The last turn whose final assistant response ended, plus the turn of
+        # the last projected message. A turn ending in tool_use/pause/None is
+        # still open; publishing an older completed id is only safe when the
+        # open turn is not the one this sync was triggered by (a scanner pass,
+        # or a new prompt after the completed turn). The settle's baseTurnId
+        # is the live turn that just ended; the server uses it to reject a
+        # stale sync outright.
+        # A CLI user-stop is a terminal fact for its turn even when the final
+        # assistant row still says tool_use/None; the partial reply is what the
+        # user stopped to copy. Computed over the full chain, before the
+        # completion walk, so a rebase cannot fall back to the previous turn.
+        interrupted_turns = interrupted_turn_ids_from_messages(
+            visible_messages, turn_ids
+        )
+        if local_session is not None:
+            interrupted_turns |= local_session.interrupted_turn_ids
+        completed_turn_id, last_visible_turn_id = turn_completion(
+            visible_messages,
+            turn_ids,
+            interrupted_turns,
+        )
+        last_turn_id: str | None = None
+        effective_base_turn_id = base_turn_id
+        last_visible_has_assistant = (
+            last_visible_turn_id is not None
+            and turn_has_assistant_reply(
+                visible_messages, turn_ids, last_visible_turn_id
+            )
+        )
+        # A provisional scheduled turn persists its live -> history bridge at
+        # turn end (and again from this sync). It is the only durable proof
+        # that a transcript turn with an open final assistant was actually
+        # ended by the runtime; use it on a restart before the settle read.
+        persisted_anchor = await self.host.sync_state_read(
+            provisional_anchor_key(session_id)
+        )
+        anchor_live: str | None = None
+        anchor_history: str | None = None
+        anchor_suppress = False
+        if isinstance(persisted_anchor, Mapping):
+            live_value = persisted_anchor.get("live")
+            history_value = persisted_anchor.get("history")
+            anchor_suppress = persisted_anchor.get("suppress") is True
+            if (
+                isinstance(live_value, str)
+                and live_value
+                and isinstance(history_value, str)
+                and history_value
+            ):
+                anchor_live = live_value
+                anchor_history = history_value
+        visible_turn_ids = set(turn_ids.values())
+        if anchor_suppress:
+            # A command turn has no transcript id; the anchor written at its
+            # terminal suppresses any history/rebase seed until the next
+            # anchored turn clears it.
+            last_turn_id = None
+        elif base_turn_id == "":
+            # Command settle: it has no transcript turn, so it must not seed
+            # or replace any id (the previous turn's id is not its own).
+            last_turn_id = None
+        elif base_turn_id is None:
+            # A scan/rebase has no settle to prove which turn just ended. The
+            # persisted provisional anchor is that proof for the last
+            # scheduled turn whose transcript final assistant was still open.
+            if (
+                anchor_history is not None
+                and anchor_history in visible_turn_ids
+                and last_visible_turn_id == anchor_history
+            ):
+                last_turn_id = anchor_history
+                effective_base_turn_id = anchor_live
+            elif (
+                anchor_history is not None
+                and anchor_history not in visible_turn_ids
+            ):
+                # The read predates the last provisional turn we know ended;
+                # falling back to the previous completed turn would replace
+                # that turn's live id on the Server.
+                last_turn_id = None
+            elif completed_turn_id is not None and (
+                completed_turn_id == last_visible_turn_id
+                or not last_visible_has_assistant
+            ):
+                # The last visible turn is the last completed one, or it has
+                # no assistant at all and owns no footer.
+                last_turn_id = completed_turn_id
+        else:
+            # The settle names the live turn. It may replace the Server's
+            # stored id only when this read actually contains that turn:
+            # either the base id itself is a visible turn id (user turn, or
+            # a scheduled turn whose anchor was bound), or the live rows of
+            # the base turn anchor to a transcript id that is visible (the
+            # scheduled provisional -> deterministic re-key). A read that
+            # predates the settled turn falls through: publishing the
+            # previous completed id there would overwrite the live id and
+            # the next sync could not tell it was the same-turn re-key.
+            expected_turn_ids: set[str] = set()
+            if base_turn_id in visible_turn_ids:
+                expected_turn_ids.add(base_turn_id)
+            else:
+                expected_turn_ids |= (
+                    _live_turn_history_ids(local_session, base_turn_id)
+                    & visible_turn_ids
+                )
+            if (
+                anchor_history is not None
+                and anchor_live == base_turn_id
+            ):
+                # The persisted bridge is for this same settled turn; it
+                # survives a missing live session.
+                expected_turn_ids.add(anchor_history)
+            if (
+                last_visible_turn_id is not None
+                and last_visible_turn_id in expected_turn_ids
+            ):
+                # The read includes the settled turn. Publish its transcript
+                # id even when the final assistant reason is still open (a
+                # failed or interrupted settle): the live runtime already
+                # declared this turn over, and its own rows are what the
+                # footer must match.
+                last_turn_id = last_visible_turn_id
+            elif (
+                completed_turn_id is not None
+                and base_turn_id == completed_turn_id
+            ):
+                # The settled turn completed earlier and a newer turn is
+                # visible now; publishing the settled id is a no-op/re-key,
+                # never an older turn replacing a newer live one.
+                last_turn_id = completed_turn_id
+        # A new turn can start during the transcript read; its partial reply
+        # must not be declared ended by this pass. Re-check the live store
+        # after the read instead of trusting only the entry gate.
+        live_session = self.session_store.get(session_id, external_session_id)
+        if live_session is not None and live_session.active_turn_id is not None:
+            last_turn_id = None
+        anchor_to_persist: dict[str, str] | None = None
+        if (
+            isinstance(base_turn_id, str)
+            and base_turn_id
+            and last_turn_id is not None
+            and last_turn_id != base_turn_id
+        ):
+            # Remember the provisional re-key for a restart that happens
+            # before the next history read. Written only after the sync is
+            # accepted (commit), so a read that lost a race cannot leave a
+            # mapping that a later rebase would trust.
+            anchor_to_persist = {
+                "live": base_turn_id,
+                "history": last_turn_id,
+            }
         tool_call_lookup, hidden_tool_use_ids = await asyncer.asyncify(
             _history_tool_call_context
         )(
@@ -344,16 +592,11 @@ class ClaudeHistorySyncer:
             pending_messages=self.pending_messages,
             prefer_latest=rebased,
         )
-        # The stopped-turn set is computed over the full chain and widened by
-        # the process's own live stops: an incremental window can hold a
-        # stopped turn's last row without the marker that explains it, and
-        # republishing it unstamped would erase the live stamp the client is
-        # already showing.
-        interrupted_turns = interrupted_turn_ids_from_messages(
-            visible_messages, turn_ids
-        )
-        if local_session is not None:
-            interrupted_turns |= local_session.interrupted_turn_ids
+        # The stopped-turn set above is computed over the full chain and
+        # widened by the process's own live stops: an incremental window can
+        # hold a stopped turn's last row without the marker that explains it,
+        # and republishing it unstamped would erase the live stamp the client
+        # is already showing.
         items = await asyncer.asyncify(_history_items_from_messages)(
             session,
             sync_messages,
@@ -394,6 +637,21 @@ class ClaudeHistorySyncer:
             session=session,
             items=items,
         )
+        if (
+            transcript_before is not None
+            and _transcript_signature(transcript_path) != transcript_before
+        ):
+            # A turn's last rows landed after this read started. The rows are
+            # still valid to publish, but the id would be one turn behind the
+            # live id the Server just stored. The next sync picks it up.
+            logger.debug(
+                "Claude transcript changed during sync; dropping lastTurnId "
+                "session_id={}",
+                session_id,
+            )
+            last_turn_id = None
+            effective_base_turn_id = None
+            anchor_to_persist = None
         snapshot = RuntimeTimelineSnapshot(
             session_id=session_id,
             runtime="claude",
@@ -405,6 +663,18 @@ class ClaudeHistorySyncer:
                 "messageCount": len(messages),
                 "syncedMessageCount": len(sync_messages),
                 "rebased": rebased,
+                **(
+                    {
+                        "lastTurnId": last_turn_id,
+                        **(
+                            {"baseTurnId": effective_base_turn_id}
+                            if effective_base_turn_id
+                            else {}
+                        ),
+                    }
+                    if last_turn_id
+                    else {}
+                ),
                 # This batch is a cursor window over the chain: its order is
                 # authoritative for the rows it names even though it does not
                 # cover the whole session. Without it the Server can only
@@ -433,6 +703,18 @@ class ClaudeHistorySyncer:
             # Only a published pass counts as this process's sync: a failed
             # history read must leave the next attempt a rebase.
             self.synced_sessions.add(external_session_id)
+            if anchor_to_persist is not None:
+                try:
+                    await self.host.sync_state_write(
+                        provisional_anchor_key(session_id),
+                        anchor_to_persist,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Claude provisional turn anchor write failed "
+                        "session_id={}",
+                        session_id,
+                    )
 
         return PreparedSessionTimelineSync(snapshot=snapshot, commit=commit)
 

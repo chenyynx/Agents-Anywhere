@@ -174,9 +174,21 @@ def read_history_index(thread: Mapping[str, Any]) -> dict[str, Any] | None:
             # Compaction changes projection across turn boundaries; calibrate in full.
             if db.execute("SELECT 1 FROM thread_items WHERE thread_id=? AND item_type IN ('contextCompaction', 'context_compaction') LIMIT 1", (thread_id,)).fetchone():
                 return None
-            result = {"source": source, "ids": [row[0] for row in turns],
-                      "revisions": {id: value.hexdigest() for id, value in hashes.items()},
-                      "settled": all(row[2] in {"completed", "interrupted", "failed"} for row in turns)}
+            result = {
+                "source": source,
+                "ids": [row[0] for row in turns],
+                "revisions": {id: value.hexdigest() for id, value in hashes.items()},
+                # Per-turn status is what lets the sync pick the newest
+                # *terminal* turn. `settled` alone assumed a thread has at most
+                # one inProgress and that it is the newest; Codex can leave an
+                # inProgress row behind in the middle (unloaded desktop task),
+                # which made `ids[-2]` publish a stale turn forever.
+                "statuses": {row[0]: row[2] for row in turns},
+                "settled": all(
+                    row[2] in {"completed", "interrupted", "failed"}
+                    for row in turns
+                ),
+            }
         finally:
             db.close()
         return result if source_signature(thread) == source else None
@@ -221,7 +233,7 @@ def _native_history_source(
 
 
 def valid_read_state(value: Any, items: Mapping[str, Any]) -> bool:
-    if not isinstance(value, dict) or value.get("version") != 1:
+    if not isinstance(value, dict) or value.get("version") != 2:
         return False
     index, counts, item_ids = value.get("index"), value.get("counts"), value.get("itemIds")
     if not isinstance(index, dict) or not isinstance(counts, dict) or not isinstance(item_ids, dict):

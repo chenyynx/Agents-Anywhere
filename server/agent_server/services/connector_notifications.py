@@ -51,6 +51,16 @@ SESSION_SOURCE_STATES = {
 }
 SESSION_SOURCE_ORIGINS = {"event", "inventory", "operation"}
 TURN_END_OUTCOMES = {"completed", "interrupted", "cancelled", "failed"}
+#: The live turn id may only become the durable ``latestTurnId`` when the
+#: Connector declares the same contract. A 2.2.0 Connector already sends a
+#: ``turnId`` on ``session.turnEnded`` but never sends the history sync's
+#: ``lastTurnId``, so accepting its live id would leave a scheduled/command
+#: re-key permanently uncorrected on the Server. The flag is additive; an old
+#: Server ignores it and keeps the old behavior.
+TURN_END_CONTRACT_VERSION = 1
+#: Bounds the opaque id before it becomes part of every session list/detail/WS
+#: frame. Item ids use the same order of magnitude.
+MAX_TURN_ID_LENGTH = 256
 
 
 def _session_dashboard_changed(
@@ -710,6 +720,18 @@ class SessionTurnEndedNotificationHandler:
                 "invalid_turn_id",
                 "session.turnEnded turnId must be a non-empty string when provided",
             )
+        if turn_id is not None and len(turn_id) > MAX_TURN_ID_LENGTH:
+            raise NotificationValidationError(
+                "invalid_turn_id",
+                f"session.turnEnded turnId must be at most {MAX_TURN_ID_LENGTH} characters",
+            )
+        # Only a Connector that also publishes the history sync's lastTurnId
+        # can keep this value correct after a restart. A 2.2.0 Connector sends
+        # the live id alone; writing it here would let a scheduled/command
+        # re-key diverge from the stored id with no writer to repair it.
+        latest_turn_id = (
+            turn_id if _supports_turn_end_contract(params) else None
+        )
         runtime, runtime_id = runtime_identity_from_params(params)
         external_session_id = _string_or_none(params.get("externalSessionId"))
         if external_session_id is not None:
@@ -754,6 +776,7 @@ class SessionTurnEndedNotificationHandler:
         if self._timeline_write_buffer is None:
             session = await self._store.record_session_turn_end(
                 session_id=session_id,
+                turn_id=latest_turn_id,
                 source_observed_at=_string_or_none(params.get("sourceObservedAt")),
                 mark_read_on_change=False,
             )
@@ -761,6 +784,7 @@ class SessionTurnEndedNotificationHandler:
             async with self._timeline_write_buffer.session_fence(session_id):
                 session = await self._store.record_session_turn_end(
                     session_id=session_id,
+                    turn_id=latest_turn_id,
                     source_observed_at=_string_or_none(params.get("sourceObservedAt")),
                     mark_read_on_change=False,
                 )
@@ -856,6 +880,11 @@ class TimelineNotificationHandler:
         items = [
             TimelineItemIn.model_validate(item) for item in params.get("items", [])
         ]
+        # Validate before any write: an invalid turn id must reject the whole
+        # sync, not leave its items committed behind a rejected notification.
+        last_turn_id = _turn_id_from_sync(params, "lastTurnId")
+        base_turn_id = _turn_id_from_sync(params, "baseTurnId")
+        allow_rebased = _history_rebuild_is_rebased(params)
         runtime, runtime_id = await timeline_runtime_identity_from_params(
             self._store,
             params,
@@ -914,6 +943,24 @@ class TimelineNotificationHandler:
         finally:
             if self._timeline_write_buffer is not None:
                 await self._timeline_write_buffer.invalidate(session_id)
+        if last_turn_id is not None:
+            # A history/settle pass is the authority after a restart and after
+            # a scheduled turn whose live id was re-keyed by the rebuild. It
+            # only fills the turn id: unread and usage belong to the live
+            # ``session.turnEnded`` path and must not be fabricated here. The
+            # repository's revision fence publishes the session through the
+            # write buffer (and skips the publish when nothing changed).
+            try:
+                await self._store.record_session_latest_turn_id(
+                    session_id=session_id,
+                    turn_id=last_turn_id,
+                    base_turn_id=base_turn_id,
+                    allow_rebased=allow_rebased,
+                )
+            except KeyError:
+                # The session was deleted between the item sync and this
+                # write; the items are already gone with it.
+                pass
         changed_items = list(result.items) if result.changed else []
         push_items = len(changed_items) <= TIMELINE_SYNC_PUSH_LIMIT
         timeline_published = result.changed and self._timeline_write_buffer is not None
@@ -932,6 +979,7 @@ class TimelineNotificationHandler:
             timeline_published=timeline_published,
             dashboard_changed=result.changed,
         )
+
 
     async def _upsert(
         self,
@@ -1689,3 +1737,51 @@ def _without_runtime_turn_ids(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_runtime_turn_ids(item) for item in value]
     return value
+
+
+def _turn_id_from_sync(
+    params: Mapping[str, Any],
+    key: str,
+) -> str | None:
+    """The optional turn id a sync declares under ``key``.
+
+    Runtimes that can state it put it beside the timeline metadata (Claude and
+    Codex) or at the top level (a future DSH snapshot page); both are accepted
+    so the transport shape is not part of the fact.
+    """
+
+    value = params.get(key)
+    if value is None:
+        metadata = params.get("metadata")
+        if isinstance(metadata, Mapping):
+            value = metadata.get(key)
+    if value is None:
+        return None
+    code = "invalid_last_turn_id" if key == "lastTurnId" else "invalid_base_turn_id"
+    if not isinstance(value, str) or not value:
+        raise NotificationValidationError(
+            code,
+            f"{key} must be a non-empty string when provided",
+        )
+    if len(value) > MAX_TURN_ID_LENGTH:
+        raise NotificationValidationError(
+            code,
+            f"{key} must be at most {MAX_TURN_ID_LENGTH} characters",
+        )
+    return value
+
+
+def _supports_turn_end_contract(params: Mapping[str, Any]) -> bool:
+    """Whether this Connector can keep ``latestTurnId`` correct after a restart.
+
+    ``bool`` is deliberately excluded even though ``True == 1``: the field is a
+    protocol version, not a boolean.
+    """
+
+    value = params.get("turnEndContract")
+    return type(value) is int and value == TURN_END_CONTRACT_VERSION
+
+
+def _history_rebuild_is_rebased(params: Mapping[str, Any]) -> bool:
+    metadata = params.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get("rebased") is True

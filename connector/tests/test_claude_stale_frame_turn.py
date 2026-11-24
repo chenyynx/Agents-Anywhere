@@ -1500,7 +1500,9 @@ class _SettleSignalHost(_RecordingHost):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
+        _ = turn_id
         self.settled.append((session_id, external_session_id))
 
 
@@ -1612,8 +1614,9 @@ def _settle_runtime(session_id: str) -> Any:
             )
 
         async def prepare_session_timeline_sync(
-            self, sid: str, external: str | None
+            self, sid: str, external: str | None, base_turn_id: str | None = None
         ) -> PreparedSessionTimelineSync:
+            _ = sid, external, base_turn_id
             self.reads.append(self.version)
             await self.gate.wait()
             return PreparedSessionTimelineSync(snapshot=None, commit=None)
@@ -1809,9 +1812,10 @@ class _OrderedSettleHost(_SettleSignalHost):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         self.upserts_at_settle.append(len(self.timeline_item_upserts))
-        await super().on_turn_settled(session_id, external_session_id)
+        await super().on_turn_settled(session_id, external_session_id, turn_id)
 
 
 class _UnclosedThinkingClient(_ScheduledClaudeClient):

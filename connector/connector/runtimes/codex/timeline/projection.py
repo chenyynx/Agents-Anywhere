@@ -188,7 +188,7 @@ class CodexTimelineProjection:
                 platform_item_type=platform_item_type,
                 content=self.content_mapping(),
             ),
-            source=TimelineSource(runtime="codex"),
+            source=TimelineSource(runtime="codex", turn_id=self.turn_id),
             revision=self.revision,
             native_item_type=native_type,
             native_item_id=self.native_id,

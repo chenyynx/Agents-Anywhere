@@ -31,6 +31,7 @@ class RuntimeHostClient(ABC):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         """Tell the connector a turn settled, so it can refresh that session now.
 
@@ -114,6 +115,7 @@ class RuntimeHostClient(ABC):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: Mapping[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         raise NotImplementedError
 

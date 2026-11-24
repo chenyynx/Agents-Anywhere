@@ -427,6 +427,12 @@ sessions = Table(
     Column("source_scan_token", Text),
     Column("last_read_seq", BigInteger, nullable=False, server_default="0"),
     Column("latest_turn_end_seq", BigInteger, nullable=False, server_default="0"),
+    # The Runtime turn id of that last ended turn. The connector declares it on
+    # ``session.turnEnded`` and on rows' ``source.turnId``; clients use the id
+    # match as the durable "turn is over" fact instead of inferring it from a
+    # possibly stale runtime state. Nullable: old connectors never send it and
+    # old servers ignore it (see migration v2_50).
+    Column("latest_turn_id", Text, nullable=True),
     Column("timeline_reset_seq", BigInteger, nullable=False, server_default="0"),
     Column("last_synced_at", Text),
     Column("source_observed_at", Text),

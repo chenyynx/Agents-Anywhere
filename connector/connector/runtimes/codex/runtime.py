@@ -683,10 +683,12 @@ class CodexRuntime(AgentRuntime):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        base_turn_id: str | None = None,
     ) -> PreparedSessionTimelineSync | None:
         return await self._session_reader.prepare_session_timeline_sync(
             session_id,
             external_session_id,
+            base_turn_id=base_turn_id,
         )
 
     async def create_and_start_session(

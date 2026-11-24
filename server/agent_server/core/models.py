@@ -866,6 +866,11 @@ class SessionView(BaseModel):
     unread: bool = False
     lastReadSeq: int = 0
     latestTurnEndSeq: int = 0
+    # The Runtime turn id of the last ended turn. Additive and optional: an old
+    # connector/server pair leaves it None and the client falls back to the
+    # runtime-state rule. Clients match this against a row's ``source.turnId``
+    # instead of guessing from state freshness.
+    latestTurnId: str | None = None
     lastSyncedAt: str | None = None
     sourceObservedAt: str | None = None
     lastActivityAt: str | None = None

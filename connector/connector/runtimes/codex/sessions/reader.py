@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -60,6 +60,164 @@ def _session_sync_key(thread_id: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+# Statuses that mean a native Codex turn is still moving. The history sync
+# only declares a turn ended when none of its rows carry one of these.
+_ACTIVE_CODEX_STATUSES = frozenset(
+    {"pending", "inProgress", "running", "waiting_approval"}
+)
+_TERMINAL_CODEX_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
+
+
+def _last_completed_turn_id_from_index(index: Mapping[str, Any]) -> str | None:
+    """The newest native turn the history index proves ended.
+
+    Codex can leave an ``inProgress`` row behind in the middle of a thread
+    (a desktop-owned task unloaded without a terminal event). The old
+    ``settled = all(terminal)`` + ``ids[-2]`` rule then published a stale turn
+    on every settle, and the Server accepted it because the settle's base
+    named the just-ended live turn. Pick the newest *terminal* turn instead;
+    a non-terminal newest turn (a real run, or an index that has not caught
+    up) leaves the previous terminal turn as the last completed one.
+    """
+
+    ids = index.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return None
+    statuses = index.get("statuses")
+    if isinstance(statuses, Mapping):
+        for turn_id in reversed(ids):
+            if (
+                isinstance(turn_id, str)
+                and statuses.get(turn_id) in _TERMINAL_CODEX_TURN_STATUSES
+            ):
+                return turn_id
+        return None
+    # Legacy index (stored before per-turn statuses): keep the conservative
+    # all-terminal rule; the next fresh read carries statuses.
+    candidate = (
+        ids[-1]
+        if index.get("settled") is True
+        else (ids[-2] if len(ids) >= 2 else None)
+    )
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
+def _latest_index_turn_is_terminal(index: Mapping[str, Any]) -> bool:
+    """Whether the newest native turn itself has a terminal status.
+
+    This is the proof a rebase/scan outside the settle window needs: only then
+    can the index-derived id be newer than whatever the Server stored last.
+    A missing status map (legacy index) accepts only the all-terminal proof.
+    """
+
+    ids = index.get("ids")
+    statuses = index.get("statuses")
+    if isinstance(ids, list) and ids and isinstance(statuses, Mapping):
+        return statuses.get(ids[-1]) in _TERMINAL_CODEX_TURN_STATUSES
+    return index.get("settled") is True
+
+
+def _gate_indexed_turn_id(
+    index: Mapping[str, Any],
+    base_turn_id: str | None,
+    last_turn_id: str | None,
+) -> str | None:
+    """Only publish an id this sync can prove belongs to the settled turn.
+
+    The Server's ``baseTurnId`` gate accepts a replacement when the base names
+    the stored live id. That is exactly what turns a stale ``ids[-2]`` into a
+    permanent regression, so the Connector must not send such a value in the
+    first place:
+
+    * base present in native history and terminal: publish only when the
+      derived id is that same turn (an older id is stale; a newer terminal
+      turn has its own settle);
+    * base present but non-terminal: the index has not caught up — publish
+      nothing;
+    * base is a synthetic live id (IPC ``turn-N``), or there is no base: allow
+      the native id only when the newest native turn is terminal.
+    """
+
+    if last_turn_id is None:
+        return None
+    ids = index.get("ids")
+    statuses = index.get("statuses")
+    if isinstance(ids, list) and isinstance(statuses, Mapping):
+        if base_turn_id is not None and base_turn_id in ids:
+            if statuses.get(base_turn_id) not in _TERMINAL_CODEX_TURN_STATUSES:
+                return None
+            return last_turn_id if last_turn_id == base_turn_id else None
+        return last_turn_id if _latest_index_turn_is_terminal(index) else None
+    if base_turn_id is not None and base_turn_id != last_turn_id:
+        return None
+    return last_turn_id if index.get("settled") is True else None
+
+
+def _turn_states(
+    items: Sequence[Any],
+) -> tuple[list[str], dict[str, tuple[bool, bool]]]:
+    order: list[str] = []
+    state: dict[str, tuple[bool, bool]] = {}
+    for item in items:
+        turn_id = item.turn_id
+        if not isinstance(turn_id, str) or not turn_id:
+            continue
+        if turn_id not in state:
+            order.append(turn_id)
+            state[turn_id] = (False, False)
+        has_reply, has_active = state[turn_id]
+        if item.type == "message" and item.role == "assistant":
+            has_reply = True
+        if item.status in _ACTIVE_CODEX_STATUSES:
+            has_active = True
+        state[turn_id] = (has_reply, has_active)
+    return order, state
+
+
+def last_completed_turn_id(items: Sequence[Any]) -> str | None:
+    """The newest turn in a full item list that replied and is not running.
+
+    Used by the non-indexed fallback, whose snapshot covers the whole thread.
+    A trailing user prompt without a reply, or a turn with a live row, is not
+    an ended turn; the sync must not publish it as ``lastTurnId``.
+    """
+
+    order, state = _turn_states(items)
+    for turn_id in reversed(order):
+        has_reply, has_active = state[turn_id]
+        if has_active:
+            continue
+        if has_reply:
+            return turn_id
+    return None
+
+
+def _gate_fallback_turn_id(
+    items: Sequence[Any],
+    base_turn_id: str | None,
+    last_turn_id: str | None,
+) -> str | None:
+    """The full-item counterpart of :func:`_gate_indexed_turn_id`.
+
+    A trailing user prompt with no reply is harmless (it owns no footer), so
+    the previous completed turn may be published. A running last turn, a
+    settle for a turn that never replied, or a settle whose own turn is older
+    than the derived id must not publish.
+    """
+
+    if last_turn_id is None:
+        return None
+    order, state = _turn_states(items)
+    if base_turn_id is not None and base_turn_id in state:
+        has_reply, has_active = state[base_turn_id]
+        if has_active or not has_reply:
+            return None
+        return last_turn_id if last_turn_id == base_turn_id else None
+    if order and state[order[-1]][1]:
+        return None
+    return last_turn_id
 
 
 @dataclass(slots=True)
@@ -206,7 +364,7 @@ class CodexSessionReader:
             getattr(self.host, "session_namespace", self.host.connector_id),
             thread_id,
         )
-        if (not isinstance(checkpoint, dict) or checkpoint.get("version") != 1
+        if (not isinstance(checkpoint, dict) or checkpoint.get("version") != 2
                 or checkpoint.get("sessionId") != session_id or not isinstance(checkpoint.get("items"), dict)
                 or not all(isinstance(k, str) and isinstance(v, str) for k, v in checkpoint["items"].items())):
             changed = True
@@ -263,19 +421,34 @@ class CodexSessionReader:
         self,
         session_id: str,
         external_session_id: str | None = None,
+        base_turn_id: str | None = None,
     ) -> PreparedSessionTimelineSync:
         checkpoint_key = f"codex/timeline-sync/{external_session_id}"
         previous = await self.host.sync_state_read(checkpoint_key) if external_session_id else None
         # Version changes deliberately invalidate projections from older implementations.
-        old_items = previous.get("items") if isinstance(previous, Mapping) and previous.get("version") == 1 and previous.get("sessionId") == session_id else None
+        old_items = previous.get("items") if isinstance(previous, Mapping) and previous.get("version") == 2 and previous.get("sessionId") == session_id else None
         valid = isinstance(old_items, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in old_items.items())
         # Capture before any history awaits: a newer scan must not be acknowledged here.
         pending = self._pending_sync_states.get(session_id)
-        indexed = await self._read_indexed_snapshot(session_id, external_session_id, previous if valid else None)
+        indexed = await self._read_indexed_snapshot(
+            session_id,
+            external_session_id,
+            previous if valid else None,
+            base_turn_id,
+        )
         read_state = None
         prefix = {}
+        snapshot_is_window = indexed is not None
         if indexed is not None:
             snapshot, read_state, prefix = indexed
+            if base_turn_id:
+                snapshot = replace(
+                    snapshot,
+                    metadata={
+                        **snapshot.metadata,
+                        "baseTurnId": base_turn_id,
+                    },
+                )
         else:
             snapshot = await self.get_session_snapshot(session_id, external_session_id)
         if snapshot is None:
@@ -294,12 +467,46 @@ class CodexSessionReader:
             items = tuple(item for item in snapshot.items if item.type not in {"turn.start", "turn.end"})
             fingerprints = {item.id: hashlib.sha256(json.dumps(asdict(item), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest() for item in items}
             read_state = None
+            snapshot_is_window = False
+        if not snapshot_is_window and snapshot is not None:
+            # The indexed reader only returns the delta window; its own
+            # metadata already carries the index-derived last turn id. A full
+            # snapshot (fallback, or the replacement above) covers the whole
+            # chain, so derive the value from the items themselves.
+            last_turn_id = _gate_fallback_turn_id(
+                items,
+                base_turn_id,
+                last_completed_turn_id(items),
+            )
+            if last_turn_id is not None:
+                snapshot = replace(
+                    snapshot,
+                    metadata={
+                        **snapshot.metadata,
+                        "lastTurnId": last_turn_id,
+                        **(
+                            {"baseTurnId": base_turn_id}
+                            if base_turn_id
+                            else {}
+                        ),
+                    },
+                )
         replacement = previous is not None and (not valid or removed)
         delta = items if not valid or replacement else tuple(item for item in items if old_items.get(item.id) != fingerprints[item.id])
+        if snapshot is not None and (not valid or replacement):
+            # The first sync of a process (and a checkpoint version bump) reads
+            # the whole chain; like Claude's rebase it is authoritative, so a
+            # differing history turn id may replace the stored live id (the
+            # Codex IPC live path can carry a synthetic `turn-N` while the
+            # native history carries the real id).
+            snapshot = replace(
+                snapshot,
+                metadata={**snapshot.metadata, "rebased": True},
+            )
         prepared_snapshot = replace(snapshot, items=delta, complete=bool(replacement)) if snapshot is not None and (delta or replacement) else None
         async def commit() -> None:
             if external_session_id:
-                await self.host.sync_state_write(checkpoint_key, {"version": 1, "sessionId": session_id, "items": fingerprints,
+                await self.host.sync_state_write(checkpoint_key, {"version": 2, "sessionId": session_id, "items": fingerprints,
                     **({"readState": read_state} if read_state is not None else {})})
             if pending is not None:
                 sync_key, sync_state = pending
@@ -310,7 +517,11 @@ class CodexSessionReader:
         return PreparedSessionTimelineSync(snapshot=prepared_snapshot, commit=commit)
 
     async def _read_indexed_snapshot(
-        self, session_id: str, external_session_id: str | None, previous: Mapping[str, Any] | None,
+        self,
+        session_id: str,
+        external_session_id: str | None,
+        previous: Mapping[str, Any] | None,
+        base_turn_id: str | None = None,
     ) -> tuple[RuntimeTimelineSnapshot | None, dict[str, Any], dict[str, str]] | None:
         page_reader = getattr(self.client, "list_thread_turns_page", None)
         if not external_session_id or not callable(page_reader) or self.timeline is None:
@@ -390,9 +601,18 @@ class CodexSessionReader:
             if item.type not in {"turn.start", "turn.end"}:
                 item_ids[item.turn_id].append(item.id)
         items = tuple(replace(item, order_seq=item.order_seq + offset) for item in projected)
+        last_turn_id = _gate_indexed_turn_id(
+            index,
+            base_turn_id,
+            _last_completed_turn_id_from_index(index),
+        )
         snapshot = RuntimeTimelineSnapshot(session_id=session_id, external_session_id=external_session_id,
-            runtime="codex", items=items, complete=False, metadata={"source": "codex.thread/turns/list"})
-        state = {"version": 1, "index": index, "counts": counts, "itemIds": item_ids}
+            runtime="codex", items=items, complete=False,
+            metadata={
+                "source": "codex.thread/turns/list",
+                **({"lastTurnId": last_turn_id} if last_turn_id else {}),
+            })
+        state = {"version": 2, "index": index, "counts": counts, "itemIds": item_ids}
         logger.info("codex indexed history read thread_id={} total_turns={} fetched_turns={} projected_turns={} prefix_turns={}",
                     external_session_id, len(ids), len(fetched), len(wanted), start)
         return snapshot, state, prefix

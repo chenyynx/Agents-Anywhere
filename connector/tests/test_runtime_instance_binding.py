@@ -197,6 +197,7 @@ class RecordingHost(RuntimeHostClient):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: Mapping[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         self.calls.append(
             (

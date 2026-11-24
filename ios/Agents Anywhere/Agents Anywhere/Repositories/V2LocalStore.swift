@@ -1,6 +1,17 @@
 import Foundation
 import os
 
+/// What a local archive says about the runtime state a cold open would need.
+nonisolated enum V2SavedOpenState {
+    /// No local archive: the open reads a network snapshot whose `state`
+    /// field arrives with the content itself.
+    case noArchive
+    /// A local archive exists but saved no idle runtime state (written before
+    /// the field existed, or saved while the session was running).
+    case missing
+    case saved(V2RuntimeState)
+}
+
 /// Serial, bounded disk I/O off the main actor. Account invalidation closes this
 /// handle before deleting it, so an in-flight save cannot recreate signed-out data.
 actor V2LocalStore {
@@ -23,6 +34,29 @@ actor V2LocalStore {
         self.timelineDatabaseEnabled = timelineDatabaseEnabled
     }
     func dashboard() -> V2DashboardArchive? { read("dashboard", as: V2DashboardArchive.self) }
+
+    /// What a local archive can tell an open about the footer's runtime state
+    /// before its rows are read.
+    func savedOpenState(_ id: String) -> V2SavedOpenState {
+        guard valid else { return .noArchive }
+        if let database = timelineStore(),
+           let blob = try? database.savedStateBlob(sessionID: id) {
+            if let archive = try? JSONDecoder().decode(
+                V2SessionArchive.self, from: blob),
+               let state = archive.state {
+                return .saved(state)
+            }
+            return .missing
+        }
+        // The JSON-fallback archives are the legacy ones the state field
+        // postdates; deciding from the file's presence avoids decoding a
+        // whole item payload just to answer this.
+        let hasJSONArchive = FileManager.default.fileExists(
+            atPath: url(sessionKey(id)).path)
+            || FileManager.default.fileExists(atPath: url(stateKey(id)).path)
+        return hasJSONArchive ? .missing : .noArchive
+    }
+
     func session(_ id: String) -> V2SessionArchive? {
         read(sessionKey(id), as: V2SessionArchive.self)
             ?? read(stateKey(id), as: V2SessionArchive.self)

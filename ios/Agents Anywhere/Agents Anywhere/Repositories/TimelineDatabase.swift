@@ -211,6 +211,16 @@ nonisolated final class TimelineDatabase {
         }
     }
 
+    /// The archive metadata blob only, without its rows. The open path uses it
+    /// to decide whether the runtime state must be read separately.
+    func savedStateBlob(sessionID: String) throws -> Data? {
+        try pool.read { db in
+            try Data.fetchOne(db, sql: """
+                SELECT state_blob FROM session_meta WHERE session_id = ?
+                """, arguments: [sessionID])
+        }
+    }
+
     func olderRows(sessionID: String, beforeOrderSeq: Int, limit: Int) throws -> [TimelineRow] {
         try pool.read { db in
             Array(try Row.fetchAll(db, sql: """

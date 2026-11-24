@@ -62,7 +62,7 @@ struct ConnectorPermissionPickerView: View {
         } label: {
             HStack(spacing: 8) {
                 Text(option.title)
-                    .font(SettingsStyle.text(16))
+                    .font(ConnectorStyle.text(16))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                     .lineLimit(1)
                 Spacer(minLength: 8)

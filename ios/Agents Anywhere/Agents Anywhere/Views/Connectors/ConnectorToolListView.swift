@@ -25,7 +25,7 @@ struct ConnectorToolListView: View {
             SettingsSection {
                 ForEach(Array(toolNames.enumerated()), id: \.offset) { index, name in
                     Text(verbatim: name)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)

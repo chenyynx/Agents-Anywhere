@@ -88,8 +88,8 @@ struct AddCustomConnectorView: View {
     /// copy (no card), matching the settings explanatory footers.
     private var intro: some View {
         Text(String(localized: "Connect directly to an MCP server by entering its URL."))
-            .font(SettingsStyle.text(15))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+            .font(ConnectorStyle.text(15))
+            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 4)
     }
@@ -103,7 +103,7 @@ struct AddCustomConnectorView: View {
                     fieldLabel(String(localized: "Name"))
                     TextField(String(localized: "My connector"), text: $name)
                         .textFieldStyle(.plain)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
@@ -117,7 +117,7 @@ struct AddCustomConnectorView: View {
                     fieldLabel(String(localized: "URL"))
                     TextField(String(localized: "https://mcp.example.com/sse"), text: $url)
                         .textFieldStyle(.plain)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .keyboardType(.URL)
                         .textContentType(.URL)
@@ -160,11 +160,11 @@ struct AddCustomConnectorView: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(String(localized: "Requires sign-in"))
-                    .font(SettingsStyle.text(16))
+                    .font(ConnectorStyle.text(16))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(String(localized: "Turn on if this server needs you to authenticate. You can enter OAuth client details below."))
-                    .font(SettingsStyle.text(15))
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .font(ConnectorStyle.text(15))
+                    .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
@@ -195,7 +195,7 @@ struct AddCustomConnectorView: View {
                     }
                 }
                 .textFieldStyle(.plain)
-                .font(SettingsStyle.text(16))
+                .font(ConnectorStyle.text(16))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -207,8 +207,8 @@ struct AddCustomConnectorView: View {
 
     private func fieldLabel(_ title: String) -> some View {
         Text(title)
-            .font(SettingsStyle.text(13))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+            .font(ConnectorStyle.text(13))
+            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
     }
 
     private var warningBanner: some View {
@@ -225,7 +225,7 @@ struct AddCustomConnectorView: View {
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 15, weight: .regular))
             Text(failure.message)
-                .font(SettingsStyle.text(14))
+                .font(ConnectorStyle.text(14))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -244,7 +244,7 @@ struct AddCustomConnectorView: View {
         Button(action: submit) {
             ZStack {
                 Text(String(localized: "Add connector"))
-                    .font(SettingsStyle.text(16, weight: .semibold))
+                    .font(ConnectorStyle.text(16, weight: .semibold))
                     .opacity(isSubmitting ? 0 : 1)
                 if isSubmitting {
                     ProgressView()

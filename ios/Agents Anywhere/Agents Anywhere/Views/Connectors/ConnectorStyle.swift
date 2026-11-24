@@ -9,6 +9,17 @@ import SwiftUI
 /// geometry. Values marked `dark?` are projected from the light capture — the
 /// official dark screenshots are still missing.
 nonisolated enum ConnectorStyle {
+    // MARK: Typography
+
+    /// Fixed-size official face for the connector screens.
+    ///
+    /// `SettingsStyle.text` scales with Dynamic Type (`relativeTo: .body`);
+    /// the official connector screens keep fixed sizes, so a larger system
+    /// font must not inflate this page (measured +15–30% otherwise).
+    static func text(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom(SettingsStyle.fontName, fixedSize: size).weight(weight)
+    }
+
     // MARK: Geometry
 
     /// Remote connector logo in directory rows and detail headers (measured
@@ -93,6 +104,14 @@ nonisolated enum ConnectorStyle {
                         : .white
     }
 
+    /// Disclosure chevrons: official #C7C7C5 (the light grey in the capture),
+    /// not the 58%-black secondary text colour.
+    static func chevron(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color.white.opacity(0.30)
+            : Color(red: 0xC7 / 255.0, green: 0xC7 / 255.0, blue: 0xC5 / 255.0)
+    }
+
     /// Trailing values on device-tool rows (“已允许 / 读取和写入”).
     /// Binary: `DeviceToolRowView` reads token `text500` (#97958D light);
     /// the screenshot samples #B6B5B4, i.e. the same light grey.
@@ -121,7 +140,7 @@ nonisolated enum ConnectorStyle {
     /// “交互式” (interactive) tag on directory rows.
     static func tagFill(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color.white.opacity(0.10)
-                        : Color(red: 0xF1 / 255.0, green: 0xF1 / 255.0, blue: 0xEF / 255.0)
+                        : Color(red: 0xF3 / 255.0, green: 0xF3 / 255.0, blue: 0xF3 / 255.0)
     }
 
     /// Hairline start that clears a leading logo. Measured: the row text
@@ -130,7 +149,7 @@ nonisolated enum ConnectorStyle {
     static let logoDividerLeading: CGFloat = 54
     /// Directory / logo row: the text column is aligned at 70 pt on screen.
     static let logoRowPadding: CGFloat = 18
-    static let logoRowGap: CGFloat = 8
+    static let logoRowGap: CGFloat = 6
 
     /// Off-state switch track (no official capture yet; matches the system
     /// grey the app uses elsewhere).

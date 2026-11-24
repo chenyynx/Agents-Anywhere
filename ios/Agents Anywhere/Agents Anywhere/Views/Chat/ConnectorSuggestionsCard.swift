@@ -145,7 +145,7 @@ struct ConnectorSuggestionsCard: View {
             if phase == .loading {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(SettingsStyle.secondary(colorScheme))
+                    .tint(ConnectorDetailStyle.secondary(colorScheme))
             }
         }
         .frame(minWidth: 44, minHeight: 44)
@@ -188,7 +188,7 @@ struct ConnectorSuggestionsCard: View {
         case .needsReconnect:
             return ConnectorStyle.warningInk(colorScheme)
         case .restricted, .notInstalled, .unknown:
-            return SettingsStyle.secondary(colorScheme)
+            return ConnectorDetailStyle.secondary(colorScheme)
         }
     }
 

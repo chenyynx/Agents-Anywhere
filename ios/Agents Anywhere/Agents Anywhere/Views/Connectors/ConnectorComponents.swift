@@ -1,5 +1,25 @@
 import SwiftUI
 
+/// Fixed-size AppSymbol twin for the connector screens. `AppSymbol` uses
+/// `@ScaledMetric`, which inflates with Dynamic Type; the official connector
+/// glyphs do not scale (measured +30% otherwise).
+struct ConnectorSymbol: View {
+    let name: String
+    var size: CGFloat = 20
+
+    var body: some View {
+        Group {
+            if let asset = AppSymbolAssets.names[name] {
+                Image(asset).resizable().scaledToFit()
+            } else {
+                Image(systemName: name).resizable().scaledToFit()
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 /// Leading artwork for a connector row: a remote `iconUrl`, a bundled
 /// `AppSymbol` (device tools), or a letter fallback (custom connectors such as
 /// “my phone”, which the official app renders as a monogram tile).
@@ -33,7 +53,7 @@ struct ConnectorLogoView: View {
                     }
                 }
             case .symbol(let name):
-                AppSymbol(name, size: size * 0.58)
+                ConnectorSymbol(name: name, size: size * 0.58)
                     .foregroundStyle(symbolTint ?? ConnectorStyle.accent(colorScheme))
             case .letter(let letter):
                 monogram(letter: String(letter.prefix(1)).uppercased())
@@ -79,7 +99,7 @@ struct ConnectorLogoView: View {
             }
             .overlay {
                 Text(letter)
-                    .font(SettingsStyle.text(size * 0.44, weight: .semibold))
+                    .font(ConnectorStyle.text(size * 0.44, weight: .semibold))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
             }
     }
@@ -135,12 +155,12 @@ struct ConnectorCircleButton: View {
                 // at 3x) — 17 pt rendered 10.7×18.3 was too large.
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
-                .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                // Official circular keys are iOS 26 liquid glass, not a
-                // painted white disc (same treatment as SubAgentToolbarButton).
-                .glassEffect(.regular.interactive(), in: Circle())
         }
-        .buttonStyle(.plain)
+        // Let the system draw the liquid-glass circle: `.glass` button style
+        // + circular border shape (no hand-built background/shape).
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .controlSize(.regular)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.4)
         .accessibilityLabel(Text(verbatim: symbol))
@@ -154,7 +174,7 @@ struct ConnectorCountCapsule: View {
 
     var body: some View {
         Text(verbatim: "\(count)")
-            .font(SettingsStyle.text(14, weight: .semibold))
+            .font(ConnectorStyle.text(14, weight: .semibold))
             .foregroundStyle(ConnectorStyle.accent(colorScheme))
             .padding(.horizontal, 9)
             .padding(.vertical, 3)
@@ -169,10 +189,11 @@ struct ConnectorTag: View {
 
     var body: some View {
         Text(text)
-            .font(SettingsStyle.text(13))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .font(ConnectorStyle.text(13))
+            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+            .padding(.horizontal, 9)
+            // Official capsule measures ~28 pt tall.
+            .padding(.vertical, 5.5)
             .background(ConnectorStyle.tagFill(colorScheme), in: Capsule())
     }
 }
@@ -185,7 +206,7 @@ struct ConnectorVerifiedBadge: View {
     var body: some View {
         Image(systemName: "checkmark.seal")
             .font(.system(size: 13, weight: .regular))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             .accessibilityLabel(Text("Anthropic verified"))
     }
 }
@@ -200,7 +221,7 @@ struct ConnectorWarningBanner: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 17, weight: .regular))
             Text(text)
-                .font(SettingsStyle.text(15))
+                .font(ConnectorStyle.text(15))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -226,7 +247,7 @@ struct ConnectorOutlineButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(SettingsStyle.text(15, weight: .medium))
+                .font(ConnectorStyle.text(15, weight: .medium))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .lineLimit(1)
                 .padding(.horizontal, 10)
@@ -253,7 +274,7 @@ struct ConnectorPrimaryButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(SettingsStyle.text(16, weight: .semibold))
+                .font(ConnectorStyle.text(16, weight: .semibold))
                 .padding(.horizontal, 22)
                 .frame(height: ConnectorStyle.actionHeight)
         }
@@ -312,7 +333,7 @@ struct ConnectorCardRow<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(title)
-                        .font(SettingsStyle.text(15))
+                        .font(ConnectorStyle.text(14))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .lineLimit(1)
                     if showsVerified { ConnectorVerifiedBadge() }
@@ -320,9 +341,12 @@ struct ConnectorCardRow<Trailing: View>: View {
                 }
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(SettingsStyle.text(13))
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                        .font(ConnectorStyle.text(12))
+                        .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
+                        // Official two-line rows measure 103 pt vs 68.7 for
+                        // one line: the description keeps a 20 pt line gap.
+                        .lineSpacing(20)
                 }
             }
             Spacer(minLength: 8)
@@ -330,7 +354,10 @@ struct ConnectorCardRow<Trailing: View>: View {
             if showsChevron {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+                    .foregroundStyle(ConnectorStyle.chevron(colorScheme))
+                    // Official chevron right edge sits 27 pt from the card
+                    // edge (row padding 18 + 7 extra).
+                    .padding(.trailing, 7)
             }
         }
         .padding(.horizontal, ConnectorStyle.logoRowPadding)

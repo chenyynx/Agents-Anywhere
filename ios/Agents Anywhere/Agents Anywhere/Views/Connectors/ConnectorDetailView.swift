@@ -91,14 +91,14 @@ struct ConnectorDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(data.name)
-                        .font(SettingsStyle.text(16, weight: .semibold))
+                        .font(ConnectorStyle.text(16, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if data.isVerified { ConnectorVerifiedBadge() }
                 }
                 // The capture’s one-liner ink is ~11 pt tall (cap ~8 pt) and
                 // 198 pt wide — one step below the 15 pt row subtitles.
                 Text(oneLiner)
-                    .font(SettingsStyle.text(12))
+                    .font(ConnectorStyle.text(12))
                     .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -110,7 +110,7 @@ struct ConnectorDetailView: View {
         Text(text)
             // 13.5 pt reproduces the capture’s ten lines and its first-line
             // break (“…search through”) inside the 321 pt text column.
-            .font(SettingsStyle.text(13.5))
+            .font(ConnectorStyle.text(13.5))
             .foregroundStyle(SettingsStyle.ink(colorScheme))
             // Official line pitch is 21 pt: 16.9 pt line box + 4 pt leading.
             .lineSpacing(4)
@@ -159,11 +159,11 @@ struct ConnectorDetailView: View {
             SettingsRowContainer(minHeight: 50, verticalPadding: 12) {
                 HStack(spacing: 10) {
                     Text(String(localized: "Tools"))
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Spacer(minLength: 8)
                     Text(verbatim: "\(toolCount)")
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     chevron
                 }
@@ -196,7 +196,7 @@ struct ConnectorDetailView: View {
                     SettingsRowContainer(minHeight: 50, verticalPadding: 12) {
                         HStack(spacing: 10) {
                             Text(String(localized: "All tools"))
-                                .font(SettingsStyle.text(16))
+                                .font(ConnectorStyle.text(16))
                                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                             Spacer(minLength: 8)
                         }
@@ -217,10 +217,10 @@ struct ConnectorDetailView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
                     Text(data.name)
-                        .font(SettingsStyle.text(22, weight: .semibold))
+                        .font(ConnectorStyle.text(22, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Text(String(localized: "Custom"))
-                        .font(SettingsStyle.text(13))
+                        .font(ConnectorStyle.text(13))
                         .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
                 }
             }
@@ -244,7 +244,7 @@ struct ConnectorDetailView: View {
                     HStack(spacing: 9) {
                         ConnectorLogoView(source: .letter(data.monogramLetter), size: 24)
                         Text(tool.name)
-                            .font(SettingsStyle.text(16))
+                            .font(ConnectorStyle.text(16))
                             .foregroundStyle(SettingsStyle.ink(colorScheme))
                         Spacer(minLength: 8)
                     }
@@ -260,7 +260,7 @@ struct ConnectorDetailView: View {
                 SettingsRowContainer(minHeight: ConnectorStyle.rowHeight, verticalPadding: 12) {
                     HStack(spacing: 8) {
                         Text(String(localized: "Disconnect"))
-                            .font(SettingsStyle.text(16))
+                            .font(ConnectorStyle.text(16))
                             .foregroundStyle(ConnectorStyle.dangerInk(colorScheme))
                         Spacer(minLength: 0)
                     }
@@ -285,11 +285,11 @@ struct ConnectorDetailView: View {
         SettingsRowContainer(minHeight: ConnectorStyle.rowHeight, verticalPadding: 12) {
             HStack(spacing: 8) {
                 Text(label)
-                    .font(SettingsStyle.text(16))
+                    .font(ConnectorStyle.text(16))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Spacer(minLength: 8)
                 Text(value)
-                    .font(SettingsStyle.text(16))
+                    .font(ConnectorStyle.text(16))
                     .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     .lineLimit(1)
             }
@@ -308,17 +308,16 @@ struct ConnectorDetailView: View {
             SettingsRowContainer(minHeight: 54, verticalPadding: 12) {
                 HStack(spacing: 8) {
                     Text(label)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                     Spacer(minLength: 8)
                     if let value {
                         Text(value)
-                            .font(SettingsStyle.text(16))
+                            .font(ConnectorStyle.text(16))
                             .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                             .lineLimit(1)
                     }
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 17, weight: .regular))
+                    ConnectorSymbol(name: "anthropicon.arrowOutSquare", size: 17)
                         .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                 }
             }
@@ -335,10 +334,10 @@ struct ConnectorDetailView: View {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Text(url)
-                        .font(SettingsStyle.text(12))
+                        .font(ConnectorStyle.text(12))
                         .foregroundStyle(ConnectorDetailStyle.tertiary(colorScheme))
                         .lineLimit(2)
                         .truncationMode(.middle)
@@ -368,7 +367,7 @@ struct ConnectorDetailView: View {
     private var chevron: some View {
         Image(systemName: "chevron.right")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+            .foregroundStyle(ConnectorStyle.chevron(colorScheme))
     }
 }
 

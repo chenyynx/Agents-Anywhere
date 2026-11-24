@@ -45,7 +45,7 @@ struct ConnectorDirectoryView: View {
                                          subtitle: entry.subtitle,
                                          // Official single-line row: 160 px =
                                          // 53 pt; taller rows grow naturally.
-                                         rowMinHeight: 53)
+                                         rowMinHeight: 68)
                     }
                     .buttonStyle(.plain)
                 }
@@ -72,9 +72,9 @@ struct ConnectorDirectoryView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
             TextField(String(localized: "Search"), text: $searchText)
-                .font(SettingsStyle.text(16))
+                .font(ConnectorStyle.text(16))
                 .textFieldStyle(.plain)
         }
         .padding(.horizontal, 14)

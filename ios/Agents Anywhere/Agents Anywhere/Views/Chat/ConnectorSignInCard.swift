@@ -97,7 +97,7 @@ struct ConnectorSignInCard: View {
             if isConnecting {
                 ProgressView()
                     .controlSize(.small)
-                    .tint(SettingsStyle.secondary(colorScheme))
+                    .tint(ConnectorDetailStyle.secondary(colorScheme))
             }
         }
         .frame(minWidth: 44, minHeight: 44)

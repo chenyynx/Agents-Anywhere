@@ -75,16 +75,16 @@ struct ConnectorsSettingsView: View {
 
     private var discoveryRow: some View {
         HStack(spacing: SettingsStyle.iconGap) {
-            AppSymbol("anthropicon.connectors", size: 20)
+            ConnectorSymbol(name: "anthropicon.connectors", size: 19)
                 .frame(width: SettingsStyle.iconFrame)
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
             VStack(alignment: .leading, spacing: 3) {
                 Text(String(localized: "Connector discovery"))
-                    .font(SettingsStyle.text(17))
+                    .font(ConnectorStyle.text(17))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(String(localized: "Claude will help you find available connectors in your directory."))
-                    .font(SettingsStyle.text(13))
-                    .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                    .font(ConnectorStyle.text(13))
+                    .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
@@ -116,30 +116,29 @@ struct ConnectorsSettingsView: View {
                 ConnectorLogoView(source: .appIcon(row.tool.imageName), size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.tool.title)
-                        .font(SettingsStyle.text(17))
+                        .font(ConnectorStyle.text(17))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if let subtitle = row.subtitle {
                         Text(subtitle)
-                            .font(SettingsStyle.text(13))
-                            .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                            .font(ConnectorStyle.text(13))
+                            .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: 8)
                 if let value = row.value {
                     Text(value)
-                        .font(SettingsStyle.text(16))
+                        .font(ConnectorStyle.text(16))
                         .foregroundStyle(ConnectorStyle.tertiaryText(colorScheme))
                         .lineLimit(1)
                 }
                 if row.opensSystemSettings {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 17, weight: .regular))
+                    ConnectorSymbol(name: "anthropicon.arrowOutSquare", size: 17)
                         .foregroundStyle(ConnectorStyle.accent(colorScheme))
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+                        .foregroundStyle(ConnectorStyle.chevron(colorScheme))
                 }
             }
             .padding(.horizontal, 12)
@@ -159,7 +158,7 @@ struct ConnectorsSettingsView: View {
             HStack(spacing: ConnectorStyle.logoRowGap) {
                 ConnectorLogoView(source: row.logo, size: 28)
                 Text(row.name)
-                    .font(SettingsStyle.text(17))
+                    .font(ConnectorStyle.text(17))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -168,13 +167,12 @@ struct ConnectorsSettingsView: View {
                     ConnectorCountCapsule(count: count)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
+                        .foregroundStyle(ConnectorStyle.chevron(colorScheme))
                 case .connect:
                     Text(String(localized: "Connect"))
-                        .font(SettingsStyle.text(17))
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 17, weight: .regular))
+                        .font(ConnectorStyle.text(17))
+                        .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                    ConnectorSymbol(name: "anthropicon.arrowOutSquare", size: 17)
                         .foregroundStyle(ConnectorStyle.accent(colorScheme))
                 }
             }

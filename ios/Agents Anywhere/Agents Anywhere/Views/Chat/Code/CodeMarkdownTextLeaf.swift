@@ -373,7 +373,14 @@ final class CodeMarkdownTextStackView: UIView {
 
     private var pendingBuild: PendingBuild?
     private var chunkScheduled = false
-    private static let chunkSize = 3
+    private static let minChunkSize = 3
+    private static let maxChunkSize = 12
+    /// Per-turn budget for the spread build. A big message that only built 3
+    /// blocks per turn could still be dozens of blocks behind when its row
+    /// reached the viewport, and the forced finish cost up to 52 ms (probe
+    /// 2026-11-25). Building more per offscreen turn shortens that lead
+    /// without turning one turn into a frame drop.
+    private static let chunkBudget: CFTimeInterval = 0.004
 
     /// The latest document. Building normally happens on the next layout pass,
     /// when the representable has its real width. When the adapter already
@@ -394,7 +401,7 @@ final class CodeMarkdownTextStackView: UIView {
         if let width, width > 0, width.isFinite,
            window == nil,
            let document,
-           document.blocks.count > Self.chunkSize * 2,
+           document.blocks.count > Self.minChunkSize * 2,
            key != builtKey || abs(width - builtWidth) > 0.5 {
             // The same content may arrive again while its chunks are running
             // (SwiftUI re-runs the update); keep the in-flight build.
@@ -436,10 +443,18 @@ final class CodeMarkdownTextStackView: UIView {
     private func buildNextChunk() {
         guard var pending = pendingBuild else { return }
         var built = 0
+        let remaining = pending.document.blocks.count - pending.nextIndex
+        // Finish large documents in fewer turns: a quarter of what is left,
+        // clamped to [min, max], and never past the per-turn budget (the
+        // minimum still runs so progress cannot stall).
+        let target = min(Self.maxChunkSize,
+                         max(Self.minChunkSize, remaining / 4))
+        let deadline = CACurrentMediaTime() + Self.chunkBudget
         while pending.nextIndex < pending.document.blocks.count,
-              built < Self.chunkSize {
+              built < target {
             appendPendingRecord(&pending)
             built += 1
+            if built >= Self.minChunkSize, CACurrentMediaTime() >= deadline { break }
         }
         pendingBuild = pending
         if pending.nextIndex >= pending.document.blocks.count {

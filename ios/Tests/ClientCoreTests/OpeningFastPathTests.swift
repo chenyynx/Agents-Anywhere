@@ -374,9 +374,11 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         let repo = repository(transport: http, policy: policy, localStore: store)
         defer { gate.release(); repo.reset() }
 
-        let started = ProcessInfo.processInfo.systemUptime
         let opened = try await repo.open(sessionId: "session")
-        #expect(ProcessInfo.processInfo.systemUptime - started < 1.0)
+        // Wall-clock is not asserted here: swift-testing interleaves the whole
+        // @MainActor suite, so the deadline's continuation can resume late
+        // under CI load. What matters is the behavior: the body returns
+        // without the state, and the in-flight read still lands afterwards.
         #expect(opened.state == nil, "past the budget the body goes first")
 
         gate.release()

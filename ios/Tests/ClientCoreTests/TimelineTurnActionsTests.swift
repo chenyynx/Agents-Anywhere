@@ -1042,6 +1042,88 @@ import Testing
             stateCoversRows: false))
     }
 
+    /// A bubble-less next turn must not stay merged into a live user bucket
+    /// when the durable fact proves the user turn ended. The ended turn's
+    /// seal would otherwise land on the running turn's reply, and a later
+    /// commit would copy both turns' text into one footer.
+    @Test func aDurableBoundarySplitsAMergedLiveBucket() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("r-b", text: "B", turnId: "turn-b", seq: 20),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let liveGroup = groups[0].id
+
+        let running = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            liveTurnGroupID: liveGroup,
+            latestTurnId: "turn-a", latestTurnEndSeq: 11)
+        #expect(running["r-a"]?.copyText == "A")
+        #expect(running["r-b"] == nil)
+
+        let bothEnded = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            liveTurnGroupID: liveGroup,
+            latestTurnId: "turn-b", latestTurnEndSeq: 20)
+        #expect(bothEnded["r-a"]?.copyText == "A")
+        #expect(bothEnded["r-b"]?.copyText == "B")
+    }
+
+    /// An older page's trailing bucket is cut by the window, not by its turn
+    /// end; the durable watermark cannot prove it complete. Keep 2.2.0's
+    /// `hasNewerItems` suppression instead of sealing it.
+    @Test func anOlderWindowDoesNotSealItsTruncatedBucket() throws {
+        let rows = try [row("r-old", text: "Old", turnId: "turn-old", seq: 10)]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let durable = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-new", latestTurnEndSeq: 100)
+        #expect(durable["r-old"]?.copyText == "Old")
+
+        let windowed = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-new", latestTurnEndSeq: 100,
+            hasNewerItems: true)
+        #expect(windowed.isEmpty)
+    }
+
+    /// The sequence watermark belongs to one bucket. A new user turn resets
+    /// it; a high revision from the previous turn must not make the new
+    /// bucket look newer than the recorded end.
+    @Test func aNewBucketDoesNotInheritThePreviousWatermark() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 100),
+            row("u-b", role: "user", turnId: "turn-b", seq: 11),
+            row("r-b", text: "B", turnId: "turn-b", seq: 20),
+        ]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            latestTurnId: "turn-old", latestTurnEndSeq: 50)
+        #expect(actions["r-a"]?.copyText == "A")
+        #expect(actions["r-b"]?.copyText == "B")
+    }
+
+    /// Sub-agent child rows keep publishing after the main turn; counting
+    /// their seq in the bucket watermark made every older bucket look newer
+    /// than the recorded end.
+    @Test func aSubAgentChildDoesNotRaiseTheBucketWatermark() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("child", text: "child", turnId: "turn-a", seq: 100,
+                parentItemID: "card"),
+        ]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.fallbackGroups(rows, interactionTargets: []),
+            suppressLatest: true,
+            latestTurnId: "turn-old", latestTurnEndSeq: 50)
+        #expect(actions.count == 1)
+        #expect(actions.values.first?.copyText == "A")
+    }
+
 }
 
 /// Which pending deliveries still open the new turn for the footer gate.
@@ -1307,87 +1389,5 @@ struct TurnFooterGateTests {
         let afterCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
                                           authoritativeTurnEnds: 1, userKeyOrder: 10)
         #expect(afterCompaction)
-    }
-
-    /// A bubble-less next turn must not stay merged into a live user bucket
-    /// when the durable fact proves the user turn ended. The ended turn's
-    /// seal would otherwise land on the running turn's reply, and a later
-    /// commit would copy both turns' text into one footer.
-    @Test func aDurableBoundarySplitsAMergedLiveBucket() throws {
-        let rows = try [
-            row("u-a", role: "user", turnId: "turn-a", seq: 10),
-            row("r-a", text: "A", turnId: "turn-a", seq: 11),
-            row("r-b", text: "B", turnId: "turn-b", seq: 20),
-        ]
-        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
-        let liveGroup = groups[0].id
-
-        let running = TimelineTurnActions.build(
-            groups: groups, suppressLatest: true,
-            liveTurnGroupID: liveGroup,
-            latestTurnId: "turn-a", latestTurnEndSeq: 11)
-        #expect(running["r-a"]?.copyText == "A")
-        #expect(running["r-b"] == nil)
-
-        let bothEnded = TimelineTurnActions.build(
-            groups: groups, suppressLatest: true,
-            liveTurnGroupID: liveGroup,
-            latestTurnId: "turn-b", latestTurnEndSeq: 20)
-        #expect(bothEnded["r-a"]?.copyText == "A")
-        #expect(bothEnded["r-b"]?.copyText == "B")
-    }
-
-    /// An older page's trailing bucket is cut by the window, not by its turn
-    /// end; the durable watermark cannot prove it complete. Keep 2.2.0's
-    /// `hasNewerItems` suppression instead of sealing it.
-    @Test func anOlderWindowDoesNotSealItsTruncatedBucket() throws {
-        let rows = try [row("r-old", text: "Old", turnId: "turn-old", seq: 10)]
-        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
-        let durable = TimelineTurnActions.build(
-            groups: groups, suppressLatest: true,
-            latestTurnId: "turn-new", latestTurnEndSeq: 100)
-        #expect(durable["r-old"]?.copyText == "Old")
-
-        let windowed = TimelineTurnActions.build(
-            groups: groups, suppressLatest: true,
-            latestTurnId: "turn-new", latestTurnEndSeq: 100,
-            hasNewerItems: true)
-        #expect(windowed.isEmpty)
-    }
-
-    /// The sequence watermark belongs to one bucket. A new user turn resets
-    /// it; a high revision from the previous turn must not make the new
-    /// bucket look newer than the recorded end.
-    @Test func aNewBucketDoesNotInheritThePreviousWatermark() throws {
-        let rows = try [
-            row("u-a", role: "user", turnId: "turn-a", seq: 10),
-            row("r-a", text: "A", turnId: "turn-a", seq: 100),
-            row("u-b", role: "user", turnId: "turn-b", seq: 11),
-            row("r-b", text: "B", turnId: "turn-b", seq: 20),
-        ]
-        let actions = TimelineTurnActions.build(
-            groups: TimelineGrouping.groups(rows, interactionTargets: []),
-            suppressLatest: true,
-            latestTurnId: "turn-old", latestTurnEndSeq: 50)
-        #expect(actions["r-a"]?.copyText == "A")
-        #expect(actions["r-b"]?.copyText == "B")
-    }
-
-    /// Sub-agent child rows keep publishing after the main turn; counting
-    /// their seq in the bucket watermark made every older bucket look newer
-    /// than the recorded end.
-    @Test func aSubAgentChildDoesNotRaiseTheBucketWatermark() throws {
-        let rows = try [
-            row("u-a", role: "user", turnId: "turn-a", seq: 10),
-            row("r-a", text: "A", turnId: "turn-a", seq: 11),
-            row("child", text: "child", turnId: "turn-a", seq: 100,
-                parentItemID: "card"),
-        ]
-        let actions = TimelineTurnActions.build(
-            groups: TimelineGrouping.fallbackGroups(rows, interactionTargets: []),
-            suppressLatest: true,
-            latestTurnId: "turn-old", latestTurnEndSeq: 50)
-        #expect(actions.count == 1)
-        #expect(actions.values.first?.copyText == "A")
     }
 }

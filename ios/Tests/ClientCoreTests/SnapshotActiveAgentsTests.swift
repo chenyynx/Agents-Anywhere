@@ -81,7 +81,7 @@ import Testing
         let state = SubAgentProgress.capsuleState(inWindow: data.items, activeCards: data.activeAgentCards, now: Self.now)
         #expect(state.runningCount >= 1)
         #expect(state.isVisible)
-        #expect(state.title == "1 个 Agent 正在运行")
+        #expect(state.title == "1 个智能体正在运行")
 
         // The seed is a confirmation like any other: read long after the
         // snapshot (an old archive), it ages out instead of pinning the capsule.
@@ -132,6 +132,6 @@ import Testing
         let state = SubAgentProgress.capsuleState(inWindow: projection.data.items,
                                                   activeCards: projection.data.activeAgentCards)
         #expect(state.runningCount == 1)
-        #expect(state.title == "1 个 Agent 正在运行")
+        #expect(state.title == "1 个智能体正在运行")
     }
 }

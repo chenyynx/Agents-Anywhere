@@ -360,6 +360,9 @@ struct SubAgentPanelSheet: View {
     /// means the activity really is not loaded, while a read still in flight
     /// must not claim it.
     private func showsContentNotLoaded(_ card: SubAgentCard, in items: [V2TimelineItem]) -> Bool {
+        // An active card with no rows is waiting for its first activity, not
+        // missing its content: the working row speaks for it (pp 2026-11-24).
+        if card.phase.isActive { return false }
         guard chat.session.windowExcludesAgentChildren else {
             return !SubAgentProgress.isContentLoaded(card, in: window)
         }
@@ -407,8 +410,11 @@ struct SubAgentPanelSheet: View {
         let rows = activityRows(of: card, in: items)
         // An empty, settled read renders nothing here (the not-loaded notice
         // already speaks for it); an empty VStack would still eat the outer
-        // stack's spacing.
-        if !rows.isEmpty || hasActivityStatus() {
+        // stack's spacing. An active card with nothing loaded yet shows the
+        // chat's own working row instead — the panel mirrors the transcript,
+        // where a live step group carries the mark and a standalone working
+        // row speaks only while no live steps exist.
+        if !rows.isEmpty || hasActivityStatus() || showsStandaloneWorkingRow(card: card, rows: rows) {
             VStack(alignment: .leading, spacing: 8) {
                 // The on-demand read's own state (C3). Only a main-only window
                 // ever leaves `.idle`: a normal window already holds the rows.
@@ -428,9 +434,40 @@ struct SubAgentPanelSheet: View {
                     // Lazy: after a few pages this list can hold hundreds of
                     // rows.
                     chatTranscript(rows, card: card)
+                } else if showsStandaloneWorkingRow(card: card, rows: rows) {
+                    workingRow(card)
                 }
             }
         }
+    }
+
+    /// The main transcript's working-row gate, re-expressed for the panel: the
+    /// standalone row joins only while no live step group carries the mark
+    /// (`SendFramePresentation.showsWorkingRow`). Here that means the card is
+    /// active and the panel has no activity to group yet; a settled card keeps
+    /// the not-loaded notice instead.
+    private func showsStandaloneWorkingRow(card: SubAgentCard,
+                                           rows: [ChatTimelineRowModel]) -> Bool {
+        guard rows.isEmpty, card.phase.isActive else { return false }
+        switch activity.phase {
+        case .loading, .loadingOlder, .failed:
+            // The store's own spinner/failure row already speaks for those.
+            return false
+        case .idle, .loaded, .unsupported, .offline:
+            return true
+        }
+    }
+
+    /// The chat profile's neutral working row (`正在处理中…` + the flipbook mark
+    /// + the shared shimmer). The subagent has no standalone runtime state, so
+    /// its own dispatch time seeds the phase.
+    @ViewBuilder private func workingRow(_ card: SubAgentCard) -> some View {
+        CodeWorkingStatusRow(isRunning: true,
+                             markBody: .think,
+                             phase: .working(startedAt: card.dispatchedAt ?? Date()),
+                             usesChatWorkingStyle: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("chat.subagent.working")
     }
 
     /// The child transcript through the chat profile's own grouping: step
@@ -496,6 +533,12 @@ struct SubAgentPanelSheet: View {
                             onOpenLink: onOpenLink)
                     }
                 }
+            }
+            // No live step group carries the mark (a message tail or an empty
+            // tail): the chat's standalone working row does, exactly like the
+            // page (SendFramePresentation.showsWorkingRow).
+            if card.phase.isActive, lastStepGroupID == nil {
+                workingRow(card)
             }
         }
     }

@@ -316,7 +316,7 @@
         }
       }
     },
-    "%lld 个 Agent 正在运行": {
+    "%lld 个智能体正在运行": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -340,7 +340,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld 个 Agent 正在运行"
+            "value": "%lld 个智能体正在运行"
           }
         }
       }

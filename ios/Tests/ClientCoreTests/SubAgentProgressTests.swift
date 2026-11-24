@@ -154,11 +154,11 @@ import Testing
         let starting = try cardItem("a", order: 1, description: "排查日志", agents: asyncEntry())
         let state = SubAgentProgress.capsuleState([starting, try cardItem("b", order: 2, status: "done")])
         #expect(state.isVisible && state.runningCount == 1)
-        #expect(state.latestRunningID == "a" && state.title == "1 个 Agent 正在运行")
+        #expect(state.latestRunningID == "a" && state.title == "1 个智能体正在运行")
         // VoiceOver follows the phase word instead of a hardcoded 运行中.
-        #expect(state.accessibilityText == "1 个 Agent 正在运行，启动中")
+        #expect(state.accessibilityText == "1 个智能体正在运行，启动中")
         let running = SubAgentProgress.capsuleState([try cardItem("a", order: 1, description: "排查日志")])
-        #expect(running.accessibilityText == "1 个 Agent 正在运行，运行中")
+        #expect(running.accessibilityText == "1 个智能体正在运行，运行中")
         // …and a failing batch still overrides both.
         let failed = SubAgentProgress.capsuleState(try [
             cardItem("x", order: 1, status: "failed", agents: asyncEntry("failed")),
@@ -211,10 +211,10 @@ import Testing
         let second = try cardItem("b", order: 2, description: "排查进程")
         let single = SubAgentProgress.capsuleState([first])
         #expect(single.isVisible && single.runningCount == 1)
-        #expect(single.title == "1 个 Agent 正在运行")
+        #expect(single.title == "1 个智能体正在运行")
         #expect(single.latestRunningID == "a")
         let pair = SubAgentProgress.capsuleState([first, second])
-        #expect(pair.title == "2 个 Agent 正在运行")
+        #expect(pair.title == "2 个智能体正在运行")
         // All-terminal cards leave no capsule.
         let done = SubAgentProgress.capsuleState([try cardItem("done", status: "done")])
         #expect(!done.isVisible && done.latestRunningID == nil)

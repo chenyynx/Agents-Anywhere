@@ -54,8 +54,8 @@ for language in ["en", "zh-Hans"] {
                chinese ? "\(count) 次工具调用" : "\(count) tool \(count == 1 ? "call" : "calls")")
         expect(String(localized: "\(count) 次 SubAgent 调用", bundle: bundle, locale: locale),
                chinese ? "\(count) 次 SubAgent 调用" : "\(count) subagent \(count == 1 ? "call" : "calls")")
-        expect(String(localized: "\(count) 个 Agent 正在运行", bundle: bundle, locale: locale),
-               chinese ? "\(count) 个 Agent 正在运行" : "\(count) \(count == 1 ? "Agent" : "Agents") running")
+        expect(String(localized: "\(count) 个智能体正在运行", bundle: bundle, locale: locale),
+               chinese ? "\(count) 个智能体正在运行" : "\(count) \(count == 1 ? "Agent" : "Agents") running")
         expect(String(localized: "\(count) sessions", bundle: bundle, locale: locale),
                chinese ? "\(count) 个会话" : "\(count) \(count == 1 ? "session" : "sessions")")
         expect(String(localized: "\(count) selected", bundle: bundle, locale: locale),

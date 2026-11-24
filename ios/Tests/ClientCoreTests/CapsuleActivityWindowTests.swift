@@ -67,7 +67,7 @@ import Testing
         let state = capsule(projection)
         #expect(state.isVisible)
         #expect(state.runningCount == 1)
-        #expect(state.title == "1 个 Agent 正在运行")
+        #expect(state.title == "1 个智能体正在运行")
         #expect(state.latestRunningID == "card")
         // The regression this pins: read from the window alone the capsule is gone.
         #expect(!SubAgentProgress.capsuleState(projection.data.items).isVisible)
@@ -100,7 +100,7 @@ import Testing
         try projection.apply(event("timeline.item_updated", seq: 11, payload: [
             "item": try agentCard(order: 3, description: "过期标题", revision: 4, seq: 20)]))
         #expect(projection.data.activeAgentCards.first?.item.revision == 5)
-        #expect(capsule(projection).title == "1 个 Agent 正在运行")
+        #expect(capsule(projection).title == "1 个智能体正在运行")
         // …and a stale terminal frame must not close it either.
         try projection.apply(event("timeline.item_updated", seq: 12, payload: [
             "item": try agentCard(order: 3, status: "done", revision: 4, seq: 20)]))

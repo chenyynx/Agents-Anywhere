@@ -23,9 +23,11 @@ struct SubAgentAgentList: View {
     @ScaledMetric(relativeTo: .footnote) private var iconSize: CGFloat = 24
     @ScaledMetric(relativeTo: .footnote) private var cornerRadius: CGFloat = 24
     @ScaledMetric(relativeTo: .footnote) private var titleFontSize: CGFloat = 13
-    /// The working row's own type is 15 pt; the card scales it to the card's
-    /// 13 pt so the activity line stays under the title (pp 2026-11-24: 改小).
-    private let activityFontSize: CGFloat = 13
+    /// The working row's face reads optically larger than the system font at
+    /// the same point size, so the activity line sits one point below the
+    /// 13 pt title (pp 2026-11-24: 活动行比标题大). Family, ink and sweep stay
+    /// the working row's.
+    private let activityFontSize: CGFloat = 12
     /// The live line refreshes from the same presented rows the detail reads,
     /// so a streaming token or a tool change reaches the list without a timer.
     /// `flushRevision` is read on purpose: a token updates its row model in
@@ -53,7 +55,7 @@ struct SubAgentAgentList: View {
         // The reference puts the count as the sheet's centred title; the
         // inline navigation title is the same 17 pt semibold, below the
         // grabber, so no custom header is needed.
-        .navigationTitle(String(localized: "\(cards.count) 个 Agent 正在运行"))
+        .navigationTitle(String(localized: "\(cards.count) 个智能体正在运行"))
         .navigationBarTitleDisplayMode(.inline)
     }
 

@@ -719,11 +719,11 @@ struct SubAgentCapsuleState: Equatable {
 
     var isVisible: Bool { runningCount > 0 }
 
-    /// "N 个 Agent 正在运行" — the count form the reference capsule uses, for
+    /// "N 个智能体正在运行" — the count form the reference capsule uses, for
     /// one running SubAgent as well (pp 2026-11-15). The task name keeps its
     /// own card and panel entry; the capsule itself only reports the count.
     var title: String {
-        String(localized: "\(runningCount) 个 Agent 正在运行")
+        String(localized: "\(runningCount) 个智能体正在运行")
     }
 
     var accessibilityText: String {

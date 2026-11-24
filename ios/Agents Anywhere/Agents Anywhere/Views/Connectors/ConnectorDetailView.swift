@@ -398,8 +398,8 @@ struct ConnectorDetailView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text(String(localized: "Copy URL")))
                 }
-                .accessibilityLabel(Text(String(localized: "Copy URL")))
             }
         }
         .padding(.horizontal, 4)

@@ -447,10 +447,6 @@ final class TimelineChatBridge: ObservableObject {
     private var reduceMotion = false
     private var openingPending = false
     private var openingSettled = false
-    /// The opening has armed the controller it will land on. A cached page
-    /// can become ready before the representable's controller exists; the
-    /// first update after attachment arms it without re-arming every frame.
-    private var openingArmedController = false
     private var historyGeneration = 0
     private var isLoadingOlder = false
     private var isLoadingLatest = false
@@ -520,15 +516,7 @@ final class TimelineChatBridge: ObservableObject {
         controller.setReduceMotion(reduceMotion)
         controller.setInteractionPresented(hasInteractions)
         updateHistoryAvailability()
-        if openingPending {
-            // A cached page can become ready before this representable's
-            // controller is attached; `beginOpening` then could not arm the
-            // bottom. Arm it once the controller exists (pp 2026-11-25).
-            if !openingArmedController, controller.beginOpeningBottom() {
-                openingArmedController = true
-            }
-            if !controller.items.isEmpty { applyCompleted() }
-        }
+        if openingPending, !controller.items.isEmpty { applyCompleted() }
     }
 
     /// Scrolls to the row that carries `rowID`, paging older history while the
@@ -762,10 +750,7 @@ final class TimelineChatBridge: ObservableObject {
 
     func beginOpening() {
         openingPending = true
-        openingArmedController = false
-        if let controller, controller.beginOpeningBottom() {
-            openingArmedController = true
-        }
+        controller?.beginOpeningBottom()
         // A cached snapshot can already be applied before `isOpeningReady`
         // flips; no later apply completion would settle the mask. Defer one
         // main-queue turn so the newly built representable has laid out.

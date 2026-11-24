@@ -6,7 +6,6 @@ import UIKit
 struct SessionChatView: View, Equatable {
     @StateObject private var storage: StableViewModel<SessionChatModel>
     private var model: SessionChatModel { storage.value }
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let sessionIdentity: V2SessionModel
     let deviceName: String?
     let fallbackTitle: String?
@@ -603,16 +602,12 @@ struct SessionChatView: View, Equatable {
             turnEnds: session.runtime.authoritativeTurnEnds,
             capabilities: session.runtime.capabilities,
             selections: session.runtime.state?.selections)
-        .task {
-            // AA mounts a fresh page per selection (the official app keeps a
-            // persistent content pane, so it has no such cost). Let the
-            // drawer's close spring commit before this page's model and
-            // collection view mount; the old "drawer settled + 120 ms" gate
-            // left the page blank for the whole close (pp 2026-11-25). One
-            // main-queue turn is enough: the cached window then applies while
-            // the card is still sliding.
-            do { try await Task.sleep(for: .milliseconds(1)) } catch { return }
-            guard !hasStartedLoading, !Task.isCancelled else { return }
+        .sidebarDrawerSettledTask(id: hasStartedLoading) { settled in
+            guard !hasStartedLoading, settled else { return }
+            // Show feedback immediately, but let the drawer's completed
+            // animation and the selection's final layout leave the main thread.
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            guard !Task.isCancelled else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) { hasStartedLoading = true }
@@ -898,14 +893,12 @@ struct SessionChatView: View, Equatable {
                     Text(error).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button(String(localized: "重试")) { Task { await model.prepareOpening() } }
                 } else {
-                    // Official chat page: the spinner waits 0.25 s, then the
-                    // mask and the transcript cross-fade with easeInOut.
-                    OpeningSpinner()
+                    ProgressView().progressViewStyle(.circular).accessibilityLabel(String(localized: "正在加载会话"))
                 }
             }
             .padding(24).frame(maxWidth: 320)
         }
-        .transition(.opacity.animation(reduceMotion ? nil : .easeInOut))
+        .transition(.identity)
     }
 
     private var takeoverPill: some View {

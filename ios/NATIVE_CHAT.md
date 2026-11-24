@@ -72,16 +72,10 @@ Semantic error and availability colors remain separate from the primary color.
   window (the row store kept the session metadata after evicting its rows)
   counts as cold, because its rows still have to be read. A memory-cached
   visit presents its snapshot during preparation and never shows the
-  full-screen mask. Its first non-empty snapshot applies during the sidebar
-  transition and the opening lands directly at the bottom; the sidebar's
-  movement suspends reader navigation but not the opening placement. Later
-  snapshot updates park until the transition ends. A local creation keeps its
-  instant placeholder presentation. The page's first render is a light
-  placeholder; history loading and timeline mounting start one main-queue
-  turn later, after the selection's drawer spring has started, so a cached
-  transcript mounts and lands while the card is still sliding and a cold load
-  starts its read at that point. A new selection cancels the pending start.
-  The model
+  full-screen mask, and a local creation keeps its instant placeholder
+  presentation. History loading and
+  timeline mounting still wait for the sidebar animation's completion and
+  another 120 ms; a new selection cancels the pending start. The model
   initializer still does not project cached rows, and a lazy `StateObject`
   lifetime holder prevents parent updates from constructing and discarding
   another chat model. Cached preparation presents the latest 100-record window

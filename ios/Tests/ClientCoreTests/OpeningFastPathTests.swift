@@ -262,6 +262,55 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(model.openingPositionSettled && !model.showsOpeningMask)
     }
 
+    /// A restored archive with two rows at one `orderSeq` predates a server
+    /// order repair (the Server never returns duplicates). Opening must re-read
+    /// the authoritative window once instead of serving the stale order
+    /// (device 2026-11-24 23:51:41, `timeline.order.duplicate` ×2 in
+    /// sess_2zXT-XtoWdsJrA).
+    @Test func duplicateLocalOrderForcesTheAuthoritativeWindow() async throws {
+        let http = TestHTTPTransport()
+        var snapshotReads = 0
+        http.respond = { call in
+            if call.path.hasSuffix("/snapshot") {
+                snapshotReads += 1
+                var object = try fixtureObject("snapshot")
+                var meta = object["session"] as! [String: Any]
+                meta["id"] = "session"; object["session"] = meta
+                var state = object["state"] as! [String: Any]
+                state["sessionId"] = "session"; object["state"] = state
+                var timeline = object["timeline"] as! [String: Any]
+                timeline["items"] = [
+                    try itemObject(id: "reply-1", order: 1, seq: 20),
+                    try itemObject(id: "reply-2", order: 2, seq: 21),
+                ]
+                timeline["hasMore"] = false
+                object["timeline"] = timeline
+                return try JSONSerialization.data(withJSONObject: object)
+            }
+            return try http.defaultResponse(call)
+        }
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport(), localStore: store)
+        var data = V2SessionData(snapshot: try snapshot(items: [
+            try itemObject(id: "reply-1", order: 1),
+            try itemObject(id: "reply-2", order: 1),
+        ]))
+        await store.saveSession(V2SessionArchive(data: data, model: probe.session(id: "session")))
+        probe.reset()
+        let repo = repository(transport: http, localStore: store)
+        defer { repo.reset() }
+
+        _ = try await repo.load(sessionId: "session")
+        let cached = try #require(repo.cached(sessionId: "session"))
+        #expect(TimelineDiagnostics.hasDuplicateOrder(items: cached.items))
+
+        let opened = try await repo.open(sessionId: "session")
+        #expect(snapshotReads >= 1, "a duplicate local order must force a read")
+        #expect(!TimelineDiagnostics.hasDuplicateOrder(items: opened.items))
+        #expect(opened.items.map(\.orderSeq) == [1, 2])
+    }
+
 }
 
 /// The presentation-side signal behind the re-assert: a window that drops a

@@ -72,24 +72,33 @@ struct SettingsScreen<Content: View>: View {
     let title: String
     var close: (() -> Void)?
     var closeDisabled = false
+    /// Vertical gap between sections. The connector screens measure 16 pt
+    /// between a card and the next header-less section (official capture),
+    /// while the general settings pages keep 24.
+    var sectionSpacing: CGFloat = SettingsStyle.sectionGap
+    var topPadding: CGFloat = 10
     private let content: Content
     @Environment(\.colorScheme) private var colorScheme
 
     init(title: String, close: (() -> Void)? = nil, closeDisabled: Bool = false,
+         sectionSpacing: CGFloat = SettingsStyle.sectionGap,
+         topPadding: CGFloat = 10,
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.close = close
         self.closeDisabled = closeDisabled
+        self.sectionSpacing = sectionSpacing
+        self.topPadding = topPadding
         self.content = content()
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
+            VStack(alignment: .leading, spacing: sectionSpacing) {
                 content
             }
             .padding(.horizontal, SettingsStyle.inset)
-            .padding(.top, 10)
+            .padding(.top, topPadding)
             .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)
@@ -112,21 +121,29 @@ struct SettingsScreen<Content: View>: View {
 struct SettingsSection<Content: View>: View {
     var header: String?
     var footer: String?
+    /// Connector pages pin the header to the fixed official face (13 pt)
+    /// instead of the Dynamic-Type-scaled settings one.
+    var headerFont: Font?
+    /// Official connector captures keep 10.35 pt between header and card.
+    var headerSpacing: CGFloat?
     private let content: Content
     @Environment(\.colorScheme) private var colorScheme
 
     init(_ header: String? = nil, footer: String? = nil,
+         headerFont: Font? = nil, headerSpacing: CGFloat? = nil,
          @ViewBuilder content: () -> Content) {
         self.header = header
         self.footer = footer
+        self.headerFont = headerFont
+        self.headerSpacing = headerSpacing
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: SettingsStyle.headerGap) {
+        VStack(alignment: .leading, spacing: headerSpacing ?? SettingsStyle.headerGap) {
             if let header {
                 Text(header)
-                    .font(SettingsStyle.text(14))
+                    .font(headerFont ?? SettingsStyle.text(14))
                     .foregroundStyle(SettingsStyle.header(colorScheme))
                     // Official headers sit 36 pt from the screen edge — 20 pt
                     // further than the card's 16 pt inset (pp 2026-11-20).
@@ -443,6 +460,9 @@ struct SettingsRowContainer<Content: View>: View {
 /// The hairline between rows; leading aligns with the title column.
 struct SettingsRowDivider: View {
     var leading: CGFloat = SettingsStyle.dividerLeading
+    /// Connector cards stop 20 pt short of the trailing edge (official
+    /// 2026-11-24 captures); plain settings keep the 14 pt inset.
+    var trailing: CGFloat = SettingsStyle.dividerTrailing
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -450,6 +470,6 @@ struct SettingsRowDivider: View {
             .fill(SettingsStyle.hairline(colorScheme))
             .frame(height: 1)
             .padding(.leading, leading)
-            .padding(.trailing, SettingsStyle.dividerTrailing)
+            .padding(.trailing, trailing)
     }
 }

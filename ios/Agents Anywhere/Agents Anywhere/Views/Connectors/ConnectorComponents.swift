@@ -45,15 +45,21 @@ struct ConnectorLogoView: View {
                     .scaledToFit()
                     .padding(size * 0.08)
             case .appIcon(let name):
-                Image(name)
-                    .resizable()
-                    .scaledToFit()
-                    // Official SquircleShape: r = 0.225 × min(w, h),
-                    // continuous (EVIDENCE `SquircleShape.path 0x100931344`).
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.225,
-                                                style: .continuous))
-                    .shadow(color: .black.opacity(colorScheme == .dark ? 0.0 : 0.08),
-                            radius: 4, y: 2)
+                // The exported CoreUI artwork is edge-to-edge (ink 50% of the
+                // canvas); the official render keeps the 40 pt white tile but
+                // draws the glyph at ~60% (measured 12 pt ink on 40 pt tile).
+                ZStack {
+                    RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+                        .fill(.white)
+                    Image(name)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(size * 0.2)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.225,
+                                            style: .continuous))
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.0 : 0.08),
+                        radius: 4, y: 2)
             }
         }
         .frame(width: size, height: size)
@@ -125,15 +131,14 @@ struct ConnectorCircleButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 17, weight: .medium))
+                // Measured: official chevron ink 7.3×13.3 pt (23.6×12.3 pt
+                // at 3x) — 17 pt rendered 10.7×18.3 was too large.
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .background(ConnectorStyle.circleFill(colorScheme), in: Circle())
-                .overlay {
-                    Circle().strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.06),
-                        radius: 3, y: 1)
+                // Official circular keys are iOS 26 liquid glass, not a
+                // painted white disc (same treatment as SubAgentToolbarButton).
+                .glassEffect(.regular.interactive(), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -249,12 +254,15 @@ struct ConnectorPrimaryButton: View {
         Button(action: action) {
             Text(title)
                 .font(SettingsStyle.text(16, weight: .semibold))
-                .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
                 .padding(.horizontal, 22)
                 .frame(height: ConnectorStyle.actionHeight)
-                .background(ConnectorStyle.actionFill(colorScheme), in: Capsule())
         }
-        .buttonStyle(.plain)
+        // Official “连接” is a prominent liquid-glass capsule, not a flat
+        // black pill (same treatment as AppGlassButton.prominent).
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.capsule)
+        .tint(ConnectorStyle.actionFill(colorScheme))
+        .foregroundStyle(ConnectorStyle.actionLabel(colorScheme))
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
     }
@@ -304,7 +312,7 @@ struct ConnectorCardRow<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(title)
-                        .font(SettingsStyle.text(16))
+                        .font(SettingsStyle.text(15))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                         .lineLimit(1)
                     if showsVerified { ConnectorVerifiedBadge() }
@@ -312,7 +320,7 @@ struct ConnectorCardRow<Trailing: View>: View {
                 }
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(SettingsStyle.text(15))
+                        .font(SettingsStyle.text(13))
                         .foregroundStyle(SettingsStyle.secondary(colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
                 }

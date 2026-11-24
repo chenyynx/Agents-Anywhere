@@ -93,6 +93,15 @@ nonisolated enum ConnectorStyle {
                         : .white
     }
 
+    /// Trailing values on device-tool rows (“已允许 / 读取和写入”).
+    /// Binary: `DeviceToolRowView` reads token `text500` (#97958D light);
+    /// the screenshot samples #B6B5B4, i.e. the same light grey.
+    static func tertiaryText(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x97 / 255.0, green: 0x95 / 255.0, blue: 0x8D / 255.0)
+            : Color(red: 0x97 / 255.0, green: 0x95 / 255.0, blue: 0x8D / 255.0)
+    }
+
     /// Count capsule behind the tool count (“4”). Official token:
     /// `accentSecondary900` — light `#CDE2FB`, dark `#062B57`
     /// (`EVIDENCE/round30-composer-visuals/raw/TOKENS-6.harvest.md:1198`).

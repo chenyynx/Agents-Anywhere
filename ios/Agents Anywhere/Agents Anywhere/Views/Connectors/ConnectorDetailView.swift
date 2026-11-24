@@ -91,7 +91,7 @@ struct ConnectorDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(data.name)
-                        .font(SettingsStyle.text(17, weight: .semibold))
+                        .font(SettingsStyle.text(16, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if data.isVerified { ConnectorVerifiedBadge() }
                 }
@@ -164,7 +164,7 @@ struct ConnectorDetailView: View {
                     Spacer(minLength: 8)
                     Text(verbatim: "\(toolCount)")
                         .font(SettingsStyle.text(16))
-                        .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                        .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     chevron
                 }
             }
@@ -217,7 +217,7 @@ struct ConnectorDetailView: View {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
                     Text(data.name)
-                        .font(SettingsStyle.text(18, weight: .semibold))
+                        .font(SettingsStyle.text(22, weight: .semibold))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     Text(String(localized: "Custom"))
                         .font(SettingsStyle.text(13))
@@ -290,7 +290,7 @@ struct ConnectorDetailView: View {
                 Spacer(minLength: 8)
                 Text(value)
                     .font(SettingsStyle.text(16))
-                    .foregroundStyle(ConnectorDetailStyle.secondary(colorScheme))
+                    .foregroundStyle(ConnectorDetailStyle.value(colorScheme))
                     .lineLimit(1)
             }
         }
@@ -309,17 +309,17 @@ struct ConnectorDetailView: View {
                 HStack(spacing: 8) {
                     Text(label)
                         .font(SettingsStyle.text(16))
-                        .foregroundStyle(ConnectorStyle.accent(colorScheme))
+                        .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                     Spacer(minLength: 8)
                     if let value {
                         Text(value)
                             .font(SettingsStyle.text(16))
-                            .foregroundStyle(ConnectorStyle.accent(colorScheme))
+                            .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                             .lineLimit(1)
                     }
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(ConnectorStyle.accent(colorScheme))
+                        .foregroundStyle(ConnectorDetailStyle.link(colorScheme))
                 }
             }
             .padding(.horizontal, 4)
@@ -390,6 +390,23 @@ nonisolated enum ConnectorDetailStyle {
         scheme == .dark
             ? Color.white.opacity(0.52)
             : Color(red: 0x88 / 255.0, green: 0x87 / 255.0, blue: 0x7F / 255.0)
+    }
+
+    /// Detail values (category / sign-in / tool count): token `text400`
+    /// (#7B796F light, #97958D dark), one step lighter than the one-liner.
+    static func value(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x97 / 255.0, green: 0x95 / 255.0, blue: 0x8D / 255.0)
+            : Color(red: 0x7B / 255.0, green: 0x79 / 255.0, blue: 0x6F / 255.0)
+    }
+
+    /// Text links (author / documentation / support / privacy):
+    /// `accentSecondary000` (#184F95 light, #9EC5F4 dark). The switch/check
+    /// accent is the brighter accentSecondary200.
+    static func link(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 0x9E / 255.0, green: 0xC5 / 255.0, blue: 0xF4 / 255.0)
+            : Color(red: 0x18 / 255.0, green: 0x4F / 255.0, blue: 0x95 / 255.0)
     }
 }
 

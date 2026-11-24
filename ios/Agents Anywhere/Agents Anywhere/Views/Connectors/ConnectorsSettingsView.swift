@@ -19,7 +19,9 @@ struct ConnectorsSettingsView: View {
     @State private var route: ConnectorSettingsRoute?
 
     var body: some View {
-        SettingsScreen(title: String(localized: "Connectors")) {
+        SettingsScreen(title: String(localized: "Connectors"),
+                       sectionSpacing: 16,
+                       topPadding: 16) {
             SettingsSection {
                 discoveryRow
             }
@@ -30,6 +32,9 @@ struct ConnectorsSettingsView: View {
                     deviceToolRow(row)
                 }
             }
+            // Official capture: card 1 bottom → card 2 top ≈ 52.7 pt
+            // (16 section gap + 12 extra + header 17 + 8).
+            .padding(.top, 12)
             SettingsSection {
                 let servers = ConnectorSettingsData.servers
                 ForEach(Array(servers.enumerated()), id: \.element.id) { index, row in
@@ -75,10 +80,10 @@ struct ConnectorsSettingsView: View {
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
             VStack(alignment: .leading, spacing: 3) {
                 Text(String(localized: "Connector discovery"))
-                    .font(SettingsStyle.text(16))
+                    .font(SettingsStyle.text(17))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                 Text(String(localized: "Claude will help you find available connectors in your directory."))
-                    .font(SettingsStyle.text(15))
+                    .font(SettingsStyle.text(13))
                     .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -111,11 +116,11 @@ struct ConnectorsSettingsView: View {
                 ConnectorLogoView(source: .appIcon(row.tool.imageName), size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.tool.title)
-                        .font(SettingsStyle.text(16))
+                        .font(SettingsStyle.text(17))
                         .foregroundStyle(SettingsStyle.ink(colorScheme))
                     if let subtitle = row.subtitle {
                         Text(subtitle)
-                            .font(SettingsStyle.text(15))
+                            .font(SettingsStyle.text(13))
                             .foregroundStyle(SettingsStyle.secondary(colorScheme))
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -124,7 +129,7 @@ struct ConnectorsSettingsView: View {
                 if let value = row.value {
                     Text(value)
                         .font(SettingsStyle.text(16))
-                        .foregroundStyle(SettingsStyle.secondary(colorScheme))
+                        .foregroundStyle(ConnectorStyle.tertiaryText(colorScheme))
                         .lineLimit(1)
                 }
                 if row.opensSystemSettings {
@@ -138,7 +143,9 @@ struct ConnectorsSettingsView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            // 40 pt icon + 2×9 = 58 pt official row height (measured
+            // 175 pt for the three-row card).
+            .padding(.vertical, 9)
             .frame(minHeight: 58)
             .contentShape(Rectangle())
         }
@@ -152,7 +159,7 @@ struct ConnectorsSettingsView: View {
             HStack(spacing: ConnectorStyle.logoRowGap) {
                 ConnectorLogoView(source: row.logo, size: 28)
                 Text(row.name)
-                    .font(SettingsStyle.text(16))
+                    .font(SettingsStyle.text(17))
                     .foregroundStyle(SettingsStyle.ink(colorScheme))
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -164,7 +171,7 @@ struct ConnectorsSettingsView: View {
                         .foregroundStyle(SettingsStyle.secondary(colorScheme).opacity(0.8))
                 case .connect:
                     Text(String(localized: "Connect"))
-                        .font(SettingsStyle.text(16))
+                        .font(SettingsStyle.text(17))
                         .foregroundStyle(SettingsStyle.secondary(colorScheme))
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 17, weight: .regular))
@@ -193,15 +200,10 @@ struct ConnectorsSettingsView: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 17, weight: .medium))
+                .font(.system(size: 17, weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .background(ConnectorStyle.circleFill(colorScheme), in: Circle())
-                .overlay {
-                    Circle().strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.06),
-                        radius: 3, y: 1)
+                .glassEffect(.regular.interactive(), in: Circle())
         }
         .accessibilityLabel(Text(String(localized: "Add")))
     }

@@ -72,24 +72,33 @@ struct SettingsScreen<Content: View>: View {
     let title: String
     var close: (() -> Void)?
     var closeDisabled = false
+    /// Vertical gap between sections. The connector screens measure 16 pt
+    /// between a card and the next header-less section (official capture),
+    /// while the general settings pages keep 24.
+    var sectionSpacing: CGFloat = SettingsStyle.sectionGap
+    var topPadding: CGFloat = 10
     private let content: Content
     @Environment(\.colorScheme) private var colorScheme
 
     init(title: String, close: (() -> Void)? = nil, closeDisabled: Bool = false,
+         sectionSpacing: CGFloat = SettingsStyle.sectionGap,
+         topPadding: CGFloat = 10,
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.close = close
         self.closeDisabled = closeDisabled
+        self.sectionSpacing = sectionSpacing
+        self.topPadding = topPadding
         self.content = content()
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: SettingsStyle.sectionGap) {
+            VStack(alignment: .leading, spacing: sectionSpacing) {
                 content
             }
             .padding(.horizontal, SettingsStyle.inset)
-            .padding(.top, 10)
+            .padding(.top, topPadding)
             .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)

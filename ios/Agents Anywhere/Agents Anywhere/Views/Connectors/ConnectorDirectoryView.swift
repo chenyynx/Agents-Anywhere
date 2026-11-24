@@ -26,7 +26,9 @@ struct ConnectorDirectoryView: View {
     }
 
     var body: some View {
-        SettingsScreen(title: String(localized: "Connectors")) {
+        // Official directory card starts at 155 pt from the screen top, i.e.
+        // 26 pt below the navigation bar (settings uses 16).
+        SettingsScreen(title: String(localized: "Connectors"), topPadding: 26) {
             SettingsSection {
                 let rows = entries
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
@@ -41,7 +43,9 @@ struct ConnectorDirectoryView: View {
                                          tag: entry.tag,
                                          showsVerified: true,
                                          subtitle: entry.subtitle,
-                                         rowMinHeight: 72)
+                                         // Official single-line row: 160 px =
+                                         // 53 pt; taller rows grow naturally.
+                                         rowMinHeight: 53)
                     }
                     .buttonStyle(.plain)
                 }
@@ -75,13 +79,8 @@ struct ConnectorDirectoryView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: ConnectorStyle.searchHeight)
-        .background(SettingsStyle.card(colorScheme),
-                    in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.08), radius: 8, y: 3)
+        // Floating search field is liquid glass in the official capture.
+        .glassEffect(.regular.interactive(), in: .capsule)
         .padding(.horizontal, SettingsStyle.inset)
         .padding(.bottom, 8)
     }
@@ -95,15 +94,10 @@ struct ConnectorDirectoryView: View {
             }
         } label: {
             Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 16, weight: .regular))
                 .foregroundStyle(SettingsStyle.ink(colorScheme))
                 .frame(width: ConnectorStyle.circleKey, height: ConnectorStyle.circleKey)
-                .background(ConnectorStyle.circleFill(colorScheme), in: Circle())
-                .overlay {
-                    Circle().strokeBorder(SettingsStyle.hairline(colorScheme), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.20 : 0.06),
-                        radius: 3, y: 1)
+                .glassEffect(.regular.interactive(), in: Circle())
         }
         .accessibilityLabel(Text(String(localized: "Sort and filter connectors")))
     }

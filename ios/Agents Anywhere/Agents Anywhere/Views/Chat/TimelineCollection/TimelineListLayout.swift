@@ -606,7 +606,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: suppressOffsetAdjustment ? nil : decision.correction,
                          contentSizeDelta: delta,
-                         state: state, probeSource: probeSource)
+                         state: state, probeSource: probeSource,
+                         patchHeight: height)
     }
 
     /// The changed item plus the visible rows below it. A height change moves
@@ -660,7 +661,8 @@ final class TimelineListLayout: UICollectionViewLayout {
     private func invalidateHeight(itemID: String, attributes: TimelineListLayoutAttributes,
                                   correction: CGFloat?, contentSizeDelta: CGFloat,
                                   state: TimelineLayoutInteractionState,
-                                  probeSource: String) {
+                                  probeSource: String,
+                                  patchHeight: CGFloat? = nil) {
         guard let collectionView else { return }
 #if DEBUG
         if let state = host?.layoutInteractionState(),
@@ -677,9 +679,18 @@ final class TimelineListLayout: UICollectionViewLayout {
                 source: probeSource)
         }
 #endif
-        let context = TimelineHeightInvalidationContext()
-        if abs(contentSizeDelta) > 0.5 {
-            context.heights[itemID] = attributes.frame.height + contentSizeDelta
+        // The patch carries the absolute height the writer measured, never
+        // `frame + delta`: the delta is computed against the displayed/cached
+        // height, which can differ from the attribute frame (a 40 pt seed was
+        // added to the fit without this). No patch is recorded when the writer
+        // has no absolute value; that pass rebuilds.
+        let context: UICollectionViewLayoutInvalidationContext
+        if let patchHeight, abs(contentSizeDelta) > 0.5 {
+            let heightContext = TimelineHeightInvalidationContext()
+            heightContext.heights[itemID] = patchHeight
+            context = heightContext
+        } else {
+            context = UICollectionViewLayoutInvalidationContext()
         }
         context.invalidateItems(at: invalidatablePaths(by: attributes))
 #if DEBUG
@@ -824,7 +835,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributes.isMeasured = true
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: decision.correction, contentSizeDelta: delta,
-                         state: state, probeSource: "preferred")
+                         state: state, probeSource: "preferred",
+                         patchHeight: height)
     }
 
     // MARK: - Streaming reveal height (per frame)
@@ -867,7 +879,8 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: adjustOffset ? decision.correction : nil,
-                         contentSizeDelta: delta, state: state, probeSource: "")
+                         contentSizeDelta: delta, state: state, probeSource: "",
+                         patchHeight: height)
     }
 
     /// Drop the override without invalidating. The controller calls this

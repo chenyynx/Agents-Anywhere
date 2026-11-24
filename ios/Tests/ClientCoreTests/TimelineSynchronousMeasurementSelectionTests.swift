@@ -52,6 +52,22 @@ import Testing
         #expect(selected(count: 1, maxY: { _ in 100 }, skipAbove: 100) == [0])
     }
 
+    /// A large pending batch (history merge / window replacement) measures
+    /// only rows that reach the expanded viewport band; everything else stays
+    /// pending. Boundaries are inclusive.
+    @Test func largeBatchKeepsOnlyRowsNearTheViewport() {
+        #expect(TimelineSynchronousMeasurementSelection.isNearViewport(
+            minY: -100, maxY: 50, top: 0, bottom: 100))
+        #expect(TimelineSynchronousMeasurementSelection.isNearViewport(
+            minY: 50, maxY: 150, top: 0, bottom: 100))
+        #expect(TimelineSynchronousMeasurementSelection.isNearViewport(
+            minY: 0, maxY: 100, top: 0, bottom: 100))
+        #expect(!TimelineSynchronousMeasurementSelection.isNearViewport(
+            minY: -300, maxY: -1, top: 0, bottom: 100))
+        #expect(!TimelineSynchronousMeasurementSelection.isNearViewport(
+            minY: 101, maxY: 300, top: 0, bottom: 100))
+    }
+
     /// A mid-list insertion leaves only a few attribute-less rows. The
     /// controller passes the item count as the limit there, so an inserted
     /// row above the viewport is measured before the reader scrolls to it

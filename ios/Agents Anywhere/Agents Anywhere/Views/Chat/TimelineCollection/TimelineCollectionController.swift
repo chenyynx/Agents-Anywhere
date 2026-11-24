@@ -987,6 +987,25 @@ final class TimelineCollectionController: UIViewController {
                 toMeasure.append(item)
             }
         }
+        // A history merge or window replacement can leave 100+ rows without a
+        // real height. Measuring them all before the snapshot cost 196 ms in
+        // one pass (probe 2026-11-25, n=145). Only the rows near the viewport
+        // belong in this pass; the rest stay pending and the offscreen pass
+        // measures them as they approach. Rows without attributes keep their
+        // opening rule (the tail is already bounded there).
+        if !applyingHistoryPage,
+           toMeasure.count > TimelineSynchronousMeasurementSelection.batchLimit {
+            let prefetch = max(Self.pendingMeasurementPrefetchMargin,
+                               viewport.visibleHeight * 1.5)
+            let top = measurementTop - prefetch
+            let bottom = measurementTop + viewport.visibleHeight + prefetch
+            toMeasure = toMeasure.filter { item in
+                guard let attributes = layout.attributes(for: item.itemID) else { return true }
+                return TimelineSynchronousMeasurementSelection.isNearViewport(
+                    minY: attributes.frame.minY, maxY: attributes.frame.maxY,
+                    top: top, bottom: bottom)
+            }
+        }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteStage(
             "apply.heightKey", seconds: CACurrentMediaTime() - probeHeightKeyStart)
@@ -1778,6 +1797,9 @@ final class TimelineCollectionController: UIViewController {
             ? 0
             : max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
         let skipAbove = viewportTop - prefetchMargin
+        // Same rule below the viewport: measuring a hundred rows that cannot
+        // be seen yet is invisible work; they are measured when they approach.
+        let skipBelow = viewportTop + viewport.visibleHeight + prefetchMargin
         pendingMeasurementTask = Task { @MainActor [weak self] in
 #if AA_TIMELINE_PROBE
             let probeStart = CACurrentMediaTime()
@@ -1806,7 +1828,7 @@ final class TimelineCollectionController: UIViewController {
                 // unmeasured. Measuring them offscreen is invisible work and
                 // moves the page's estimated height one row at a time.
                 if let attributes = self.layout.attributes(for: item.itemID),
-                   attributes.frame.maxY < skipAbove {
+                   attributes.frame.maxY < skipAbove || attributes.frame.minY > skipBelow {
 #if AA_TIMELINE_PROBE
                     probeSkipped += 1
 #endif

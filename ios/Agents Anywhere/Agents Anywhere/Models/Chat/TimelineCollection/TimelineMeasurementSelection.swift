@@ -22,6 +22,18 @@ nonisolated enum TimelineSynchronousMeasurementSelection {
     /// Attribute-less items an opening apply measures. About three screens of
     /// tall rows; the opening anchor is the bottom of the window.
     static let openingTailLimit = 24
+    /// Above this many pending rows, an apply measures only the ones near the
+    /// viewport. A history merge or window replacement can leave 100+ rows
+    /// without a real height; measuring them all synchronously cost 196 ms in
+    /// one pass on the 2026-11-25 device probe.
+    static let batchLimit = 48
+
+    /// Whether a row's frame reaches the viewport band (already expanded by
+    /// the caller's prefetch margin).
+    static func isNearViewport(minY: CGFloat, maxY: CGFloat,
+                               top: CGFloat, bottom: CGFloat) -> Bool {
+        maxY >= top && minY <= bottom
+    }
 
     static func shouldMeasure(index: Int,
                               itemCount: Int,

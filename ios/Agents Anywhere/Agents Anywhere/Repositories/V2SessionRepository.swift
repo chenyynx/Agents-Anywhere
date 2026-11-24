@@ -287,6 +287,7 @@ final class V2SessionRepository {
         _ = try await load(sessionId: sessionId)
         try Task.checkCancellation()
         try requireCurrent(entry)
+        prefetchRuntimeState(entry)
         if let projection = entry.projection {
             ClientDiagnosticsLog.shared.record(
                 kind: "session.open.ready",
@@ -2060,6 +2061,46 @@ final class V2SessionRepository {
         }
     }
 
+    /// A window restored from disk can carry no runtime state (the archive was
+    /// evicted, or written before the state field existed). The footer cannot
+    /// seal a finished turn without one, and waiting for the socket handshake
+    /// + recovery put the footer ~1 s after the rows were on screen (pp
+    /// 2026-11-24 07:32:56: rows +225 ms, state +1.08 s; same on every
+    /// relaunch before the archive stored the state). Read it beside the open.
+    /// `applyState` (not `applyLive`) keeps the session un-fresh, so the
+    /// footer's coverage rule still decides whether it may seal; the
+    /// connection's recovery remains the authoritative full read, and a
+    /// failure here is silent.
+    private func prefetchRuntimeState(_ entry: Entry) {
+        guard entry.projection?.data.state == nil,
+              !entry.model.isLocalCreation,
+              network.availability != .offline,
+              entry.liveStatePrefetchTask == nil else { return }
+        let token = UUID()
+        entry.liveStatePrefetchID = token
+        entry.liveStatePrefetchTask = Task { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            defer {
+                if entry.liveStatePrefetchID == token { entry.liveStatePrefetchTask = nil }
+            }
+            do {
+                let state = try await self.detail.runtimeState(sessionId: entry.id)
+                // Only a settled idle state helps here — it lets the footer
+                // seal the cached turn. A last-known `running` state from a
+                // connector that is offline must not suppress it (the offline
+                // rule is "last known layout wins"), and any in-flight state
+                // buys the footer nothing.
+                guard state.status == .idle, state.error == nil else { return }
+                guard self.isCurrent(entry), entry.liveStatePrefetchID == token,
+                      entry.projection?.data.state == nil else { return }
+                entry.projection?.applyState(state)
+                self.emit(entry)
+            } catch {
+                // The connection's recovery is the authoritative read.
+            }
+        }
+    }
+
     /// One recovery round, owned by `epoch`:
     /// - reads durable events and authoritative live facts concurrently,
     /// - applies recovered events first so a meta update they carry lands
@@ -2419,6 +2460,9 @@ final class V2SessionRepository {
         entry.latestFillID = UUID()
         entry.latestFillTask?.cancel()
         entry.latestFillTask = nil
+        entry.liveStatePrefetchID = UUID()
+        entry.liveStatePrefetchTask?.cancel()
+        entry.liveStatePrefetchTask = nil
         if entry.connection == .connected {
             ClientDiagnosticsLog.shared.record(
                 kind: "ws.disconnect",
@@ -2452,6 +2496,7 @@ final class V2SessionRepository {
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
                 && $0.historyTask == nil && $0.latestRefreshTask == nil && $0.recoveryTask == nil
+                && $0.liveStatePrefetchTask == nil
                 && $0.followUpReconcileTask == nil && !$0.model.hasLocalWork
         }
             .sorted { $0.lastAccess < $1.lastAccess }
@@ -2518,6 +2563,11 @@ private final class Entry {
     /// Rotation key so a finishing fill only clears its own registration
     /// (a stop + observe can replace the task before its defer runs).
     var latestFillID = UUID()
+    /// One-shot read of the runtime state when a restored window carries none
+    /// (see `prefetchRuntimeState`). The token lets a finishing task clear
+    /// only its own registration.
+    var liveStatePrefetchID = UUID()
+    var liveStatePrefetchTask: Task<Void, Never>?
 #if AA_TIMELINE_PROBE
     /// Probe-only latest-page counters (see `V2TimelineWindowSnapshot`).
     var latestStarted = 0

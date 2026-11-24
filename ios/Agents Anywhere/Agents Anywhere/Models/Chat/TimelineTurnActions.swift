@@ -224,11 +224,13 @@ enum TimelineTurnActions {
     /// `isFresh` is the model's own "current live facts are applied" gate
     /// (`V2SessionModel.update`), so a fresh state follows the same authority
     /// as authoritative turn ends. A stale state is still enough to seal when
-    /// its `updatedSeq` covers every cached row: the state was written after
-    /// the newest visible row, so nothing arrived behind its back. That is the
-    /// normal session-switch case and keeps the finished turn's footer
-    /// immediate; only rows newer than the state (a turn that started or
-    /// streamed after it) force the 1–2 s wait for the live read. When the
+    /// its `updatedSeq` covers every **main-agent** row (see
+    /// `footerStateCoverage`; sub-agent child rows are excluded): the state was
+    /// written after the newest visible row of the turn, so nothing of that
+    /// turn arrived behind its back. That is the normal session-switch case
+    /// and keeps the finished turn's footer immediate; only main rows newer
+    /// than the state (a turn that started or streamed after it) force the
+    /// 1–2 s wait for the live read. When the
     /// connector is offline or failed there is no live read to wait for; the
     /// last known layout wins as before, otherwise an offline session would
     /// never regain its newest footer.
@@ -236,6 +238,84 @@ enum TimelineTurnActions {
                                                 connectorOffline: Bool,
                                                 stateCoversRows: Bool) -> Bool {
         connectorOffline || (stateExists && (isFresh || stateCoversRows))
+    }
+
+    /// The rows a runtime state's `updatedSeq` must cover before a stale read
+    /// may seal the latest turn.
+    ///
+    /// Only rows that can open, extend or end the turn whose footer is on
+    /// screen can veto the seal. Two kinds cannot:
+    /// - sub-agent child rows (`content.parentItemId`) belong to the child's
+    ///   own run and keep streaming long after the main turn's idle state;
+    /// - the background hand-off row itself — a background `agent_call` card
+    ///   or a `runInBackground` command — is a **main** row with no parent,
+    ///   and the connector republishes it on every child step (usage, last
+    ///   tool). Its `updatedSeq` therefore outruns the runtime state's
+    ///   watermark, which only advances when the state semantically changes
+    ///   (see the server's `connector_ingest`). Counting it made every switch
+    ///   into a session with a live background agent look like "a row newer
+    ///   than the state" and pay the live-read wait again (pp 2026-11-24
+    ///   07:12:54: stateSeq 1231196, card 1231198, footer at +1.23 s while
+    ///   the session was idle; that card was still `running` at seq 1231316
+    ///   minutes later, long after the turn ended at 1231150).
+    ///   `latchedBackgroundIDs` keeps a card exempt after the wire drops its
+    ///   flag (see `footerBackgroundLatch`).
+    /// `ed12dc9bb` added the coverage test to keep switches instant; this
+    /// predicate narrows what it counts.
+    /// A foreground main row newer than the state is activity it never saw
+    /// and still forces the wait.
+    /// Known boundary: a runtime that reports idle between tool steps can be
+    /// mid-turn. If the last state is such a flap and only a background card
+    /// is newer, this predicate lets the first refresh seal until `running`
+    /// lands (the gate then keeps it as a userless episode). That class
+    /// predates this exclusion — the 2026-11-23 rule trusted any state that
+    /// covered the rows — but the card case widens it; the device probe to
+    /// watch is `timeline.turn.footer.build` with `commit=1` followed by
+    /// `running=1` on the same session.
+    nonisolated struct FooterStateCoverage: Equatable {
+        /// Newest `updatedSeq` among rows that can move the main turn (0 when
+        /// there is none).
+        var maxMainSeq = 0
+        /// Newest `updatedSeq` among background hand-off rows, excluded from
+        /// `maxMainSeq`. The diagnostics pair it with the other two maxima so
+        /// an exclusion is visible instead of inferred.
+        var maxBackgroundSeq = 0
+        /// Newest `updatedSeq` in the whole window, child rows included.
+        var maxAnySeq = 0
+        var coversMainRows = true
+    }
+
+    static func footerStateCoverage<S: Sequence>(rows: S,
+                                                 stateSeq: Int,
+                                                 latchedBackgroundIDs: Set<String> = []) -> FooterStateCoverage
+    where S.Element == V2TimelineItem {
+        var coverage = FooterStateCoverage()
+        for item in rows {
+            let seq = item.updatedSeq
+            if seq > coverage.maxAnySeq { coverage.maxAnySeq = seq }
+            guard SubAgentProgress.parentItemID(item) == nil else { continue }
+            if latchedBackgroundIDs.contains(item.id) || isBackgroundHandoffRow(item) {
+                if seq > coverage.maxBackgroundSeq { coverage.maxBackgroundSeq = seq }
+                continue
+            }
+            if seq > coverage.maxMainSeq { coverage.maxMainSeq = seq }
+        }
+        coverage.coversMainRows = coverage.maxMainSeq <= stateSeq
+        return coverage
+    }
+
+    /// What the last bucket of one `build` pass saw. Diagnostics only: the
+    /// adapter writes it when it changes so a withheld footer names its
+    /// blocker (the active row, the host it would have used, the commit
+    /// decision) instead of being reconstructed from row counts.
+    nonisolated struct FooterBuildReport: Equatable {
+        var endGroupID: String?
+        var replyCount = 0
+        var changeCount = 0
+        var hasActiveItems = false
+        /// Up to three rows that kept the final bucket from committing.
+        var activeItemIDs: [String] = []
+        var committed = false
     }
 
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
@@ -272,7 +352,9 @@ enum TimelineTurnActions {
     static func build(groups: [ChatTimelineGroup], suppressLatest: Bool,
                       hasPendingUserMessage: Bool = false,
                       liveTurnGroupID: String? = nil,
-                      footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true })
+                      latchedBackgroundIDs: Set<String> = [],
+                      footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
+                      report: ((FooterBuildReport) -> Void)? = nil)
         -> [String: TimelineTurnAction] {
         var actions: [String: TimelineTurnAction] = [:]
         var replies: [ChatTimelineRowModel] = []
@@ -281,6 +363,7 @@ enum TimelineTurnActions {
         var endGroupID: String?
         var turnOpen = false
         var hasActiveItems = false
+        var activeItemIDs: [String] = []
         /// The declared turn id of the open bucket (its first naming row).
         /// Ordinary turns are still split by a user bubble; the wire's id
         /// only closes buckets that are no longer live.
@@ -306,19 +389,23 @@ enum TimelineTurnActions {
             }
         }
 
-        func commit() {
+        func commit() -> Bool {
+            var wrote = false
             if let endGroupID, (!replies.isEmpty || !changes.isEmpty), !hasActiveItems {
                 actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
+                wrote = true
             }
             replies = []; changes = []; endGroupID = nil
             turnOpen = false; hasActiveItems = false
             bucketTurnID = nil
+            activeItemIDs.removeAll()
+            return wrote
         }
 
         for group in groups {
             if group.id == liveTurnGroupID { pastLiveTurnStart = true }
             if group.rows.contains(where: { $0.structure.startsTurn }) {
-                commit()
+                _ = commit()
                 turnOpen = true
                 startsMidTurn = false
             }
@@ -335,7 +422,7 @@ enum TimelineTurnActions {
                 // (same day 10:05:54: host msg_577ba3bc → msg_1e1de664, count
                 // unchanged at 76). The declared turn-id change is the
                 // boundary those turns have instead of a bubble.
-                commit()
+                _ = commit()
             }
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
@@ -362,15 +449,39 @@ enum TimelineTurnActions {
             // footer while the subagent is still working (pp 2026-11-18 需求
             // 2: 不等子代理). Foreground rows — including a foreground tool
             // that shares the same step group — still suppress
-            // (`aRunningToolKeepsTheFooterClosed`).
-            let active = group.rows.contains { isLiveActivityRow($0.value) }
+            // (`aRunningToolKeepsTheFooterClosed`). `latchedBackgroundIDs`
+            // keeps that exemption once a card proved it was backgrounded:
+            // the wire can rewrite the card without the flag, and a flapping
+            // exemption withholds the finished turn's footer for as long as
+            // the card runs (pp 2026-11-24: four background agents, footer
+            // absent until a later rewrite restored the flag).
+            var active = false
+            for row in group.rows
+            where isLiveActivityRow(row.value, latchedBackgroundIDs: latchedBackgroundIDs) {
+                active = true
+                if activeItemIDs.count < 3, !activeItemIDs.contains(row.id) {
+                    activeItemIDs.append(row.id)
+                }
+            }
             hasActiveItems = hasActiveItems || active
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.
+        let finalEndGroupID = endGroupID
+        let finalReplyCount = replies.count
+        let finalChangeCount = changes.count
+        let finalHasActiveItems = hasActiveItems
+        let finalActiveItemIDs = activeItemIDs
+        var committed = false
         if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
-            commit()
+            committed = commit()
         }
+        report?(FooterBuildReport(endGroupID: finalEndGroupID,
+                                  replyCount: finalReplyCount,
+                                  changeCount: finalChangeCount,
+                                  hasActiveItems: finalHasActiveItems,
+                                  activeItemIDs: finalActiveItemIDs,
+                                  committed: committed))
         return actions
     }
 
@@ -403,7 +514,8 @@ enum TimelineTurnActions {
     static func resolveLiveTurnGroupID(isLiveUserTurn: Bool,
                                        hasUnEchoedPending: Bool,
                                        latestUserRowID: String?,
-                                       groups: [ChatTimelineGroup]) -> String? {
+                                       groups: [ChatTimelineGroup],
+                                       latchedBackgroundIDs: Set<String> = []) -> String? {
         guard isLiveUserTurn, let latestUserRowID else { return nil }
         guard let bubbleIndex = groups.lastIndex(where: { group in
             group.rows.contains { $0.id == latestUserRowID }
@@ -415,7 +527,9 @@ enum TimelineTurnActions {
         // then belongs to the un-echoed new turn, which has no rows yet, and
         // protecting the old bubble would merge every turn after it.
         let liveRowsAfterBubble = groups[(bubbleIndex + 1)...].contains { group in
-            group.rows.contains { isLiveActivityRow($0.value) }
+            group.rows.contains {
+                isLiveActivityRow($0.value, latchedBackgroundIDs: latchedBackgroundIDs)
+            }
         }
         return liveRowsAfterBubble ? groups[bubbleIndex].id : nil
     }
@@ -425,14 +539,58 @@ enum TimelineTurnActions {
     /// The footer build and the live-group resolution must agree, or a row one
     /// of them deliberately ignores still parks the live group on an older
     /// user bubble and turns turn-id splitting off for the trailing stretch.
-    /// A background hand-off card and a running compaction marker are not
-    /// activity: the first keeps running after its turn's reply finished
-    /// (pp 2026-11-18 需求 2: 不等子代理), the second is session maintenance
-    /// (pp 2026-11-15: copy/share vanished for the whole compaction).
-    static func isLiveActivityRow(_ item: V2TimelineItem) -> Bool {
-        item.status.isActive
+    /// A background hand-off card, a sub-agent child row and a running
+    /// compaction marker are not activity: the first keeps running after its
+    /// turn's reply finished (pp 2026-11-18 需求 2: 不等子代理), the second is
+    /// the child's own work (its card is the main row that reports it), the
+    /// third is session maintenance (pp 2026-11-15: copy/share vanished for
+    /// the whole compaction).
+    ///
+    /// `latchedBackgroundIDs` is the adapter's memory of cards that were once
+    /// seen as background dispatches. The claim is not stable on the wire: a
+    /// card rebuilt from the transcript (or one re-minted after a connector
+    /// restart lost its in-memory task overlay) carries no
+    /// `agents[*].isBackgrounded`, and the transcript's tool input may omit
+    /// `runInBackground`; the exemption flipping back made a still-running
+    /// card count as activity again (pp 2026-11-24: the finished turn's
+    /// footer vanished for ~1 min with four background agents, returned only
+    /// when a later publication carried the flag again). Membership is
+    /// monotonic for the row's stay in the window.
+    static func isLiveActivityRow(_ item: V2TimelineItem,
+                                  latchedBackgroundIDs: Set<String> = []) -> Bool {
+        // A sub-agent child row is the child's work, never the main turn's:
+        // its card (parent nil) is the main row that says whether the turn is
+        // still busy. The one child row the grouping keeps is an interaction
+        // anchor (an approval/question card docked to it), and a pending card
+        // on a background child must not withhold the finished main turn's
+        // footer either.
+        SubAgentProgress.parentItemID(item) == nil
+            && item.status.isActive
             && !TimelineEntryPresentation.isCompactItem(item)
-            && !isBackgroundHandoffRow(item)
+            && !(latchedBackgroundIDs.contains(item.id) || isBackgroundHandoffRow(item))
+    }
+
+    /// Fold one refresh into the adapter's background latch.
+    ///
+    /// Rows that are active and prove a background hand-off join the set;
+    /// rows that left the window are pruned; everything else keeps its claim.
+    /// Pure and exhaustively unit-tested because the adapter itself is outside
+    /// the `ClientCore` target (`Package.swift` excludes `Views`), so the
+    /// wiring would otherwise only be guarded by device runs.
+    static func footerBackgroundLatch(existing: Set<String>,
+                                      rows: some Sequence<V2TimelineItem>) -> Set<String> {
+        var latched: Set<String> = []
+        var present: Set<String>? = existing.isEmpty ? nil : []
+        for item in rows {
+            present?.insert(item.id)
+            if item.status.isActive, isBackgroundHandoffRow(item) {
+                latched.insert(item.id)
+            }
+        }
+        if let present {
+            latched.formUnion(existing.intersection(present))
+        }
+        return latched
     }
 
     /// The rows after the last visible user bubble that still count as live
@@ -443,23 +601,30 @@ enum TimelineTurnActions {
     /// contradiction (device 2026-11-23 06:38 window review).
     static func liveActivityRowIDs(groups: [ChatTimelineGroup],
                                    latestUserRowID: String?,
+                                   latchedBackgroundIDs: Set<String> = [],
                                    limit: Int = 3) -> [String] {
         rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
-            .filter { isLiveActivityRow($0.value) }
+            .filter { isLiveActivityRow($0.value, latchedBackgroundIDs: latchedBackgroundIDs) }
             .prefix(limit)
             .map(\.id)
     }
 
     /// The same window's rows that are `status.isActive` but deliberately not
-    /// activity (a background hand-off card or a running compaction marker).
-    /// They explain a send window that shows running rows while `liveGroup`
+    /// activity (a background hand-off card, a sub-agent child row, or a
+    /// running compaction marker).
+    /// They explain a window that shows running rows while `liveGroup`
     /// stays nil, and they name the card whose background flag a later wire
-    /// rewrite can drop — invisible to `liveActivityRowIDs` by design.
+    /// rewrite can drop — invisible to `liveActivityRowIDs` by design, and
+    /// exactly the row the adapter's latch must re-exempt.
     static func ignoredActivityRowIDs(groups: [ChatTimelineGroup],
                                       latestUserRowID: String?,
+                                      latchedBackgroundIDs: Set<String> = [],
                                       limit: Int = 3) -> [String] {
         rowsAfterLastUserBubble(groups: groups, latestUserRowID: latestUserRowID)
-            .filter { $0.value.status.isActive && !isLiveActivityRow($0.value) }
+            .filter {
+                $0.value.status.isActive
+                    && !isLiveActivityRow($0.value, latchedBackgroundIDs: latchedBackgroundIDs)
+            }
             .prefix(limit)
             .map(\.id)
     }
@@ -501,7 +666,11 @@ enum TimelineTurnActions {
     /// never sets it, and DSH's command content has no such field: a runtime
     /// that does not report the flag keeps the ordinary activity rule —
     /// capability-driven, no provider branching.
-    private static func isBackgroundHandoffRow(_ item: V2TimelineItem) -> Bool {
+    /// Also the adapter's latch source: every row this returns true for while
+    /// its claim is present is remembered for the rest of its window life, so
+    /// a later rebuild that drops the flag cannot turn the running card back
+    /// into activity (see `isLiveActivityRow`).
+    static func isBackgroundHandoffRow(_ item: V2TimelineItem) -> Bool {
         if SubAgentProgress.isAgentCall(item) {
             return isDispatchAgentCall(item) && reportsBackground(item)
         }

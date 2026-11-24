@@ -53,6 +53,13 @@ nonisolated struct V2SessionArchive: Codable {
         var superseded: [String]? = nil
     }
     let session: V2SessionMeta
+    /// The last **idle** runtime state this client saw, so a cold launch can
+    /// judge the cached turn from the cached rows instead of waiting for the
+    /// first live read (pp 2026-11-24: the footer appeared only after the
+    /// post-launch sync, ~1.7 s). Restoring it never marks it fresh; the
+    /// footer's coverage rule still decides whether it may seal. Optional:
+    /// archives written before this field existed decode without it.
+    var state: V2RuntimeState? = nil
     var items: [JSONValue]
     let cursor: String
     var hasOlderItems: Bool
@@ -98,7 +105,18 @@ nonisolated struct V2SessionArchive: Codable {
     var draftOriginPendingID: String? = nil
 
     @MainActor init(data: V2SessionData, model: V2SessionModel) {
-        session = data.session; items = data.items.map(\.raw); cursor = data.cursor
+        session = data.session
+        // Only an idle state without an error means anything across a
+        // relaunch. A turn in flight at kill time has moved on by definition;
+        // restoring "running" would paint a working row and gate the composer
+        // on facts that are no longer true. A restored error would re-show a
+        // notice the session may already have cleared. The footer only needs
+        // the idle state to seal a finished turn.
+        state = data.state.flatMap { state in
+            guard state.status == .idle, state.error == nil else { return nil }
+            return state
+        }
+        items = data.items.map(\.raw); cursor = data.cursor
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
         excludesAgentChildren = data.windowExcludesAgentChildren ? true : nil
         deferredActivity = data.windowDeferredActivity ? true : nil
@@ -149,6 +167,17 @@ nonisolated struct V2SessionArchive: Codable {
         draftOriginPendingID = model.draft.isEmpty ? nil : model.draftRestoredFromPendingID
     }
 
+    /// The archived state is a cache, not a live fact: the projection keeps
+    /// it but never marks it fresh, so the footer's coverage rule still has
+    /// to accept it. It must also belong to the runtime the session points at
+    /// — a runtime switch leaves the old state behind, and feeding it back
+    /// would show another runtime's status.
+    private var restorableState: V2RuntimeState? {
+        guard let state, state.sessionId == session.id,
+              (state.runtimeId ?? state.runtime) == session.effectiveRuntimeId else { return nil }
+        return state
+    }
+
     @MainActor func projection(maximumItems: Int, now: @escaping () -> Date = Date.init) throws -> V2SessionProjection {
         // Lossy, like every wire collection of items: a stored row that no
         // longer decodes (older payload missing a now-required field) is dropped
@@ -162,7 +191,7 @@ nonisolated struct V2SessionArchive: Codable {
 
     @MainActor func projection(items decoded: [V2TimelineItem], maximumItems: Int, now: @escaping () -> Date = Date.init) -> V2SessionProjection {
         let empty = V2RuntimeCapabilitySnapshot(revision: 0, capabilities: [])
-        let snapshot = V2SessionSnapshot(session: session, state: nil,
+        let snapshot = V2SessionSnapshot(session: session, state: restorableState,
             timeline: .init(items: decoded, nextSeq: V2SessionProjection.sequence(cursor), hasMore: hasOlderItems),
             approvals: [], notices: [], effectiveCapabilities: empty, runtimeCapabilities: empty,
             catalogs: [:], eventCursor: cursor, serverTime: "",

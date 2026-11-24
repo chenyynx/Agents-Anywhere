@@ -70,6 +70,12 @@ def task_event_from_message(message: Any) -> ClaudeTaskEvent | None:
     if not isinstance(task_id, str) or not task_id:
         return None
     patch = _value(message, "patch")
+    # `task_updated`'s patch is the second carrier of the background claim: the
+    # CLI moves a foreground agent to the background later and announces it as
+    # ``patch.is_backgrounded`` (CLI 2.1.330 schema: "A later move to the
+    # background arrives as task_updated patch.is_backgrounded"). The root
+    # field wins when the frame declares one; the patch is the fallback.
+    root_backgrounded = _bool(_field(message, "is_backgrounded"))
     return ClaudeTaskEvent(
         kind=kind,
         task_id=task_id,
@@ -79,7 +85,11 @@ def task_event_from_message(message: Any) -> ClaudeTaskEvent | None:
         description=_string(_field(message, "description")),
         subagent_type=_string(_field(message, "subagent_type")),
         prompt=_string(_field(message, "prompt")),
-        is_backgrounded=_bool(_field(message, "is_backgrounded")),
+        is_backgrounded=(
+            root_backgrounded
+            if root_backgrounded is not None
+            else _bool(_value(patch, "is_backgrounded"))
+        ),
         spawn_depth=_int(_field(message, "spawn_depth")),
         status=_string(_field(message, "status"))
         or _string(_value(patch, "status")),

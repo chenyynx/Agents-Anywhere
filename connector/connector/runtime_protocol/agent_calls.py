@@ -87,6 +87,29 @@ def complete_agent_call_content(
     )
     if not isinstance(completed, AgentCallToolContent):
         raise TypeError("agent call completion changed the content type")
+    # Merge the incoming entries into the ones the completed content already
+    # carries. A receipt or a terminal event only names `status`; replacing the
+    # whole map dropped every other key the card had already learned —
+    # `isBackgrounded` in particular, and the client's "wait for the agent?"
+    # exemption reads exactly that (pp 2026-11-24: the finished turn's footer
+    # was withheld until a later publication restored the flag).
+    #
+    # Defensive for now: every present caller passes an empty (or None) map
+    # and folds task state through `ClaudeAgentTaskOverlay.apply`, which does
+    # its own per-entry merge. An explicit `{}` therefore no longer clears the
+    # map; no caller wants that today, and a future one should say so.
+    merged_agents: dict[str, Any] = {
+        key: dict(value) if isinstance(value, Mapping) else value
+        for key, value in completed.agents.items()
+    }
+    for key, value in (agents or {}).items():
+        if not isinstance(value, Mapping):
+            merged_agents[key] = value
+            continue
+        existing = merged_agents.get(key)
+        merged_agents[key] = (
+            {**existing, **value} if isinstance(existing, Mapping) else dict(value)
+        )
     return replace(
         completed,
         agent_id=agent_id or completed.agent_id,
@@ -95,6 +118,6 @@ def complete_agent_call_content(
         target_ids=(
             tuple(target_ids) if target_ids is not None else completed.target_ids
         ),
-        agents=dict(agents) if agents is not None else completed.agents,
+        agents=merged_agents,
         usage={**dict(completed.usage), **dict(usage or {})},
     )

@@ -416,13 +416,36 @@ def test_unknown_project_directory_declines_to_judge() -> None:
     )
 
 
-def test_project_key_matches_the_cli_rule() -> None:
+def test_project_key_matches_the_cli_rule(tmp_path: Any) -> None:
+    """Realpath first, then the CLI's sanitize rule.
+
+    The old form used ``/home/ubuntu/repos/Agents-Anywhere`` as a literal and
+    assumed it had no symlinks. On a host where that path links into
+    ``/data/home-repos`` the key correctly came out as the target's
+    (``-data-home-repos-Agents-Anywhere``) and the test failed on an
+    untouched tree. Build the symlink here instead, so the assertion pins the
+    rule rather than the machine's own layout.
+    """
+
+    import os
+    import re
+
     from connector.runtimes.claude.sessions.subagent_oracle import claude_project_key
 
     assert claude_project_key("/home/ubuntu") == "-home-ubuntu"
-    assert claude_project_key("/home/ubuntu/repos/Agents-Anywhere") == (
-        "-home-ubuntu-repos-Agents-Anywhere"
-    )
+
+    target = tmp_path / "real_project"
+    target.mkdir()
+    link = tmp_path / "linked-project"
+    link.symlink_to(target)
+
+    resolved = re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(str(target)))
+    assert claude_project_key(str(target)) == resolved
+    # The rule is realpath-first: a symlinked cwd keys like its target — the
+    # CLI writes the resolved directory name (observed on the HK host as
+    # ``~/.claude/projects/-data-home-repos-Agents-Anywhere`` for the
+    # ``/home/ubuntu/repos/Agents-Anywhere`` symlink).
+    assert claude_project_key(str(link)) == resolved
 
 
 # --------------------------------------------------------------------------

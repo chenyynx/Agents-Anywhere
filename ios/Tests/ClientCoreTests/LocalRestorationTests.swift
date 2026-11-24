@@ -387,4 +387,132 @@ import Testing
         #expect(!http.calls.contains { $0.path.contains("local") })
         store.reset(); await local.close(removing: true)
     }
+
+    /// A relaunch used to have no runtime state until the first live read, so
+    /// the finished turn's footer waited for that sync (~1.7 s on pp's
+    /// 2026-11-24 launch). The last state now rides the same archive as the
+    /// rows; it is restored as cached, never fresh, so the footer's coverage
+    /// rule still has to accept it.
+    @Test func coldLaunchRestoresTheRuntimeStateWithoutMarkingItFresh() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        let first = repo(TestHTTPTransport(), local: store)
+        _ = try await first.load(sessionId: "session")
+        // Any durable change writes the archive; the draft only forces one.
+        first.session(id: "session").draft = "state check"
+        await first.flushCache(); first.reset()
+        let restored = repo(TestHTTPTransport(), local: store)
+        restored.updateConnectivity(.init(availability: .offline))
+        _ = try await restored.load(sessionId: "session")
+        let model = restored.session(id: "session")
+        #expect(model.runtime.state?.updatedSeq == 10)
+        #expect(model.runtime.state?.status == .idle)
+        #expect(!model.runtime.isFresh)
+        restored.reset(); await store.close(removing: true)
+    }
+
+    /// A window restored from rows without a state (the archive was evicted,
+    /// or written before the state field existed) used to hold the finished
+    /// turn's footer until the socket's recovery — ~1 s after the rows were on
+    /// screen (pp 2026-11-24 07:32:56: rows +225 ms, state +1.08 s). The open
+    /// reads the state itself; applying it must not mark the session fresh, so
+    /// the footer's coverage rule still decides.
+    @Test func openingAWindowWithoutStateReadsTheRuntimeStateBesideIt() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        let first = repo(TestHTTPTransport(), local: store)
+        _ = try await first.load(sessionId: "session")
+        let data = V2SessionData(snapshot: try snapshot(items: [try itemObject()]))
+        var archive = V2SessionArchive(data: data, model: first.session(id: "session"))
+        archive.state = nil
+        await store.saveSession(archive)
+        first.reset()
+        let http = TestHTTPTransport()
+        let restored = repo(http, local: store)
+        _ = try await restored.open(sessionId: "session")
+        let model = restored.session(id: "session")
+        try await eventually { model.runtime.state != nil }
+        #expect(model.runtime.state?.updatedSeq == 10)
+        #expect(!model.runtime.isFresh)
+        #expect(!model.canSend)
+        #expect(http.calls.contains { $0.path.hasSuffix("/state") })
+        restored.reset(); await store.close(removing: true)
+    }
+
+    /// The prefetch is a footer aid, not a live read: offline the last known
+    /// layout wins (no request), and a local creation has no server state yet.
+    @Test func theRuntimeStatePrefetchStaysOfflineAndOffLocalCreations() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        let first = repo(TestHTTPTransport(), local: store)
+        _ = try await first.load(sessionId: "session")
+        let data = V2SessionData(snapshot: try snapshot(items: [try itemObject()]))
+        var archive = V2SessionArchive(data: data, model: first.session(id: "session"))
+        archive.state = nil
+        await store.saveSession(archive)
+        first.reset()
+        let http = TestHTTPTransport()
+        let restored = repo(http, local: store)
+        restored.updateConnectivity(.init(availability: .offline))
+        _ = try await restored.open(sessionId: "session")
+        #expect(restored.session(id: "session").runtime.state == nil)
+        #expect(!http.calls.contains { $0.path.hasSuffix("/state") })
+
+        let local = V2LocalStore(directory: location())
+        let created = repo(http, local: local)
+        let project = try fixture("project", as: V2ProjectResponse.self).project
+        let runtime: V2DeviceRuntime = try fixture("runtime")
+        let submission = NewSessionSubmission(project: project, runtime: runtime,
+                                              text: "新会话", attachments: [])
+        created.stageCreation(submission)
+        _ = try? await created.open(sessionId: submission.session.id)
+        #expect(!http.calls.contains { $0.path.hasSuffix("/state") })
+        created.reset(); await local.close(removing: true)
+        restored.reset(); await store.close(removing: true)
+    }
+
+    /// The archive field is additive: an archive written before it existed
+    /// decodes with no state, and a state left over from another runtime is
+    /// dropped on restore instead of rendering that runtime's status.
+    @Test func theArchiveKeepsTheRuntimeStateAndDropsItAfterARuntimeSwitch() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url)
+        let repository = repo(TestHTTPTransport(), local: store)
+        let data = V2SessionData(snapshot: try snapshot(items: [try itemObject()]))
+        let archive = V2SessionArchive(data: data, model: repository.session(id: "session"))
+        #expect(archive.state?.updatedSeq == 10)
+        let encoded = try JSONEncoder().encode(archive)
+        let decoded = try JSONDecoder().decode(V2SessionArchive.self, from: encoded)
+        #expect(decoded.state == archive.state)
+        let restored = try decoded.projection(maximumItems: 100).data
+        #expect(restored.state == archive.state)
+
+        var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        legacy.removeValue(forKey: "state")
+        let legacyArchive = try JSONDecoder().decode(V2SessionArchive.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(legacyArchive.state == nil)
+
+        var switched = data
+        switched.session.runtimeId = "rti_other"
+        let switchedArchive = V2SessionArchive(data: switched, model: repository.session(id: "session"))
+        let switchedRestore = try switchedArchive.projection(maximumItems: 100).data
+        #expect(switchedRestore.state == nil)
+
+        // A turn in flight at kill time is not a fact a relaunch can keep:
+        // restoring "running" would paint a working row and gate the composer
+        // until the live read. The archive keeps only settled states.
+        var inFlight = data
+        inFlight.state = data.state.map {
+            V2RuntimeState(sessionId: $0.sessionId, runtime: $0.runtime,
+                           runtimeId: $0.runtimeId, runtimeType: $0.runtimeType,
+                           externalSessionId: $0.externalSessionId, status: .running,
+                           selections: $0.selections, statusReason: nil, error: nil,
+                           metadata: $0.metadata, updatedSeq: $0.updatedSeq + 1,
+                           createdAt: $0.createdAt, updatedAt: $0.updatedAt)
+        }
+        let inFlightArchive = V2SessionArchive(data: inFlight, model: repository.session(id: "session"))
+        #expect(inFlightArchive.state == nil)
+        repository.reset(); await store.close(removing: true)
+    }
 }

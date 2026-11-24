@@ -186,6 +186,13 @@ struct V2SessionDetailService {
         )
     }
 
+    /// The runtime state alone. A window restored from disk without one needs
+    /// it to judge the cached turn; capabilities and notices still arrive with
+    /// the connection's full live read.
+    func runtimeState(sessionId: V2SessionID) async throws -> V2RuntimeState {
+        try await runtimeAPI.state(sessionId: sessionId).state
+    }
+
     /// The runtime's live context-window answer (`summary` for the ring,
     /// `full` for the sheet's per-category pass).
     func contextUsage(

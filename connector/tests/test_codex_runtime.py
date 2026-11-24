@@ -751,6 +751,7 @@ class FakeHost(RuntimeHostClient):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: Mapping[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         self.lifecycle_events.append("turn_end")
         self.turn_ends.append(

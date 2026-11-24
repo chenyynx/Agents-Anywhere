@@ -185,7 +185,7 @@ class _Host(RuntimeHostClient):
     async def timeline_item_upsert(self, item):
         self.item_upserts.append(item)
 
-    async def session_turn_ended(self, session_id, runtime, external_session_id=None, turn_id=None, outcome="completed", metadata=None):
+    async def session_turn_ended(self, session_id, runtime, external_session_id=None, turn_id=None, outcome="completed", metadata=None, turn_end_contract=False):
         self.turn_ends.append({"session_id": session_id, "turn_id": turn_id, "outcome": outcome})
 
     async def session_capabilities_update(self, capabilities):

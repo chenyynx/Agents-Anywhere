@@ -304,6 +304,41 @@ enum TimelineTurnActions {
         return coverage
     }
 
+    /// The wire's durable answer for the latest bucket, or nil when it cannot
+    /// answer.
+    ///
+    /// The connector declares the last ended turn's id on the session
+    /// (`latestTurnId`) and the same id on every row's `source.turnId`. A
+    /// matching id is the turn boundary itself: no runtime-state freshness,
+    /// row watermark or idle flap can change it. A bucket that carries no
+    /// declared id (an old connector, or a runtime that does not declare one)
+    /// falls back to the previous runtime-state rule. A different id is
+    /// either an older bucket (its newest main row is at or before the
+    /// recorded end) or a newer turn with no end record; the latter must stay
+    /// suppressed even when a stale idle state says otherwise.
+    ///
+    /// Offline is the one case where the contract cannot prove a newer turn is
+    /// still open: a socket can drop after the turn's rows arrived but before
+    /// its meta did, leaving `latestTurnId` one turn behind. The previous
+    /// rule deliberately shows the last known footer offline, so a mismatch
+    /// returns nil (fallback) rather than false; a match still seals.
+    static func latestTurnSeal(bucketTurnID: V2TurnID?,
+                               bucketMaxMainSeq: Int,
+                               latestTurnId: V2TurnID?,
+                               latestTurnEndSeq: Int,
+                               connectorOffline: Bool = false) -> Bool? {
+        guard let latestTurnId = latestTurnId, let bucketTurnID = bucketTurnID else {
+            return nil
+        }
+        if bucketTurnID == latestTurnId { return true }
+        if connectorOffline { return nil }
+        // The turn-end sequence is recorded before the turn's last rows in
+        // some writers, so this only proves *older* buckets; the latest turn
+        // is decided by the id match above.
+        if bucketMaxMainSeq > 0, bucketMaxMainSeq <= latestTurnEndSeq { return true }
+        return false
+    }
+
     /// What the last bucket of one `build` pass saw. Diagnostics only: the
     /// adapter writes it when it changes so a withheld footer names its
     /// blocker (the active row, the host it would have used, the commit
@@ -316,6 +351,12 @@ enum TimelineTurnActions {
         /// Up to three rows that kept the final bucket from committing.
         var activeItemIDs: [String] = []
         var committed = false
+        /// The wire's decision for the final bucket; nil means the contract
+        /// was unavailable and the runtime-state rule decided.
+        var latestTurnSeal: Bool?
+        var bucketTurnID: V2TurnID?
+        var latestTurnID: V2TurnID?
+        var latestTurnEndSeq = 0
     }
 
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
@@ -353,6 +394,10 @@ enum TimelineTurnActions {
                       hasPendingUserMessage: Bool = false,
                       liveTurnGroupID: String? = nil,
                       latchedBackgroundIDs: Set<String> = [],
+                      latestTurnId: V2TurnID? = nil,
+                      latestTurnEndSeq: Int = 0,
+                      connectorOffline: Bool = false,
+                      hasNewerItems: Bool = false,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
                       report: ((FooterBuildReport) -> Void)? = nil)
         -> [String: TimelineTurnAction] {
@@ -368,6 +413,10 @@ enum TimelineTurnActions {
         /// Ordinary turns are still split by a user bubble; the wire's id
         /// only closes buckets that are no longer live.
         var bucketTurnID: V2TurnID?
+        /// The newest `updatedSeq` among the bucket's main rows. The wire's
+        /// turn-end id is the primary fact; this watermark only decides that
+        /// a bucket with a *different* id is older than the recorded end.
+        var bucketMaxMainSeq = 0
         /// The live user turn's bucket keeps the bubble-only split once its
         /// opening group is reached; history before it splits as usual.
         var pastLiveTurnStart = false
@@ -398,6 +447,7 @@ enum TimelineTurnActions {
             replies = []; changes = []; endGroupID = nil
             turnOpen = false; hasActiveItems = false
             bucketTurnID = nil
+            bucketMaxMainSeq = 0
             activeItemIDs.removeAll()
             return wrote
         }
@@ -410,19 +460,33 @@ enum TimelineTurnActions {
                 startsMidTurn = false
             }
             let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
-            if !pastLiveTurnStart, let declaredTurnID, let currentTurnID = bucketTurnID,
+            if let declaredTurnID, let currentTurnID = bucketTurnID,
                declaredTurnID != currentTurnID {
-                // A turn that begins with no user bubble — a compaction
-                // continuation, or the scheduled turn a background-task
-                // notification wakes — is otherwise re-absorbed into the
-                // previous bucket: the finished turn loses its footer and its
-                // reply text joins the next turn's copy. Compaction made the
-                // bar blink 30 pt in and out (pp 2026-11-16 09:29); a wake-up
-                // turn moved the footer from the previous reply to its own
-                // (same day 10:05:54: host msg_577ba3bc → msg_1e1de664, count
-                // unchanged at 76). The declared turn-id change is the
-                // boundary those turns have instead of a bubble.
-                _ = commit()
+                // The live user turn keeps its bubble-only split for a
+                // mid-turn id flap (b1279). The durable end is the exception:
+                // once the wire says this bucket's turn is over (or the new
+                // id is the recorded end), a new declared id is a real
+                // boundary, even when the gate never observed the end.
+                // Without this, a bubble-less scheduled turn merged into the
+                // live user's bucket, and the ended turn's seal landed on the
+                // running turn's reply.
+                let durableBoundary = latestTurnId != nil
+                    && (currentTurnID == latestTurnId
+                        || declaredTurnID == latestTurnId)
+                if !pastLiveTurnStart || durableBoundary {
+                    // A turn that begins with no user bubble — a compaction
+                    // continuation, or the scheduled turn a background-task
+                    // notification wakes — is otherwise re-absorbed into the
+                    // previous bucket: the finished turn loses its footer and
+                    // its reply text joins the next turn's copy. Compaction
+                    // made the bar blink 30 pt in and out (pp 2026-11-16
+                    // 09:29); a wake-up turn moved the footer from the previous
+                    // reply to its own (same day 10:05:54: host msg_577ba3bc
+                    // → msg_1e1de664, count unchanged at 76). The declared
+                    // turn-id change is the boundary those turns have instead
+                    // of a bubble.
+                    _ = commit()
+                }
             }
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
@@ -435,6 +499,18 @@ enum TimelineTurnActions {
             if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
             if bucketTurnID == nil { bucketTurnID = declaredTurnID }
+            // Same exclusions as the state-coverage gate: a sub-agent child
+            // and a background hand-off card keep publishing long after the
+            // main turn, and counting them would make every older bucket look
+            // newer than the recorded turn end.
+            for row in group.rows where SubAgentProgress.parentItemID(row.value) == nil {
+                if latchedBackgroundIDs.contains(row.id) || isBackgroundHandoffRow(row.value) {
+                    continue
+                }
+                if row.value.updatedSeq > bucketMaxMainSeq {
+                    bucketMaxMainSeq = row.value.updatedSeq
+                }
+            }
             if hostsFooter(group) { endGroupID = group.id }
             replies.append(contentsOf: messages)
             changes.append(contentsOf: fileChanges)
@@ -472,8 +548,25 @@ enum TimelineTurnActions {
         let finalChangeCount = changes.count
         let finalHasActiveItems = hasActiveItems
         let finalActiveItemIDs = activeItemIDs
+        let finalBucketTurnID = bucketTurnID
+        let finalBucketMaxMainSeq = bucketMaxMainSeq
+        // The watermark is only a complete bucket's fact. An older page ends
+        // at a window boundary, so its last bucket may be missing newer rows
+        // and its max seq proves nothing about the bucket's end; keep the
+        // window's own suppression (the 2.2.0 rule) there.
+        let seal = hasNewerItems
+            ? nil
+            : latestTurnSeal(bucketTurnID: finalBucketTurnID,
+                             bucketMaxMainSeq: finalBucketMaxMainSeq,
+                             latestTurnId: latestTurnId,
+                             latestTurnEndSeq: latestTurnEndSeq,
+                             connectorOffline: connectorOffline)
+        // The durable id decides when it can; the runtime-state gate (and a
+        // pending outgoing bubble) stays the fallback for old servers and
+        // runtimes that declare no turn ids.
+        let latestIsOver = seal ?? !suppressLatest
         var committed = false
-        if (!suppressLatest || hasPendingUserMessage), !hasActiveItems {
+        if (latestIsOver || hasPendingUserMessage), !hasActiveItems {
             committed = commit()
         }
         report?(FooterBuildReport(endGroupID: finalEndGroupID,
@@ -481,7 +574,11 @@ enum TimelineTurnActions {
                                   changeCount: finalChangeCount,
                                   hasActiveItems: finalHasActiveItems,
                                   activeItemIDs: finalActiveItemIDs,
-                                  committed: committed))
+                                  committed: committed,
+                                  latestTurnSeal: seal,
+                                  bucketTurnID: finalBucketTurnID,
+                                  latestTurnID: latestTurnId,
+                                  latestTurnEndSeq: latestTurnEndSeq))
         return actions
     }
 

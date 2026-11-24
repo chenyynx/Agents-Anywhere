@@ -2,9 +2,12 @@ import Testing
 @testable import ClientCore
 
 @Suite @MainActor struct TimelineTurnActionsTests {
-    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done", turnId: String? = nil, seq: Int = 10) throws -> ChatTimelineRowModel {
+    private func row(_ id: String, type: String = "message", role: String = "assistant", text: String = "", status: String = "done", turnId: String? = nil, seq: Int = 10, parentItemID: String? = nil) throws -> ChatTimelineRowModel {
         var value = try itemObject(id: id, seq: seq, text: text)
         value["type"] = type; value["role"] = role; value["status"] = status
+        if let parentItemID {
+            value["content"] = ["text": text, "parentItemId": parentItemID]
+        }
         if let turnId {
             var source = value["source"] as? [String: Any] ?? [:]
             source["turnId"] = turnId
@@ -61,6 +64,108 @@ import Testing
             groups: TimelineGrouping.groups(streamingRows, interactionTargets: []),
             suppressLatest: true)
         #expect(streaming.isEmpty)
+    }
+
+    /// The durable turn-end contract, independent of runtime-state freshness.
+    @Test func latestTurnSealComparesTheBucketAndTheEndRecord() {
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-a", bucketMaxMainSeq: 10,
+            latestTurnId: nil, latestTurnEndSeq: 0) == nil)
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: nil, bucketMaxMainSeq: 10,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10) == nil)
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-a", bucketMaxMainSeq: 10,
+            latestTurnId: "turn-a", latestTurnEndSeq: 5) == true)
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-b", bucketMaxMainSeq: 10,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10) == true)
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-b", bucketMaxMainSeq: 11,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10) == false)
+        // Offline cannot prove a newer turn is open; keep the last known
+        // footer (the 2.2.0 offline rule) instead of suppressing it.
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-b", bucketMaxMainSeq: 11,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10,
+            connectorOffline: true) == nil)
+    }
+
+    /// A matching id commits the latest bucket even when the runtime-state
+    /// gate is closed; a newer turn with no end record stays suppressed even
+    /// when the gate is open. No id on the rows keeps the old rule.
+    @Test func aDeclaredTurnEndSealsOnlyTheMatchingOrOlderBucket() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+
+        let matched = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-b", latestTurnEndSeq: 15)
+        #expect(matched["r-a"]?.copyText == "A")
+        #expect(matched["r-b"]?.copyText == "B")
+
+        let newer = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15)
+        #expect(newer["r-a"]?.copyText == "A")
+        #expect(newer["r-b"] == nil)
+
+        // Offline keeps the 2.2.0 behavior: a meta that lags the rows is not
+        // proof that the newer turn is open, so the last known footer stays.
+        let offline = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            connectorOffline: true)
+        #expect(offline["r-b"]?.copyText == "B")
+
+        // The latest bucket is older than the recorded end: history commits.
+        let older = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-c", latestTurnEndSeq: 25)
+        #expect(older["r-b"]?.copyText == "B")
+
+        // No declared id anywhere: the runtime-state fallback is unchanged.
+        let idlessRows = try [
+            row("u-a", role: "user", seq: 10),
+            row("r-a", text: "A", seq: 11),
+            row("u-b", role: "user", seq: 20),
+            row("r-b", text: "B", seq: 21),
+        ]
+        let fallback = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(idlessRows, interactionTargets: []),
+            suppressLatest: false, latestTurnId: "turn-b", latestTurnEndSeq: 15)
+        #expect(fallback["r-b"]?.copyText == "B")
+    }
+
+    /// A scheduled/wake turn has no user bubble; its first assistant row still
+    /// names the bucket, so a matching durable id seals it.
+    @Test func aScheduledTurnSealsOnAMatchingIdWithoutAUserBubble() throws {
+        let rows = try [row("wake-reply", text: "Wake", turnId: "turn-scheduled", seq: 30)]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            latestTurnId: "turn-scheduled", latestTurnEndSeq: 31)
+        #expect(actions["wake-reply"]?.copyText == "Wake")
+    }
+
+    /// A running row still vetoes a matching id: the id says the turn ended,
+    /// but visible activity means the client has not caught up yet.
+    @Test func anActiveRowStillVetoesAMatchingTurnEnd() throws {
+        let rows = try [
+            row("u", role: "user", turnId: "turn-a", seq: 10),
+            row("r", text: "A", turnId: "turn-a", seq: 11),
+            row("tool", type: "tool", status: "running", turnId: "turn-a", seq: 12),
+        ]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true, latestTurnId: "turn-a", latestTurnEndSeq: 20,
+            footerHostEligible: { $0.id != "tool" })
+        #expect(actions.isEmpty)
     }
 
     @Test func visibleActiveItemsAndNonAssistantTextDoNotGainActions() throws {
@@ -1202,5 +1307,87 @@ struct TurnFooterGateTests {
         let afterCompaction = gate.update(userKey: "u1", runtimeIsRunning: true,
                                           authoritativeTurnEnds: 1, userKeyOrder: 10)
         #expect(afterCompaction)
+    }
+
+    /// A bubble-less next turn must not stay merged into a live user bucket
+    /// when the durable fact proves the user turn ended. The ended turn's
+    /// seal would otherwise land on the running turn's reply, and a later
+    /// commit would copy both turns' text into one footer.
+    @Test func aDurableBoundarySplitsAMergedLiveBucket() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("r-b", text: "B", turnId: "turn-b", seq: 20),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let liveGroup = groups[0].id
+
+        let running = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            liveTurnGroupID: liveGroup,
+            latestTurnId: "turn-a", latestTurnEndSeq: 11)
+        #expect(running["r-a"]?.copyText == "A")
+        #expect(running["r-b"] == nil)
+
+        let bothEnded = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            liveTurnGroupID: liveGroup,
+            latestTurnId: "turn-b", latestTurnEndSeq: 20)
+        #expect(bothEnded["r-a"]?.copyText == "A")
+        #expect(bothEnded["r-b"]?.copyText == "B")
+    }
+
+    /// An older page's trailing bucket is cut by the window, not by its turn
+    /// end; the durable watermark cannot prove it complete. Keep 2.2.0's
+    /// `hasNewerItems` suppression instead of sealing it.
+    @Test func anOlderWindowDoesNotSealItsTruncatedBucket() throws {
+        let rows = try [row("r-old", text: "Old", turnId: "turn-old", seq: 10)]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let durable = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-new", latestTurnEndSeq: 100)
+        #expect(durable["r-old"]?.copyText == "Old")
+
+        let windowed = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-new", latestTurnEndSeq: 100,
+            hasNewerItems: true)
+        #expect(windowed.isEmpty)
+    }
+
+    /// The sequence watermark belongs to one bucket. A new user turn resets
+    /// it; a high revision from the previous turn must not make the new
+    /// bucket look newer than the recorded end.
+    @Test func aNewBucketDoesNotInheritThePreviousWatermark() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 100),
+            row("u-b", role: "user", turnId: "turn-b", seq: 11),
+            row("r-b", text: "B", turnId: "turn-b", seq: 20),
+        ]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(rows, interactionTargets: []),
+            suppressLatest: true,
+            latestTurnId: "turn-old", latestTurnEndSeq: 50)
+        #expect(actions["r-a"]?.copyText == "A")
+        #expect(actions["r-b"]?.copyText == "B")
+    }
+
+    /// Sub-agent child rows keep publishing after the main turn; counting
+    /// their seq in the bucket watermark made every older bucket look newer
+    /// than the recorded end.
+    @Test func aSubAgentChildDoesNotRaiseTheBucketWatermark() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("child", text: "child", turnId: "turn-a", seq: 100,
+                parentItemID: "card"),
+        ]
+        let actions = TimelineTurnActions.build(
+            groups: TimelineGrouping.fallbackGroups(rows, interactionTargets: []),
+            suppressLatest: true,
+            latestTurnId: "turn-old", latestTurnEndSeq: 50)
+        #expect(actions.count == 1)
+        #expect(actions.values.first?.copyText == "A")
     }
 }

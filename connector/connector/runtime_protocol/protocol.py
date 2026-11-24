@@ -134,8 +134,9 @@ class AgentRuntime(ABC):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        base_turn_id: str | None = None,
     ) -> PreparedSessionTimelineSync | None:
-        _ = session_id, external_session_id
+        _ = session_id, external_session_id, base_turn_id
         return None
 
     async def bind_external_session(

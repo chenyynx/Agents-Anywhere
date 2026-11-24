@@ -909,6 +909,18 @@
           "title": "Latestturnendseq",
           "type": "integer"
         },
+        "latestTurnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latestturnid"
+        },
         "pinned": {
           "default": false,
           "title": "Pinned",

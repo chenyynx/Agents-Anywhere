@@ -41,6 +41,10 @@ nonisolated struct V2SessionMeta: Codable, Identifiable, Hashable {
     var unread: Bool
     var lastReadSeq: Int
     let latestTurnEndSeq: Int
+    /// The Runtime turn id of the last ended turn. Optional and additive:
+    /// older servers omit it and the footer falls back to the runtime-state
+    /// rule; a matching row `source.turnId` is the durable turn boundary.
+    var latestTurnId: V2TurnID? = nil
     let lastSyncedAt: String?
     let sourceObservedAt: String?
     let lastActivityAt: String?

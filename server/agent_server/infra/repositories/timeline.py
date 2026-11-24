@@ -2183,6 +2183,7 @@ class TimelineRepositoryMixin:
         self,
         *,
         session_id: str,
+        turn_id: str | None = None,
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
     ) -> SessionView:
@@ -2197,11 +2198,94 @@ class TimelineRepositoryMixin:
                 session_id,
                 mark_read=mark_read_on_change,
             )
+            values: dict[str, object] = {"latest_turn_end_seq": updated_seq}
+            # A turn-ended notification without an id (an old connector, or a
+            # Runtime that does not declare one) must not clear the last id.
+            if turn_id is not None:
+                values["latest_turn_id"] = turn_id
             await conn.execute(
                 update(sessions_t)
                 .where(sessions_t.c.id == session_id)
-                .values(latest_turn_end_seq=updated_seq)
+                .values(**values)
             )
+        return await self.get_session(session_id)
+
+    @session_revision_fenced
+    async def record_session_latest_turn_id(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        base_turn_id: str | None = None,
+        allow_rebased: bool = False,
+    ) -> SessionView:
+        """Persist a history sync's last ended turn id.
+
+        The live ``session.turnEnded`` path writes the same column; this method
+        exists for the settle/history sync, which is the authority after a
+        restart or a scheduled turn whose live id was re-keyed by the rebuild.
+        It deliberately does not touch ``latest_turn_end_seq``, unread or usage:
+        those are live turn-end facts, and a history pass must not fabricate
+        them.
+
+        A sync may only replace a different, already-recorded id when it proves
+        it is *the same turn*: ``base_turn_id`` is the live id of the settle
+        that triggered it, and a matching stored id means a scheduled turn was
+        re-keyed (provisional -> transcript deterministic). A full-chain rebase
+        after a connector restart is authoritative by construction. Any other
+        differing id is an older turn arriving late; replacing a newer live id
+        would suppress that turn's footer until the next settle.
+
+        The revision fence is the same one ``record_session_turn_end`` uses:
+        it publishes the session through the write buffer and advances its
+        published head. Bumping outside that fence left the head behind and the
+        next fenced operation re-sent a ``refetch`` session frame. The
+        decorator also skips the publish when the id did not change (the
+        before/after SessionView carries the same updatedSeq).
+        """
+
+        async with self._timeline_lock(session_id), self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(sessions_t.c.latest_turn_id).where(
+                        sessions_t.c.id == session_id
+                    )
+                )
+            ).first()
+            if row is None:
+                raise KeyError(session_id)
+            stored = row.latest_turn_id
+            if (
+                stored is not None
+                and stored != turn_id
+                and base_turn_id != stored
+                # A rebased full-chain rebuild has no base and may replace a
+                # stale value. A rebased sync that *does* name a base is not
+                # proof of the same turn: the base must still match what the
+                # Server stored, or a stale/early read could overwrite a
+                # newer live id.
+                and not (allow_rebased and base_turn_id is None)
+            ):
+                # A stale sync is expected in a race and must not replace the
+                # newer live id. Log the four facts that decide it: without
+                # them a missing footer cannot be told from a Server bug.
+                logger.info(
+                    "session latest turn id rejected session_id={} stored={} "
+                    "incoming={} base={} rebased={}",
+                    session_id,
+                    stored,
+                    turn_id,
+                    base_turn_id,
+                    allow_rebased,
+                )
+                return await self.get_session(session_id)
+            if stored != turn_id:
+                await self._bump_session(conn, session_id, mark_read=False)
+                await conn.execute(
+                    update(sessions_t)
+                    .where(sessions_t.c.id == session_id)
+                    .values(latest_turn_id=turn_id)
+                )
         return await self.get_session(session_id)
 
     @asynccontextmanager

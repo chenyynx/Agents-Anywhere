@@ -58,8 +58,14 @@ from test_claude_runtime import (
     _wait_until,
 )
 
-from connector.runtime_protocol import RuntimeAttachment, RuntimeAttachmentContent
+from connector.runtime_protocol import (
+    RuntimeAttachment,
+    RuntimeAttachmentContent,
+    RuntimeTimelineItem,
+)
 from connector.runtimes.claude.domain.session import ClaudeSession
+from connector.runtimes.claude.history.syncer import provisional_anchor_key
+from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.history.cursor import (
     HISTORY_PROJECTION_VERSION,
     ClaudeHistoryCursor,
@@ -99,12 +105,18 @@ def _user(uuid: str, text: str, *, is_meta: bool = False) -> Any:
     )
 
 
-def _assistant(uuid: str, text: str, *, message_id: str | None = None) -> Any:
+def _assistant(uuid: str, text: str, *, message_id: str | None = None,
+               stop_reason: str | None = "end_turn") -> Any:
     content: Any = text
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if message_id is not None:
         message["id"] = message_id
-    return SimpleNamespace(type="assistant", uuid=uuid, message=message)
+    return SimpleNamespace(
+        type="assistant",
+        uuid=uuid,
+        message=message,
+        stop_reason=stop_reason,
+    )
 
 
 def _assistant_row(uuid: str, text: str, *, message_id: str | None = None) -> str:
@@ -570,6 +582,445 @@ async def _test_syncer_computes_turn_ids_over_the_full_chain_not_the_window() ->
     assert incremental.snapshot.metadata["rebased"] is False
     assert incremental.snapshot.metadata["syncedMessageCount"] == 1
     assert _turn_id_by_text(incremental.snapshot.items, "second reply") == expected
+
+
+def test_syncer_publishes_the_last_replied_turn_as_last_turn_id() -> None:
+    """The settle sync's ``lastTurnId`` is the last turn that actually replied.
+
+    A trailing user prompt whose turn never replied must not be declared
+    ended; the previous turn is the durable answer the footer can seal. This
+    is the fact the iOS gate compares against a row's ``source.turnId``.
+    """
+
+    asyncio.run(_test_syncer_publishes_the_last_replied_turn_as_last_turn_id())
+
+
+async def _test_syncer_publishes_the_last_replied_turn_as_last_turn_id() -> None:
+    first_prompt = "aaaaaaaa-1111-2222-3333-444444444444"
+    second_prompt = "bbbbbbbb-1111-2222-3333-444444444444"
+    first = [_user(first_prompt, "one"), _assistant("row-a1", "reply one")]
+
+    both = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk(
+            [*first, _user(second_prompt, "two"), _assistant("row-a2", "reply two")]
+        ),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert both is not None and both.snapshot is not None
+    assert both.snapshot.metadata["lastTurnId"] == _history_turn_id(second_prompt)
+
+    # A prompt the CLI accepted but never answered is not an ended turn.
+    trailing = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk([*first, _user(second_prompt, "two")]),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert trailing is not None and trailing.snapshot is not None
+    assert trailing.snapshot.metadata["lastTurnId"] == _history_turn_id(first_prompt)
+
+
+def test_syncer_does_not_publish_an_older_turn_for_an_unfinished_base() -> None:
+    """A settle for a turn that never got a terminal reply must not publish
+    the previous turn's id: the server would replace this turn's live id and
+    suppress its footer. A scanner pass (no base) may still publish the last
+    completed turn (the previous one) because it is not replacing a live id.
+    """
+
+    asyncio.run(_test_syncer_does_not_publish_an_older_turn_for_an_unfinished_base())
+
+
+async def _test_syncer_does_not_publish_an_older_turn_for_an_unfinished_base() -> None:
+    first_prompt = "cccccccc-1111-2222-3333-444444444444"
+    dangling_prompt = "dddddddd-1111-2222-3333-444444444444"
+    completed = _history_turn_id(first_prompt)
+    dangling = _history_turn_id(dangling_prompt)
+    messages = [
+        _user(first_prompt, "one"),
+        _assistant("row-a1", "reply"),
+        _user(dangling_prompt, "two"),
+    ]
+
+    async def prepare(base: str | None) -> dict[str, Any]:
+        prepared = await _syncer(
+            host=_SyncStateHost(),
+            sdk=_CompactHistorySdk(list(messages)),
+        ).prepare_session_timeline_sync(
+            SESSION_ID,
+            EXTERNAL_SESSION_ID,
+            base_turn_id=base,
+        )
+        assert prepared is not None and prepared.snapshot is not None
+        return prepared.snapshot.metadata
+
+    # The settle's base is the dangling turn itself: publish that turn, never
+    # the older completed one.
+    assert (await prepare(dangling))["lastTurnId"] == dangling
+    # The base is the previous completed turn: publishing it is safe.
+    assert (await prepare(completed))["lastTurnId"] == completed
+    # A scanner pass has no base; publishing the last completed turn is safe.
+    assert (await prepare(None))["lastTurnId"] == completed
+
+    # An assistant that stopped for a tool call is not terminal in the
+    # transcript, but the live settle already declared the turn over. Its own
+    # id is the safe answer; the previous turn's id is not.
+    tool_turn = _history_turn_id(dangling_prompt)
+    tool_messages = [
+        _user(first_prompt, "one"),
+        _assistant("row-a1", "reply"),
+        _user(dangling_prompt, "two"),
+        _assistant("row-a2", "calling", stop_reason="tool_use"),
+    ]
+    prepared = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk(tool_messages),
+    ).prepare_session_timeline_sync(
+        SESSION_ID,
+        EXTERNAL_SESSION_ID,
+        base_turn_id=tool_turn,
+    )
+    assert prepared is not None and prepared.snapshot is not None
+    assert prepared.snapshot.metadata["lastTurnId"] == tool_turn
+
+
+def test_syncer_treats_a_cli_interrupt_marker_as_the_turn_end() -> None:
+    """The user's stop is terminal even when the last assistant says tool_use.
+
+    Without this, a restart's rebase published the previous turn and the
+    Server replaced the interrupted turn's live id; its footer disappeared.
+    """
+
+    asyncio.run(_test_syncer_treats_a_cli_interrupt_marker_as_the_turn_end())
+
+
+async def _test_syncer_treats_a_cli_interrupt_marker_as_the_turn_end() -> None:
+    first_prompt = "11111111-aaaa-bbbb-cccc-111111111111"
+    stopped_prompt = "22222222-aaaa-bbbb-cccc-222222222222"
+    messages = [
+        _user(first_prompt, "one"),
+        _assistant("row-a1", "reply"),
+        _user(stopped_prompt, "two"),
+        _assistant("row-a2", "calling", stop_reason="tool_use"),
+        _user("interrupt-marker", "[Request interrupted by user]"),
+    ]
+    prepared = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk(list(messages)),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert prepared is not None and prepared.snapshot is not None
+    assert prepared.snapshot.metadata["lastTurnId"] == _history_turn_id(
+        stopped_prompt
+    )
+
+
+def test_syncer_does_not_publish_a_previous_turn_for_an_open_assistant() -> None:
+    """A scanner/rebase with no base must not replace a newer live id.
+
+    The open turn owns an assistant row (its footer is still owed); publishing
+    the previous completed turn would make the Server's newer live id look
+    older and suppress that footer.
+    """
+
+    asyncio.run(
+        _test_syncer_does_not_publish_a_previous_turn_for_an_open_assistant()
+    )
+
+
+async def _test_syncer_does_not_publish_a_previous_turn_for_an_open_assistant() -> None:
+    first_prompt = "33333333-aaaa-bbbb-cccc-333333333333"
+    open_prompt = "44444444-aaaa-bbbb-cccc-444444444444"
+    messages = [
+        _user(first_prompt, "one"),
+        _assistant("row-b1", "reply"),
+        _user(open_prompt, "two"),
+        _assistant("row-b2", "calling", stop_reason="tool_use"),
+    ]
+    prepared = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk(list(messages)),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert prepared is not None and prepared.snapshot is not None
+    assert "lastTurnId" not in prepared.snapshot.metadata
+
+
+def test_syncer_publishes_the_history_id_when_the_live_base_is_provisional() -> None:
+    """A scheduled turn's live base and transcript id can differ.
+
+    Both name the same just-ended turn; the settle must still publish the
+    transcript id so the Server can replace the provisional live id.
+    """
+
+    asyncio.run(
+        _test_syncer_publishes_the_history_id_when_the_live_base_is_provisional()
+    )
+
+
+async def _test_syncer_publishes_the_history_id_when_the_live_base_is_provisional() -> None:
+    anchor = "msg_anchor"
+    messages = [
+        _user("task-note", "<task-notification>x</task-notification>"),
+        # The transcript's final assistant is still open (a failed/interrupted
+        # settle); the live settle is the authority that the turn ended.
+        _assistant("row-c1", "done", message_id=anchor, stop_reason="tool_use"),
+    ]
+    live_item = RuntimeTimelineItem(
+        id="row-c1",
+        session_id=SESSION_ID,
+        type="message",
+        status="done",
+        order_seq=1,
+        content_hash="sha256:test",
+        role="assistant",
+        turn_id="turn_live_provisional",
+        content={"text": "done"},
+        source={"nativeMessageId": anchor},
+    )
+    live = ClaudeSession(
+        session_id=SESSION_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        timeline_items={live_item.id: live_item},
+    )
+    host = _SyncStateHost()
+    prepared = await _syncer(
+        host=host,
+        sdk=_CompactHistorySdk(list(messages)),
+        session_store=ClaudeSessionStore({SESSION_ID: live}),
+    ).prepare_session_timeline_sync(
+        SESSION_ID,
+        EXTERNAL_SESSION_ID,
+        base_turn_id="turn_live_provisional",
+    )
+    assert prepared is not None and prepared.snapshot is not None
+    assert prepared.snapshot.metadata["lastTurnId"] == _history_turn_id(anchor)
+    assert prepared.snapshot.metadata["baseTurnId"] == "turn_live_provisional"
+    # The anchor is written only after the sync is accepted.
+    assert provisional_anchor_key(SESSION_ID) not in host.sync_states
+    await prepared.commit()
+    assert host.sync_states[provisional_anchor_key(SESSION_ID)] == {
+        "live": "turn_live_provisional",
+        "history": _history_turn_id(anchor),
+    }
+
+
+def test_syncer_uses_a_persisted_provisional_anchor_on_a_rebase() -> None:
+    """A restart before the settle read can still repair a failed turn.
+
+    The live turn id is provisional, the transcript's final assistant is open
+    (failed turn, no interrupt marker), and there is no live session. The
+    bridge written before ``turnEnded`` is the only proof that names the
+    transcript turn.
+    """
+
+    asyncio.run(_test_syncer_uses_a_persisted_provisional_anchor_on_a_rebase())
+
+
+async def _test_syncer_uses_a_persisted_provisional_anchor_on_a_rebase() -> None:
+    anchor = "msg_anchor"
+    history = _history_turn_id(anchor)
+    host = _SyncStateHost()
+    await host.sync_state_write(
+        provisional_anchor_key(SESSION_ID),
+        {"live": "turn_live_provisional", "history": history},
+    )
+    messages = [
+        _user("task-note", "<task-notification>x</task-notification>"),
+        _assistant("row-e1", "partial", message_id=anchor, stop_reason="tool_use"),
+    ]
+    prepared = await _syncer(
+        host=host,
+        sdk=_CompactHistorySdk(list(messages)),
+        session_store=ClaudeSessionStore({}),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert prepared is not None and prepared.snapshot is not None
+    assert prepared.snapshot.metadata["lastTurnId"] == history
+    assert prepared.snapshot.metadata["baseTurnId"] == "turn_live_provisional"
+    assert prepared.snapshot.metadata["rebased"] is True
+
+
+def test_syncer_does_not_fall_back_when_a_persisted_anchor_is_not_visible() -> None:
+    """The read predates the last persisted provisional turn.
+
+    Falling back to the previous completed turn would replace that turn's
+    live id. The anchor is the proof the read is behind.
+    """
+
+    asyncio.run(
+        _test_syncer_does_not_fall_back_when_a_persisted_anchor_is_not_visible()
+    )
+
+
+async def _test_syncer_does_not_fall_back_when_a_persisted_anchor_is_not_visible() -> None:
+    host = _SyncStateHost()
+    await host.sync_state_write(
+        provisional_anchor_key(SESSION_ID),
+        {
+            "live": "turn_live_provisional",
+            "history": _history_turn_id("msg_later"),
+        },
+    )
+    first_prompt = "77777777-aaaa-bbbb-cccc-777777777777"
+    messages = [_user(first_prompt, "one"), _assistant("row-f1", "reply")]
+    prepared = await _syncer(
+        host=host,
+        sdk=_CompactHistorySdk(list(messages)),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert prepared is not None and prepared.snapshot is not None
+    assert "lastTurnId" not in prepared.snapshot.metadata
+
+
+def test_syncer_suppresses_the_turn_id_for_a_command_anchor() -> None:
+    """A command turn has no transcript turn; its anchor suppresses seeding.
+
+    Without the anchor, a compaction rebase would publish the previous
+    completed turn and the Server would replace the command's opaque id.
+    """
+
+    asyncio.run(_test_syncer_suppresses_the_turn_id_for_a_command_anchor())
+
+
+async def _test_syncer_suppresses_the_turn_id_for_a_command_anchor() -> None:
+    host = _SyncStateHost()
+    await host.sync_state_write(
+        provisional_anchor_key(SESSION_ID),
+        {"live": "turn_command", "suppress": True},
+    )
+    prompt = "88888888-aaaa-bbbb-cccc-888888888888"
+    messages = [_user(prompt, "one"), _assistant("row-g1", "reply")]
+    prepared = await _syncer(
+        host=host,
+        sdk=_CompactHistorySdk(list(messages)),
+    ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+    assert prepared is not None and prepared.snapshot is not None
+    assert "lastTurnId" not in prepared.snapshot.metadata
+
+
+def test_syncer_drops_the_turn_id_when_the_transcript_moves_during_the_read(
+    monkeypatch, tmp_path
+) -> None:
+    """A write during the read means the id may be one turn behind."""
+
+    from connector.runtimes.claude.history import syncer as syncer_module
+
+    signatures = iter([(1, 1), (2, 2)])
+    monkeypatch.setattr(
+        syncer_module,
+        "_transcript_signature",
+        lambda path: next(signatures),
+    )
+    monkeypatch.setattr(
+        syncer_module,
+        "_raw_transcript_path",
+        lambda session: tmp_path / "transcript.jsonl",
+    )
+    live = ClaudeSession(
+        session_id=SESSION_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        cwd=str(tmp_path),
+    )
+    prompt = "99999999-aaaa-bbbb-cccc-999999999999"
+    messages = [_user(prompt, "one"), _assistant("row-h1", "reply")]
+
+    async def run() -> None:
+        prepared = await _syncer(
+            host=_SyncStateHost(),
+            sdk=_CompactHistorySdk(list(messages)),
+            session_store=ClaudeSessionStore({SESSION_ID: live}),
+        ).prepare_session_timeline_sync(SESSION_ID, EXTERNAL_SESSION_ID)
+        assert prepared is not None and prepared.snapshot is not None
+        assert "lastTurnId" not in prepared.snapshot.metadata
+
+    asyncio.run(run())
+
+
+def test_syncer_does_not_publish_a_previous_turn_when_the_read_predates_the_settle() -> None:
+    """A lagging read must not replace the just-stored live id.
+
+    The settle base names turn X, but the transcript read only reached the
+    previous turn P. Publishing P with base X is exactly the shape the Server
+    accepts as a re-key, so it would overwrite X and the corrective sync would
+    be rejected as stale.
+    """
+
+    asyncio.run(
+        _test_syncer_does_not_publish_a_previous_turn_when_the_read_predates_the_settle()
+    )
+
+
+async def _test_syncer_does_not_publish_a_previous_turn_when_the_read_predates_the_settle() -> None:
+    first_prompt = "66666666-aaaa-bbbb-cccc-666666666666"
+    messages = [_user(first_prompt, "one"), _assistant("row-d1", "reply")]
+    live_item = RuntimeTimelineItem(
+        id="row-x1",
+        session_id=SESSION_ID,
+        type="message",
+        status="done",
+        order_seq=1,
+        content_hash="sha256:test",
+        role="assistant",
+        turn_id="turn_live_x",
+        content={"text": "newer"},
+        source={"nativeMessageId": "msg_x"},
+    )
+    live = ClaudeSession(
+        session_id=SESSION_ID,
+        external_session_id=EXTERNAL_SESSION_ID,
+        timeline_items={live_item.id: live_item},
+    )
+    prepared = await _syncer(
+        host=_SyncStateHost(),
+        sdk=_CompactHistorySdk(list(messages)),
+        session_store=ClaudeSessionStore({SESSION_ID: live}),
+    ).prepare_session_timeline_sync(
+        SESSION_ID,
+        EXTERNAL_SESSION_ID,
+        base_turn_id="turn_live_x",
+    )
+    assert prepared is not None and prepared.snapshot is not None
+    assert "lastTurnId" not in prepared.snapshot.metadata
+
+
+def test_turn_completion_reads_the_raw_transcript_stop_reason() -> None:
+    """History messages are SessionMessage objects; stop_reason is nested.
+
+    The SDK's transcript view returns ``SessionMessage(message={...})``, not
+    ``AssistantMessage``. Reading only the attribute made every real history
+    turn look unfinished; the nested dict is the production shape.
+    """
+
+    from connector.runtimes.claude.sessions.reader import turn_completion
+
+    prompt = "eeeeeeee-1111-2222-3333-444444444444"
+    messages = [
+        _user(prompt, "go"),
+        SimpleNamespace(
+            type="assistant",
+            uuid="row-nested",
+            message={
+                "role": "assistant",
+                "content": "done",
+                "stop_reason": "end_turn",
+            },
+        ),
+    ]
+    turn_ids = _history_turn_ids(messages, None)
+    completed, visible = turn_completion(messages, turn_ids)
+    assert completed == visible == _history_turn_id(prompt)
+
+    tool_messages = [
+        _user(prompt, "go"),
+        SimpleNamespace(
+            type="assistant",
+            uuid="row-nested",
+            message={
+                "role": "assistant",
+                "content": "calling",
+                "stop_reason": "tool_use",
+            },
+        ),
+    ]
+    tool_ids = _history_turn_ids(tool_messages, None)
+    assert turn_completion(tool_messages, tool_ids) == (None, _history_turn_id(prompt))
+    # The CLI's stop marker is the other terminal fact for the same shape.
+    stopped = _history_turn_id(prompt)
+    assert turn_completion(tool_messages, tool_ids, {stopped}) == (stopped, stopped)
 
 
 def test_assistant_api_message_id_is_preferred_over_the_row_uuid() -> None:

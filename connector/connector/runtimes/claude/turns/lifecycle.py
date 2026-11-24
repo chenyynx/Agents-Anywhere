@@ -36,7 +36,11 @@ from connector.runtimes.claude.domain.permissions import (
 )
 from connector.runtimes.claude.domain.session import ClaudeExecution, ClaudeSession
 from connector.runtimes.claude.domain.skills import ClaudeSkill, skills_from_dialog
-from connector.runtimes.claude.history.syncer import ClaudeHistorySyncer
+from connector.runtimes.claude.history.syncer import (
+    ClaudeHistorySyncer,
+    live_turn_history_id,
+    provisional_anchor_key,
+)
 from connector.runtimes.claude.notifications.projector import (
     ClaudeNotificationProjector,
 )
@@ -3129,6 +3133,9 @@ class ClaudeTurnRunner:
             else None
         )
         turn_anchor_bound = not scheduled or scheduled_anchor is not None
+        execution.provisional = (
+            scheduled and not turn_anchor_bound and command is None
+        )
         turn_bind_warned = False
         stderr = ClaudeStderrBuffer(session.session_id)
         client = response
@@ -3425,9 +3432,11 @@ class ClaudeTurnRunner:
                                 resolved = None
                             turn_id = resolved or _history_turn_id(deferred_anchor)
                             execution.turn_id = turn_id
+                            execution.provisional = False
                             self.last_scheduled_turn_ids[session.session_id] = turn_id
                             turn_anchor_bound = True
                         elif not turn_bind_warned:
+                            execution.provisional = True
                             turn_bind_warned = True
                             logger.warning(
                                 "Claude scheduled turn kept its provisional "
@@ -4185,7 +4194,12 @@ class ClaudeTurnRunner:
                 # something extra to carry (a reasoning batch or the
                 # interrupted-turn stamp): a turn that published nothing extra
                 # must not pay for a second transcript read.
-                await self._request_settled_session_sync(session)
+                await self._request_settled_session_sync(
+                    session,
+                    base_turn_id=(
+                        None if execution.command is not None else execution.turn_id
+                    ),
+                )
             if connection is not None:
                 # The turn is fully settled (terminal state published, rows
                 # flushed), and the transport that just ran it is idle: the
@@ -4747,7 +4761,14 @@ class ClaudeTurnRunner:
                         # immediately, so this costs the turn nothing. And it is
                         # display plumbing, so it can never fail a turn that has
                         # already been correctly settled.
-                        await self._request_settled_session_sync(session)
+                        await self._request_settled_session_sync(
+                            session,
+                            base_turn_id=(
+                                None
+                                if execution.command is not None
+                                else execution.turn_id
+                            ),
+                        )
                 finally:
                     if response is not None:
                         response.release(interrupted=terminal.status == "interrupted")
@@ -4765,7 +4786,12 @@ class ClaudeTurnRunner:
                     execution.finished.set()
             return True
 
-    async def _request_settled_session_sync(self, session: ClaudeSession) -> None:
+    async def _request_settled_session_sync(
+        self,
+        session: ClaudeSession,
+        *,
+        base_turn_id: str | None,
+    ) -> None:
         """Tell the connector this session settled, so it can refresh it now.
 
         L3b. A no-op on any host that does not implement the signal (the
@@ -4773,16 +4799,66 @@ class ClaudeTurnRunner:
         an older connector behaving exactly as before. Failures are logged and
         swallowed: the turn has already published its verdict by the time this
         runs, and nothing about a follow-up refresh is worth failing it for.
+
+        ``base_turn_id`` is the live id of the turn that just ended. The
+        connector carries it as ``baseTurnId`` so the server can tell a
+        re-key of this same turn (scheduled turn: provisional -> transcript
+        deterministic) from a stale sync for an older turn. A command turn
+        passes None: it has no transcript row, so its id must not be replaced
+        by the previous turn's.
         """
 
         try:
             await self.host.on_turn_settled(
-                session.session_id, session.external_session_id
+                session.session_id,
+                session.external_session_id,
+                turn_id=base_turn_id,
             )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Claude settled session sync request failed session_id={}",
                 session.session_id,
+            )
+
+    async def _persist_turn_anchor(
+        self,
+        session: ClaudeSession,
+        execution: ClaudeExecution,
+    ) -> None:
+        """Persist the id bridge (or the command suppression) before turnEnded.
+
+        A provisional scheduled turn's live token and its transcript id are
+        two names for the same turn. Persisting the bridge before the ledger
+        notification lets a connector restart before the settle read repair
+        the Server's id (a failed turn has no interrupt marker). A command
+        turn has no transcript turn at all, so its anchor suppresses any
+        history/rebase ``lastTurnId`` instead of replacing its opaque id.
+        Every other terminal clears a previous anchor.
+        """
+
+        key = provisional_anchor_key(session.session_id)
+        try:
+            if execution.command is not None:
+                await self.host.sync_state_write(
+                    key,
+                    {"live": execution.turn_id, "suppress": True},
+                )
+                return
+            if not execution.provisional:
+                await self.host.sync_state_write(key, {})
+                return
+            history_id = live_turn_history_id(session, execution.turn_id)
+            if history_id is None or history_id == execution.turn_id:
+                return
+            await self.host.sync_state_write(
+                key,
+                {"live": execution.turn_id, "history": history_id},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Claude turn anchor write failed session_id={} turn_id={}",
+                session.session_id,
+                execution.turn_id,
             )
 
     async def publish_terminal_state(
@@ -4809,6 +4885,12 @@ class ClaudeTurnRunner:
         # the ledger is bookkeeping no client reads before painting the turn
         # end, so the state goes first and the ledger rides behind it.
         reason = terminal.reason or execution.interrupt_reason
+        # Persist the provisional live -> history bridge before the ledger
+        # notification: a connector restart between the two would otherwise
+        # leave the Server with the provisional id and no way to map it after
+        # the restart. The write is local and its failure must never fail the
+        # turn.
+        await self._persist_turn_anchor(session, execution)
         if terminal.status == "failed":
             metadata = {
                 "source": "claude.turn.failed",
@@ -4842,6 +4924,7 @@ class ClaudeTurnRunner:
                     turn_id=execution.turn_id,
                     outcome="failed",
                     metadata=metadata,
+                    turn_end_contract=True,
                 )
             else:
                 logger.warning(
@@ -4879,6 +4962,7 @@ class ClaudeTurnRunner:
             turn_id=execution.turn_id,
             outcome=terminal.status,
             metadata=metadata,
+            turn_end_contract=True,
         )
         if state_error is not None:
             raise state_error

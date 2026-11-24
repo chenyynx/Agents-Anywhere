@@ -81,6 +81,7 @@ export type Lastitemorderseq = number | null
 export type Lastreadseq = number
 export type Lastsyncedat = string | null
 export type Latestturnendseq = number
+export type Latestturnid = string | null
 export type Pinned = boolean
 export type Pinnedat = string | null
 export type Projectid = string | null
@@ -263,6 +264,7 @@ export interface SessionView {
   lastReadSeq?: Lastreadseq
   lastSyncedAt?: Lastsyncedat
   latestTurnEndSeq?: Latestturnendseq
+  latestTurnId?: Latestturnid
   pinned?: Pinned
   pinnedAt?: Pinnedat
   projectId?: Projectid

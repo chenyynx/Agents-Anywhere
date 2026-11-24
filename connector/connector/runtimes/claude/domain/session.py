@@ -13,6 +13,15 @@ from connector.runtimes.session_identity import stable_runtime_session_id
 @dataclass(slots=True)
 class ClaudeExecution:
     turn_id: str
+    #: The native command this turn runs, when it is a command turn. A command
+    #: has no transcript user row, so its opaque live id must never be
+    #: "re-keyed" from the previous turn's transcript record.
+    command: str | None = None
+    #: A scheduled turn whose transcript anchor never bound: its live id is a
+    #: provisional token and the history rebuild will re-key its rows to the
+    #: first assistant message id. The turn-end path persists that bridge so a
+    #: restart before the settle read can still repair the Server's id.
+    provisional: bool = False
     started_at_monotonic: float = field(default_factory=time.monotonic)
     task: asyncio.Task[None] | None = None
     watchdog_task: asyncio.Task[None] | None = None

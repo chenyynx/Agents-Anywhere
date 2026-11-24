@@ -1014,9 +1014,23 @@ def test_unversioned_runtime_schema_is_classified_by_actual_columns(tmp_path,
     )
 
 
-def test_current_schema_version_is_v2_49() -> None:
-    assert CURRENT_SCHEMA_REVISION == "v2_49"
-    assert CURRENT_SCHEMA_VERSION == "2.49"
+def test_current_schema_version_is_v2_50() -> None:
+    assert CURRENT_SCHEMA_REVISION == "v2_50"
+    assert CURRENT_SCHEMA_VERSION == "2.50"
+
+
+def test_v2_50_adds_a_nullable_latest_turn_id(fresh_database_url) -> None:
+    url = fresh_database_url
+    upgrade_database(db_url=url, revision="v2_50")
+    engine = create_engine(_sync_url(url))
+    try:
+        columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("sessions")
+        }
+        assert columns["latest_turn_id"]["nullable"] is True
+    finally:
+        engine.dispose()
 
 
 def test_v2_49_rebuilds_v1_stubs_with_the_truncation_fields(fresh_database_url) -> None:

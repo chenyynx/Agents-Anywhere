@@ -206,6 +206,7 @@ class CodexIpcSessionProjector:
                 turn_id=previous,
                 outcome="completed",
                 metadata={"source": f"{IPC_SOURCE}.turn/completed"},
+                turn_end_contract=True,
             )
         return None
 

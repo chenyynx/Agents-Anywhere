@@ -306,6 +306,7 @@ class RuntimeInstanceHost(RuntimeHostClient):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: Mapping[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         self._validate_native_runtime(runtime)
         await self.base.session_turn_ended(
@@ -315,6 +316,7 @@ class RuntimeInstanceHost(RuntimeHostClient):
             turn_id=turn_id,
             outcome=outcome,
             metadata=self.instance_metadata(metadata),
+            turn_end_contract=turn_end_contract,
         )
 
     async def runtime_capabilities_update(
@@ -437,11 +439,16 @@ class RuntimeInstanceHost(RuntimeHostClient):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         # L3b: forwarded, not swallowed. This wrapper exists to scope storage
         # and status, and a settle signal that stopped here would make every
         # runtime behind an instance wrapper invisible to the connector's sync.
-        await self.base.on_turn_settled(session_id, external_session_id)
+        await self.base.on_turn_settled(
+            session_id,
+            external_session_id,
+            turn_id=turn_id,
+        )
 
     async def sync_state_write(
         self,
@@ -629,10 +636,12 @@ class RuntimeInstance(AgentRuntime):
         self,
         session_id: str,
         external_session_id: str | None = None,
+        base_turn_id: str | None = None,
     ) -> PreparedSessionTimelineSync | None:
         prepared = await self.native_runtime.prepare_session_timeline_sync(
             session_id=session_id,
             external_session_id=external_session_id,
+            base_turn_id=base_turn_id,
         )
         if prepared is None or prepared.snapshot is None:
             return prepared

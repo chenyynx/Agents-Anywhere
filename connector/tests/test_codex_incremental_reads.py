@@ -80,9 +80,13 @@ def boot(path, client):
     return CodexRuntime(config=_config(), host=host, client=client), host, store
 
 
-async def prepare(runtime):
+async def prepare(runtime, base_turn_id=None):
     session = (await runtime.list_sessions())[0]
-    return await runtime.prepare_session_timeline_sync(session.session_id, "thread_1")
+    return await runtime.prepare_session_timeline_sync(
+        session.session_id,
+        "thread_1",
+        base_turn_id=base_turn_id,
+    )
 
 
 def test_restart_reads_zero_history_and_append_reads_one_page_with_retry(tmp_path):
@@ -172,6 +176,94 @@ def test_stale_unowned_native_in_progress_turn_is_exposed_as_idle(tmp_path):
         assert state.metadata["source"] == "codex.thread_history.state"
         assert state.metadata["turn_id"] == "turn_1"
         assert state.metadata["native_status"] == "inProgress"
+
+    asyncio.run(run())
+
+
+def test_prepare_publishes_the_last_completed_turn_id(tmp_path):
+    """The settle sync's lastTurnId is the newest terminal turn, not a running one.
+
+    It must use the native index (not the projected delta window): an
+    incremental pass can cover an older turn while a newer turn is running.
+    """
+
+    async def run():
+        client = NativeHistory(tmp_path / "native", count=5)
+        runtime, host, _store = boot(tmp_path / "checkpoint.json", client)
+        prepared = await prepare(runtime, base_turn_id="turn_4")
+        assert prepared.snapshot.metadata["lastTurnId"] == "turn_4"
+        assert prepared.snapshot.metadata["baseTurnId"] == "turn_4"
+        # The first sync of a process is a full-chain read; the server may
+        # replace a stored live id (including an IPC synthetic one).
+        assert prepared.snapshot.metadata["rebased"] is True
+        await prepared.commit()
+        checkpoint = await host.sync_state_read("codex/timeline-sync/thread_1")
+        assert checkpoint["version"] == 2
+
+        # A stored version-1 checkpoint is a projection from before the turn
+        # id existed; it must rebuild rather than be reused.
+        checkpoint["version"] = 1
+        await host.sync_state_write("codex/timeline-sync/thread_1", checkpoint)
+        rebuilt = await prepare(runtime)
+        assert rebuilt.snapshot is not None
+        assert rebuilt.snapshot.metadata["lastTurnId"] == "turn_4"
+
+        # The newest turn is still running. A scanner pass with no base must
+        # not publish the previous turn: if the index is only lagging (the turn
+        # actually ended), that id would replace the Server's newer live id.
+        # A settle whose base is the last completed turn may still publish it.
+        client.turns[-1]["status"] = "inProgress"
+        client.persist()
+        runtime, _host, _store = boot(tmp_path / "checkpoint-running.json", client)
+        running = await prepare(runtime)
+        assert "lastTurnId" not in running.snapshot.metadata
+        settled_previous = await prepare(runtime, base_turn_id="turn_3")
+        assert settled_previous.snapshot.metadata["lastTurnId"] == "turn_3"
+        settled_running = await prepare(runtime, base_turn_id="turn_4")
+        assert "lastTurnId" not in settled_running.snapshot.metadata
+
+    asyncio.run(run())
+
+
+def test_settle_ignores_a_stale_in_progress_turn_before_the_newest(tmp_path):
+    """A stale inProgress row in the middle must not make `settled` lie.
+
+    Codex can leave one behind when a desktop-owned task is unloaded. The old
+    `ids[-2]` rule then published that stale turn with the just-ended live id
+    as its base, and the Server accepted the regression.
+    """
+
+    async def run():
+        client = NativeHistory(tmp_path / "native", count=5)
+        runtime, host, store = boot(tmp_path / "checkpoint.json", client)
+        first = await prepare(runtime)
+        await first.commit()
+        store.flush()
+
+        client.turns.append(
+            {
+                "id": "turn_5_stale",
+                "status": "inProgress",
+                "items": [{"id": "item_5s", "type": "agentMessage", "text": "stale"}],
+            }
+        )
+        client.turns.append(
+            {
+                "id": "turn_6",
+                "status": "completed",
+                "items": [{"id": "item_6", "type": "agentMessage", "text": "done"}],
+            }
+        )
+        client.persist()
+
+        prepared = await prepare(runtime, base_turn_id="turn_6")
+        assert prepared.snapshot.metadata["lastTurnId"] == "turn_6"
+        assert prepared.snapshot.metadata["baseTurnId"] == "turn_6"
+
+        # A settle for the stale row itself publishes nothing: the index has
+        # not caught up on that turn.
+        stale = await prepare(runtime, base_turn_id="turn_5_stale")
+        assert "lastTurnId" not in stale.snapshot.metadata
 
     asyncio.run(run())
 

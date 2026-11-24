@@ -30,6 +30,48 @@ def test_connector_runtime_host_persists_sync_state(tmp_path) -> None:
     asyncio.run(_exercise_persistent_sync_state(tmp_path))
 
 
+def test_connector_runtime_host_declares_the_turn_end_contract_only_when_asked() -> None:
+    asyncio.run(_exercise_turn_end_contract())
+
+
+async def _exercise_turn_end_contract() -> None:
+    notifications: list[tuple[str, dict[str, Any]]] = []
+
+    async def notify(method: str, params: dict[str, Any]) -> None:
+        notifications.append((method, params))
+
+    async def download(session_id: str, file_id: str) -> tuple[bytes, str, str]:
+        _ = session_id
+        return b"data", f"{file_id}.txt", "text/plain"
+
+    host = ConnectorRuntimeHost(
+        connector_id="conn_1",
+        notifier=notify,
+        attachment_downloader=download,
+    )
+    await host.session_turn_ended(
+        session_id="sess_1",
+        runtime="claude",
+        external_session_id="native_1",
+        turn_id="turn_1",
+        outcome="completed",
+        turn_end_contract=True,
+    )
+    assert notifications[-1][0] == "session.turnEnded"
+    assert notifications[-1][1]["turnEndContract"] == 1
+
+    # DSH and any runtime that has not opted in must not claim the contract;
+    # the Server then keeps latestTurnId empty and clients fall back.
+    await host.session_turn_ended(
+        session_id="sess_1",
+        runtime="dsh",
+        external_session_id="native_1",
+        turn_id="turn_1",
+        outcome="completed",
+    )
+    assert "turnEndContract" not in notifications[-1][1]
+
+
 def test_connector_runtime_host_maps_notice_context_to_backend_notification() -> None:
     asyncio.run(_exercise_notice_notification())
 
@@ -88,6 +130,7 @@ async def _exercise_timeline_item_notification() -> None:
             source={
                 "runtime": "codex",
                 "threadId": "thr_1",
+                "turnId": "turn_1",
                 "rawType": "agentMessage",
                 "event": "item/agentMessage/delta",
             },
@@ -110,6 +153,10 @@ async def _exercise_timeline_item_notification() -> None:
                     "source": {
                         "runtime": "codex",
                         "sessionId": "thr_1",
+                        # Codex declares the turn on the item; the host
+                        # serializer now carries it into source so the stored
+                        # row can match the session's latestTurnId.
+                        "turnId": "turn_1",
                         "itemId": "item_1",
                         "itemType": "agentMessage",
                         "event": "item/agentMessage/delta",

@@ -1938,6 +1938,7 @@ class SessionRepositoryMixin:
         sort_at = row.get("session_sort_at") or last_item_at or row["last_activity_at"] or row["created_at"]
         last_read_seq = int(row["last_read_seq"] or 0)
         latest_turn_end_seq = int(row["latest_turn_end_seq"] or 0)
+        latest_turn_id = row["latest_turn_id"]
         updated_seq = int(row["updated_seq"] or 0)
         aa_archived = bool(row["archived"])
         source_availability = _normalized_source_availability(row["source_state"])
@@ -1968,6 +1969,7 @@ class SessionRepositoryMixin:
             unread=latest_turn_end_seq > last_read_seq,
             lastReadSeq=last_read_seq,
             latestTurnEndSeq=latest_turn_end_seq,
+            latestTurnId=latest_turn_id,
             lastSyncedAt=row["last_synced_at"],
             sourceObservedAt=row["source_observed_at"],
             lastActivityAt=row["last_activity_at"],

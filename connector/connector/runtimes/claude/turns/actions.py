@@ -136,7 +136,7 @@ class ClaudeTurnActionHandler:
             else:
                 prompt_uuid = None
                 turn_id = f"turn_claude_{secrets.token_urlsafe(12)}"
-            execution = ClaudeExecution(turn_id=turn_id)
+            execution = ClaudeExecution(turn_id=turn_id, command=command)
             session.execution = execution
             session.selections = effective_selections
             try:

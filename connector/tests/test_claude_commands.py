@@ -1291,6 +1291,7 @@ class _RecordingHost(RuntimeHostClient):
         turn_id: str | None = None,
         outcome: str = "completed",
         metadata: dict[str, Any] | None = None,
+        turn_end_contract: bool = False,
     ) -> None:
         self.session_turn_ends.append(
             {

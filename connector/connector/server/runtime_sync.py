@@ -188,6 +188,11 @@ class RuntimeSyncRunner:
         self._session_sync_state: dict[tuple[str, str], str] = {}
         self._session_sync_dirty: set[tuple[str, str]] = set()
         self._session_sync_tasks: set[asyncio.Task[None]] = set()
+        # The live turn id that most recently settled, per session. The settle
+        # sync forwards it so the server can tell a re-key of that same turn
+        # (scheduled: provisional -> transcript deterministic) from a stale
+        # sync that lost the race to a newer live turn end.
+        self._settled_turn_ids: dict[tuple[str, str], str | None] = {}
         # Catalog push continuity (catalog-revision-conflict.md): the content
         # signature and revision of the last push per (runtime instance,
         # catalog type). Persisted through the instance's sync state so a used
@@ -212,6 +217,7 @@ class RuntimeSyncRunner:
         runtime_id: str | None,
         session_id: str,
         external_session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         """Queue one refresh of the session that just settled. Returns at once.
 
@@ -223,6 +229,7 @@ class RuntimeSyncRunner:
         if runtime_id is None or self.closing:
             return
         key = (runtime_id, session_id)
+        self._settled_turn_ids[key] = turn_id
         state = self._session_sync_state.get(key)
         if state == "running":
             # A refresh for this session has already taken (or is taking) its
@@ -298,20 +305,39 @@ class RuntimeSyncRunner:
         session = next(
             (item for item in sessions if item.session_id == session_id), None
         )
+        if session is None and runtime.supports_complete_session_inventory():
+            # A settle must not depend on the session happening to fall in
+            # page one. The inventory path already paginates the whole
+            # library for the recovery pass; using it here is the directed
+            # lookup the protocol otherwise lacks.
+            sessions = await runtime.list_complete_session_inventory(
+                page_size=SESSION_LOOKUP_PAGE_SIZE,
+                force=False,
+            )
+            session = next(
+                (item for item in sessions if item.session_id == session_id),
+                None,
+            )
         if session is None:
             logger.warning(
-                "settled session sync found no session in the first page "
-                "runtime={} session_id={} listed={} page_size={} "
-                "(list_sessions has no cursor; a directed lookup is needed for "
-                "connectors past one page)",
+                "settled session sync found no session runtime={} session_id={} "
+                "listed={} page_size={} inventory={}",
                 runtime_id,
                 session_id,
                 len(sessions),
                 SESSION_LOOKUP_PAGE_SIZE,
+                runtime.supports_complete_session_inventory(),
             )
             return False
         async with self._session_sync_lock(runtime_id, session_id):
-            await self.sync_existing_session(runtime, session)
+            await self.sync_existing_session(
+                runtime,
+                session,
+                base_turn_id=self._settled_turn_ids.get(
+                    (runtime_id, session_id)
+                ),
+                runtime_id=runtime_id,
+            )
         return (runtime_id, session_id) in self._session_sync_dirty
 
     async def sync_existing_loop(self) -> None:
@@ -422,8 +448,14 @@ class RuntimeSyncRunner:
                             # timeline can never overlap. Per session, not
                             # global: a slow session must not delay the rest.
                             completed = await self.sync_existing_session(
-                                runtime, session, source_in_inventory=inventory_scan_token is not None,
+                                runtime,
+                                session,
+                                source_in_inventory=inventory_scan_token is not None,
                                 recovering=recover_session,
+                                base_turn_id=self._settled_turn_ids.get(
+                                    (runtime_id, session.session_id)
+                                ),
+                                runtime_id=runtime_id,
                             )
                         if completed is False:
                             failed = True
@@ -528,6 +560,8 @@ class RuntimeSyncRunner:
         *,
         source_in_inventory: bool = False,
         recovering: bool = False,
+        base_turn_id: str | None = None,
+        runtime_id: str | None = None,
     ) -> bool | None:
         """Publish one discovered session and any required fresh timeline.
 
@@ -600,6 +634,7 @@ class RuntimeSyncRunner:
         prepared = await runtime.prepare_session_timeline_sync(
             session.session_id,
             session.external_session_id,
+            base_turn_id=base_turn_id,
         )
         snapshot: RuntimeTimelineSnapshot | None = None
         if prepared is not None:
@@ -622,9 +657,58 @@ class RuntimeSyncRunner:
                 snapshot.complete,
                 read_elapsed_ms,
             )
+        # A settle can land after this read began (the map is updated by the
+        # live turn end). Its live id is already newer than anything the
+        # snapshot could contain; publishing the snapshot's older lastTurnId
+        # would replace it. Keep the id only when the snapshot accounts for
+        # the settle as its own base or already names that turn.
+        settled_turn_id = (
+            self._settled_turn_ids.get((runtime_id, session.session_id))
+            if runtime_id is not None
+            else None
+        )
+        if settled_turn_id is None:
+            # Direct callers (tests, the one-shot path) pass the same value as
+            # the base; it is the last known settle even without the key.
+            settled_turn_id = base_turn_id
+        if (
+            snapshot is not None
+            and settled_turn_id is not None
+            and snapshot.metadata.get("baseTurnId") != settled_turn_id
+            and snapshot.metadata.get("lastTurnId") != settled_turn_id
+        ):
+            logger.info(
+                "settle landed during timeline read; dropping stale lastTurnId "
+                "runtime={} session_id={} settled={} snapshot={} base={}",
+                session.runtime,
+                session.session_id,
+                settled_turn_id,
+                snapshot.metadata.get("lastTurnId"),
+                snapshot.metadata.get("baseTurnId"),
+            )
+            snapshot = replace(
+                snapshot,
+                metadata={
+                    key: value
+                    for key, value in snapshot.metadata.items()
+                    if key not in {"lastTurnId", "baseTurnId"}
+                },
+            )
         deferred_replacement = recovering and active and snapshot is not None and snapshot.complete
         if recovering and active and snapshot is not None:
-            snapshot = replace(snapshot, complete=False)
+            # The recovering pass is the only one that syncs an active session.
+            # Its history read can include the running turn's partial reply,
+            # so the derived lastTurnId would declare a live turn ended. Drop
+            # the fact and let the live turn-end / later settle sync seed it.
+            snapshot = replace(
+                snapshot,
+                complete=False,
+                metadata={
+                    key: value
+                    for key, value in snapshot.metadata.items()
+                    if key != "lastTurnId"
+                },
+            )
         notices = await runtime.get_session_notices(
             session.session_id,
             session.external_session_id,
@@ -1131,7 +1215,14 @@ class RuntimeSyncRunner:
                     # from a paged window by the reader's live/active filters,
                     # and `sync_existing_session` keeps its own active-status
                     # gate for the ones that reach it.
-                    completed = await self.sync_existing_session(runtime, session)
+                    completed = await self.sync_existing_session(
+                        runtime,
+                        session,
+                        base_turn_id=self._settled_turn_ids.get(
+                            (runtime_id, session.session_id)
+                        ),
+                        runtime_id=runtime_id,
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "session rotation rebuild failed runtime={} session_id={} external_session_id={} offset={}",

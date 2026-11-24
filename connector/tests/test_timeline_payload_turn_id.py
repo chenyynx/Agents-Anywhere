@@ -40,6 +40,29 @@ def _item(source: dict[str, str]) -> RuntimeTimelineItem:
     )
 
 
+def _item_with_top_level_turn(
+    turn_id: str | None,
+    *,
+    source_turn_id: str | None = None,
+    runtime: str = "codex",
+) -> RuntimeTimelineItem:
+    source: dict[str, str] = {"runtime": runtime, "sessionId": "native_1"}
+    if source_turn_id is not None:
+        source["turnId"] = source_turn_id
+    return RuntimeTimelineItem(
+        id="item_1",
+        session_id="sess_1",
+        type="message",
+        status="done",
+        order_seq=1,
+        content_hash="sha256:test",
+        role="assistant",
+        turn_id=turn_id,
+        content={"kind": "markdown", "format": "markdown", "text": "hi"},
+        source=source,
+    )
+
+
 def test_payload_carries_the_declared_turn_id() -> None:
     payload = _timeline_item_payload(_item({"turnId": "turn_1", "itemId": "msg_1"}))
     assert payload["source"]["turnId"] == "turn_1"
@@ -48,6 +71,27 @@ def test_payload_carries_the_declared_turn_id() -> None:
 def test_payload_omits_a_missing_turn_id() -> None:
     payload = _timeline_item_payload(_item({"itemId": "msg_1"}))
     assert "turnId" not in payload["source"]
+
+
+def test_payload_does_not_invent_a_source_turn_id_from_the_item_field() -> None:
+    """DSH declares the turn only on the item; its wire source must stay as-is.
+
+    The durable itemUpsert path keeps only ``source.turnId`` and strips the
+    top-level field, so accepting the fallback here would make a live DSH row
+    carry a turn id that its replayed row does not.
+    """
+
+    payload = _timeline_item_payload(
+        _item_with_top_level_turn("turn_dsh", runtime="dsh")
+    )
+    assert "turnId" not in payload["source"]
+
+
+def test_payload_prefers_the_source_turn_id_over_the_item_field() -> None:
+    payload = _timeline_item_payload(
+        _item_with_top_level_turn("turn_item", source_turn_id="turn_source")
+    )
+    assert payload["source"]["turnId"] == "turn_source"
 
 
 def _timeline_notification() -> dict:

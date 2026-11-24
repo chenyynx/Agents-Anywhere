@@ -122,6 +122,23 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         hasher.combine(model.session.localOlderAvailable)
         hasher.combine(model.session.isLoadingHistory)
         hasher.combine(model.session.metadata?.cwd)
+        // The footer's durable turn-end fact can arrive on a session meta
+        // frame with no row/state change (a settle sync seeding an old
+        // session). Without it in the fingerprint the adapter keeps the old
+        // build and the footer waits for an unrelated refresh.
+        hasher.combine(model.session.metadata?.latestTurnId)
+        hasher.combine(model.session.metadata?.latestTurnEndSeq)
+        // The durable rule falls back offline; an online/offline transition
+        // must rebuild even when no row or runtime state changed. Only the
+        // boolean the build consumes is hashed — `.failed(String)` carries a
+        // message that can change without changing the footer decision.
+        let connectorOffline: Bool = {
+            switch model.session.connection {
+            case .offline, .failed: return true
+            case .inactive, .connecting, .connected, .reconnecting: return false
+            }
+        }()
+        hasher.combine(connectorOffline)
         hasher.combine(model.session.pendingMessages.count)
         hasher.combine(model.timeline.pendingMessages.count)
         hasher.combine(model.session.isSendQueuePaused)
@@ -406,6 +423,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             case .failed: return "failed"
             }
         }()
+        let turnMatchLabel = report.latestTurnSeal.map { $0 ? "1" : "0" } ?? "nil"
         let decision = [
             "suppress=\(suppressLatest ? 1 : 0)",
             "gate=\(latestTurnOpen ? 1 : 0)",
@@ -421,6 +439,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "replies=\(report.replyCount)",
             "changes=\(report.changeCount)",
             "commit=\(report.committed ? 1 : 0)",
+            "latestTurn=\(report.latestTurnID ?? "nil")",
+            "bucketTurn=\(report.bucketTurnID ?? "nil")",
+            "turnMatch=\(turnMatchLabel)",
+            "endSeq=\(report.latestTurnEndSeq)",
+            "fallback=\(report.latestTurnSeal == nil ? 1 : 0)",
         ].joined(separator: " ")
         guard decision != lastFooterBuildProbe else { return }
         lastFooterBuildProbe = decision
@@ -2610,6 +2633,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // rewrite that drops the flag must not turn it back into activity
             // (see `backgroundDispatchedItemIDs`).
             latchedBackgroundIDs: backgroundDispatchedItemIDs,
+            // The session's durable turn-end fact. When the server/connector
+            // declare the ended turn's id, a matching last bucket is over
+            // regardless of state freshness; nil keeps the runtime-state rule.
+            latestTurnId: model.session.metadata?.latestTurnId,
+            latestTurnEndSeq: model.session.metadata?.latestTurnEndSeq ?? 0,
+            // A dropped socket can leave rows newer than the session meta;
+            // the contract must not suppress the last known footer offline.
+            connectorOffline: connectorOffline,
+            // An older page's trailing bucket is cut by the window, not by
+            // its turn end; the durable watermark cannot prove it complete.
+            hasNewerItems: model.session.hasNewerItems,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact

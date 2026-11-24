@@ -88,6 +88,7 @@ class CodexTurnLifecycleHandler:
             turn_id=turn_id,
             outcome=method.rsplit("/", maxsplit=1)[-1],
             metadata={"source": f"codex.{method}"},
+            turn_end_contract=True,
         )
         await self.session_states.update(
             session_id=session_id,
@@ -95,6 +96,11 @@ class CodexTurnLifecycleHandler:
             status="idle",
             metadata={"source": f"codex.{method}"},
         )
+        # Seed the settle sync with the live turn id: the history projection
+        # may re-key an IPC turn from its synthetic id to the native one, and
+        # the server only accepts that replacement when the sync proves it is
+        # the same turn. The sync also catches rows the live push missed.
+        await self.host.on_turn_settled(session_id, thread_id, turn_id)
 
     async def handle_turn_failed(
         self,
@@ -144,6 +150,7 @@ class CodexTurnLifecycleHandler:
             turn_id=turn_id,
             outcome="failed",
             metadata={"source": "codex.turn/failed"},
+            turn_end_contract=True,
         )
         await self.session_states.update(
             session_id=session_id,
@@ -156,6 +163,7 @@ class CodexTurnLifecycleHandler:
                 **({"turn_id": turn_id} if turn_id else {}),
             },
         )
+        await self.host.on_turn_settled(session_id, thread_id, turn_id)
 
     async def _finish_superseded_turn(
         self, session_id: str, thread_id: str, turn_id: str | None, method: str
@@ -173,5 +181,6 @@ class CodexTurnLifecycleHandler:
             turn_id=turn_id,
             outcome=method.rsplit("/", maxsplit=1)[-1],
             metadata={"source": f"codex.{method}"},
+            turn_end_contract=True,
         )
         return True

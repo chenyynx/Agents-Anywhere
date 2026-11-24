@@ -103,6 +103,50 @@ import Testing
         repo.reset(); await store.close(removing: true)
     }
 
+    /// A disk page carrying two rows at one `orderSeq` predates a server order
+    /// repair (the Server keys order uniquely). Scrolling is where those rows
+    /// resurface after the opening repair, so the page must come from the
+    /// Server instead of serving the stale order (device 2026-11-25
+    /// 01:30:31/32/36, sess_2zXT-XtoWdsJrA).
+    @Test func aLocalPageWithDuplicateOrdersFallsBackToTheServer() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport(), localStore: store)
+        var items: [[String: Any]] = []
+        for order in 1...600 {
+            // item 11 shares item 10's order: a stale local copy.
+            items.append(try itemObject(id: "item-\(order)",
+                                        order: order == 11 ? 10 : order,
+                                        seq: order))
+        }
+        var data = V2SessionData(snapshot: try snapshot(items: items))
+        await store.saveSession(V2SessionArchive(
+            data: data, model: probe.session(id: "session")))
+        probe.reset()
+        await store.close(removing: false)
+
+        let http = TestHTTPTransport()
+        var timelineReads = 0
+        http.respond = { call in
+            guard call.path.hasSuffix("timeline") else {
+                return try http.defaultResponse(call)
+            }
+            timelineReads += 1
+            return try timelinePage(1...100)
+        }
+        let reopened = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let repo = repository(transport: http, localStore: reopened)
+        _ = try await repo.open(sessionId: "session")
+        let first = try await repo.loadOlder(sessionId: "session")
+        #expect(first.items.map(\.orderSeq) == Array(101...600))
+        #expect(timelineReads == 0, "a clean disk page must not pay the network")
+        let second = try await repo.loadOlder(sessionId: "session")
+        #expect(timelineReads == 1, "a duplicate disk page must read the Server")
+        #expect(!TimelineDiagnostics.hasDuplicateOrder(items: second.items))
+
+        repo.reset(); await reopened.close(removing: true)
+    }
+
     @Test func aStaleLocalLatestPageReconcilesInTheBackground() async throws {
         let url = location(); defer { try? FileManager.default.removeItem(at: url) }
         try await seed(V2LocalStore(directory: url, timelineDatabaseEnabled: true),

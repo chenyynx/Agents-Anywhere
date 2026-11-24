@@ -425,7 +425,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard decision != lastFooterBuildProbe else { return }
         lastFooterBuildProbe = decision
         let probe = decision + " stateSeq=\(runtimeStateSeq)"
-            + " mainMax=\(coverage.maxMainSeq) anyMax=\(coverage.maxAnySeq)"
+            + " mainMax=\(coverage.maxMainSeq) bgMax=\(coverage.maxBackgroundSeq)"
+            + " anyMax=\(coverage.maxAnySeq)"
         ClientDiagnosticsLog.shared.record(
             kind: "timeline.turn.footer.build",
             sessionID: model.session.id,
@@ -2537,17 +2538,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
         }()
         let runtimeState = model.session.runtime.state
-        // A stale state still seals when it was written after the newest
-        // *main-agent* row; a main row newer than the state is activity it
-        // never saw. Sub-agent child rows are excluded: a background child
-        // keeps streaming after the main turn's idle state, so counting them
-        // made every switch into a session with background subagents pay the
-        // 1–2 s live-read wait again (pp 2026-11-24: the footer stayed hidden
-        // until the sync, and the only rows newer than the idle state were
-        // child rows of the four background agents).
+        // A stale state still seals when it was written after the newest row
+        // that can move the main turn; a main row newer than the state is
+        // activity it never saw. Sub-agent child rows and the background
+        // hand-off card itself are excluded: a background child keeps
+        // streaming *and* its card is republished on every step long after the
+        // main turn's idle state, so counting either made every switch into a
+        // session with background agents pay the 1–2 s live-read wait again
+        // (pp 2026-11-24: the footer stayed hidden until the sync, and the
+        // only rows newer than the idle state were the child rows and the
+        // card of the running background agent). The latch covers a card
+        // whose wire flag was dropped by a later publication.
         let coverage = TimelineTurnActions.footerStateCoverage(
             rows: model.timeline.rows.lazy.map(\.value),
-            stateSeq: runtimeState?.updatedSeq ?? 0)
+            stateSeq: runtimeState?.updatedSeq ?? 0,
+            latchedBackgroundIDs: backgroundDispatchedItemIDs)
         // `footerRuntimeStateIsTrustworthy` already handles the missing state
         // and the fresh state; only the stale-state coverage decision lives
         // here.

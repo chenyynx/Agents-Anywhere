@@ -243,34 +243,61 @@ enum TimelineTurnActions {
     /// The rows a runtime state's `updatedSeq` must cover before a stale read
     /// may seal the latest turn.
     ///
-    /// Only main-agent rows can open, extend or end the turn whose footer is
-    /// on screen. Sub-agent child rows (`content.parentItemId`) belong to the
-    /// child's own run and keep streaming long after the main turn's idle
-    /// state — counting them made every switch into a session with background
-    /// subagents look like "a row newer than the state" and pay the live-read
-    /// wait again (pp 2026-11-24: ~1.6 s, footer missing until the sync).
+    /// Only rows that can open, extend or end the turn whose footer is on
+    /// screen can veto the seal. Two kinds cannot:
+    /// - sub-agent child rows (`content.parentItemId`) belong to the child's
+    ///   own run and keep streaming long after the main turn's idle state;
+    /// - the background hand-off row itself — a background `agent_call` card
+    ///   or a `runInBackground` command — is a **main** row with no parent,
+    ///   and the connector republishes it on every child step (usage, last
+    ///   tool). Its `updatedSeq` therefore outruns the runtime state's
+    ///   watermark, which only advances when the state semantically changes
+    ///   (see the server's `connector_ingest`). Counting it made every switch
+    ///   into a session with a live background agent look like "a row newer
+    ///   than the state" and pay the live-read wait again (pp 2026-11-24
+    ///   07:12:54: stateSeq 1231196, card 1231198, footer at +1.23 s while
+    ///   the session was idle; that card was still `running` at seq 1231316
+    ///   minutes later, long after the turn ended at 1231150).
+    ///   `latchedBackgroundIDs` keeps a card exempt after the wire drops its
+    ///   flag (see `footerBackgroundLatch`).
     /// `ed12dc9bb` added the coverage test to keep switches instant; this
     /// predicate narrows what it counts.
-    /// A main row newer than the state is activity it never saw and still
-    /// forces the wait.
+    /// A foreground main row newer than the state is activity it never saw
+    /// and still forces the wait.
+    /// Known boundary: a runtime that reports idle between tool steps can be
+    /// mid-turn. If the last state is such a flap and only a background card
+    /// is newer, this predicate lets the first refresh seal until `running`
+    /// lands (the gate then keeps it as a userless episode). That class
+    /// predates this exclusion — the 2026-11-23 rule trusted any state that
+    /// covered the rows — but the card case widens it; the device probe to
+    /// watch is `timeline.turn.footer.build` with `commit=1` followed by
+    /// `running=1` on the same session.
     nonisolated struct FooterStateCoverage: Equatable {
-        /// Newest `updatedSeq` among main-agent rows (0 when there is none).
+        /// Newest `updatedSeq` among rows that can move the main turn (0 when
+        /// there is none).
         var maxMainSeq = 0
-        /// Newest `updatedSeq` in the whole window, child rows included. The
-        /// diagnostics pair this with `maxMainSeq` so a veto from a child row
-        /// is visible instead of inferred.
+        /// Newest `updatedSeq` among background hand-off rows, excluded from
+        /// `maxMainSeq`. The diagnostics pair it with the other two maxima so
+        /// an exclusion is visible instead of inferred.
+        var maxBackgroundSeq = 0
+        /// Newest `updatedSeq` in the whole window, child rows included.
         var maxAnySeq = 0
         var coversMainRows = true
     }
 
     static func footerStateCoverage<S: Sequence>(rows: S,
-                                                 stateSeq: Int) -> FooterStateCoverage
+                                                 stateSeq: Int,
+                                                 latchedBackgroundIDs: Set<String> = []) -> FooterStateCoverage
     where S.Element == V2TimelineItem {
         var coverage = FooterStateCoverage()
         for item in rows {
             let seq = item.updatedSeq
             if seq > coverage.maxAnySeq { coverage.maxAnySeq = seq }
             guard SubAgentProgress.parentItemID(item) == nil else { continue }
+            if latchedBackgroundIDs.contains(item.id) || isBackgroundHandoffRow(item) {
+                if seq > coverage.maxBackgroundSeq { coverage.maxBackgroundSeq = seq }
+                continue
+            }
             if seq > coverage.maxMainSeq { coverage.maxMainSeq = seq }
         }
         coverage.coversMainRows = coverage.maxMainSeq <= stateSeq

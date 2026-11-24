@@ -573,6 +573,66 @@ import Testing
             stateCoversRows: coverage.coversMainRows))
     }
 
+    /// The card a background subagent reports into has no `parentItemId`, so
+    /// it reads as a main row — but the connector republishes it on every
+    /// child step (usage, last tool), long after the main turn ended. Counting
+    /// it made every switch into a session with a live background agent look
+    /// like "a row newer than the state" and pay the live-read wait again
+    /// (pp 2026-11-24 07:12:54: stateSeq 1231196, card 1231198, footer at
+    /// +1.23 s while the session was idle).
+    @Test func aBackgroundAgentCardNewerThanTheStateDoesNotBlockTheSeal() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message", role: "user", status: "done"),
+                        timelineItem("reply", seq: 120, type: "message",
+                                     role: "assistant", status: "done"),
+                        timelineItem("task", seq: 900, type: "tool", role: "assistant",
+                                     content: ["kind": "agent_call", "action": "invoke",
+                                               "agents": ["agent-1": ["status": "running",
+                                                                      "isBackgrounded": true]]])]
+        let coverage = TimelineTurnActions.footerStateCoverage(rows: rows, stateSeq: 200)
+        #expect(coverage.maxMainSeq == 120)
+        #expect(coverage.maxBackgroundSeq == 900)
+        #expect(coverage.maxAnySeq == 900)
+        #expect(coverage.coversMainRows)
+        #expect(TimelineTurnActions.footerRuntimeStateIsTrustworthy(
+            stateExists: true, isFresh: false, connectorOffline: false,
+            stateCoversRows: coverage.coversMainRows))
+    }
+
+    /// A card rebuilt from the transcript (or re-minted after a connector
+    /// restart lost its task overlay) can arrive without `isBackgrounded`.
+    /// The adapter's monotonic latch remembers the card and must keep it out
+    /// of the coverage watermark too, not just out of activity.
+    @Test func aLatchedBackgroundCardIsExcludedFromCoverageWithoutTheWireFlag() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message", role: "user", status: "done"),
+                        timelineItem("reply", seq: 120, type: "message",
+                                     role: "assistant", status: "done"),
+                        timelineItem("task", seq: 900, type: "tool", role: "assistant",
+                                     content: ["kind": "agent_call", "action": "invoke",
+                                               "agents": ["agent-1": ["status": "running"]]])]
+        let coverage = TimelineTurnActions.footerStateCoverage(
+            rows: rows, stateSeq: 200, latchedBackgroundIDs: ["task"])
+        #expect(coverage.maxMainSeq == 120)
+        #expect(coverage.maxBackgroundSeq == 900)
+        #expect(coverage.coversMainRows)
+    }
+
+    /// The other direction: a **foreground** Agent call is ordinary main-agent
+    /// work. A card newer than the stale state is activity it never saw, so
+    /// the seal still waits — the exclusion is the background claim, not the
+    /// card shape.
+    @Test func aForegroundAgentCardNewerThanTheStateStillBlocksTheSeal() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message", role: "user", status: "done"),
+                        timelineItem("reply", seq: 120, type: "message",
+                                     role: "assistant", status: "done"),
+                        timelineItem("task", seq: 900, type: "tool", role: "assistant",
+                                     content: ["kind": "agent_call", "action": "invoke",
+                                               "agents": ["agent-1": ["status": "running"]]])]
+        let coverage = TimelineTurnActions.footerStateCoverage(rows: rows, stateSeq: 200)
+        #expect(coverage.maxMainSeq == 900)
+        #expect(coverage.maxBackgroundSeq == 0)
+        #expect(!coverage.coversMainRows)
+    }
+
     /// Once a card proved it was a background dispatch, a later rebuild that
     /// drops the flag (a transcript re-projection, or a card re-minted after a
     /// connector restart lost its in-memory task overlay) must not turn the

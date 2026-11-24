@@ -267,8 +267,18 @@ struct ChatShellView: View {
     }
 
     private func openSession(_ id: V2SessionID) {
-        selection = .session(id)
+        // AA builds a fresh page per selection; the official app keeps its
+        // content/detail pane mounted (`DrawerPanesView{drawer,content,detail}`)
+        // and only moves the drawer. Mounting the page's model/timeline in the
+        // same update delayed the close spring's first frame, so the tap could
+        // sit for a beat before the drawer moved (pp 2026-11-25). Start the
+        // spring here; the selection lands on the next main-queue turn, under
+        // the already-moving card.
         sidebar.selectDestination()
+        let appState = self.appState
+        DispatchQueue.main.async {
+            appState.chatSelection = .session(id)
+        }
     }
 
     private func removeConnector(_ id: V2ConnectorID) {

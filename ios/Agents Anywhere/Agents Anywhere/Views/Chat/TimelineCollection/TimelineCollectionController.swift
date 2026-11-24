@@ -216,7 +216,11 @@ final class TimelineCollectionController: UIViewController {
     /// replay it when the gesture ends instead of starting a spring that
     /// would fight the finger.
     private var pendingGestureBottomRequest: (animated: Bool, forced: Bool, generation: Int)?
-    private var suspendedOpeningRequest = false
+    /// The first non-empty snapshot is the page the reader is opening; it has
+    /// to apply even while the sidebar moves, or a cached transcript waits for
+    /// the drawer to land and the page shows only its background during the
+    /// close (pp 2026-11-25). Later updates keep parking as before.
+    private var hasAppliedNonEmptySnapshot = false
     private var lastContainerHeight: CGFloat = 0
     /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
     /// return landed immediately. The wrapper forwards the environment value.
@@ -760,7 +764,8 @@ final class TimelineCollectionController: UIViewController {
         // produced the stream-only hitches (the parked apply left the refresh
         // untouched). Defer the whole reload; `applyPendingIfNeeded` performs
         // it once the list settles.
-        if isScrollMoving || (navigationSuspended && !historyPaging) {
+        if isScrollMoving
+            || (navigationSuspended && !historyPaging && hasAppliedNonEmptySnapshot) {
             reloadDeferred = true
             return
         }
@@ -793,7 +798,7 @@ final class TimelineCollectionController: UIViewController {
         // reliable discriminator — a streamed tail changes the row set too
         // (a new step group appears, the message group splits), and those
         // applies are exactly the ones that dropped frames mid-drag.
-        if navigationSuspended, !historyPaging {
+        if navigationSuspended, !historyPaging, hasAppliedNonEmptySnapshot {
             pendingApply = (items: items, animating: animating)
             schedulePendingApplyCheck()
             return
@@ -810,6 +815,9 @@ final class TimelineCollectionController: UIViewController {
             pendingApply = (items: items, animating: animating)
             schedulePendingApplyCheck()
             return
+        }
+        if items.contains(where: { Self.isDynamicItem($0) }) {
+            hasAppliedNonEmptySnapshot = true
         }
         pendingApply = nil
         isPerformingSnapshot = true
@@ -2922,12 +2930,15 @@ final class TimelineCollectionController: UIViewController {
     /// content-size change pins there, then land without an animation. The
     /// wrapper's 400 ms fallback settles the cold-load mask even if the window
     /// never arrives.
-    func beginOpeningBottom() {
-        if navigationSuspended {
-            suspendedOpeningRequest = true
-            return
-        }
-        guard collectionView != nil else { return }
+    ///
+    /// The opening is a one-shot direct placement, not reader navigation, so a
+    /// sidebar transition must not defer it: a cached page mounted while the
+    /// drawer closes would otherwise show its oldest rows until the drawer
+    /// lands (pp 2026-11-25). The drawer's card translation is layout-
+    /// independent, so the viewport size is already final.
+    @discardableResult
+    func beginOpeningBottom() -> Bool {
+        guard collectionView != nil else { return false }
         // Hold the near-top trigger until this landing is observed (or the
         // bounded fallback expires): the first frames show an empty window at
         // the top, and paging history there would replace the landing.
@@ -2939,6 +2950,7 @@ final class TimelineCollectionController: UIViewController {
             self?.pagingPolicy.openingFallbackExpired()
         }
         anchorDriver?.requestEnd(animated: false)
+        return true
     }
 
     /// The opening's bottom landing was observed; the near-top trigger may
@@ -3307,11 +3319,7 @@ final class TimelineCollectionController: UIViewController {
             // The driver's navigationSuspendedChanged(false) performs the
             // placement itself.
             publishViewport()
-            if suspendedOpeningRequest {
-                suspendedOpeningRequest = false
-                suspendedBottomRequest = nil
-                beginOpeningBottom()
-            } else if let request = suspendedBottomRequest {
+            if let request = suspendedBottomRequest {
                 suspendedBottomRequest = nil
                 requestBottom(animated: request.animated, forced: request.forced)
             }

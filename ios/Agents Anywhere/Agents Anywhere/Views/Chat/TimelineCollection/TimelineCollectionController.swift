@@ -1000,6 +1000,12 @@ final class TimelineCollectionController: UIViewController {
             let top = measurementTop - prefetch
             let bottom = measurementTop + viewport.visibleHeight + prefetch
             toMeasure = toMeasure.filter { item in
+                // A changed row is a new or edited row, not leftover window
+                // backlog: a mid-list insertion must take its real height even
+                // outside the viewport (the autorun gesture fixture asserts
+                // exactly that). Only the merely-unmeasured backlog is
+                // trimmed to the viewport band.
+                if changed.contains(item) { return true }
                 guard let attributes = layout.attributes(for: item.itemID) else { return true }
                 return TimelineSynchronousMeasurementSelection.isNearViewport(
                     minY: attributes.frame.minY, maxY: attributes.frame.maxY,

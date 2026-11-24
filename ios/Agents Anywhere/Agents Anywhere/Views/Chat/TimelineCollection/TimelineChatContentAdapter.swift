@@ -2641,6 +2641,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // A dropped socket can leave rows newer than the session meta;
             // the contract must not suppress the last known footer offline.
             connectorOffline: connectorOffline,
+            // A state written after every visible main row, on an idle
+            // runtime, already proves the bucket ended: the durable id is
+            // only late (the Server records it behind the timeline fence).
+            // Without this the footer appeared 0.4–1.2 s after the reply
+            // finished even though `timeline.state` was already idle with
+            // coversMain=1 (pp 2026-11-24 23:52:52 → 23:52:53.65).
+            stateCoversMain: coverage.coversMainRows,
             // An older page's trailing bucket is cut by the window, not by
             // its turn end; the durable watermark cannot prove it complete.
             hasNewerItems: model.session.hasNewerItems,

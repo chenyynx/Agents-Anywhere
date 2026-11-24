@@ -89,6 +89,19 @@ import Testing
             bucketTurnID: "turn-b", bucketMaxMainSeq: 11,
             latestTurnId: "turn-a", latestTurnEndSeq: 10,
             connectorOffline: true) == nil)
+        // A runtime state that covers every main row and says idle is the
+        // same proof from the other side: the ledger id is merely late, so
+        // fall back to the state rule instead of withholding the footer
+        // (pp 2026-11-24: 0.4–1.2 s of finished reply without its footer).
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-b", bucketMaxMainSeq: 11,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10,
+            stateCoversMain: true) == nil)
+        // Without that coverage the newer bucket is one the state never saw.
+        #expect(TimelineTurnActions.latestTurnSeal(
+            bucketTurnID: "turn-b", bucketMaxMainSeq: 11,
+            latestTurnId: "turn-a", latestTurnEndSeq: 10,
+            stateCoversMain: false) == false)
     }
 
     /// A matching id commits the latest bucket even when the runtime-state
@@ -140,6 +153,34 @@ import Testing
             groups: TimelineGrouping.groups(idlessRows, interactionTargets: []),
             suppressLatest: false, latestTurnId: "turn-b", latestTurnEndSeq: 15)
         #expect(fallback["r-b"]?.copyText == "B")
+    }
+
+    /// A covering idle state seals the newest bucket as soon as the turn
+    /// ends; the ledger id is only needed when the state cannot cover the
+    /// rows it is judging (pp 2026-11-24 23:52:52 → 23:52:53.65).
+    @Test func aCoveringIdleStateSealsWithoutWaitingForTheLedgerId() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        // The runtime already says idle and its `updatedSeq` covers the rows;
+        // the session meta still names the previous turn (the Server records
+        // the ledger behind its timeline fence).
+        let covering = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: true)
+        #expect(covering["r-b"]?.copyText == "B")
+        // A state that predates the newest bucket cannot seal it: that is a
+        // turn the state never saw, and the id must arrive first.
+        let uncovered = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false)
+        #expect(uncovered["r-b"] == nil)
     }
 
     /// A scheduled/wake turn has no user bubble; its first assistant row still

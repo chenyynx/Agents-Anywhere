@@ -25,6 +25,11 @@ nonisolated struct V2SessionCachePolicy {
     /// 64 MB is <5% of a 6 GB device's jetsam budget and covers the measured
     /// session above entirely.
     var openingByteBudget = 64 * 1024 * 1024
+    /// How long a cold open may wait for the one-shot runtime-state read it
+    /// needs to seal a finished turn's footer, measured from the start of the
+    /// open (the request runs beside the disk restore). Past this budget the
+    /// body is presented first and the state lands later, as before.
+    var openStateWaitSeconds: TimeInterval = 0.5
     /// One history/latest page, aligned with the official Code events page.
     var networkPageSize = 200
     /// How long an accepted direct send waits before the page reads the newest
@@ -284,10 +289,51 @@ final class V2SessionRepository {
             ],
             dedupe: false
         )
+        let openStartedAt = ProcessInfo.processInfo.systemUptime
+        // A cold open whose archive carries no runtime state needs one
+        // separate state read before the footer can seal its last turn. Start
+        // it beside the disk restore so the request overlaps the row read;
+        // the wait below spends the rest of the open's budget before the first
+        // paint, so the footer joins the body instead of moving it 30 pt later
+        // (device 2026-11-25 02:36:10/22: body first, state +0.23–0.30 s, then
+        // `timeline.mover start delta=30.0`).
+        let statePrefetch: Task<V2RuntimeState?, Never>?
+        if let cachedProjection {
+            statePrefetch = cachedProjection.data.state == nil
+                ? prefetchRuntimeState(entry) : nil
+        } else if let localStore, !entry.model.isLocalCreation {
+            // Only a disk-restored archive without a saved state needs the
+            // separate read: an archive with one needs no request, and a
+            // network snapshot carries its state with the content itself.
+            switch await localStore.savedOpenState(sessionId) {
+            case .missing:
+                statePrefetch = prefetchRuntimeState(entry)
+            case .saved(_), .noArchive:
+                statePrefetch = nil
+            }
+        } else {
+            statePrefetch = nil
+        }
         _ = try await load(sessionId: sessionId)
         try Task.checkCancellation()
         try requireCurrent(entry)
-        prefetchRuntimeState(entry)
+        applyPrefetchedState(entry)
+        if let statePrefetch, entry.projection?.data.state == nil {
+            await waitForRuntimeState(
+                statePrefetch,
+                deadline: openStartedAt + policy.openStateWaitSeconds)
+            applyPrefetchedState(entry)
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.open.state_wait",
+                sessionID: sessionId,
+                detail: [
+                    "waitedMs": String(Int((ProcessInfo.processInfo.systemUptime
+                        - openStartedAt) * 1000)),
+                    "applied": entry.projection?.data.state == nil ? "0" : "1",
+                ],
+                dedupe: false)
+            try Task.checkCancellation()
+        }
         if let projection = entry.projection {
             ClientDiagnosticsLog.shared.record(
                 kind: "session.open.ready",
@@ -2102,15 +2148,18 @@ final class V2SessionRepository {
     /// footer's coverage rule still decides whether it may seal; the
     /// connection's recovery remains the authoritative full read, and a
     /// failure here is silent.
-    private func prefetchRuntimeState(_ entry: Entry) {
-        guard entry.projection?.data.state == nil,
-              !entry.model.isLocalCreation,
-              network.availability != .offline,
-              entry.liveStatePrefetchTask == nil else { return }
+    @discardableResult
+    private func prefetchRuntimeState(
+        _ entry: Entry
+    ) -> Task<V2RuntimeState?, Never>? {
+        guard !entry.model.isLocalCreation,
+              network.availability != .offline else { return nil }
+        if let existing = entry.liveStatePrefetchTask { return existing }
+        guard entry.projection?.data.state == nil else { return nil }
         let token = UUID()
         entry.liveStatePrefetchID = token
-        entry.liveStatePrefetchTask = Task { [weak self, weak entry] in
-            guard let self, let entry else { return }
+        let task = Task { [weak self, weak entry] in
+            guard let self, let entry else { return nil }
             defer {
                 if entry.liveStatePrefetchID == token { entry.liveStatePrefetchTask = nil }
             }
@@ -2121,14 +2170,51 @@ final class V2SessionRepository {
                 // connector that is offline must not suppress it (the offline
                 // rule is "last known layout wins"), and any in-flight state
                 // buys the footer nothing.
-                guard state.status == .idle, state.error == nil else { return }
-                guard self.isCurrent(entry), entry.liveStatePrefetchID == token,
-                      entry.projection?.data.state == nil else { return }
-                entry.projection?.applyState(state)
-                self.emit(entry)
+                guard state.status == .idle, state.error == nil else { return nil }
+                guard self.isCurrent(entry), entry.liveStatePrefetchID == token
+                else { return nil }
+                // The read may finish before the disk restore produced a
+                // projection (it starts beside it): hold the state until
+                // `applyPrefetchedState` can hand it to the window.
+                entry.prefetchedState = state
+                self.applyPrefetchedState(entry)
+                return state
             } catch {
                 // The connection's recovery is the authoritative read.
+                return nil
             }
+        }
+        entry.liveStatePrefetchTask = task
+        return task
+    }
+
+    /// Hand a prefetched state to the restored window once it exists. The live
+    /// recovery still owns the authoritative read; this only makes the first
+    /// footer build see the finished turn.
+    private func applyPrefetchedState(_ entry: Entry) {
+        guard let state = entry.prefetchedState else { return }
+        guard let projection = entry.projection else { return }
+        entry.prefetchedState = nil
+        guard projection.data.state == nil else { return }
+        projection.applyState(state)
+        emit(entry)
+    }
+
+    /// Wait for the open's state read at most until `deadline`. The open is
+    /// cancelled with the page, so a switch must not sit here.
+    private func waitForRuntimeState(
+        _ task: Task<V2RuntimeState?, Never>,
+        deadline: TimeInterval
+    ) async {
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await task.value }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(remaining))
+            }
+            await group.next()
+            group.cancelAll()
         }
     }
 
@@ -2602,7 +2688,11 @@ private final class Entry {
     /// (see `prefetchRuntimeState`). The token lets a finishing task clear
     /// only its own registration.
     var liveStatePrefetchID = UUID()
-    var liveStatePrefetchTask: Task<Void, Never>?
+    var liveStatePrefetchTask: Task<V2RuntimeState?, Never>?
+    /// A state the prefetch read before the projection was ready. `open`
+    /// applies it once the restored window exists, so the first footer build
+    /// can seal instead of waiting for the socket's state event.
+    var prefetchedState: V2RuntimeState?
 #if AA_TIMELINE_PROBE
     /// Probe-only latest-page counters (see `V2TimelineWindowSnapshot`).
     var latestStarted = 0

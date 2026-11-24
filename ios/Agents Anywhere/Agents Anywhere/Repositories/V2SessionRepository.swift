@@ -618,9 +618,15 @@ final class V2SessionRepository {
                 // A page from the archive can carry a step the server has
                 // already finished: its terminal update was missed, and the
                 // disk copy would otherwise serve the stale status on every
-                // visit. Read the server's page for this range instead; the
-                // disk page stays the fallback when the read fails.
-                if local.items.contains(where: { $0.status.isActive }) {
+                // visit. A duplicate orderSeq in the page is the same kind of
+                // stale copy (the Server keys order uniquely; the disk row
+                // predates an order repair), and scrolling is where such rows
+                // resurface after the opening repair (device 2026-11-25
+                // 01:30:31/32/36, sess_2zXT). Read the server's page for this
+                // range instead; the disk page stays the fallback when the
+                // read fails.
+                if local.items.contains(where: { $0.status.isActive })
+                    || TimelineDiagnostics.hasDuplicateOrder(items: local.items) {
                     do {
                         try requireNetwork()
                         let page = try await detail.loadOlderItems(

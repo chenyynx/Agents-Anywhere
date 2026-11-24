@@ -93,7 +93,18 @@ nonisolated struct TimelineChatGroupingCache {
                         standaloneTargets: Set<String>? = nil,
                         cwd: String? = nil) -> [TimelineChatUnit] {
         let standalone = standaloneTargets ?? interactionTargets
-        let sorted = items.sorted(by: TimelineChatGrouping.wireOrder)
+        // The repository keeps the window in wire order. A stream tick appends
+        // or rewrites the tail, so the input is already sorted in the common
+        // case; a monotonic scan is cheaper than sorting ~1,700 rows on every
+        // refresh.
+        var alreadySorted = true
+        if items.count > 1 {
+            for index in 1..<items.count where TimelineChatGrouping.wireOrder(items[index], items[index - 1]) {
+                alreadySorted = false
+                break
+            }
+        }
+        let sorted = alreadySorted ? items : items.sorted(by: TimelineChatGrouping.wireOrder)
         var fingerprints: [RowFingerprint] = []
         fingerprints.reserveCapacity(sorted.count)
         var seen = Set<String>()
@@ -153,12 +164,28 @@ nonisolated struct TimelineChatGroupingCache {
             cwd: cwd,
             startingTurnID: TimelineChatGrouping.turnContext(
                 before: start, in: sorted, interactionTargets: interactionTargets))
+        // Only the replaced tail moves in the row→unit index. Rebuilding the
+        // whole index here walked all ~1,700 rows on every stream tick.
+        let removedUnits = units[unitIndex...]
+        var nextRowUnitIndex = rowUnitIndex
+        for (offset, unit) in removedUnits.enumerated() {
+            let removedIndex = unitIndex + offset
+            for rowID in unit.rowIDs where nextRowUnitIndex[rowID] == removedIndex {
+                nextRowUnitIndex.removeValue(forKey: rowID)
+            }
+        }
         let merged = Array(units[0..<unitIndex]) + tailUnits
+        for (offset, unit) in tailUnits.enumerated() {
+            let newIndex = unitIndex + offset
+            for rowID in unit.rowIDs where nextRowUnitIndex[rowID] == nil {
+                nextRowUnitIndex[rowID] = newIndex
+            }
+        }
         self.rows = sorted
         self.fingerprints = fingerprints
         self.units = merged
+        self.rowUnitIndex = nextRowUnitIndex
         reusableUnitCount = unitIndex
-        rebuildRowUnitIndex()
         return merged
     }
 

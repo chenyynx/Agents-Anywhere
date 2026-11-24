@@ -281,6 +281,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last grouping shape written to diagnostics. A live turn changes it
     /// often; logging only changes keeps the trail useful without flooding it.
     private var lastGroupingSignature: String?
+    /// Cheap shape key for the grouping diagnostics. A stream tick rewrites
+    /// one row's text, so the grouping output is rebuilt every tick while the
+    /// rows/units/kind counts stay put. The full-window `validateUnits` sort
+    /// and `groupingSummary` filter only run when the shape moves, or once a
+    /// second so a row that changes unit without changing counts is still
+    /// reported.
+    private var lastDiagnosticsStructureKey = ""
+    private var lastDiagnosticsAt: TimeInterval = 0
+    /// Identity hash of the item list. The send-frame `timeline.rows.frame`
+    /// log builds two Sets and diffs them; the identity scan is O(items) and
+    /// allocation-free when nothing moved.
+    private var lastItemsFrameHash: Int?
 
     /// The last compact row's state and the words the divider would draw,
     /// logged when it changes. A compaction leaves a handful of lines; a
@@ -1982,6 +1994,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// the "a live turn with steps already has its mark" gate so the
         /// standalone `正在处理中` row takes the mark (pp 2026-11-17).
         var lastUnitIsSteeringRow = false
+        // One row index serves the live-turn scan and the group build. The
+        // steps branch used to build the same ~1,700-entry map twice per
+        // refresh.
+        var rowsByID: [String: ChatTimelineRowModel] = [:]
         if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
@@ -1999,33 +2015,57 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 interactionTargets: interactionTargets,
                 standaloneTargets: standaloneTargets,
                 cwd: model.session.metadata?.cwd)
-            TimelineDiagnostics.validateUnits(
-                sessionID: model.session.id,
-                rows: timelineRows,
-                units: chatUnits)
-            let grouping = TimelineDiagnostics.groupingSummary(
-                rows: timelineRows, units: chatUnits)
-            let groupingSignature = grouping.keys.sorted()
-                .map { "\($0)=\(grouping[$0] ?? "")" }
-                .joined(separator: "&")
-            if groupingSignature != lastGroupingSignature {
-                lastGroupingSignature = groupingSignature
-                ClientDiagnosticsLog.shared.record(
-                    kind: "timeline.grouping",
+            // The validator sorts the whole window and the summary filters
+            // it; a stream tick changes one row's text without changing any
+            // count here. Run both when the shape moves, or at most once a
+            // second so a row that changes unit without changing counts is
+            // still reported. `timeline.grouping` keeps its own signature
+            // check inside the gate.
+            var stepGroupCount = 0
+            var messageUnitCount = 0
+            var standaloneCount = 0
+            for unit in chatUnits {
+                switch unit {
+                case .stepGroup: stepGroupCount += 1
+                case .message: messageUnitCount += 1
+                case .standalone: standaloneCount += 1
+                }
+            }
+            let diagnosticsKey = "\(timelineRows.count)|\(chatUnits.count)"
+                + "|\(stepGroupCount)|\(messageUnitCount)|\(standaloneCount)"
+                + "|\(chatUnits.first?.id ?? "-")|\(chatUnits.last?.id ?? "-")"
+            let diagnosticsNow = CACurrentMediaTime()
+            if diagnosticsKey != lastDiagnosticsStructureKey
+                || diagnosticsNow - lastDiagnosticsAt >= 1 {
+                lastDiagnosticsStructureKey = diagnosticsKey
+                lastDiagnosticsAt = diagnosticsNow
+                TimelineDiagnostics.validateUnits(
                     sessionID: model.session.id,
-                    detail: grouping,
-                    dedupe: false)
+                    rows: timelineRows,
+                    units: chatUnits)
+                let grouping = TimelineDiagnostics.groupingSummary(
+                    rows: timelineRows, units: chatUnits)
+                let groupingSignature = grouping.keys.sorted()
+                    .map { "\($0)=\(grouping[$0] ?? "")" }
+                    .joined(separator: "&")
+                if groupingSignature != lastGroupingSignature {
+                    lastGroupingSignature = groupingSignature
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.grouping",
+                        sessionID: model.session.id,
+                        detail: grouping,
+                        dedupe: false)
+                }
             }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage(
                 "adapter.group", seconds: CACurrentMediaTime() - probeGroupStart)
 #endif
-            var rowsByID: [String: ChatTimelineRowModel] = [:]
-            for row in model.timeline.rows where rowsByID[row.id] == nil {
-                rowsByID[row.id] = row
-            }
-            for row in model.timeline.rows where row.value.startsVisibleTurn {
-                chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
+            for row in model.timeline.rows {
+                if rowsByID[row.id] == nil { rowsByID[row.id] = row }
+                if row.value.startsVisibleTurn {
+                    chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
+                }
             }
             let turnGroupIDs = TimelineRunningTurnStepGroups.ids(
                 units: chatUnits,
@@ -2204,8 +2244,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var groups: [ChatTimelineGroup] = []
         var stepGroupsByID: [String: TimelineStepGroup] = [:]
         if renderMode == .steps {
-            var rowsByID: [String: ChatTimelineRowModel] = [:]
-            for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
             var lastStepGroupID: String?
             // Units the cache carried over unchanged are rebuilt from last
@@ -2782,28 +2820,38 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // send reads "bubble lands, working row follows", the next reads
         // "working row already there". One line per item-set change names the
         // order and the two sources; read it beside `timeline.mover`.
-        let previousItemIDs = Set(itemsValue.map(\.itemID))
-        let nextItemIDs = Set(identity.items.map(\.itemID))
-        if previousItemIDs != nextItemIDs {
-            ClientDiagnosticsLog.shared.record(
-                kind: "timeline.rows.frame",
-                sessionID: model.session.id,
-                detail: [
-                    "added": identity.items.map(\.itemID)
-                        .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
-                    "removed": itemsValue.map(\.itemID)
-                        .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
-                    "items": String(identity.items.count),
-                    "working": model.isAwaitingReply ? "1" : "0",
-                    "workingText": workingStatusShowsText ? "1" : "0",
-                    "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
-                    "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
-                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
-                    "queue": String(model.session.sendQueue.items.count),
-                    "running": model.isRunning ? "1" : "0",
-                    "status": String(describing: model.session.runtime.state?.status),
-                ],
-                dedupe: false)
+        // The frame log needs two Sets and their diff. Its trigger is an
+        // identity move, so hash the ordered ids first (allocation-free) and
+        // build the Sets only when the hash moved this refresh.
+        var itemsFrameHasher = Hasher()
+        itemsFrameHasher.combine(identity.items.count)
+        for item in identity.items { itemsFrameHasher.combine(item.itemID) }
+        let nextItemsFrameHash = itemsFrameHasher.finalize()
+        if nextItemsFrameHash != lastItemsFrameHash {
+            lastItemsFrameHash = nextItemsFrameHash
+            let previousItemIDs = Set(itemsValue.map(\.itemID))
+            let nextItemIDs = Set(identity.items.map(\.itemID))
+            if previousItemIDs != nextItemIDs {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.rows.frame",
+                    sessionID: model.session.id,
+                    detail: [
+                        "added": identity.items.map(\.itemID)
+                            .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
+                        "removed": itemsValue.map(\.itemID)
+                            .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
+                        "items": String(identity.items.count),
+                        "working": model.isAwaitingReply ? "1" : "0",
+                        "workingText": workingStatusShowsText ? "1" : "0",
+                        "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
+                        "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
+                        "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                        "queue": String(model.session.sendQueue.items.count),
+                        "running": model.isRunning ? "1" : "0",
+                        "status": String(describing: model.session.runtime.state?.status),
+                    ],
+                    dedupe: false)
+            }
         }
         itemsValue = identity.items
         signaturesByItem = signatures

@@ -1117,8 +1117,29 @@ final class TimelineCollectionController: UIViewController {
             // provider's own configure on the cell already on screen; its
             // geometry report owns the height exactly as after a reconfigure,
             // and the item's structure did not move.
-            if let hosting = visibleCell as? TimelineHostingCell {
+            //
+            // The tail is excluded: its height comes from the queued-bubble
+            // rule the apply writes as a precalc, and re-configuring it alone
+            // settles at the spacer height (autorun `tail flap: settled at
+            // 12.0, expected 32`). The chat reply cell is excluded too — its
+            // reveal runs a per-frame clamp and the apply's measured height is
+            // not the displayed height (`textkit M4: stored 313.0 vs reveal
+            // clamp 174.0`).
+            let policy = content.heightPolicy(for: streamedItem)
+            let beforeHeight = layout.attributes(for: streamedItem.itemID)?.frame.height
+            if let hosting = visibleCell as? TimelineHostingCell, policy != .tail,
+               policy != .interactive || beforeHeight != nil {
                 configureHostedCell(hosting, for: streamedItem)
+                if policy == .interactive, let beforeHeight {
+                    // An interactive row's height is a fitting pass the
+                    // reconfigure path polls after the apply; run the same poll
+                    // here, or the row keeps its old frame (`content update:
+                    // row is 405.0pt after the detail cleared`).
+                    previousInteractiveHeights[streamedItem.itemID] = PreChangeHeight(
+                        height: beforeHeight, recordedAt: CACurrentMediaTime())
+                    applyPreferredHeights(for: [streamedItem],
+                                          beforeHeights: [streamedItem.itemID: beforeHeight])
+                }
                 currentItems = items
                 isPerformingSnapshot = false
                 onApplyCompleted?()
@@ -1126,39 +1147,6 @@ final class TimelineCollectionController: UIViewController {
 #if AA_TIMELINE_PROBE
                 TimelineProbeStore.shared.noteStage(
                     "apply.fastPath.hit.hosted",
-                    seconds: CACurrentMediaTime() - probeApplyStart)
-#endif
-                return
-            }
-            if let cell = visibleCell as? AssistantMarkdownCell,
-               let streaming = content.assistantStreamingDocument(for: streamedItem),
-               let height = documentHeights[streamedItem.itemID] {
-                cell.configure(streaming: streaming,
-                               reveal: content.assistantStreamingReveal(for: streamedItem))
-                cell.onStreamingRevealFrame = { [weak self] height in
-                    self?.streamingRevealFrame(height, for: streamedItem)
-                }
-                cell.onStreamingRevealCaughtUp = { [weak self] in
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        self.content?.streamingRevealDidFinish(for: streamedItem)
-                        self.reloadFromContent()
-                    }
-                }
-                // The measured height for this tick, applied the same way the
-                // reveal's per-frame override is: the layout shifts the rows
-                // below it and the reader's bottom follow owns the offset.
-                let animatingPhase = phase.phase == .animating
-                let following = anchorDriver?.state.placement == .end && !animatingPhase
-                layout.applyStreamingHeight(height, for: streamedItem.itemID,
-                                            adjustOffset: !(following || animatingPhase))
-                currentItems = items
-                isPerformingSnapshot = false
-                onApplyCompleted?()
-                schedulePendingMeasurements()
-#if AA_TIMELINE_PROBE
-                TimelineProbeStore.shared.noteStage(
-                    "apply.fastPath.hit.chat",
                     seconds: CACurrentMediaTime() - probeApplyStart)
 #endif
                 return

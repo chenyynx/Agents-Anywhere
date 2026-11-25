@@ -511,70 +511,77 @@ final class TimelineCollectionController: UIViewController {
             }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
-            if let self, let content = self.content {
-                // Official 0x101a3ff20: `isMeasured` is item-level and only a
-                // width change clears it. A same-width content revision keeps
-                // the row measured instead of reopening its one self-measure;
-                // the hosting geometry report supplies the new height.
-                let isMeasured = self.layout.heights.isMeasured(
-                    itemID: item.itemID, width: self.columnWidth)
-                // Seed an unmeasured cell-reported row's one self-measure.
-                // Official Part V §2.5: a placeholder row's height is the last
-                // measured value (`__height`/`__headerHeight` are
-                // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
-                // never-measured row only the estimate tier until the cell
-                // materializes. Code has no reveal and re-lays out as data
-                // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
-                // the provider's structural height is the real value when it
-                // exists. Without one (streaming or pre-layout content) the row
-                // keeps the height `prepare()` already recorded for it — the
-                // estimate for a never-shown row, the displayed height
-                // otherwise. Letting UIKit fit the pre-layout body instead
-                // collapsed a streaming row 44→18 (461 probe); the content's
-                // later geometry change supersedes the seed through the
-                // changed-only `onContentHeightReport` path.
-                let reportsContentHeight = content.usesCellReportedHeight(for: item)
-                let seed: CGFloat?
-                if !isMeasured, reportsContentHeight {
-                    if let structural = content.measuredCodeGroupHeight(
-                        for: item, width: self.columnWidth) {
-                        seed = structural
-                    } else if let displayed = self.layout.heights.displayedHeight(
-                        for: item.itemID), displayed > 1 {
-                        seed = displayed
-                    } else {
-                        seed = nil
-                    }
-                } else {
-                    seed = nil
-                }
-                // A hosted row's geometry value is its measurement (official
-                // `_GeometryActionModifier` → `rowMeasured`,
-                // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
-                // signature this configuration's content belongs to; a
-                // width/typography re-key of the same content (rotation does
-                // not reconfigure the cell) is still accepted. The Chat rows
-                // keep the controller polling path.
-                if reportsContentHeight {
-                    let reportKey = content.heightKey(for: item, width: self.columnWidth)
-                    let reportSignature = content.contentSignature(for: item)
-                    cell.onContentHeightReport = { [weak self] height in
-                        self?.hostedContentHeightReported(
-                            height, for: item,
-                            reportedKey: reportKey, reportedSignature: reportSignature)
-                    }
-                } else {
-                    cell.onContentHeightReport = nil
-                }
-                cell.configure(content.rowView(for: item, width: self.columnWidth),
-                               itemID: item.itemID,
-                               policy: content.heightPolicy(for: item),
-                               isMeasured: isMeasured,
-                               reportsContentHeight: reportsContentHeight,
-                               seededHeight: seed)
-            }
+            if let self { self.configureHostedCell(cell, for: item) }
             return cell
         }
+    }
+
+    /// The hosted row's one configuration path. Extracted so a stream tick can
+    /// re-configure the visible cell in place (a working row's reasoning text)
+    /// without a diffable reconfigure; the provider and the fast path must not
+    /// drift.
+    private func configureHostedCell(_ cell: TimelineHostingCell, for item: TimelineListItem) {
+        guard let content else { return }
+        // Official 0x101a3ff20: `isMeasured` is item-level and only a
+        // width change clears it. A same-width content revision keeps
+        // the row measured instead of reopening its one self-measure;
+        // the hosting geometry report supplies the new height.
+        let isMeasured = layout.heights.isMeasured(
+            itemID: item.itemID, width: columnWidth)
+        // Seed an unmeasured cell-reported row's one self-measure.
+        // Official Part V §2.5: a placeholder row's height is the last
+        // measured value (`__height`/`__headerHeight` are
+        // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
+        // never-measured row only the estimate tier until the cell
+        // materializes. Code has no reveal and re-lays out as data
+        // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
+        // the provider's structural height is the real value when it
+        // exists. Without one (streaming or pre-layout content) the row
+        // keeps the height `prepare()` already recorded for it — the
+        // estimate for a never-shown row, the displayed height
+        // otherwise. Letting UIKit fit the pre-layout body instead
+        // collapsed a streaming row 44→18 (461 probe); the content's
+        // later geometry change supersedes the seed through the
+        // changed-only `onContentHeightReport` path.
+        let reportsContentHeight = content.usesCellReportedHeight(for: item)
+        let seed: CGFloat?
+        if !isMeasured, reportsContentHeight {
+            if let structural = content.measuredCodeGroupHeight(
+                for: item, width: columnWidth) {
+                seed = structural
+            } else if let displayed = layout.heights.displayedHeight(
+                for: item.itemID), displayed > 1 {
+                seed = displayed
+            } else {
+                seed = nil
+            }
+        } else {
+            seed = nil
+        }
+        // A hosted row's geometry value is its measurement (official
+        // `_GeometryActionModifier` → `rowMeasured`,
+        // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
+        // signature this configuration's content belongs to; a
+        // width/typography re-key of the same content (rotation does
+        // not reconfigure the cell) is still accepted. The Chat rows
+        // keep the controller polling path.
+        if reportsContentHeight {
+            let reportKey = content.heightKey(for: item, width: columnWidth)
+            let reportSignature = content.contentSignature(for: item)
+            cell.onContentHeightReport = { [weak self] height in
+                self?.hostedContentHeightReported(
+                    height, for: item,
+                    reportedKey: reportKey, reportedSignature: reportSignature)
+            }
+        } else {
+            cell.onContentHeightReport = nil
+        }
+        cell.configure(content.rowView(for: item, width: columnWidth),
+                       itemID: item.itemID,
+                       policy: content.heightPolicy(for: item),
+                       isMeasured: isMeasured,
+                       reportsContentHeight: reportsContentHeight,
+                       seededHeight: seed)
     }
 
     override func viewDidLayoutSubviews() {
@@ -1096,12 +1103,27 @@ final class TimelineCollectionController: UIViewController {
            reconfigure.count == 1, existingChanges.count == 1,
            let streamedItem = changed.first {
             let indexPath = dataSource.indexPath(for: streamedItem)
-            let cell = indexPath.flatMap {
-                collectionView.cellForItem(at: $0) as? AssistantMarkdownCell
+            let visibleCell = indexPath.flatMap { collectionView.cellForItem(at: $0) }
+            // A working row's reasoning text is a hosted SwiftUI row. Run the
+            // provider's own configure on the cell already on screen; its
+            // geometry report owns the height exactly as after a reconfigure,
+            // and the item's structure did not move.
+            if let hosting = visibleCell as? TimelineHostingCell {
+                configureHostedCell(hosting, for: streamedItem)
+                currentItems = items
+                isPerformingSnapshot = false
+                onApplyCompleted?()
+                schedulePendingMeasurements()
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteStage(
+                    "apply.fastPath.hit.hosted",
+                    seconds: CACurrentMediaTime() - probeApplyStart)
+#endif
+                return
             }
-            let streaming = content.assistantStreamingDocument(for: streamedItem)
-            let height = documentHeights[streamedItem.itemID]
-            if let cell, let streaming, let height {
+            if let cell = visibleCell as? AssistantMarkdownCell,
+               let streaming = content.assistantStreamingDocument(for: streamedItem),
+               let height = documentHeights[streamedItem.itemID] {
                 cell.configure(streaming: streaming,
                                reveal: content.assistantStreamingReveal(for: streamedItem))
                 cell.onStreamingRevealFrame = { [weak self] height in
@@ -1127,27 +1149,33 @@ final class TimelineCollectionController: UIViewController {
                 schedulePendingMeasurements()
 #if AA_TIMELINE_PROBE
                 TimelineProbeStore.shared.noteStage(
-                    "apply.fastPath.hit", seconds: CACurrentMediaTime() - probeApplyStart)
+                    "apply.fastPath.hit.chat",
+                    seconds: CACurrentMediaTime() - probeApplyStart)
 #endif
                 return
             }
-#if AA_TIMELINE_PROBE
-            let miss = cell == nil ? "offscreen"
-                : (streaming == nil ? "notStreaming" : "noHeight")
-            TimelineProbeStore.shared.noteStage(
-                "apply.fastPath.miss.\(miss)", seconds: CACurrentMediaTime() - probeApplyStart)
-#endif
         }
 #if AA_TIMELINE_PROBE
-        // A conditional `else if` across `#if` does not parse when the flag is
-        // off; a second `if` is equivalent here because the hit path returns.
-        if structureUnchanged, !animating, changed.count > 1 {
-            // The tick touched more than the streamed reply (a tail notice, a
-            // status row): the fast path cannot carry it, but the count says
-            // how often a text-only tick really is single-item.
-            TimelineProbeStore.shared.noteStage(
-                "apply.fastPath.miss.multi", seconds: CACurrentMediaTime() - probeApplyStart)
+        // Why the tick kept the snapshot path. One stage per apply, so the
+        // next device report counts each blocker instead of guessing.
+        let missReason: String
+        if !structureUnchanged {
+            missReason = "structure"
+        } else if animating {
+            missReason = "animating"
+        } else if changed.count != 1 {
+            missReason = "count"
+        } else if reconfigure.count != 1 {
+            missReason = "reconfig"
+        } else if existingChanges.count != 1 {
+            missReason = "existing"
+        } else {
+            // The single changed item has no visible cell the fast path can
+            // drive (offscreen, or a cell type it does not own).
+            missReason = "cell"
         }
+        TimelineProbeStore.shared.noteStage(
+            "apply.fastPath.miss.\(missReason)", seconds: 0)
 #endif
         var snapshot: NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>
         if structureUnchanged {

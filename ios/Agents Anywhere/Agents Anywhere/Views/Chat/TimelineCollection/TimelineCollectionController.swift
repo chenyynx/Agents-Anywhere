@@ -1108,7 +1108,13 @@ final class TimelineCollectionController: UIViewController {
         // in one visible cell and the layout can patch its height directly.
         // Everything else — a new row, a tail or prompt move, a hidden cell,
         // an animated arrival — keeps the snapshot path below.
-        if structureUnchanged, !animating, changed.count == 1,
+        // An explicit 「回到底部」 fly animates the height corrections frame by
+        // frame; a cell grown in place would paint past a layout that has not
+        // caught up yet (the `timeline.row.overlap` probe exists for exactly
+        // that window, pp 2026-11-16). Keep the snapshot path while the fly
+        // runs.
+        if structureUnchanged, !animating, !flightProbeActive,
+           changed.count == 1,
            reconfigure.count == 1, existingChanges.count == 1,
            let streamedItem = changed.first {
             let indexPath = dataSource.indexPath(for: streamedItem)
@@ -1160,6 +1166,8 @@ final class TimelineCollectionController: UIViewController {
             missReason = "structure"
         } else if animating {
             missReason = "animating"
+        } else if flightProbeActive {
+            missReason = "flight"
         } else if changed.count != 1 {
             missReason = "count"
         } else if reconfigure.count != 1 {

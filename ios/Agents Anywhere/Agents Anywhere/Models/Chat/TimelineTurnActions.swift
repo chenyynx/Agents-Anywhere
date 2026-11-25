@@ -497,6 +497,8 @@ enum TimelineTurnActions {
             }
         }
         return facts
+    }
+
     /// A footer the state-coverage proof committed, remembered for its turn.
     ///
     /// The runtime state is the turn-end signal every client paints from; the

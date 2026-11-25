@@ -1139,7 +1139,9 @@ final class TimelineCollectionController: UIViewController {
 #endif
         }
 #if AA_TIMELINE_PROBE
-        else if structureUnchanged, !animating, changed.count > 1 {
+        // A conditional `else if` across `#if` does not parse when the flag is
+        // off; a second `if` is equivalent here because the hit path returns.
+        if structureUnchanged, !animating, changed.count > 1 {
             // The tick touched more than the streamed reply (a tail notice, a
             // status row): the fast path cannot carry it, but the count says
             // how often a text-only tick really is single-item.

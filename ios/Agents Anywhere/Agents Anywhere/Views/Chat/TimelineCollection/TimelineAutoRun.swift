@@ -138,7 +138,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // that then shrink and drag the phase's target out of the viewport.
         if entry.kind == .toolExpanded,
            entry.id.hasPrefix(Self.gestureRowPrefix),
-           !entry.id.hasPrefix(Self.hostedRowPrefix) {
+           !entry.id.hasPrefix(Self.hostedRowPrefix),
+           // Only the collapsed header is pre-seeded: the expanded row's
+           // height comes from its own fitting. A fixed estimate for both
+           // states pinned the row at 17 pt once the content revision changed
+           // the height key (the fold phase kept `expanded 17.0 == collapsed`).
+           !entry.expanded {
             return .fixed(17)
         }
         return .row

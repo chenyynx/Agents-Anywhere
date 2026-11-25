@@ -102,6 +102,10 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "selection.autoscroll",
         "outline.open", "outline.close", "outline.frame", "outline.reload",
         "outline.keyboard", "outline.scroll", "outline.jump",
+        // The 2026-11-25 performance diagnostics: actions, not anomalies.
+        "timeline.update.path", "timeline.update.summary",
+        "timeline.height.estimate", "timeline.leaf.partial",
+        "timeline.turnfacts.reset",
     ]
 
     static func severity(for kind: String) -> String {

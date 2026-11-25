@@ -203,7 +203,16 @@ struct TimelineChatTimelineView: View {
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
-                if ready { bridge.beginOpening() }
+                // One bottom landing per open (or renderer rebuild). A tab
+                // switch re-appears the page; it must not re-arm the bottom —
+                // it returns to the reader's saved row instead.
+                if ready {
+                    if model.armOpeningPositionIfNeeded() {
+                        bridge.beginOpening()
+                    } else if let anchor = model.scrollAnchor {
+                        bridge.restoreScrollAnchor(anchor)
+                    }
+                }
             }
             .onChange(of: jumpRequest.token) { _, _ in
                 guard let rowID = jumpRequest.rowID else { return }
@@ -301,7 +310,12 @@ struct TimelineChatTimelineView: View {
                 guard !Task.isCancelled else { return }
                 bridge.fallbackOpeningSettle()
             }
-            .onDisappear { bridge.cancel() }
+            .onDisappear {
+                // The page may be hidden (tab switch) or torn down; either way
+                // keep the reader's row so a rebuilt page returns to it.
+                bridge.captureScrollAnchor()
+                bridge.cancel()
+            }
             // Official TurnStatusView transfer: the end of a stream is the
             // one light impact; other phase changes are selections. Streamed
             // tokens never play a haptic.
@@ -549,6 +563,48 @@ final class TimelineChatBridge: ObservableObject {
               let item = adapter.item(containingRow: rowID),
               let path = controller.indexPath(for: item) else { return false }
         controller.collectionView.scrollToItem(at: path, at: .centeredVertically, animated: true)
+        return true
+    }
+
+    /// Keeps the reader's row and offset on the model so a rebuilt tab page
+    /// can return to the same place (official holds the page itself; AA holds
+    /// the model and this anchor).
+    func captureScrollAnchor() {
+        guard let controller,
+              let anchor = controller.anchor(at: controller.viewport.offsetY) else { return }
+        model.scrollAnchor = ChatScrollAnchor(rowID: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
+    }
+
+    /// Restores a saved reader position after the page is rebuilt. The row
+    /// store window is already present (the model stayed open), so this is a
+    /// placement, not a history request.
+    func restoreScrollAnchor(_ anchor: ChatScrollAnchor) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<20 {
+                if self.restoreLoadedAnchor(anchor) { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func restoreLoadedAnchor(_ anchor: ChatScrollAnchor) -> Bool {
+        guard let controller,
+              let item = adapter.item(containingRow: anchor.rowID),
+              let path = controller.indexPath(for: item) else { return false }
+        // A settled bottom-follow target must not pull the reader back down
+        // while the restored position is placed.
+        controller.disarmBottom()
+        controller.collectionView.scrollToItem(at: path, at: .top, animated: false)
+        if anchor.offsetIntoRow > 0.5 {
+            var offset = controller.collectionView.contentOffset
+            offset.y += anchor.offsetIntoRow
+            let maxY = controller.collectionView.contentSize.height
+                - controller.collectionView.bounds.height
+                + controller.collectionView.adjustedContentInset.bottom
+            offset.y = min(offset.y, maxY)
+            controller.collectionView.setContentOffset(offset, animated: false)
+        }
         return true
     }
 

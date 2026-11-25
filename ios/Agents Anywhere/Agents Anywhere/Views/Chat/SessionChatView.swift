@@ -4,8 +4,9 @@ import QuickLook
 import UIKit
 
 struct SessionChatView: View, Equatable {
-    @StateObject private var storage: StableViewModel<SessionChatModel>
-    private var model: SessionChatModel { storage.value }
+    /// Shell-owned, so switching tabs (or a rebuilt page) keeps the session
+    /// model, its live observer and its reader anchor.
+    let model: SessionChatModel
     private let sessionIdentity: V2SessionModel
     let deviceName: String?
     let fallbackTitle: String?
@@ -15,6 +16,10 @@ struct SessionChatView: View, Equatable {
     /// rides `session.metadata.pinned`, refreshed through the dashboard push,
     /// so the item's title flips without local state.
     let onTogglePinned: (Bool) -> Void
+    /// The bottom-tab shell leaves an 8 pt gap between the composer bar and
+    /// the Liquid Glass tab bar; the legacy drawer shell sits on the home
+    /// indicator and needs none.
+    @Environment(\.shellTabBarActive) private var shellTabBarActive
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
     /// Whether the transcript must ignore keyboard-driven bottom insets. The
@@ -151,6 +156,7 @@ struct SessionChatView: View, Equatable {
                 // must rebuild it, exactly like the old switch rebuilt the
                 // branch it replaced.
                 .id(renderModeRaw)
+                .onChange(of: renderModeRaw) { _, _ in model.resetOpeningPositionArm() }
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
                 // Measure the expanded base the card draws in. Global frames
                 // give the anchor one coordinate system: the card clears the
@@ -271,6 +277,10 @@ struct SessionChatView: View, Equatable {
                     // the keyboard (pp 2026-11-22).
                     maximumCardHeight: questionCardHeightLimit(geometry)
                 )
+                // Official spacing above the Liquid Glass tab bar. With the
+                // keyboard up the tab bar is off screen and the composer sits
+                // on the keyboard, so the gap only exists keyboard-down.
+                .padding(.bottom, composerTabBarGap)
             }
             // [E] chrome-composer.md §4 — Code page background
             // `#F9F9F7` / `#151515`, edge to edge.
@@ -357,6 +367,13 @@ struct SessionChatView: View, Equatable {
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
+    /// The official tab shell keeps 8 pt between the composer capsule and the
+    /// Liquid Glass bar. The keyboard owns the bottom edge when it is up, so
+    /// the gap only applies keyboard-down.
+    private var composerTabBarGap: CGFloat {
+        shellTabBarActive && !windowKeyboardVisible ? ShellTabBarMetrics.composerGap : 0
+    }
+
     private func composerDockArea(maximumEditorHeight: CGFloat,
                                   maximumCardHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
@@ -476,20 +493,12 @@ struct SessionChatView: View, Equatable {
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
     @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
-    init(session: V2SessionModel, services: V2ClientServices, deviceName: String?,
+    init(model: SessionChatModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
          onMenu: @escaping () -> Void,
          onTogglePinned: @escaping (Bool) -> Void) {
-        _storage = StateObject(wrappedValue: StableViewModel {
-            let chat = SessionChatModel(session: session, repository: services.sessionRepository, attachments: services.attachments,
-                files: services.workspaceFiles)
-            chat.onEditCreation = { [weak services, weak session] pending in
-                if let session { services?.editCreation(session, pending: pending) }
-            }
-            chat.onDiscardCreation = { [weak services] in services?.discardCreation(session.id) }
-            return chat
-        })
-        sessionIdentity = session
+        self.model = model
+        sessionIdentity = model.session
         self.deviceName = deviceName
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
@@ -614,21 +623,17 @@ struct SessionChatView: View, Equatable {
         }
         .task(id: hasStartedLoading) {
             guard hasStartedLoading else { return }
-            // Reattaching a loaded detail only resumes observation.
-            await model.prepareOpening()
+            // The first visit opens the session and repairs queued uploads;
+            // returning from another tab only re-attaches the UI (no network
+            // re-open, no sync wait). Recovering a queue restored from disk
+            // finishes any attachment upload the last page left in flight.
+            await model.completeOpeningOnce()
             guard !Task.isCancelled else { return }
-            // Recover a queue restored from disk: any attachment upload the last
-            // page left in flight is finished here, and the queue re-evaluates
-            // once its messages are whole. Runs before the long-lived loops
-            // below, which only return when the view goes away.
-            await model.completeQueuedUploads()
-            guard !Task.isCancelled else { return }
-            // The timeline loop shares this task's lifetime and stops when
-            // the view's task is cancelled.
-            let chat = model
-            let timeline = chat.timeline
-            let repository = chat.repository
-            await timeline.run(sessionID: session.id, repository: repository)
+            // The observer lives with the model, not with this task: SwiftUI
+            // cancels the task when the tab is hidden, and the repository
+            // closes the session socket when its last observer leaves
+            // (`V2SessionRepository.observe`).
+            model.startLiveRun(sessionID: session.id)
         }
         .sheet(item: $sheet) { destination in
             sheetContent(for: destination)

@@ -47,6 +47,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 ShellTabLabel(title: "Artifacts", image: "anthropicon.artifacts")
             }
         }
+        .environment(\.shellTabBarActive, true)
     }
 }
 

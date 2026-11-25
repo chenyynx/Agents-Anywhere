@@ -42,6 +42,10 @@ final class SessionChatModel {
     private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
+    /// The transcript's opening bottom position is armed once per open (and
+    /// once per renderer rebuild). Re-entering the tab must keep the reader's
+    /// position instead of snapping back to the bottom.
+    @ObservationIgnored private(set) var hasArmedOpeningPosition = false
     /// The opening refresh (`repository.open`) finished, successfully or not.
     /// A cached window can be ready for display before that read returns; the
     /// viewport's automatic latest load must wait for it or the two reads race.
@@ -78,6 +82,16 @@ final class SessionChatModel {
     @ObservationIgnored var onEditCreation: ((V2PendingMessage) -> Void)?
     @ObservationIgnored var onDiscardCreation: (() -> Void)?
     @ObservationIgnored let repository: V2SessionRepository
+    /// Owns the live observer across tab switches: the view's `.task` is
+    /// cancelled when the tab is hidden, but the repository closes the session
+    /// socket when its last observer leaves.
+    @ObservationIgnored private let liveRun = SessionLiveRun()
+    /// The opening read (network latest page) and queue repair run once per
+    /// page model. Re-appearing from another tab only re-attaches the UI.
+    @ObservationIgnored private(set) var hasCompletedOpening = false
+    /// Where the reader was when the tab left the screen. A rebuilt page
+    /// restores this point instead of landing at the bottom.
+    @ObservationIgnored var scrollAnchor: ChatScrollAnchor?
     @ObservationIgnored private let attachments: V2AttachmentService
     @ObservationIgnored private let files: V2WorkspaceFilesService?
     /// The next session's default, updated when this session's options sheet
@@ -372,6 +386,47 @@ final class SessionChatModel {
 
     private func fail(_ message: String) {
         commandFailure = CommandFeedback(title: String(localized: "无法执行指令"), message: message)
+    }
+
+    /// The first visit does the network opening and the queue repair. Returning
+    /// from another tab only re-attaches the UI; re-opening here is what made
+    /// a tab switch feel like a fresh session (spinner + latest-page sync).
+    func completeOpeningOnce() async {
+        guard !hasCompletedOpening else { return }
+        await prepareOpening()
+        // A tab switch can cancel the view task mid-open; leave the model
+        // unopened so the next appearance retries instead of showing a blank
+        // page with no refresh.
+        guard !Task.isCancelled else { return }
+        await completeQueuedUploads()
+        guard !Task.isCancelled else { return }
+        hasCompletedOpening = true
+    }
+
+    /// Starts the long-lived observer once. It outlives the view's task so a
+    /// tab switch keeps the repository observer (and the session socket)
+    /// alive; releasing the model ends the run.
+    func startLiveRun(sessionID: V2SessionID) {
+        guard !liveRun.isRunning else { return }
+        let timeline = timeline
+        let repository = repository
+        liveRun.start {
+            await timeline.run(sessionID: sessionID, repository: repository)
+        }
+    }
+
+    /// Arms the transcript's opening position once. Returns true when the
+    /// caller should land the fresh transcript at the bottom.
+    func armOpeningPositionIfNeeded() -> Bool {
+        guard !hasArmedOpeningPosition else { return false }
+        hasArmedOpeningPosition = true
+        return true
+    }
+
+    /// A renderer rebuild creates a fresh bridge that needs its own opening
+    /// position even though the model itself stayed open.
+    func resetOpeningPositionArm() {
+        hasArmedOpeningPosition = false
     }
 
     func prepareOpening() async {

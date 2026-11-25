@@ -10,6 +10,9 @@ struct ChatShellView: View {
     @State private var newSessionPresentationID = UUID()
     @State private var panes = ShellPanesModel()
     @State private var panesScope: V2ClientScope?
+    /// Owns the chat tab's session model outside the tab page, like the
+    /// official SessionRegistry keeps the store alive across tab switches.
+    @State private var chatPane = ChatPaneStore()
     @AppStorage("aa.shell.tabs") private var shellTabsEnabled = true
 
     private var selection: ChatShellSelection {
@@ -45,6 +48,10 @@ struct ChatShellView: View {
             loadPanes(scope)
         }
         .onChange(of: appState.chatSelection) { _, next in
+            switch next {
+            case let .session(id): chatPane.release(unless: id)
+            case .newSession, .device: chatPane.release(unless: nil)
+            }
             syncPanesFromSelection(next)
         }
         .onChange(of: panes) { _, next in
@@ -221,7 +228,7 @@ struct ChatShellView: View {
         let session = services.sessionRepository.session(id: id)
         let summary = appState.sessions.first { $0.id == id }
         let connectorID = session.metadata?.connectorId ?? summary?.connectorId
-        SessionChatView(session: session, services: services,
+        SessionChatView(model: chatPane.pane(for: session, services: services), services: services,
             deviceName: appState.connectors.first { $0.id == connectorID }?.name,
             fallbackTitle: summary?.title,
             fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,

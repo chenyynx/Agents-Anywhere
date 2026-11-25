@@ -24,6 +24,9 @@ struct ChatControlMetrics {
     let topMargin: CGFloat
     let collapsedBottomMargin: CGFloat
     let expandedBottomMargin: CGFloat
+    /// Whether the keyboard owns the bottom edge. The expanded margin is
+    /// keyboard clearance, so it is only applied while the keyboard is up.
+    let keyboardVisible: Bool
     let collapsedHeight: CGFloat
     let collapsedCornerRadius: CGFloat
     let expandedCornerRadius: CGFloat
@@ -37,10 +40,11 @@ struct ChatControlMetrics {
     }
 
     func bottomMargin(expanded: Bool) -> CGFloat {
-        expanded ? expandedBottomMargin : collapsedBottomMargin
+        profile.bottomMargin(expanded: expanded, keyboardVisible: keyboardVisible)
     }
 
-    init(bodyLineHeight: CGFloat, profile: ComposerMetricsProfile? = nil) {
+    init(bodyLineHeight: CGFloat, profile: ComposerMetricsProfile? = nil,
+         keyboardVisible: Bool = true) {
         let profile = profile ?? .chat(bodyLineHeight: bodyLineHeight)
         self.profile = profile
         self.touchTarget = profile.touchTarget
@@ -55,6 +59,7 @@ struct ChatControlMetrics {
         self.topMargin = profile.topMargin
         self.collapsedBottomMargin = profile.collapsedBottomMargin
         self.expandedBottomMargin = profile.expandedBottomMargin
+        self.keyboardVisible = keyboardVisible
         self.collapsedHeight = profile.collapsedHeight
         self.collapsedCornerRadius = profile.collapsedCornerRadius
         self.expandedCornerRadius = profile.expandedCornerRadius

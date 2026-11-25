@@ -162,8 +162,9 @@ struct SessionChatView: View, Equatable {
                 // The bridge owns one adapter for its lifetime; a mode switch
                 // must rebuild it, exactly like the old switch rebuilt the
                 // branch it replaced.
+                // The rebuilt bridge notices the renderer change itself
+                // (`takeOpeningRenderModeChange`) and lands at the bottom.
                 .id(renderModeRaw)
-                .onChange(of: renderModeRaw) { _, _ in model.resetOpeningPositionArm() }
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
                 // Measure the expanded base the card draws in. Global frames
                 // give the anchor one coordinate system: the card clears the
@@ -526,7 +527,8 @@ struct SessionChatView: View, Equatable {
         .code
     }
     private var controls: ChatControlMetrics {
-        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)
+        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile,
+              keyboardVisible: keyboardOnScreen)
     }
     /// Default hint, mid-turn queue hint, or the takeover gate.
     private var composerPlaceholder: String {

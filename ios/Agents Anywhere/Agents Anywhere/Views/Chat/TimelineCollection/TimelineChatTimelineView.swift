@@ -12,6 +12,8 @@ import UIKit
 /// actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
+    /// The renderer this bridge built, in the model's raw-value terms.
+    private let renderModeName: String
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
     /// and outside the list's ignore: bar + home indicator + keyboard. This is
     /// the single inset source (official formula); no keyboard notifications
@@ -40,6 +42,10 @@ struct TimelineChatTimelineView: View {
     /// Cues stay disarmed through the seed, so a page opened mid-turn does not
     /// buzz on appearance.
     @State private var phaseHapticsArmed = false
+    /// One placement per bridge. The model-level arm is shared by every pane
+    /// showing the session; a second pane (or a rebuilt page) still has to
+    /// land somewhere instead of leaving the new collection at offset zero.
+    @State private var didPlaceOpening = false
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -51,6 +57,7 @@ struct TimelineChatTimelineView: View {
          renderMode: TimelineRenderMode = .merged) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
+        self.renderModeName = renderMode.rawValue
         _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onOpenLink: onOpenLink,
@@ -203,15 +210,24 @@ struct TimelineChatTimelineView: View {
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             .onChange(of: model.isOpeningReady, initial: true) { _, ready in
-                // One bottom landing per open (or renderer rebuild). A tab
-                // switch re-appears the page; it must not re-arm the bottom —
-                // it returns to the reader's saved row instead.
-                if ready {
-                    if model.armOpeningPositionIfNeeded() {
-                        bridge.beginOpening()
-                    } else if let anchor = model.scrollAnchor {
-                        bridge.restoreScrollAnchor(anchor)
-                    }
+                // One placement per bridge (or renderer rebuild). A tab switch
+                // re-appears the same page; it must not re-place the reader —
+                // the held page keeps its own scroll position. A rebuilt page
+                // or a second pane sharing this model (Devices tab opening the
+                // session already open in Chats) still lands somewhere: the
+                // saved anchor when there is one, the bottom otherwise.
+                guard ready, !didPlaceOpening else { return }
+                didPlaceOpening = true
+                // A renderer switch lands bottom: the two renderers build
+                // different item spaces, so the saved anchor cannot resolve.
+                let firstOpen = model.armOpeningPositionIfNeeded()
+                let rendererChanged = model.takeOpeningRenderModeChange(renderModeName)
+                if firstOpen || rendererChanged {
+                    bridge.beginOpening()
+                } else if let anchor = model.scrollAnchor {
+                    bridge.restoreScrollAnchor(anchor)
+                } else {
+                    bridge.beginOpening()
                 }
             }
             .onChange(of: jumpRequest.token) { _, _ in
@@ -570,9 +586,11 @@ final class TimelineChatBridge: ObservableObject {
     /// can return to the same place (official holds the page itself; AA holds
     /// the model and this anchor).
     func captureScrollAnchor() {
-        guard let controller,
+        // `viewport` dereferences the implicitly-unwrapped collection view;
+        // onDisappear can run before (or after) the controller's view exists.
+        guard let controller, controller.isViewLoaded,
               let anchor = controller.anchor(at: controller.viewport.offsetY) else { return }
-        model.scrollAnchor = ChatScrollAnchor(rowID: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
+        model.scrollAnchor = ChatScrollAnchor(itemID: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
     }
 
     /// Restores a saved reader position after the page is rebuilt. The row
@@ -583,22 +601,32 @@ final class TimelineChatBridge: ObservableObject {
             guard let self else { return }
             for _ in 0..<20 {
                 if self.restoreLoadedAnchor(anchor) { return }
+                // The anchor cannot land (row gone with the window, or the
+                // page never loaded). A fresh page defaults to the bottom;
+                // leaving it at the oldest loaded row is the bug this restore
+                // exists to prevent. A reader who already scrolled owns the
+                // page and is left alone.
+                if self.readerTookOver { return }
                 try? await Task.sleep(for: .milliseconds(50))
             }
+            guard !self.readerTookOver else { return }
+            self.beginOpening()
         }
     }
 
     private func restoreLoadedAnchor(_ anchor: ChatScrollAnchor) -> Bool {
-        guard let controller else { return false }
+        // Same nil-window rule as capture: the retry loop runs through the
+        // representable's attach → viewDidLoad window.
+        guard let controller, controller.isViewLoaded else { return false }
         // A retained tab page is already at the captured point. Re-scrolling
         // there would run a full collection layout during the tab switch — a
         // visible hitch for no move at all.
         if let current = controller.anchor(at: controller.viewport.offsetY),
-           current.id == anchor.rowID,
+           current.id == anchor.itemID,
            abs(current.offsetIntoRow - anchor.offsetIntoRow) < 0.5 {
             return true
         }
-        guard let item = adapter.item(containingRow: anchor.rowID),
+        guard let item = adapter.item(forItemID: anchor.itemID),
               let path = controller.indexPath(for: item) else { return false }
         // A settled bottom-follow target must not pull the reader back down
         // while the restored position is placed.

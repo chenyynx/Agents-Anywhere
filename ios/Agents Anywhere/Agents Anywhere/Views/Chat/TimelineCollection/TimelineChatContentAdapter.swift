@@ -3248,7 +3248,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // is the only reset point, when a new turn actually takes over.
     }
 
-    private func item(forItemID itemID: String) -> TimelineListItem? {
+    /// Resolves an itemID (`"g:…"` / `"n:…"` / `"p:…"`); the reader anchor is
+    /// captured in this space, so restoring must not go through the bare-row
+    /// `rowToItem` map.
+    func item(forItemID itemID: String) -> TimelineListItem? {
         itemsByID[itemID]
     }
 

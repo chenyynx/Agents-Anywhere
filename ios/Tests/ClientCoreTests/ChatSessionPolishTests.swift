@@ -134,6 +134,21 @@ private func imageThumbnailFixture(width: Int, height: Int) -> Data? {
         #expect(http.calls.count == requests)
     }
 
+    @Test func openingPlacementArmsOnceAndFollowsRendererSwitches() {
+        let model = chat(TestHTTPTransport())
+        // The first page lands at the bottom; every later page keeps the
+        // reader's anchor.
+        #expect(model.armOpeningPositionIfNeeded())
+        #expect(!model.armOpeningPositionIfNeeded())
+        // The renderer that placed last is remembered; only a different one
+        // forces another bottom landing. ("code" / "chat" are the two
+        // TimelineRenderMode raw values; Views is not part of this target.)
+        #expect(!model.takeOpeningRenderModeChange("code"))
+        #expect(!model.takeOpeningRenderModeChange("code"))
+        #expect(model.takeOpeningRenderModeChange("chat"))
+        #expect(!model.takeOpeningRenderModeChange("chat"))
+    }
+
     @Test func openingPublishesStreamingAndOptimisticHandoffWithoutAScrollAcknowledgement() throws {
         let first: V2TimelineItem = try decode(itemObject(id: "reply", text: "Initial reply"))
         let updated: V2TimelineItem = try decode(itemObject(id: "reply", revision: 2, text: "Initial reply with more content"))

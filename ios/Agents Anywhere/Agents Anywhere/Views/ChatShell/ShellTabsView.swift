@@ -8,6 +8,14 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     let chatRoot: ChatRoot
     let devicesRoot: DevicesRoot
     let onMenu: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// The legacy detail wrapper tinted the whole page with the primary
+    /// control ink. The tab shell must do the same inside each tab, or a
+    /// non-default accent recolours the chat's spinners and menus.
+    private var contentTint: Color {
+        AppTheme.primaryControlBackground(colorScheme)
+    }
 
     var body: some View {
         TabView(selection: $panes.selectedTab) {
@@ -16,6 +24,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                     // The session page owns its keyboard insets (composer is a
                     // safeAreaBar); the shell must not move the whole page.
                     .ignoresSafeArea(.keyboard)
+                    .tint(contentTint)
             } label: {
                 ShellTabLabel(title: "Chats", image: "anthropicon.chat")
             }
@@ -23,6 +32,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 // The shell supplies the Devices NavigationStack (it owns the
                 // path and the push destinations).
                 devicesRoot
+                    .tint(contentTint)
             } label: {
                 ShellTabLabel(title: "Devices", image: "anthropicon.laptop.tab")
             }

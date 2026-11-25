@@ -6,8 +6,12 @@ import SwiftUI
 struct DevicesListPage: View {
     let devices: [ChatSidebarDevice]
     let isLoading: Bool
+    /// Dashboard fetch failure while there is nothing to show (cold start
+    /// offline); an empty list alone must not read as "no devices".
+    var error: String? = nil
     let onMenu: () -> Void
     let onOpen: (V2ConnectorID) -> Void
+    var onRetry: () async -> Void = {}
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -17,6 +21,19 @@ struct DevicesListPage: View {
                 if isLoading && devices.isEmpty {
                     ProgressView()
                         .padding(.top, 48)
+                } else if devices.isEmpty, let error {
+                    VStack(spacing: 12) {
+                        Text(error)
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(DevicePageStyle.secondary(colorScheme))
+                        Button(String(localized: "重试")) {
+                            Task { await onRetry() }
+                        }
+                        .font(.footnote.weight(.medium))
+                    }
+                    .padding(.top, 48)
+                    .padding(.horizontal, 24)
                 } else if devices.isEmpty {
                     Text(String(localized: "No devices"))
                         .font(.footnote)
@@ -36,6 +53,7 @@ struct DevicesListPage: View {
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
+        .refreshable { await onRetry() }
         .scrollEdgeEffectStyle(.soft, for: .all)
         .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea())
         .modifier(ChatPageToolbar(title: String(localized: "Devices"), onMenu: onMenu))

@@ -3,7 +3,9 @@ import Foundation
 /// A reader position inside the transcript, kept by the page model so a
 /// rebuilt view can return to the same place instead of the bottom.
 nonisolated struct ChatScrollAnchor: Equatable, Sendable {
-    let rowID: String
+    /// `TimelineListItem.itemID` (`"g:…"` / `"n:…"` / `"p:…"`), the same id
+    /// space `TimelineCollectionController.anchor(at:)` reports.
+    let itemID: String
     let offsetIntoRow: CGFloat
 }
 
@@ -31,6 +33,16 @@ final class ChatPaneStore {
             models.removeAll()
             order.removeAll()
             self.services = services
+        }
+        // A cached model can outlive its repository entry: the repository
+        // invalidates the old object and mints a new one under the same
+        // presentation key. Reusing that stale model would pin the page to a
+        // closed session, so drop it before the identity/key lookup.
+        for (key, model) in Array(models) where model.session !== session
+            && model.session.presentationKey == session.presentationKey
+            && !model.session.isValid {
+            models.removeValue(forKey: key)
+            order.removeAll { $0 == key }
         }
         // A local creation is renamed to the server id in place: the same
         // session object can still sit under its old key.

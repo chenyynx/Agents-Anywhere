@@ -37,7 +37,8 @@ struct NewSessionView: View, Equatable {
         .code
     }
     private var controls: ChatControlMetrics {
-        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile)
+        .init(bodyLineHeight: bodyLineHeight, profile: composerProfile,
+              keyboardVisible: keyboardOnScreen)
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {

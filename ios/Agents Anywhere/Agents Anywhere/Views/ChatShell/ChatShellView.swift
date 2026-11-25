@@ -42,7 +42,15 @@ struct ChatShellView: View {
         }
         .onChange(of: layout, initial: true) { _, next in sidebar.setLayout(next) }
         .onChange(of: tabShellActive, initial: true) { _, active in
-            if active { loadPanes(appState.clientScope) }
+            if active {
+                // A size-class return re-enters the tab shell with the same
+                // client scope; the saved panes may have gone stale while the
+                // legacy shell owned the selection, so force the reload.
+                panesScope = nil
+                loadPanes(appState.clientScope)
+            } else {
+                chatPane.retain(legacyChatSessionIDs(appState.chatSelection))
+            }
         }
         .onChange(of: appState.clientScope, initial: true) { _, scope in
             loadPanes(scope)
@@ -52,6 +60,11 @@ struct ChatShellView: View {
             // releases models that are neither the root nor on the device
             // stack.
             syncPanesFromSelection(next)
+            if !tabShellActive {
+                // The legacy shell has no `panes`; only the selected session
+                // stays alive, exactly like the old view-owned model.
+                chatPane.retain(legacyChatSessionIDs(next))
+            }
         }
         .onChange(of: panes) { _, next in
             chatPane.retain(liveChatSessionIDs(next))
@@ -160,14 +173,23 @@ struct ChatShellView: View {
 
     @ViewBuilder private var chatTabRoot: some View {
         if let services = appState.nativeChatServices {
-            if case let .session(id) = selection {
+            if let id = chatRootSessionID {
                 sessionPage(id: id, services: services)
             } else {
                 newSessionPage(services: services)
             }
         } else {
-            shellPlaceholderPage
+            shellPlaceholderPage()
         }
+    }
+
+    /// What the Chat tab renders. `panes` owns the tab shell's navigation;
+    /// `selection` is the cross-shell input and only seeds the first frame
+    /// before `loadPanes` has run (no restore flash).
+    private var chatRootSessionID: V2SessionID? {
+        if panesScope == nil, case let .session(id) = selection { return id }
+        if case let .session(id) = panes.chatRoot { return id }
+        return nil
     }
 
     private var devicesTabRoot: some View {
@@ -175,8 +197,10 @@ struct ChatShellView: View {
             DevicesListPage(
                 devices: sidebarDevices,
                 isLoading: appState.isDashboardLoading && !appState.hasLoadedConnectors,
+                error: appState.connectorsError,
                 onMenu: toggleSidebar,
-                onOpen: { id in panes.openDevice(id) }
+                onOpen: { id in panes.openDevice(id) },
+                onRetry: { await appState.refreshDashboard() }
             )
             .navigationDestination(for: ShellDevicesRoute.self) { route in
                 switch route {
@@ -227,7 +251,7 @@ struct ChatShellView: View {
             )
             .id(connectorId)
         } else {
-            shellPlaceholderPage
+            shellPlaceholderPage(showsMenuButton: false)
         }
     }
 
@@ -246,7 +270,7 @@ struct ChatShellView: View {
                 .equatable()
                 .id(session.presentationKey)
         } else {
-            shellPlaceholderPage
+            shellPlaceholderPage(showsMenuButton: false)
         }
     }
 
@@ -260,7 +284,7 @@ struct ChatShellView: View {
                 newSessionPage(services: services)
             }
         } else {
-            shellPlaceholderPage
+            shellPlaceholderPage()
         }
     }
 
@@ -298,7 +322,7 @@ struct ChatShellView: View {
             )
             .id(connectorId)
         } else {
-            shellPlaceholderPage
+            shellPlaceholderPage()
         }
     }
 
@@ -328,18 +352,25 @@ struct ChatShellView: View {
             onOpenDevice: openDevice,
             onCreated: { session in
                 appState.updateSession(session)
-                if case .newSession = selection { openSession(session.id) }
+                // The page the creation started from may have been left while
+                // the request was in flight; only navigate if it still owns
+                // the Chat tab (or the legacy selection).
+                let stillWanted = tabShellActive ? chatRootSessionID == nil : selection == .newSession
+                if stillWanted { openSession(session.id) }
             },
             onRefresh: { await appState.refreshDashboard(); return appState.connectors })
             .equatable()
             .id(newSessionPresentationID)
     }
 
-    private var shellPlaceholderPage: some View {
+    /// Pushed pages leave the leading bar slot to the system back button; the
+    /// root keeps the drawer hamburger.
+    private func shellPlaceholderPage(showsMenuButton: Bool = true) -> some View {
         ChatShellPlaceholderPage(
             isConnecting: appState.isRetryingServerConnection,
             title: selectedContentTitle ?? "",
-            onOpenSidebar: openSidebar
+            onOpenSidebar: openSidebar,
+            showsMenuButton: showsMenuButton
         )
     }
 
@@ -467,7 +498,12 @@ struct ChatShellView: View {
         case let .session(id):
             loaded.chatRoot = .session(id)
         case let .device(id):
-            if loaded.devicesPath.isEmpty { loaded.openDevice(id) }
+            // Keep a saved stack only when it belongs to the same device;
+            // the cross-shell selection wins over a stale path.
+            if case let .device(first)? = loaded.devicesPath.first, first == id {
+                break
+            }
+            loaded.openDevice(id)
         }
         panes = loaded
         panesScope = scope
@@ -477,9 +513,10 @@ struct ChatShellView: View {
         guard tabShellActive else { return }
         switch next {
         case .newSession:
-            if panes.selectedTab != .chat || panes.chatRoot != .newSession {
-                panes.startNewChat()
-            }
+            // Only the Chat root resets. Deleting a device or archiving a
+            // session also writes `.newSession`; those flows must not drag the
+            // user out of the Devices tab.
+            if panes.chatRoot != .newSession { panes.chatRoot = .newSession }
         case let .session(id):
             if panes.chatRoot != .session(id) {
                 panes.openChatSession(id)
@@ -507,6 +544,13 @@ struct ChatShellView: View {
             if case let .session(id) = route { ids.insert(id) }
         }
         return ids
+    }
+
+    /// The legacy shell has no pane cache: its only live session is the one
+    /// the selection shows.
+    private func legacyChatSessionIDs(_ selection: ChatShellSelection) -> Set<V2SessionID> {
+        if case let .session(id) = selection { return [id] }
+        return []
     }
 
     // MARK: - Navigation actions
@@ -547,6 +591,12 @@ struct ChatShellView: View {
     }
 
     private func removeConnector(_ id: V2ConnectorID) {
+        // Resolve before the removal drops the connector's sessions from
+        // `appState.sessions`.
+        var clearsChatRoot = false
+        if case let .session(rootID) = panes.chatRoot {
+            clearsChatRoot = appState.sessions.first { $0.id == rootID }?.connectorId == id
+        }
         appState.removeConnector(connectorId: id)
         if tabShellActive {
             let referencesDevice = panes.devicesPath.contains { route in
@@ -554,8 +604,16 @@ struct ChatShellView: View {
                 return false
             }
             if referencesDevice { panes.devicesPath.removeAll() }
+            if clearsChatRoot {
+                panes.chatRoot = .newSession
+                // The Chat root is the one the Chat tab renders; reset the
+                // cross-shell pointer with it. Unrelated roots (and a stale
+                // device pointer) are left alone so the Devices tab stays put.
+                selection = .newSession
+            }
+        } else {
+            selection = .newSession
         }
-        selection = .newSession
     }
 
     private func renameSession(_ id: V2SessionID, title: String) {
@@ -574,7 +632,23 @@ struct ChatShellView: View {
         Task {
             let shouldArchive = appState.sessions.first { $0.id == id }?.archived != true
             let changed = await appState.setSessionArchived(sessionId: id, archived: shouldArchive)
-            if changed && shouldArchive, selectedSessionId == id {
+            guard changed, shouldArchive else { return }
+            if tabShellActive {
+                // The archived session may be the Chat root, the top of the
+                // Devices stack, or both. Remove exactly those references and
+                // stay on the tab the user is already on.
+                var resetsChatRoot = false
+                if case let .session(rootID) = panes.chatRoot, rootID == id {
+                    panes.chatRoot = .newSession
+                    resetsChatRoot = true
+                }
+                if case let .session(topID)? = panes.devicesPath.last, topID == id {
+                    panes.devicesPath.removeLast()
+                }
+                if resetsChatRoot {
+                    selection = .newSession
+                }
+            } else if selectedSessionId == id {
                 selection = .newSession
             }
         }
@@ -606,6 +680,7 @@ private struct ChatShellPlaceholderPage: View {
     let isConnecting: Bool
     let title: String
     let onOpenSidebar: () -> Void
+    var showsMenuButton = true
 
     var body: some View {
         Color(.systemBackground)
@@ -615,7 +690,8 @@ private struct ChatShellPlaceholderPage: View {
                         .font(.footnote).foregroundStyle(.secondary).padding(24)
                 }
             }
-            .modifier(ChatPageToolbar(title: title, onMenu: onOpenSidebar))
+            .modifier(ChatPageToolbar(title: title, onMenu: onOpenSidebar,
+                showsMenuButton: showsMenuButton))
     }
 }
 

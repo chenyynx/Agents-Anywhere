@@ -42,10 +42,15 @@ final class SessionChatModel {
     private(set) var blockedSendTick = 0
     var settingsError: String?
     private(set) var isOpeningPrepared = false
-    /// The transcript's opening bottom position is armed once per open (and
-    /// once per renderer rebuild). Re-entering the tab must keep the reader's
-    /// position instead of snapping back to the bottom.
+    /// The transcript's opening bottom position is armed once per open.
+    /// Re-entering the tab must keep the reader's position instead of
+    /// snapping back to the bottom; a renderer switch is handled by
+    /// `takeOpeningRenderModeChange`.
     @ObservationIgnored private(set) var hasArmedOpeningPosition = false
+    /// The renderer that made the last opening placement. A switch rebuilds
+    /// the bridge into a different item space, which cannot restore the old
+    /// anchor.
+    @ObservationIgnored private var placedOpeningRenderMode: String?
     /// The opening refresh (`repository.open`) finished, successfully or not.
     /// A cached window can be ready for display before that read returns; the
     /// viewport's automatic latest load must wait for it or the two reads race.
@@ -400,6 +405,10 @@ final class SessionChatModel {
         guard !Task.isCancelled else { return }
         await completeQueuedUploads()
         guard !Task.isCancelled else { return }
+        // A failed open stays uncompleted so the next appearance can retry,
+        // exactly like the old view-owned model did on every visit. The error
+        // is already surfaced through `openingError`.
+        guard openingError == nil else { return }
         hasCompletedOpening = true
     }
 
@@ -423,10 +432,14 @@ final class SessionChatModel {
         return true
     }
 
-    /// A renderer rebuild creates a fresh bridge that needs its own opening
-    /// position even though the model itself stayed open.
-    func resetOpeningPositionArm() {
-        hasArmedOpeningPosition = false
+    /// Whether this bridge must land at the bottom because the renderer
+    /// changed since the model last placed a transcript. The other renderer
+    /// builds a different item space, so an anchor saved in one cannot be
+    /// restored in the other. Also remembers the mode this placement used.
+    func takeOpeningRenderModeChange(_ mode: String) -> Bool {
+        defer { placedOpeningRenderMode = mode }
+        guard let placedOpeningRenderMode else { return false }
+        return placedOpeningRenderMode != mode
     }
 
     func prepareOpening() async {

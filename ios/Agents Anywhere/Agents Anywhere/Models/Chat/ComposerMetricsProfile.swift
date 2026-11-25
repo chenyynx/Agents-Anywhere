@@ -53,6 +53,14 @@ nonisolated struct ComposerMetricsProfile: Equatable, Sendable {
         textInset + editorHeight + textToActions + touchTarget + expandedBottomInset
     }
 
+    /// The visible gap under the card. The expanded margin is the official
+    /// keyboard clearance (≈8.7 pt above the keyboard); with no keyboard the
+    /// expanded card sits on the safe area exactly like the collapsed bar, so
+    /// the gap to the tab bar does not change with the composer state.
+    func bottomMargin(expanded: Bool, keyboardVisible: Bool) -> CGFloat {
+        expanded && keyboardVisible ? expandedBottomMargin : collapsedBottomMargin
+    }
+
     /// Chat keeps the current AA bar: a capsule scaled from the body line
     /// height, 32 pt collapsed / 12 pt expanded, 10 pt above the safe area.
     static func chat(bodyLineHeight: CGFloat) -> Self {

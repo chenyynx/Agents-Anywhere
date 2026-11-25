@@ -29,6 +29,7 @@ struct DeviceManagementView: View {
     @State private var model = DeviceManagementModel()
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.shellTabBarActive) private var shellTabBarActive
     @State private var toasts = ChatToastStore()
     @State private var isRenaming = false
     @State private var proposedName = ""
@@ -54,6 +55,12 @@ struct DeviceManagementView: View {
     }
     private var canManage: Bool { dashboard.canWrite && !model.isDeviceActionRunning && !model.isArchiveActionRunning && !busy }
     private var canReadFiles: Bool { dashboard.canWrite && connector.status == .online }
+    /// Official FAB sits ~1.3 pt above the home-indicator safe area (2 pt
+    /// here). In the tab shell that safe area is the Liquid Glass bar, so the
+    /// FAB keeps the composer's 8 pt gap instead of looking pinned to it.
+    private var fabBottomPadding: CGFloat {
+        shellTabBarActive ? ShellTabBarMetrics.composerGap : 2
+    }
     private var workspaceChoices: [WorkspaceDirectoryChoice] {
         WorkspaceDirectoryChoice.recent(connectorID: connector.id, deviceOS: connector.deviceOs,
             home: nil, projects: deviceProjects, sessions: model.sessions)
@@ -136,7 +143,7 @@ struct DeviceManagementView: View {
             if !model.isSelectingSessions {
                 DeviceNewSessionFab { onNewSession(nil) }
                     .padding(.trailing, DevicePageStyle.fabTrailing)
-                    .padding(.bottom, 2)
+                    .padding(.bottom, fabBottomPadding)
             }
         }
         .onChange(of: allSessions, initial: true) { _, values in model.updateSessions(connectorId: connector.id, allSessions: values) }

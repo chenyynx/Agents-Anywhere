@@ -33,6 +33,21 @@ import Testing
         #expect(profile.expandAnimation == .spring(response: 0.22, dampingFraction: 0.77))
     }
 
+    @Test func expandedBottomMarginIsKeyboardClearanceOnly() {
+        let code = ComposerMetricsProfile.code
+        #expect(code.bottomMargin(expanded: false, keyboardVisible: false) == 0)
+        #expect(code.bottomMargin(expanded: false, keyboardVisible: true) == 0)
+        #expect(code.bottomMargin(expanded: true, keyboardVisible: true) == 8)
+        // Keyboard down: the expanded card sits on the safe area exactly like
+        // the collapsed bar, so the tab-bar gap does not change with the
+        // composer state (pp 2026-11-26).
+        #expect(code.bottomMargin(expanded: true, keyboardVisible: false) == 0)
+
+        let chat = ComposerMetricsProfile.chat(bodyLineHeight: 22)
+        #expect(chat.bottomMargin(expanded: true, keyboardVisible: false) == 10)
+        #expect(chat.bottomMargin(expanded: true, keyboardVisible: true) == 10)
+    }
+
     @Test func chatProfileKeepsTheCurrentBar() {
         let profile = ComposerMetricsProfile.chat(bodyLineHeight: 22)
         #expect(profile.collapsedHorizontalInset == 32)

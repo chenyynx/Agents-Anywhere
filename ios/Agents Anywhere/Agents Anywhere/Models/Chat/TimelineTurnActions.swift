@@ -304,6 +304,44 @@ enum TimelineTurnActions {
         return coverage
     }
 
+    /// One pass for the two row folds the adapter runs on every refresh: the
+    /// monotonic background latch and the state-coverage watermarks. They read
+    /// the same rows with the same per-row JSON probes (`parentItemId`,
+    /// background hand-off), and the 2026-11-25 streaming probe attributed
+    /// 12 ms per tick to this section; two full scans became one.
+    nonisolated struct FooterScanResult: Equatable {
+        var latchedBackgroundIDs: Set<String>
+        var coverage: FooterStateCoverage
+    }
+
+    static func footerScan<S: Sequence>(rows: S,
+                                        existing: Set<String>,
+                                        stateSeq: Int) -> FooterScanResult
+    where S.Element == V2TimelineItem {
+        var coverage = FooterStateCoverage()
+        var latched: Set<String> = []
+        var present: Set<String>? = existing.isEmpty ? nil : []
+        for item in rows {
+            present?.insert(item.id)
+            let backgroundFlag = isBackgroundHandoffRow(item)
+            if item.status.isActive, backgroundFlag { latched.insert(item.id) }
+            let seq = item.updatedSeq
+            if seq > coverage.maxAnySeq { coverage.maxAnySeq = seq }
+            guard SubAgentProgress.parentItemID(item) == nil else { continue }
+            let isBackground = existing.contains(item.id)
+                || latched.contains(item.id)
+                || backgroundFlag
+            if isBackground {
+                if seq > coverage.maxBackgroundSeq { coverage.maxBackgroundSeq = seq }
+                continue
+            }
+            if seq > coverage.maxMainSeq { coverage.maxMainSeq = seq }
+        }
+        if let present { latched.formUnion(existing.intersection(present)) }
+        coverage.coversMainRows = coverage.maxMainSeq <= stateSeq
+        return FooterScanResult(latchedBackgroundIDs: latched, coverage: coverage)
+    }
+
     /// The wire's durable answer for the latest bucket, or nil when it cannot
     /// answer.
     ///

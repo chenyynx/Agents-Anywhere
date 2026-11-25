@@ -2456,9 +2456,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if AA_TIMELINE_PROBE
         let probeIndexStart = CACurrentMediaTime()
 #endif
-        let timelineRowIDs = Set(model.timeline.rows.map(\.id))
-        let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
-                                                          timelineRowIDs: timelineRowIDs)
+        // The routing set only exists for notices. Most streaming refreshes
+        // carry none, and building it cost a ~2,900-row set on every tick.
+#if AA_TIMELINE_PROBE
+        let probeNoticesStart = CACurrentMediaTime()
+#endif
+        let tailNotices: [SessionNoticeModel]
+        if notices.isEmpty {
+            tailNotices = []
+        } else {
+            let timelineRowIDs = Set(model.timeline.rows.map(\.id))
+            tailNotices = SessionNoticeRouting.tailNotices(
+                notices, sessionID: model.session.id,
+                timelineRowIDs: timelineRowIDs)
+        }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.notices", seconds: CACurrentMediaTime() - probeNoticesStart)
+#endif
         // The presentation retires a pending row one refresh after its echo
         // row publishes; hiding it as soon as the echo row is on screen keeps
         // one message from drawing as two bubbles (dashed + settled) for a
@@ -2554,9 +2569,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // returned when a later publication carried the flag again). The fold
         // is a pure function so `swift test` covers its wiring; the adapter
         // itself is outside the ClientCore target.
-        backgroundDispatchedItemIDs = TimelineTurnActions.footerBackgroundLatch(
-            existing: backgroundDispatchedItemIDs,
-            rows: model.timeline.rows.lazy.map(\.value))
         // A pending bubble whose echo row is already in the timeline is no
         // longer opening a new turn; it must not force the previous turn's
         // commit or the new turn's footer.
@@ -2606,6 +2618,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             case .inactive, .connecting, .connected, .reconnecting: return false
             }
         }()
+        // One pass for the latch and the coverage watermarks; both read the
+        // same rows with the same per-row JSON probes (2026-11-25 probe:
+        // 12 ms per stream tick in `adapter.index`).
+#if AA_TIMELINE_PROBE
+        let probeFooterStart = CACurrentMediaTime()
+#endif
+        let footerScan = TimelineTurnActions.footerScan(
+            rows: model.timeline.rows.lazy.map(\.value),
+            existing: backgroundDispatchedItemIDs,
+            stateSeq: model.session.runtime.state?.updatedSeq ?? 0)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.footer", seconds: CACurrentMediaTime() - probeFooterStart)
+#endif
+        backgroundDispatchedItemIDs = footerScan.latchedBackgroundIDs
         let runtimeState = model.session.runtime.state
         // A stale state still seals when it was written after the newest row
         // that can move the main turn; a main row newer than the state is
@@ -2618,10 +2645,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // only rows newer than the idle state were the child rows and the
         // card of the running background agent). The latch covers a card
         // whose wire flag was dropped by a later publication.
-        let coverage = TimelineTurnActions.footerStateCoverage(
-            rows: model.timeline.rows.lazy.map(\.value),
-            stateSeq: runtimeState?.updatedSeq ?? 0,
-            latchedBackgroundIDs: backgroundDispatchedItemIDs)
+        let coverage = footerScan.coverage
         // `footerRuntimeStateIsTrustworthy` already handles the missing state
         // and the fresh state; only the stale-state coverage decision lives
         // here.
@@ -2762,7 +2786,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         noteTurnFooterState(groups: groups)
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
+#if AA_TIMELINE_PROBE
+        let probeStreamingStart = CACurrentMediaTime()
+#endif
         updateCodeStreaming(groups: groups)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.streaming", seconds: CACurrentMediaTime() - probeStreamingStart)
+#endif
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }

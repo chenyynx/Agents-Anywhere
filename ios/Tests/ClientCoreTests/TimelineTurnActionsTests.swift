@@ -762,6 +762,31 @@ import Testing
         #expect(coverage.coversMainRows)
     }
 
+    /// The fused scan must be indistinguishable from the two folds it replaced:
+    /// the latch's retained set and the coverage watermarks both feed the
+    /// footer decision, and a divergence would silently hide or show a footer.
+    @Test func fusedFooterScanMatchesTheTwoSeparateFolds() throws {
+        let rows = try [timelineItem("user", seq: 100, type: "message",
+                                     role: "user", status: "done"),
+                        timelineItem("reply", seq: 120, type: "message",
+                                     role: "assistant", status: "done"),
+                        timelineItem("card", seq: 900, type: "tool", role: "assistant",
+                                     content: ["kind": "agent_call", "action": "invoke",
+                                               "agents": ["a": ["status": "running",
+                                                                "isBackgrounded": true]]]),
+                        timelineItem("child", seq: 950, type: "tool",
+                                     role: "assistant", parent: "task")]
+        let existing: Set<String> = ["card", "gone"]
+        let fused = TimelineTurnActions.footerScan(
+            rows: rows, existing: existing, stateSeq: 500)
+        let latch = TimelineTurnActions.footerBackgroundLatch(
+            existing: existing, rows: rows)
+        let coverage = TimelineTurnActions.footerStateCoverage(
+            rows: rows, stateSeq: 500, latchedBackgroundIDs: latch)
+        #expect(fused.latchedBackgroundIDs == latch)
+        #expect(fused.coverage == coverage)
+    }
+
     /// The other direction: a **foreground** Agent call is ordinary main-agent
     /// work. A card newer than the stale state is activity it never saw, so
     /// the seal still waits — the exclusion is the background claim, not the

@@ -3848,10 +3848,16 @@ private struct TimelineCollectionOlderPromptRow: View {
     var body: some View {
         Group {
             if isLoading {
-                HStack(spacing: 8) {
-                    ProgressView().progressViewStyle(.circular).controlSize(.small)
-                    Text(String(localized: "正在加载更早的消息…"))
-                }.accessibilityElement(children: .combine)
+                // Official `LoadOlderHeader` draws the spinner alone: 20x20 pt,
+                // horizontally centred, no label (device screenshot 2026-11-25:
+                // bbox 560–620 x 363–422 px at 3x = 20.3x20.0 pt, centre on the
+                // column axis; the row content is 44 pt tall with the standard
+                // 5 pt row margin above and the paging row's zero list gap
+                // below). The words stay as the accessibility label.
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .accessibilityLabel(Text(String(localized: "正在加载更早的消息")))
+                    .frame(maxWidth: .infinity, minHeight: 44)
             } else if hasOlderItems {
                 Button { onLoad?() } label: {
                     Text(pullReady ? String(localized: "松开加载更早的消息") : String(localized: "加载更早的消息"))

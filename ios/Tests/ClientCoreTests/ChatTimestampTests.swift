@@ -73,4 +73,31 @@ struct ChatTimestampTests {
     func absentTimestamp() {
         #expect(ChatTimestamp.parse("") == nil)
     }
+
+    @Test("cached formatters do not leak across locales or zones")
+    func cacheIsKeyedByLocaleAndZone() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let english = Locale(identifier: "en_US")
+        let reply = date(2026, 10, 17, 22, 13)
+        let now = date(2026, 10, 17, 23, 0)
+
+        // Same instant, two zones: 22:13 +08 is 14:13 UTC.
+        #expect(ChatTimestamp.string(reply, now: now, calendar: calendar, locale: locale) == "22:13")
+        #expect(ChatTimestamp.string(reply, now: now, calendar: utc, locale: english) == "14:13")
+        // Reverse order must hit the same two entries, not the first one.
+        #expect(ChatTimestamp.string(reply, now: now, calendar: utc, locale: english) == "14:13")
+        #expect(ChatTimestamp.string(reply, now: now, calendar: calendar, locale: locale) == "22:13")
+
+        // The weekday pattern is localised per locale, not shared.
+        let mondayUTCDate = utc.date(from: DateComponents(
+            year: 2026, month: 10, day: 12, hour: 9, minute: 5))!
+        let nowUTCDate = utc.date(from: DateComponents(
+            year: 2026, month: 10, day: 17, hour: 22, minute: 30))!
+        #expect(ChatTimestamp.string(mondayUTCDate, now: nowUTCDate,
+                                      calendar: utc, locale: english) == "Monday 09:05")
+        #expect(ChatTimestamp.string(date(2026, 10, 12, 9, 5),
+                                      now: date(2026, 10, 17, 22, 30),
+                                      calendar: calendar, locale: locale) == "星期一 09:05")
+    }
 }

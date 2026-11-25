@@ -2478,13 +2478,28 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // row publishes; hiding it as soon as the echo row is on screen keeps
         // one message from drawing as two bubbles (dashed + settled) for a
         // frame (pp 2026-11-17). The queue row already uses the same rule.
-        let echoedClientIDs = Set(model.timeline.rows.compactMap { row -> String? in
-            guard row.value.role == .user else { return nil }
-            return row.value.source["clientMessageId"]?.stringValue
-        })
-        let pending = model.timeline.pendingMessages.filter {
-            !echoedClientIDs.contains($0.id)
+        //
+        // Only pending records need the echo set. Most live refreshes carry
+        // none, and building it scanned every window row (2,900+) with a JSON
+        // field probe on each stream tick.
+#if AA_TIMELINE_PROBE
+        let probeEchoStart = CACurrentMediaTime()
+#endif
+        let pendingRecords = model.timeline.pendingMessages
+        let pending: [V2PendingMessage]
+        if pendingRecords.isEmpty {
+            pending = []
+        } else {
+            let echoedClientIDs = Set(model.timeline.rows.compactMap { row -> String? in
+                guard row.value.role == .user else { return nil }
+                return row.value.source["clientMessageId"]?.stringValue
+            })
+            pending = pendingRecords.filter { !echoedClientIDs.contains($0.id) }
         }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.echo", seconds: CACurrentMediaTime() - probeEchoStart)
+#endif
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.canLoadOlder || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
@@ -2502,6 +2517,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         for message in pending where pendingByID[message.id] == nil {
             pendingByID[message.id] = message
         }
+#if AA_TIMELINE_PROBE
+        let probeRowMapStart = CACurrentMediaTime()
+#endif
         var rowToItem: [String: TimelineListItem] = [:]
         for group in groups {
             let item = TimelineListItem.group(group.id)
@@ -2509,6 +2527,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowToItem[row.id] = item
             }
         }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.rowmap", seconds: CACurrentMediaTime() - probeRowMapStart)
+#endif
         // The interrupted-turn notice is a footer of the unit that carries the
         // stopped turn's last row (a message group when there is a partial
         // answer, otherwise the step group). A cold open can recover the
@@ -2675,6 +2697,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn,
                               latchedBackgroundIDs: backgroundDispatchedItemIDs)
+#if AA_TIMELINE_PROBE
+        let probeTurnActionsStart = CACurrentMediaTime()
+#endif
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2739,6 +2764,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     runtimeStateSeq: runtimeState?.updatedSeq ?? 0,
                     connection: self.model.session.connection)
             })
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.turnActions", seconds: CACurrentMediaTime() - probeTurnActionsStart)
+#endif
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is
         // already finished, so the closed state's footers stay. Browsing an

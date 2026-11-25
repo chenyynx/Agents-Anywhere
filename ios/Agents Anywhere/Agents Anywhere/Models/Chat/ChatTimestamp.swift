@@ -10,7 +10,7 @@ nonisolated enum ChatTimestamp {
     /// - Same week: `星期一 22:13`
     /// - Older: `3月5日 22:13`
     static func string(_ date: Date, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
-        let time = formatter("HH:mm", locale: locale, calendar: calendar).string(from: date)
+        let time = stamp(date, format: "HH:mm", locale: locale, calendar: calendar)
         if calendar.isDate(date, inSameDayAs: now) { return time }
 
         let elapsed = calendar.dateComponents(
@@ -19,10 +19,12 @@ nonisolated enum ChatTimestamp {
             to: calendar.startOfDay(for: now)
         ).day ?? 0
         if elapsed < 7 {
-            let weekday = formatter(weekdayTemplate(locale), locale: locale, calendar: calendar).string(from: date)
+            let weekday = stamp(date, format: template("EEEE", locale: locale),
+                                locale: locale, calendar: calendar)
             return "\(weekday) \(time)"
         }
-        let day = formatter(monthDayTemplate(locale), locale: locale, calendar: calendar).string(from: date)
+        let day = stamp(date, format: template("MMMd", locale: locale),
+                        locale: locale, calendar: calendar)
         return "\(day) \(time)"
     }
 
@@ -59,7 +61,29 @@ nonisolated enum ChatTimestamp {
         return plainParser.date(from: raw)
     }
 
-    private static func formatter(_ format: String, locale: Locale, calendar: Calendar) -> DateFormatter {
+    /// The action row formats one of these per materialized row. Building a
+    /// `DateFormatter` costs far more than formatting with it, and a fresh one
+    /// per call was left in place when the outline path was fixed
+    /// (`ConversationOutlineRowContent`, 2026-11-21); the device probe caught
+    /// this sibling call site at 16 ms in a single call during a pure scroll
+    /// (2026-11-25). Formatters are mutable classes, so the cache is only ever
+    /// touched under the lock — including the format call itself.
+    private static let stampLock = NSLock()
+    private nonisolated(unsafe) static var stampFormatters: [String: DateFormatter] = [:]
+
+    /// Localised patterns are derived once per locale for the same reason
+    /// (`dateFormat(fromTemplate:)` builds a formatter inside Foundation).
+    private nonisolated(unsafe) static var stampTemplates: [String: String] = [:]
+
+    private static func stamp(_ date: Date, format: String,
+                              locale: Locale, calendar: Calendar) -> String {
+        let key = "\(format)|\(locale.identifier)|\(calendar.identifier)|\(calendar.timeZone.identifier)"
+        stampLock.lock()
+        defer { stampLock.unlock() }
+        if let formatter = stampFormatters[key] { return formatter.string(from: date) }
+        // A reader that keeps switching locale or zone must not grow the table
+        // without bound; one device holds a handful of live styles at once.
+        if stampFormatters.count >= 16 { stampFormatters.removeAll() }
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.calendar = calendar
@@ -68,16 +92,21 @@ nonisolated enum ChatTimestamp {
         // back to the process default, so it is set explicitly.
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = format
-        return formatter
+        stampFormatters[key] = formatter
+        return formatter.string(from: date)
     }
 
-    /// `EEEE` gives the localised full weekday name (`星期一` in zh-Hans).
-    private static func weekdayTemplate(_ locale: Locale) -> String {
-        DateFormatter.dateFormat(fromTemplate: "EEEE", options: 0, locale: locale) ?? "EEEE"
-    }
-
-    /// `MMMd` gives `3月5日` in zh-Hans and `Mar 5` elsewhere.
-    private static func monthDayTemplate(_ locale: Locale) -> String {
-        DateFormatter.dateFormat(fromTemplate: "MMMd", options: 0, locale: locale) ?? "MMM d"
+    /// `EEEE` gives the localised full weekday name (`星期一` in zh-Hans);
+    /// `MMMd` gives `3月5日` there and `Mar 5` elsewhere.
+    private static func template(_ raw: String, locale: Locale) -> String {
+        let key = "\(raw)|\(locale.identifier)"
+        stampLock.lock()
+        defer { stampLock.unlock() }
+        if let cached = stampTemplates[key] { return cached }
+        if stampTemplates.count >= 16 { stampTemplates.removeAll() }
+        let pattern = DateFormatter.dateFormat(
+            fromTemplate: raw, options: 0, locale: locale) ?? raw
+        stampTemplates[key] = pattern
+        return pattern
     }
 }

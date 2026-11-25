@@ -333,6 +333,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// publication carried the flag again). Monotonic for the row's window
     /// life; pruned when the row leaves the window.
     private var backgroundDispatchedItemIDs: Set<String> = []
+    /// Per-group turn facts, keyed by the group's cheap row identity
+    /// (`TimelineTurnActions.GroupFactsKey`). Only the group whose rows moved
+    /// is walked again on a stream tick.
+    private var groupFactsCache: [String: TimelineTurnActions.GroupTurnFacts] = [:]
+    private var groupFactsKeys: [String: TimelineTurnActions.GroupFactsKey] = [:]
+    private var groupFactsLatch: Set<String> = []
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -2700,6 +2706,43 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if AA_TIMELINE_PROBE
         let probeTurnActionsStart = CACurrentMediaTime()
 #endif
+        // Per-group facts memo (`GroupFactsKey`). A stream tick rewrites one
+        // group's rows; every other group reuses last refresh's walk, which is
+        // where `adapter.index.turnActions` spent 4.7 ms (b1625, 301 items).
+        // The latch changes the facts' exclusions, so a latch change drops the
+        // whole table.
+        if groupFactsLatch != backgroundDispatchedItemIDs {
+            groupFactsCache.removeAll(keepingCapacity: true)
+            groupFactsKeys.removeAll(keepingCapacity: true)
+            groupFactsLatch = backgroundDispatchedItemIDs
+        }
+        let groupFactsProvider: (ChatTimelineGroup) -> TimelineTurnActions.GroupTurnFacts = {
+            [weak self] group in
+            guard let self else {
+                return TimelineTurnActions.groupFacts(
+                    for: group,
+                    latchedBackgroundIDs: backgroundDispatchedItemIDs)
+            }
+            let key = TimelineTurnActions.GroupFactsKey(group: group)
+            if self.groupFactsKeys[group.id] == key, let cached = self.groupFactsCache[group.id] {
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteStage("turnActions.memo.hit", seconds: 0)
+#endif
+                return cached
+            }
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage("turnActions.memo.miss", seconds: 0)
+#endif
+            let facts = TimelineTurnActions.groupFacts(
+                for: group, latchedBackgroundIDs: self.backgroundDispatchedItemIDs)
+            self.groupFactsKeys[group.id] = key
+            self.groupFactsCache[group.id] = facts
+            if self.groupFactsCache.count > groups.count * 2 {
+                self.groupFactsCache = self.groupFactsCache.filter { groupsByID[$0.key] != nil }
+                self.groupFactsKeys = self.groupFactsKeys.filter { groupsByID[$0.key] != nil }
+            }
+            return facts
+        }
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2746,6 +2789,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // An older page's trailing bucket is cut by the window, not by
             // its turn end; the durable watermark cannot prove it complete.
             hasNewerItems: model.session.hasNewerItems,
+            // Memoized per-group row facts (see `groupFactsProvider` above).
+            facts: groupFactsProvider,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact

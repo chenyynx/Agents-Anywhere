@@ -2716,12 +2716,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             groupFactsKeys.removeAll(keepingCapacity: true)
             groupFactsLatch = backgroundDispatchedItemIDs
         }
+        let factsLatch = backgroundDispatchedItemIDs
         let groupFactsProvider: (ChatTimelineGroup) -> TimelineTurnActions.GroupTurnFacts = {
             [weak self] group in
             guard let self else {
                 return TimelineTurnActions.groupFacts(
-                    for: group,
-                    latchedBackgroundIDs: backgroundDispatchedItemIDs)
+                    for: group, latchedBackgroundIDs: factsLatch)
             }
             let key = TimelineTurnActions.GroupFactsKey(group: group)
             if self.groupFactsKeys[group.id] == key, let cached = self.groupFactsCache[group.id] {

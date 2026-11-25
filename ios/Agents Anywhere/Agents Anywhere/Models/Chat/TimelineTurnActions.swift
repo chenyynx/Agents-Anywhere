@@ -364,6 +364,9 @@ enum TimelineTurnActions {
         /// Up to three rows that kept the final bucket from committing.
         var activeItemIDs: [String] = []
         var committed = false
+        /// Whether the commit was kept alive by `stickyCommit` rather than a
+        /// fresh proof this pass.
+        var stickyKept = false
         /// The wire's decision for the final bucket; nil means the contract
         /// was unavailable and the runtime-state rule decided.
         var latestTurnSeal: Bool?
@@ -371,6 +374,29 @@ enum TimelineTurnActions {
         var latestTurnID: V2TurnID?
         var latestTurnEndSeq = 0
     }
+
+    /// A footer the state-coverage proof committed, remembered across builds.
+    ///
+    /// `stateCoversMain` is only a proof about the rows the state *saw*. One
+    /// row arriving after the idle state (a late echo, the ledger written
+    /// behind the timeline fence) withdraws that proof on the very next
+    /// refresh, and the bucket flips back the moment the durable id lands —
+    /// the 30 pt action bar blinked out and back within 1.4 s on device
+    /// (2026-11-25 10:28:48.79 commit → 10:28:49.96 withdraw → 10:28:50.17
+    /// commit, content 57535 → 57505 → 57535; the same commit→withdraw pair
+    /// fired 13 times on pure beta that morning). Within the window the
+    /// finished bucket keeps the footer it already showed; a running turn
+    /// (`suppressLatest`) or a different host group still decides on its own.
+    nonisolated struct FooterStickyCommit: Equatable {
+        var hostGroupID: String
+        var decidedAt: TimeInterval
+    }
+
+    /// How long a state-coverage commit outlives its proof. The durable id
+    /// lands 0.4–1.2 s after the idle state (see `latestTurnSeal`), so two
+    /// seconds cover the gap with margin without holding a stale footer on a
+    /// turn that actually resumed.
+    static let footerStickyWindow: TimeInterval = 2
 
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
     /// end a turn but never enter its copied reply.
@@ -412,6 +438,8 @@ enum TimelineTurnActions {
                       connectorOffline: Bool = false,
                       stateCoversMain: Bool = false,
                       hasNewerItems: Bool = false,
+                      stickyCommit: FooterStickyCommit? = nil,
+                      now: TimeInterval = 0,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
                       report: ((FooterBuildReport) -> Void)? = nil)
         -> [String: TimelineTurnAction] {
@@ -580,8 +608,19 @@ enum TimelineTurnActions {
         // pending outgoing bubble) stays the fallback for old servers and
         // runtimes that declare no turn ids.
         let latestIsOver = seal ?? !suppressLatest
+        // A commit the *state* proved (seal == nil) is only as stable as the
+        // rows that state saw. One row arriving after it withdraws the proof
+        // and the footer blinks out until the durable id lands — the 30 pt
+        // bar at 10:28:49.96 in the 2026-11-25 device log. Keep the footer it
+        // already showed on the same host for one short window; a running
+        // turn and a different bucket still decide on their own.
+        var stickyKeeps = false
+        if let stickyCommit, now > 0, !suppressLatest, !hasActiveItems,
+           finalEndGroupID == stickyCommit.hostGroupID {
+            stickyKeeps = now - stickyCommit.decidedAt <= Self.footerStickyWindow
+        }
         var committed = false
-        if (latestIsOver || hasPendingUserMessage), !hasActiveItems {
+        if (latestIsOver || hasPendingUserMessage || stickyKeeps), !hasActiveItems {
             committed = commit()
         }
         report?(FooterBuildReport(endGroupID: finalEndGroupID,
@@ -590,6 +629,7 @@ enum TimelineTurnActions {
                                   hasActiveItems: finalHasActiveItems,
                                   activeItemIDs: finalActiveItemIDs,
                                   committed: committed,
+                                  stickyKept: stickyKeeps,
                                   latestTurnSeal: seal,
                                   bucketTurnID: finalBucketTurnID,
                                   latestTurnID: latestTurnId,

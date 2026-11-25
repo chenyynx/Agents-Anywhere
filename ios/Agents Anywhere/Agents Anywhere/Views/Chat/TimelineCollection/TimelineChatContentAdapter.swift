@@ -321,6 +321,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// publication carried the flag again). Monotonic for the row's window
     /// life; pruned when the row leaves the window.
     private var backgroundDispatchedItemIDs: Set<String> = []
+    /// The host group of a footer the state-coverage proof committed, kept
+    /// briefly so one late row cannot blink the 30 pt bar out and back
+    /// (`FooterStickyCommit`). Cleared by a durable seal and on session
+    /// change.
+    private var stickyFooterCommit: TimelineTurnActions.FooterStickyCommit?
+    private var stickyFooterSessionID: String?
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -439,6 +445,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "replies=\(report.replyCount)",
             "changes=\(report.changeCount)",
             "commit=\(report.committed ? 1 : 0)",
+            "sticky=\(report.stickyKept ? 1 : 0)",
             "latestTurn=\(report.latestTurnID ?? "nil")",
             "bucketTurn=\(report.bucketTurnID ?? "nil")",
             "turnMatch=\(turnMatchLabel)",
@@ -2605,6 +2612,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn,
                               latchedBackgroundIDs: backgroundDispatchedItemIDs)
+        if stickyFooterSessionID != model.session.id {
+            stickyFooterCommit = nil
+            stickyFooterSessionID = model.session.id
+        }
+        let footerClock = CACurrentMediaTime()
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2651,12 +2663,29 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // An older page's trailing bucket is cut by the window, not by
             // its turn end; the durable watermark cannot prove it complete.
             hasNewerItems: model.session.hasNewerItems,
+            // The state-coverage commit this session already showed. A single
+            // row arriving after that state must not withdraw it for the
+            // 0.4–1.2 s the ledger id needs (the 30 pt blink at 2026-11-25
+            // 10:28:49.96).
+            stickyCommit: stickyFooterCommit,
+            now: footerClock,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
             footerHostEligible: { stepGroupsByID[$0.id] == nil },
             report: { report in
+                if report.committed, let host = report.endGroupID {
+                    if report.latestTurnSeal == nil {
+                        // The state proved this one; the proof can break on
+                        // the next row, so remember the host for the window.
+                        self.stickyFooterCommit = TimelineTurnActions.FooterStickyCommit(
+                            hostGroupID: host, decidedAt: footerClock)
+                    } else {
+                        // The durable id proved it; nothing to keep alive.
+                        self.stickyFooterCommit = nil
+                    }
+                }
                 // One line per change: the decision inputs plus what the last
                 // bucket actually held. With the gate probe it turns a missing
                 // footer into a diagnosis instead of a row-count guess.

@@ -183,6 +183,79 @@ import Testing
         #expect(uncovered["r-b"] == nil)
     }
 
+    /// A state-coverage commit is withdrawn by the next row the state never
+    /// saw; the footer it already showed must not blink out and back while
+    /// the ledger id lands (device 2026-11-25 10:28:48.79 → 49.96 → 50.17,
+    /// content 57535 → 57505 → 57535).
+    @Test func aStateCommitOutlivesALateRowWithinTheStickyWindow() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let first = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: true)
+        #expect(first["r-b"]?.copyText == "B")
+        // A row newer than that state withdraws the proof, and the ledger id
+        // still names the previous turn.
+        let sticky = TimelineTurnActions.FooterStickyCommit(
+            hostGroupID: "r-b", decidedAt: 100)
+        let kept = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false, stickyCommit: sticky, now: 101)
+        #expect(kept["r-b"]?.copyText == "B")
+        // Past the window the ordinary rule decides again.
+        let expired = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false, stickyCommit: sticky,
+            now: 100 + TimelineTurnActions.footerStickyWindow + 0.5)
+        #expect(expired["r-b"] == nil)
+    }
+
+    /// The remembered commit must not outlive a resumed turn, a different
+    /// bucket, or a visible running row.
+    @Test func theStickyCommitDoesNotSurviveAResumedTurnOrANewBucket() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        let sticky = TimelineTurnActions.FooterStickyCommit(
+            hostGroupID: "r-b", decidedAt: 100)
+        // The gate reopened: the turn is running again.
+        let running = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false, stickyCommit: sticky, now: 101)
+        #expect(running["r-b"] == nil)
+        // The remembered host is not this bucket's end group.
+        let moved = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false,
+            stickyCommit: TimelineTurnActions.FooterStickyCommit(
+                hostGroupID: "r-a", decidedAt: 100), now: 101)
+        #expect(moved["r-b"] == nil)
+        // A visible running row still vetoes.
+        let active = try rows + [row("tool", type: "tool", status: "running",
+                                     turnId: "turn-b", seq: 22)]
+        let vetoed = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(active, interactionTargets: []),
+            suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false, stickyCommit: sticky, now: 101,
+            footerHostEligible: { $0.id != "tool" })
+        #expect(vetoed["r-b"] == nil)
+    }
+
     /// A scheduled/wake turn has no user bubble; its first assistant row still
     /// names the bucket, so a matching durable id seals it.
     @Test func aScheduledTurnSealsOnAMatchingIdWithoutAUserBubble() throws {

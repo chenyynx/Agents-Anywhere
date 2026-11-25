@@ -138,7 +138,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // that then shrink and drag the phase's target out of the viewport.
         if entry.kind == .toolExpanded,
            entry.id.hasPrefix(Self.gestureRowPrefix),
-           !entry.id.hasPrefix(Self.hostedRowPrefix) {
+           !entry.id.hasPrefix(Self.hostedRowPrefix),
+           // Only the collapsed header is pre-seeded: the expanded row's
+           // height comes from its own fitting. A fixed estimate for both
+           // states pinned the row at 17 pt once the content revision changed
+           // the height key (the fold phase kept `expanded 17.0 == collapsed`).
+           !entry.expanded {
             return .fixed(17)
         }
         return .row
@@ -250,8 +255,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func setExpanded(_ id: String, _ expanded: Bool) {
-        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = entries.firstIndex(where: { $0.id == id }),
+              entries[index].expanded != expanded else { return }
         entries[index].expanded = expanded
+        // The product path reconfigures a row on a content-signature change,
+        // and this provider's signature hashes `revision`. Without the bump
+        // `reloadFromContent` saw the same input and never reconfigured the
+        // row: the collapse and gesture-freeze phases stayed at the expanded
+        // height on beta head (2026-11-24 baseline run 45456636689).
+        entries[index].revision += 1
     }
 
     func setTailStatusLine(_ present: Bool) {

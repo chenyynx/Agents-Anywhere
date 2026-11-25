@@ -339,6 +339,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var groupFactsCache: [String: TimelineTurnActions.GroupTurnFacts] = [:]
     private var groupFactsKeys: [String: TimelineTurnActions.GroupFactsKey] = [:]
     private var groupFactsLatch: Set<String> = []
+    /// Whether this refresh recomputed any group's facts (diagnostics).
+    private var factsMissedThisRefresh = false
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -457,6 +459,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "replies=\(report.replyCount)",
             "changes=\(report.changeCount)",
             "commit=\(report.committed ? 1 : 0)",
+            "facts=\(factsMissedThisRefresh ? "miss" : "hit")",
             "latestTurn=\(report.latestTurnID ?? "nil")",
             "bucketTurn=\(report.bucketTurnID ?? "nil")",
             "turnMatch=\(turnMatchLabel)",
@@ -2712,10 +2715,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // The latch changes the facts' exclusions, so a latch change drops the
         // whole table.
         if groupFactsLatch != backgroundDispatchedItemIDs {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.turnfacts.reset",
+                sessionID: model.session.id,
+                detail: ["cleared": String(groupFactsCache.count),
+                         "latch": String(backgroundDispatchedItemIDs.count)],
+                dedupe: false)
             groupFactsCache.removeAll(keepingCapacity: true)
             groupFactsKeys.removeAll(keepingCapacity: true)
             groupFactsLatch = backgroundDispatchedItemIDs
         }
+        factsMissedThisRefresh = false
         let factsLatch = backgroundDispatchedItemIDs
         let groupFactsProvider: (ChatTimelineGroup) -> TimelineTurnActions.GroupTurnFacts = {
             [weak self] group in
@@ -2730,6 +2740,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #endif
                 return cached
             }
+            self.factsMissedThisRefresh = true
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage("turnActions.memo.miss", seconds: 0)
 #endif

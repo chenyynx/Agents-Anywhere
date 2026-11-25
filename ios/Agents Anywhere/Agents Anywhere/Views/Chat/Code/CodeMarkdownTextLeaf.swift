@@ -373,6 +373,8 @@ final class CodeMarkdownTextStackView: UIView {
 
     private var pendingBuild: PendingBuild?
     private var chunkScheduled = false
+    /// Reset whenever a new spread build starts; see `timeline.leaf.partial`.
+    private var partialLogged = false
     private static let minChunkSize = 3
     private static let maxChunkSize = 18
     /// Per-turn budget for the spread build. A big message that only built 3
@@ -422,6 +424,7 @@ final class CodeMarkdownTextStackView: UIView {
             builtKey = ""
             builtWidth = -1
             builtGeneration = -1
+            partialLogged = false
             pendingBuild = PendingBuild(
                 document: document,
                 key: key,
@@ -448,6 +451,20 @@ final class CodeMarkdownTextStackView: UIView {
 
     private func buildNextChunk() {
         guard var pending = pendingBuild else { return }
+        // A row that reached the screen more than a second ago and is still
+        // filling in means the spread build is not keeping up — the sliced
+        // first frame (`applyDocument`) would leave it visibly incomplete.
+        // One line per pending build; release builds only.
+        if window != nil, !partialLogged,
+           CACurrentMediaTime() - pending.startedAt > 1 {
+            partialLogged = true
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.leaf.partial",
+                detail: ["built": String(pending.nextIndex),
+                         "total": String(pending.document.blocks.count),
+                         "width": String(Int(pending.width.rounded()))],
+                dedupe: false)
+        }
         var built = 0
         let remaining = pending.document.blocks.count - pending.nextIndex
         // Finish large documents in fewer turns: a quarter of what is left,

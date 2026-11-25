@@ -158,6 +158,18 @@ final class TimelineCollectionController: UIViewController {
     /// arrival, records at most one `timeline.row.overlap` line, and stops
     /// after that. Remove once the root cause is fixed.
     private var flightProbeActive = false
+    /// Low-frequency production diagnostics for the update paths this branch
+    /// introduced. The probe overlay only exists in the AA_TIMELINE_PROBE
+    /// build, so a release build needs its own evidence: which path last
+    /// updated an item, how often each path ran, rows stuck at an estimate
+    /// height, and a facts-cache reset.
+    private var lastUpdatePath: (itemID: String, path: String)?
+    private var diagFastHits = 0
+    private var diagSnapshotApplies = 0
+    private var diagLastFastItem = "-"
+    private var diagLastSnapshotReason = "-"
+    private var estimateWatch: [String: CFTimeInterval] = [:]
+    private var estimateLogged: Set<String> = []
     private var flightProbeLogged = false
     private var flightProbeHeightChanges = 0
     private var flightProbeArmedAt: CFTimeInterval = 0
@@ -346,6 +358,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification, object: nil)
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         // The SwiftUI timeline asked for `.scrollEdgeEffectStyle(.soft, for:
@@ -665,6 +680,66 @@ final class TimelineCollectionController: UIViewController {
                 dedupe: false)
             return
         }
+    }
+
+    /// Which channel last updated one item (`fast` / `snapshot`), written only
+    /// when it changes. A row whose content stops matching its model shows up
+    /// here first: this is the last path that touched it.
+    private func noteUpdatePath(_ itemID: String, path: String, reason: String) {
+        if let last = lastUpdatePath, last.itemID == itemID, last.path == path { return }
+        lastUpdatePath = (itemID, path)
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.update.path",
+            sessionID: diagnosticSessionID,
+            detail: ["item": itemID, "path": path, "reason": reason],
+            dedupe: false)
+    }
+
+    /// One line per backgrounding: how often each update path ran, so a
+    /// release build shows whether the fast path silently stopped engaging.
+    private func noteUpdateSummary() {
+        guard diagFastHits > 0 || diagSnapshotApplies > 0 else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.update.summary",
+            sessionID: diagnosticSessionID,
+            detail: ["fast": String(diagFastHits),
+                     "apply": String(diagSnapshotApplies),
+                     "lastFastItem": diagLastFastItem,
+                     "lastApplyReason": diagLastSnapshotReason],
+            dedupe: false)
+    }
+
+    @objc private func appDidEnterBackground() { noteUpdateSummary() }
+
+    /// A visible row that still has no measured or precalc height seconds after
+    /// it appeared means the offscreen-measure parking never released it — its
+    /// height would stay an estimate. One line per item.
+    private func noteEstimateStalls() {
+        guard let content, let collectionView, columnWidth > 0 else { return }
+        let now = CACurrentMediaTime()
+        var live: Set<String> = []
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let item = dataSource.itemIdentifier(for: indexPath) else { continue }
+            live.insert(item.itemID)
+            let key = content.heightKey(for: item, width: columnWidth)
+            if layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                estimateWatch[item.itemID] = nil
+                estimateLogged.remove(item.itemID)
+                continue
+            }
+            let since = estimateWatch[item.itemID] ?? now
+            estimateWatch[item.itemID] = since
+            guard now - since >= 2, !estimateLogged.contains(item.itemID) else { continue }
+            estimateLogged.insert(item.itemID)
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.height.estimate",
+                sessionID: diagnosticSessionID,
+                detail: ["item": item.itemID,
+                         "heldMs": String(Int(((now - since) * 1000).rounded())),
+                         "visible": "1"],
+                dedupe: false)
+        }
+        estimateWatch = estimateWatch.filter { live.contains($0.key) }
     }
 
     /// A finger resting on the list is still `isDragging == true`, but the
@@ -1148,6 +1223,10 @@ final class TimelineCollectionController: UIViewController {
                 }
                 currentItems = items
                 isPerformingSnapshot = false
+                diagFastHits += 1
+                diagLastFastItem = streamedItem.itemID
+                noteUpdatePath(streamedItem.itemID, path: "fast", reason: "ok")
+                noteEstimateStalls()
                 onApplyCompleted?()
                 schedulePendingMeasurements()
 #if AA_TIMELINE_PROBE
@@ -1158,9 +1237,8 @@ final class TimelineCollectionController: UIViewController {
                 return
             }
         }
-#if AA_TIMELINE_PROBE
-        // Why the tick kept the snapshot path. One stage per apply, so the
-        // next device report counts each blocker instead of guessing.
+        // Why the tick kept the snapshot path. One stage per apply in the probe
+        // build; the same reason rides `timeline.update.path` in release.
         let missReason: String
         if !structureUnchanged {
             missReason = "structure"
@@ -1179,6 +1257,11 @@ final class TimelineCollectionController: UIViewController {
             // drive (offscreen, or a cell type it does not own).
             missReason = "cell"
         }
+        diagSnapshotApplies += 1
+        diagLastSnapshotReason = missReason
+        noteUpdatePath(changed.count == 1 ? (changed.first?.itemID ?? "-") : "multi",
+                       path: "snapshot", reason: missReason)
+#if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteStage(
             "apply.fastPath.miss.\(missReason)", seconds: 0)
 #endif
@@ -1244,6 +1327,7 @@ final class TimelineCollectionController: UIViewController {
             if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
+            self.noteEstimateStalls()
             // A reconfigured interactive row (fold, notice) changes height in
             // SwiftUI after the apply; the single visible-cell pass can see
             // the old content, stop early, and leave the row at its previous

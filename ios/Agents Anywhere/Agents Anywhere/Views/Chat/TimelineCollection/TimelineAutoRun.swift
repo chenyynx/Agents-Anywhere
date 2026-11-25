@@ -250,8 +250,15 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func setExpanded(_ id: String, _ expanded: Bool) {
-        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = entries.firstIndex(where: { $0.id == id }),
+              entries[index].expanded != expanded else { return }
         entries[index].expanded = expanded
+        // The product path reconfigures a row on a content-signature change,
+        // and this provider's signature hashes `revision`. Without the bump
+        // `reloadFromContent` saw the same input and never reconfigured the
+        // row: the collapse and gesture-freeze phases stayed at the expanded
+        // height on beta head (2026-11-24 baseline run 45456636689).
+        entries[index].revision += 1
     }
 
     func setTailStatusLine(_ present: Bool) {

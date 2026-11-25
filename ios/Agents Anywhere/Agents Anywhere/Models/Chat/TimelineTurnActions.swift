@@ -390,10 +390,12 @@ enum TimelineTurnActions {
         return false
     }
 
-    /// What the last bucket of one `build` pass saw. Diagnostics only: the
-    /// adapter writes it when it changes so a withheld footer names its
-    /// blocker (the active row, the host it would have used, the commit
-    /// decision) instead of being reconstructed from row counts.
+    /// What the last bucket of one `build` pass saw. The adapter writes it
+    /// when it changes so a withheld footer names its blocker (the active row,
+    /// the host it would have used, the commit decision) instead of being
+    /// reconstructed from row counts. It also carries the facts the adapter
+    /// needs to remember a `FooterStateSeal` and to keep the closed-state
+    /// restore away from a turn that is running again.
     nonisolated struct FooterBuildReport: Equatable {
         var endGroupID: String?
         var replyCount = 0
@@ -402,6 +404,15 @@ enum TimelineTurnActions {
         /// Up to three rows that kept the final bucket from committing.
         var activeItemIDs: [String] = []
         var committed = false
+        /// Whether `stateSeal` decided this commit: no fresh proof (durable id
+        /// or runtime-state rule) and no outgoing bubble would have committed
+        /// it. Diagnostics only; false when the seal is merely incidental.
+        var stateSealKept = false
+        /// Whether the commit rested on the state-coverage proof rather than
+        /// the durable id or an outgoing bubble. Only this kind is worth
+        /// remembering as a `FooterStateSeal`: the other two do not depend on
+        /// rows the state may not have seen.
+        var stateSealed = false
         /// The wire's decision for the final bucket; nil means the contract
         /// was unavailable and the runtime-state rule decided.
         var latestTurnSeal: Bool?
@@ -486,6 +497,35 @@ enum TimelineTurnActions {
             }
         }
         return facts
+    /// A footer the state-coverage proof committed, remembered for its turn.
+    ///
+    /// The runtime state is the turn-end signal every client paints from; the
+    /// Connector deliberately publishes it *before* the ledger notification,
+    /// which waits on the timeline write fence (`publish_terminal_state`:
+    /// ledger-first made every client learn "the turn ended" ~1 s late,
+    /// pp 2026-11-17). `stateCoversMain` is the proof that the idle state saw
+    /// every main row of this bucket.
+    ///
+    /// That proof belongs to the turn it covered, not to one refresh. One row
+    /// of the same turn rewritten after the idle state (a projection update,
+    /// not new work) used to withdraw it, and the bucket flipped back only
+    /// when the ledger id landed — the 30 pt action bar blinked out and back
+    /// within 1.4 s on device (2026-11-25 10:28:48.79 commit → 49.96 withdraw
+    /// → 50.17 commit). Recomputing coverage cannot tell a rewrite of this
+    /// turn from a new turn, so the proof is remembered by the declared turn
+    /// id: rows of the same turn can no longer unseal it, a different turn
+    /// never inherits it, and a running runtime or the durable ledger id still
+    /// decides on its own.
+    ///
+    /// No timer: the seal lasts until the ledger supersedes it or the session
+    /// changes. A running runtime withholds its effect (`suppressLatest`), and
+    /// the adapter still keeps it to tell a resume of the same turn from a
+    /// userless *new* turn. A runtime that declares no turn id keeps the old
+    /// live-coverage rule — without an id the client could not tell a new
+    /// bubble-less turn from a rewrite, and an unbounded seal would be wrong
+    /// there.
+    nonisolated struct FooterStateSeal: Equatable {
+        var turnID: V2TurnID
     }
 
     /// Match Web's one-footer-per-turn rule. Tool results and reasoning can
@@ -529,6 +569,7 @@ enum TimelineTurnActions {
                       stateCoversMain: Bool = false,
                       hasNewerItems: Bool = false,
                       facts: ((ChatTimelineGroup) -> GroupTurnFacts)? = nil,
+                      stateSeal: FooterStateSeal? = nil,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
                       report: ((FooterBuildReport) -> Void)? = nil)
         -> [String: TimelineTurnAction] {
@@ -661,16 +702,40 @@ enum TimelineTurnActions {
         // pending outgoing bubble) stays the fallback for old servers and
         // runtimes that declare no turn ids.
         let latestIsOver = seal ?? !suppressLatest
+        // A commit the *state* proved (seal == nil) belongs to the turn it
+        // covered, not to the rows one refresh happened to show. Keep it for
+        // this declared turn while the gate is closed (a running runtime
+        // still suppresses it) and until the ledger supersedes it; a rewrite
+        // of a row of the same turn must not withdraw it (the 30 pt blink at
+        // 2026-11-25 10:28:49.96), and a different turn can never match the
+        // id. A bucket with no declared id keeps the old live-coverage rule:
+        // without an id the seal cannot tell a new bubble-less turn from a
+        // rewrite.
+        var stateSealKeeps = false
+        if let stateSeal, !suppressLatest, !hasActiveItems,
+           let bucketTurnID = finalBucketTurnID,
+           bucketTurnID == stateSeal.turnID {
+            stateSealKeeps = true
+        }
         var committed = false
-        if (latestIsOver || hasPendingUserMessage), !hasActiveItems {
+        if (latestIsOver || hasPendingUserMessage || stateSealKeeps), !hasActiveItems {
             committed = commit()
         }
+        let stateSealed = committed && seal == nil && !suppressLatest
+            && !hasPendingUserMessage
+        // The seal is worth a diagnostic flag only when it decided the
+        // commit: a durable id or an outgoing bubble would have committed
+        // anyway, and the probe should read `stateSeal=0` on that refresh.
+        let stateSealDecided = stateSealKeeps && !latestIsOver
+            && !hasPendingUserMessage
         report?(FooterBuildReport(endGroupID: finalEndGroupID,
                                   replyCount: finalReplyCount,
                                   changeCount: finalChangeCount,
                                   hasActiveItems: finalHasActiveItems,
                                   activeItemIDs: finalActiveItemIDs,
                                   committed: committed,
+                                  stateSealKept: stateSealDecided,
+                                  stateSealed: stateSealed,
                                   latestTurnSeal: seal,
                                   bucketTurnID: finalBucketTurnID,
                                   latestTurnID: latestTurnId,
@@ -923,6 +988,43 @@ enum TimelineTurnActions {
             merged[groupID] = action
         }
         return merged
+    }
+
+    /// Fold one build report into the remembered state seal.
+    ///
+    /// - a durable ledger answer ends the need for it;
+    /// - a commit the state proved starts it for that declared turn;
+    /// - anything else (a running refresh, a different bucket, no commit)
+    ///   leaves the previous seal alone: the same turn may be the final bucket
+    ///   again on the next refresh, and the restore guard reads it.
+    ///
+    /// Pure so the adapter's recording rule is covered by `swift test`; the
+    /// adapter itself is outside the ClientCore target.
+    static func nextStateSeal(previous: FooterStateSeal?,
+                              report: FooterBuildReport) -> FooterStateSeal? {
+        if report.latestTurnSeal == true { return nil }
+        if report.committed, report.stateSealed, let turnID = report.bucketTurnID {
+            return FooterStateSeal(turnID: turnID)
+        }
+        return previous
+    }
+
+    /// Whether a userless episode is the same declared turn resuming, so the
+    /// closed-state restore must stay away from the bucket `build` suppressed.
+    ///
+    /// A userless episode (scheduled wake, compaction, or an idle flap inside
+    /// one turn) has no user key that tells them apart. The declared turn id
+    /// does: the same id plus visible activity means the bucket on screen is
+    /// the live turn, not a finished turn whose footer should survive the
+    /// episode. `sealedOrLedgerTurnID` is the turn the closed footer belongs
+    /// to — the state seal or the durable ledger id.
+    static func restoreWouldCoverAResumingTurn(hasActiveItems: Bool,
+                                               bucketTurnID: V2TurnID?,
+                                               sealedOrLedgerTurnID: V2TurnID?) -> Bool {
+        guard hasActiveItems, let bucketTurnID, let sealedOrLedgerTurnID else {
+            return false
+        }
+        return bucketTurnID == sealedOrLedgerTurnID
     }
 
     /// Whether a pending delivery still opens the new turn for the footer gate.

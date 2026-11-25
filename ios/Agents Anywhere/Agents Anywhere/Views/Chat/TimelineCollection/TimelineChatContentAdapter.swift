@@ -341,6 +341,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var groupFactsLatch: Set<String> = []
     /// Whether this refresh recomputed any group's facts (diagnostics).
     private var factsMissedThisRefresh = false
+    /// The turn a covering idle state proved ended, kept until the durable
+    /// ledger supersedes it or the session changes (`FooterStateSeal`). A row
+    /// of this turn rewritten after the state can no longer withdraw the
+    /// footer; a different turn never matches it. A running runtime withholds
+    /// its effect, but the seal stays readable so the closed-state restore can
+    /// tell a resume from a userless new turn.
+    private var stateSealCommit: TimelineTurnActions.FooterStateSeal?
+    private var stateSealSessionID: String?
 
     private func noteTurnFooterState(groups: [ChatTimelineGroup]) {
         // Hosts, in timeline order; the copy text itself is never logged.
@@ -460,6 +468,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "changes=\(report.changeCount)",
             "commit=\(report.committed ? 1 : 0)",
             "facts=\(factsMissedThisRefresh ? "miss" : "hit")",
+            "stateSeal=\(report.stateSealKept ? 1 : 0)",
             "latestTurn=\(report.latestTurnID ?? "nil")",
             "bucketTurn=\(report.bucketTurnID ?? "nil")",
             "turnMatch=\(turnMatchLabel)",
@@ -2754,6 +2763,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             }
             return facts
         }
+        if stateSealSessionID != model.session.id {
+            stateSealCommit = nil
+            stateSealSessionID = model.session.id
+        }
+        // A running runtime is not a reason to drop the seal: `suppressLatest`
+        // already withholds the commit while the gate is open, and the seal is
+        // still needed to tell a userless *new* turn from the same turn
+        // resuming after an idle flap (see the restore guard below). The
+        // durable ledger id and a session change are the only clearers.
+        var footerReport: TimelineTurnActions.FooterBuildReport?
         var turnActions = TimelineTurnActions.build(
             groups: groups,
             // The gate's authoritative end count is the primary boundary, but
@@ -2802,12 +2821,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             hasNewerItems: model.session.hasNewerItems,
             // Memoized per-group row facts (see `groupFactsProvider` above).
             facts: groupFactsProvider,
+            // The turn this session's covering idle state already proved
+            // over. A row of that same turn rewritten afterwards must not
+            // withdraw the footer while the ledger id is still in flight (the
+            // 30 pt blink at 2026-11-25 10:28:49.96); a different turn can
+            // never match the id.
+            stateSeal: stateSealCommit,
             // A step group renders as one line (CodeStepGroupRowView) and draws
             // no footer; keying a turn action to it made the footer vanish and
             // hop to the next group (device 2026-10-31 05:40: the compact
             // divider lost its footer by 91 pt when the next step arrived).
             footerHostEligible: { stepGroupsByID[$0.id] == nil },
             report: { report in
+                footerReport = report
+                // The state proved a turn over: remember the turn, not the
+                // host (rows of the same turn may still move the footer's
+                // hosting group, while a different turn must never match it).
+                // A durable ledger answer clears the seal; an outgoing bubble
+                // is not this proof — it does not depend on rows the state has
+                // seen. See `nextStateSeal`.
+                self.stateSealCommit = TimelineTurnActions.nextStateSeal(
+                    previous: self.stateSealCommit, report: report)
                 // One line per change: the decision inputs plus what the last
                 // bucket actually held. With the gate probe it turns a missing
                 // footer into a diagnosis instead of a row-count guess.
@@ -2830,7 +2864,22 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // older page keeps its own rule (`hasNewerItems` suppresses the
         // latest bucket by design).
         if latestTurnOpen {
-            if turnFooterGate.isUserlessEpisode, !model.session.hasNewerItems {
+            // A userless episode is not always a *new* turn: a runtime that
+            // reports idle between tool steps and then running again resumes
+            // the same turn, and the gate's authoritative end clears its user
+            // anchor either way. Restoring the closed footer onto a bucket
+            // that is actively running *that same declared turn* would put the
+            // finished footer back on the live reply (the 2026-11-23 22:04
+            // class). A scheduled wake or a compaction carries a different
+            // turn id (or none), so its finished footer still restores.
+            let sealedOrLedgerTurnID = stateSealCommit?.turnID
+                ?? footerReport?.latestTurnID
+            let isResumingTheSealedTurn = TimelineTurnActions.restoreWouldCoverAResumingTurn(
+                hasActiveItems: footerReport?.hasActiveItems == true,
+                bucketTurnID: footerReport?.bucketTurnID,
+                sealedOrLedgerTurnID: sealedOrLedgerTurnID)
+            if turnFooterGate.isUserlessEpisode, !model.session.hasNewerItems,
+               !isResumingTheSealedTurn {
                 turnActions = TimelineTurnActions.restoringFinishedFooters(
                     turnActions, from: closedTurnActions,
                     groupIDs: Set(groupsByID.keys))

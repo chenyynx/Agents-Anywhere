@@ -311,6 +311,96 @@ private func openingTimelinePage(rows: [Int], hasMore: Bool = false) throws -> D
         #expect(opened.items.map(\.orderSeq) == [1, 2])
     }
 
+    /// A saved archive without a runtime state makes the footer wait for a
+    /// separate state read. The open starts that read beside the disk restore
+    /// and holds the first paint until it lands (bounded), so the footer joins
+    /// the body instead of moving it 30 pt a beat later (device 2026-11-25
+    /// 02:36:10/22).
+    @Test func aColdOpenWithoutSavedStateWaitsForTheState() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seededStateArchive(url, rows: 20, withState: false)
+        let http = TestHTTPTransport()
+        var stateReads = 0
+        http.respond = { call in
+            if call.path.hasSuffix("/runtime/state") { stateReads += 1 }
+            return try http.defaultResponse(call)
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.openStateWaitSeconds = 2
+        let repo = repository(transport: http, policy: policy, localStore: store)
+
+        let opened = try await repo.open(sessionId: "session")
+        #expect(stateReads == 1, "one state read, beside the disk restore")
+        #expect(opened.state?.status == .idle, "the first paint carries the state")
+        #expect(opened.items.count == 20)
+        repo.reset(); await store.close(removing: true)
+    }
+
+    /// An archive that carries its idle state needs no extra request and no
+    /// wait: the footer is part of the first frame already.
+    @Test func aStateBearingArchiveDoesNotReadTheState() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seededStateArchive(url, rows: 20, withState: true)
+        let http = TestHTTPTransport()
+        var stateReads = 0
+        http.respond = { call in
+            if call.path.hasSuffix("/runtime/state") { stateReads += 1 }
+            return try http.defaultResponse(call)
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let repo = repository(transport: http, localStore: store)
+
+        let opened = try await repo.open(sessionId: "session")
+        #expect(stateReads == 0, "no separate read when the archive has a state")
+        #expect(opened.state?.status == .idle)
+        repo.reset(); await store.close(removing: true)
+    }
+
+    /// Past the budget the body is presented without the state (as before),
+    /// and the in-flight read still lands for the next build.
+    @Test func aStateReadPastTheDeadlineFallsBackAndAppliesLater() async throws {
+        let url = location(); defer { try? FileManager.default.removeItem(at: url) }
+        try await seededStateArchive(url, rows: 20, withState: false)
+        let http = TestHTTPTransport()
+        let gate = TestGate()
+        http.respond = { call in
+            if call.path.hasSuffix("/runtime/state") { await gate.wait() }
+            return try http.defaultResponse(call)
+        }
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        var policy = V2SessionCachePolicy()
+        policy.openStateWaitSeconds = 0.05
+        let repo = repository(transport: http, policy: policy, localStore: store)
+        defer { gate.release(); repo.reset() }
+
+        let opened = try await repo.open(sessionId: "session")
+        // Wall-clock is not asserted here: swift-testing interleaves the whole
+        // @MainActor suite, so the deadline's continuation can resume late
+        // under CI load. What matters is the behavior: the body returns
+        // without the state, and the in-flight read still lands afterwards.
+        #expect(opened.state == nil, "past the budget the body goes first")
+
+        gate.release()
+        try await eventually { repo.cached(sessionId: "session")?.state != nil }
+        repo.reset(); await store.close(removing: true)
+    }
+
+    /// Seed a local archive with or without the idle state the footer needs.
+    private func seededStateArchive(_ url: URL, rows: Int,
+                                    withState: Bool) async throws {
+        let store = V2LocalStore(directory: url, timelineDatabaseEnabled: true)
+        let probe = repository(transport: TestHTTPTransport(), localStore: store)
+        var data = V2SessionData(snapshot: try snapshot(items: (1...rows).map {
+            try itemObject(id: "reply-\($0)", order: $0, seq: $0)
+        }))
+        if !withState { data.state = nil }
+        await store.saveSession(V2SessionArchive(
+            data: data, model: probe.session(id: "session")))
+        probe.reset()
+        await store.close(removing: false)
+    }
+
 }
 
 /// The presentation-side signal behind the re-assert: a window that drops a

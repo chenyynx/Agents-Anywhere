@@ -139,7 +139,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // viewport.
         if entry.kind == .growingCard,
            entry.id.hasPrefix(Self.gestureRowPrefix),
-           !entry.id.hasPrefix(Self.hostedRowPrefix) {
+           !entry.id.hasPrefix(Self.hostedRowPrefix),
+           // Only the collapsed header is pre-seeded: the row with its
+           // detail showing takes its own fitting. A fixed estimate for both
+           // states pinned the row at 17 pt once the content revision changed
+           // the height key (the content-update phase kept
+           // `detail shown 17.0 == header 17.0`).
+           !entry.showsDetail {
             return .fixed(17)
         }
         return .row

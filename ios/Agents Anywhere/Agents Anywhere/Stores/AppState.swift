@@ -508,6 +508,20 @@ final class AppState {
         makeV2Services()?.sessionReads.setVisibleSession(sessionId?.hasPrefix("local:") == true ? nil : sessionId)
     }
 
+    /// Server/account scope the tab shell restores its pane state against.
+    var clientScope: V2ClientScope? {
+        guard let serverURL, let me else { return nil }
+        return V2ClientScope(serverURL: serverURL, accountID: me.userId)
+    }
+
+    func shellPanes(in scope: V2ClientScope) -> ShellPanesModel {
+        restoration.panes(in: scope)
+    }
+
+    func saveShellPanes(_ panes: ShellPanesModel, in scope: V2ClientScope) {
+        restoration.save(panes: panes, in: scope)
+    }
+
     func setSessionPinned(sessionId: V2SessionID, pinned: Bool) async -> Bool {
         sessionActionError = nil
         guard let services = makeV2Services() else {

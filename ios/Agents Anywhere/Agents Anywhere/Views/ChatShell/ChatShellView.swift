@@ -8,9 +8,19 @@ struct ChatShellView: View {
 
     @State private var sidebar = ChatSidebarState()
     @State private var newSessionPresentationID = UUID()
+    @State private var panes = ShellPanesModel()
+    @State private var panesScope: V2ClientScope?
+    @AppStorage("aa.shell.tabs") private var shellTabsEnabled = true
+
     private var selection: ChatShellSelection {
         get { appState.chatSelection }
         nonmutating set { appState.chatSelection = newValue }
+    }
+
+    /// The tab shell replaces the phone drawer only. iPad keeps the native
+    /// split layout until the two-column design is scoped.
+    private var tabShellActive: Bool {
+        shellTabsEnabled && horizontalSizeClass != .regular
     }
 
     var body: some View {
@@ -20,8 +30,26 @@ struct ChatShellView: View {
         let layout = ChatSidebarState.Layout.resolve(
             hasRegularWidth: horizontalSizeClass == .regular
         )
-        sidebarLayout(layout)
+        Group {
+            if tabShellActive {
+                tabShell(layout)
+            } else {
+                legacyShell(layout)
+            }
+        }
         .onChange(of: layout, initial: true) { _, next in sidebar.setLayout(next) }
+        .onChange(of: tabShellActive, initial: true) { _, active in
+            if active { loadPanes(appState.clientScope) }
+        }
+        .onChange(of: appState.clientScope, initial: true) { _, scope in
+            loadPanes(scope)
+        }
+        .onChange(of: appState.chatSelection) { _, next in
+            syncPanesFromSelection(next)
+        }
+        .onChange(of: panes) { _, next in
+            persistPanes(next)
+        }
         .task(id: NewSessionLoadKey(target: appState.nativeChatServices?.newSession.refreshKey,
             presentationID: newSessionPresentationID)) {
             // Warm the next draft even when launch restores a session/device.
@@ -48,6 +76,234 @@ struct ChatShellView: View {
             appState.setVisibleSession(id)
         }
         .onDisappear { appState.setVisibleSession(nil) }
+    }
+
+    // MARK: - Shells
+
+    private func tabShell(_ layout: ChatSidebarState.Layout) -> some View {
+        SidebarDrawer(
+            isOpen: sidebarBinding(for: layout),
+            presentation: .drawer,
+            configuration: .chat
+        ) { _ in
+            ChatSidebarHeaderView()
+        } sidebar: { safeAreaInsets in
+            sidebarContent(safeAreaInsets: safeAreaInsets)
+        } content: { _ in
+            ShellTabsView(
+                panes: $panes,
+                chatRoot: chatTabRoot,
+                devicesRoot: devicesTabRoot,
+                onMenu: toggleSidebar
+            )
+        }
+    }
+
+    private func legacyShell(_ layout: ChatSidebarState.Layout) -> some View {
+        SidebarDrawer(
+            isOpen: sidebarBinding(for: layout),
+            presentation: layout == .regularSplit ? .nativeSidebar : .drawer,
+            configuration: .chat
+        ) { _ in
+            ChatSidebarHeaderView()
+        } sidebar: { safeAreaInsets in
+            sidebarContent(safeAreaInsets: safeAreaInsets)
+        } content: { _ in
+            mainContent
+                .modifier(ChatDetailNavigation())
+        }
+    }
+
+    private func sidebarContent(safeAreaInsets: EdgeInsets) -> some View {
+        let sessions = sidebarSessions
+        let services = appState.nativeChatServices
+        return ChatSidebarView(
+            appState: appState,
+            agentSetup: services?.agentSetup,
+            safeAreaInsets: safeAreaInsets,
+            devices: sidebarDevices,
+            pinnedSessions: sessions.filter(\.pinned),
+            recentSessions: sessions.filter { !$0.pinned },
+            repository: services?.dashboardRepository,
+            onNewProjectSession: startProjectSession,
+            onRestoreSession: { await appState.setSessionArchived(sessionId: $0, archived: false) },
+            account: sidebarAccount,
+            selectedDeviceId: selectedDeviceId,
+            selectedSessionId: selectedSessionId,
+            isLoadingDevices: appState.isDashboardLoading && !appState.hasLoadedConnectors,
+            isLoadingSessions: appState.isDashboardLoading && !appState.hasLoadedSessions,
+            onNewSession: startNewSession,
+            onOpenDevice: openDevice,
+            onOpenSession: openSession,
+            onRenameSession: renameSession,
+            onToggleSessionPinned: setSessionPinned,
+            onArchiveSession: archiveSession,
+            onCopyDeviceId: copyDeviceId,
+            onCopySessionId: copySessionId
+        )
+    }
+
+    // MARK: - Tab roots
+
+    @ViewBuilder private var chatTabRoot: some View {
+        if let services = appState.nativeChatServices {
+            if case let .session(id) = selection {
+                sessionPage(id: id, services: services)
+            } else {
+                newSessionPage(services: services)
+            }
+        } else {
+            shellPlaceholderPage
+        }
+    }
+
+    private var devicesTabRoot: some View {
+        DevicesListPage(
+            devices: sidebarDevices,
+            isLoading: appState.isDashboardLoading && !appState.hasLoadedConnectors,
+            onMenu: toggleSidebar
+        )
+    }
+
+    @ViewBuilder private var mainContent: some View {
+        if case let .device(connectorId) = selection {
+            devicePage(connectorId: connectorId)
+        } else if let services = appState.nativeChatServices {
+            if case let .session(id) = selection {
+                sessionPage(id: id, services: services)
+            } else {
+                newSessionPage(services: services)
+            }
+        } else {
+            shellPlaceholderPage
+        }
+    }
+
+    @ViewBuilder private func devicePage(connectorId: V2ConnectorID) -> some View {
+        if let connector = appState.connectors.first(where: { $0.id == connectorId }),
+           let clients = appState.nativeChatServices,
+           let service = appState.deviceManagementService,
+           let workspaceFilesService = appState.workspaceFilesService,
+           let serverURL = appState.serverURL
+        {
+            DeviceManagementView(
+                connector: connector,
+                connectors: appState.connectors,
+                allSessions: appState.sessions,
+                projects: appState.projects,
+                agents: clients.agents(on: connectorId),
+                dashboard: clients.dashboardRepository,
+                service: service,
+                workspaceFilesService: workspaceFilesService,
+                serverURL: serverURL,
+                onMenu: toggleSidebar,
+                onOpenDevice: openDevice,
+                onOpenSession: openSession,
+                onNewSession: { path in
+                    if let model = appState.nativeChatServices?.newSession {
+                        model.focusDevice(connectorId, workspace: path)
+                    }
+                    startNewSession()
+                },
+                onNewProjectSession: startProjectSession,
+                onConnectorUpdated: appState.updateConnector,
+                onConnectorDeleted: removeConnector,
+                onSessionsUpdated: appState.updateSessions,
+                onSetSessionsArchived: appState.setSessionsArchived
+            )
+            .id(connectorId)
+        } else {
+            shellPlaceholderPage
+        }
+    }
+
+    @ViewBuilder private func sessionPage(id: V2SessionID, services: V2ClientServices) -> some View {
+        let session = services.sessionRepository.session(id: id)
+        let summary = appState.sessions.first { $0.id == id }
+        let connectorID = session.metadata?.connectorId ?? summary?.connectorId
+        SessionChatView(session: session, services: services,
+            deviceName: appState.connectors.first { $0.id == connectorID }?.name,
+            fallbackTitle: summary?.title,
+            fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
+            onMenu: toggleSidebar,
+            onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
+            .equatable()
+            // The model's identity, not the selection's: binding a
+            // local creation renames the session in place, and re-keying
+            // here remounted the page — replaying the send's entrance
+            // (pp 2026-11-15).
+            .id(session.presentationKey)
+    }
+
+    @ViewBuilder private func newSessionPage(services: V2ClientServices) -> some View {
+        NewSessionView(model: services.newSession, connectors: appState.connectors, sessions: appState.sessions, repository: services.dashboardRepository,
+            dashboardLoading: appState.isDashboardLoading,
+            dashboardError: appState.connectorsError,
+            onMenu: toggleSidebar,
+            onOpenDevice: openDevice,
+            onCreated: { session in
+                appState.updateSession(session)
+                if case .newSession = selection { openSession(session.id) }
+            },
+            onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+            .equatable()
+            .id(newSessionPresentationID)
+    }
+
+    private var shellPlaceholderPage: some View {
+        ChatShellPlaceholderPage(
+            isConnecting: appState.isRetryingServerConnection,
+            title: selectedContentTitle ?? "",
+            onOpenSidebar: openSidebar
+        )
+    }
+
+    // MARK: - Sidebar inputs
+
+    private func sidebarBinding(for layout: ChatSidebarState.Layout) -> Binding<Bool> {
+        Binding(get: { sidebar.isOpen(in: layout) }, set: { isOpen in
+            sidebar.setLayout(layout)
+            sidebar.isOpen = isOpen
+        })
+    }
+
+    private var selectedDeviceId: V2ConnectorID? {
+        if tabShellActive { return nil }
+        guard case let .device(id) = selection else { return nil }
+        return id
+    }
+
+    private var selectedSessionId: V2SessionID? {
+        if tabShellActive {
+            guard panes.selectedTab == .chat, case let .session(id) = panes.chatRoot else {
+                return nil
+            }
+            return id
+        }
+        guard case let .session(id) = selection else { return nil }
+        return id
+    }
+
+    private var selectedContentTitle: String? {
+        switch selection {
+        case .newSession:
+            return nil
+        case let .device(id):
+            return appState.connectors.first { $0.id == id }?.name
+        case let .session(id):
+            return appState.sessions.first { $0.id == id }?.title
+        }
+    }
+
+    private var sessionActionErrorBinding: Binding<Bool> {
+        Binding(
+            get: { appState.sessionActionError != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appState.dismissSessionActionError()
+                }
+            }
+        )
     }
 
     private var agentSetupBinding: Binding<V2Connector?> {
@@ -88,163 +344,59 @@ struct ChatShellView: View {
     }
 
     private var visibleSessionID: V2SessionID? {
-        scenePhase == .active && !sidebar.obscuresDetail ? selectedSessionId : nil
-    }
-
-    private func sidebarLayout(_ layout: ChatSidebarState.Layout) -> some View {
-        // Map and sort the session list once per body, not once per section.
-        let sessions = sidebarSessions
-        let services = appState.nativeChatServices
-        return SidebarDrawer(
-            isOpen: sidebarBinding(for: layout),
-            presentation: layout == .regularSplit ? .nativeSidebar : .drawer,
-            configuration: .chat
-        ) { _ in
-            ChatSidebarHeaderView()
-        } sidebar: { safeAreaInsets in
-            ChatSidebarView(
-                appState: appState,
-                agentSetup: services?.agentSetup,
-                safeAreaInsets: safeAreaInsets,
-                devices: sidebarDevices,
-                pinnedSessions: sessions.filter(\.pinned),
-                recentSessions: sessions.filter { !$0.pinned },
-                repository: services?.dashboardRepository,
-                onNewProjectSession: startProjectSession,
-                onRestoreSession: { await appState.setSessionArchived(sessionId: $0, archived: false) },
-                account: sidebarAccount,
-                selectedDeviceId: selectedDeviceId,
-                selectedSessionId: selectedSessionId,
-                isLoadingDevices: appState.isDashboardLoading && !appState.hasLoadedConnectors,
-                isLoadingSessions: appState.isDashboardLoading && !appState.hasLoadedSessions,
-                onNewSession: startNewSession,
-                onOpenDevice: openDevice,
-                onOpenSession: openSession,
-                onRenameSession: renameSession,
-                onToggleSessionPinned: setSessionPinned,
-                onArchiveSession: archiveSession,
-                onCopyDeviceId: copyDeviceId,
-                onCopySessionId: copySessionId
-            )
-        } content: { _ in
-            mainContent
-                .modifier(ChatDetailNavigation())
+        guard scenePhase == .active else { return nil }
+        if tabShellActive {
+            return panes.visibleSessionId(obscured: sidebar.obscuresDetail)
         }
+        return sidebar.obscuresDetail ? nil : selectedSessionId
     }
 
-    private func sidebarBinding(for layout: ChatSidebarState.Layout) -> Binding<Bool> {
-        Binding(get: { sidebar.isOpen(in: layout) }, set: { isOpen in
-            sidebar.setLayout(layout)
-            sidebar.isOpen = isOpen
-        })
-    }
+    // MARK: - Pane state
 
-    private var selectedDeviceId: V2ConnectorID? {
-        guard case let .device(id) = selection else { return nil }
-        return id
-    }
-
-    private var selectedSessionId: V2SessionID? {
-        guard case let .session(id) = selection else { return nil }
-        return id
-    }
-
-    private var selectedContentTitle: String? {
-        switch selection {
+    private func loadPanes(_ scope: V2ClientScope?) {
+        guard tabShellActive, let scope, panesScope != scope else { return }
+        var loaded = appState.shellPanes(in: scope)
+        // The saved ChatShellSelection is the cross-shell truth: the legacy
+        // shell and notifications both write it. Adopt it over a stale panes
+        // snapshot, then keep the snapshot in sync.
+        switch appState.chatSelection {
         case .newSession:
-            return nil
-        case let .device(id):
-            return appState.connectors.first { $0.id == id }?.name
+            loaded.chatRoot = .newSession
         case let .session(id):
-            return appState.sessions.first { $0.id == id }?.title
+            loaded.chatRoot = .session(id)
+        case let .device(id):
+            if loaded.devicesPath.isEmpty { loaded.openDevice(id) }
+        }
+        panes = loaded
+        panesScope = scope
+    }
+
+    private func syncPanesFromSelection(_ next: ChatShellSelection) {
+        guard tabShellActive else { return }
+        switch next {
+        case .newSession:
+            if panes.selectedTab != .chat || panes.chatRoot != .newSession {
+                panes.startNewChat()
+            }
+        case let .session(id):
+            if panes.chatRoot != .session(id) {
+                panes.openChatSession(id)
+            } else if panes.selectedTab != .chat {
+                panes.selectedTab = .chat
+            }
+        case let .device(id):
+            if panes.selectedTab != .devices || panes.devicesPath.isEmpty {
+                panes.openDevice(id)
+            }
         }
     }
 
-    private var sessionActionErrorBinding: Binding<Bool> {
-        Binding(
-            get: { appState.sessionActionError != nil },
-            set: { isPresented in
-                if !isPresented {
-                    appState.dismissSessionActionError()
-                }
-            }
-        )
+    private func persistPanes(_ next: ShellPanesModel) {
+        guard tabShellActive, let scope = panesScope else { return }
+        appState.saveShellPanes(next, in: scope)
     }
 
-    @ViewBuilder
-    private var mainContent: some View {
-        if case let .device(connectorId) = selection,
-           let connector = appState.connectors.first(where: { $0.id == connectorId }),
-           let clients = appState.nativeChatServices,
-           let service = appState.deviceManagementService,
-           let workspaceFilesService = appState.workspaceFilesService,
-           let serverURL = appState.serverURL
-        {
-            DeviceManagementView(
-                connector: connector,
-                connectors: appState.connectors,
-                allSessions: appState.sessions,
-                projects: appState.projects,
-                agents: clients.agents(on: connectorId),
-                dashboard: clients.dashboardRepository,
-                service: service,
-                workspaceFilesService: workspaceFilesService,
-                serverURL: serverURL,
-                onMenu: toggleSidebar,
-                onOpenDevice: openDevice,
-                onOpenSession: openSession,
-                onNewSession: { path in
-                    if let model = appState.nativeChatServices?.newSession {
-                        model.focusDevice(connectorId, workspace: path)
-                    }
-                    startNewSession()
-                },
-                onNewProjectSession: startProjectSession,
-                onConnectorUpdated: appState.updateConnector,
-                onConnectorDeleted: removeConnector,
-                onSessionsUpdated: appState.updateSessions,
-                onSetSessionsArchived: appState.setSessionsArchived
-            )
-            .id(connectorId)
-        } else if let services = appState.nativeChatServices {
-            if case let .session(id) = selection {
-                let session = services.sessionRepository.session(id: id)
-                let summary = appState.sessions.first { $0.id == id }
-                let connectorID = session.metadata?.connectorId ?? summary?.connectorId
-                SessionChatView(session: session, services: services,
-                    deviceName: appState.connectors.first { $0.id == connectorID }?.name,
-                    fallbackTitle: summary?.title,
-                    fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
-                    onMenu: toggleSidebar,
-                    onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
-                    .equatable()
-                    // The model's identity, not the selection's: binding a
-                    // local creation renames the session in place, and re-keying
-                    // here remounted the page — replaying the send's entrance
-                    // (pp 2026-11-15).
-                    .id(session.presentationKey)
-            } else {
-                NewSessionView(model: services.newSession, connectors: appState.connectors, sessions: appState.sessions, repository: services.dashboardRepository,
-                    dashboardLoading: appState.isDashboardLoading,
-                    dashboardError: appState.connectorsError,
-                    onMenu: toggleSidebar,
-                    onOpenDevice: openDevice,
-                    onCreated: { session in
-                        appState.updateSession(session)
-                        if case .newSession = selection { openSession(session.id) }
-                    },
-                    onRefresh: { await appState.refreshDashboard(); return appState.connectors })
-                    .equatable()
-                    .id(newSessionPresentationID)
-            }
-        } else {
-            ChatShellPlaceholderPage(
-                isConnecting: appState.isRetryingServerConnection,
-                title: selectedContentTitle ?? "",
-                onOpenSidebar: openSidebar
-            )
-        }
-    }
+    // MARK: - Navigation actions
 
     private func startProjectSession(_ id: String) {
         guard let services = appState.nativeChatServices else { return }
@@ -257,22 +409,35 @@ struct ChatShellView: View {
         // Reselecting this destination must also remount its local presentation
         // state, including the welcome reveal. The account still owns the draft.
         newSessionPresentationID = UUID()
+        if tabShellActive {
+            panes.startNewChat()
+        }
         selection = .newSession
         sidebar.selectDestination()
     }
 
     private func openDevice(_ id: V2ConnectorID) {
-        selection = .device(id)
+        if tabShellActive {
+            panes.openDevice(id)
+        } else {
+            selection = .device(id)
+        }
         sidebar.selectDestination()
     }
 
     private func openSession(_ id: V2SessionID) {
+        if tabShellActive {
+            panes.openChatSession(id)
+        }
         selection = .session(id)
         sidebar.selectDestination()
     }
 
     private func removeConnector(_ id: V2ConnectorID) {
         appState.removeConnector(connectorId: id)
+        if tabShellActive, panes.selectedTab == .devices {
+            panes.devicesPath.removeAll()
+        }
         selection = .newSession
     }
 

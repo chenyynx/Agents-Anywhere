@@ -702,6 +702,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         return value
     }
 
+    /// The official LoadOlderHeader is a 36 pt spinner row that exists only
+    /// while a page loads; the idle sentinel draws nothing. Its height is a
+    /// state constant, not a measurement — the row body is empty when idle,
+    /// so a measurement never arrives and the old 44 pt estimate stayed in
+    /// the cache forever (the status-bar scroll-to-top then stopped one
+    /// footer height short of the first message, pp 2026-11-26).
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        guard case .olderPrompt = item else { return nil }
+        return isLoadingOlder || isLoadingLatest ? 36 : 0
+    }
+
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
         switch item {
         case .olderPrompt: return .olderPrompt

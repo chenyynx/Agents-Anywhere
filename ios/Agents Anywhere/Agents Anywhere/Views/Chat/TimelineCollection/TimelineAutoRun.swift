@@ -65,6 +65,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// product adapter returns 0 for Code message rows; this lets the gate
     /// prove the per-item spacing path itself.
     @ObservationIgnored var zeroSpacingItemIDs: Set<String> = []
+    /// The status-bar phase needs the product's paging sentinel above the
+    /// first message. Every earlier scenario assumes the synthetic row set
+    /// starts with a message, so the prompt is opt-in and only the last
+    /// phase turns it on.
+    @ObservationIgnored var includesOlderPrompt = false
     weak var controller: TimelineCollectionController?
     @ObservationIgnored private var failures: [String] = []
     @ObservationIgnored private var report: [String: Any] = [:]
@@ -88,11 +93,21 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     // MARK: - Content providing
 
-    var itemCount: Int { entries.count }
+    var itemCount: Int { entries.count + (includesOlderPrompt ? 1 : 0) }
 
-    func item(at index: Int) -> TimelineListItem { listItem(entries[index]) }
+    func item(at index: Int) -> TimelineListItem {
+        if includesOlderPrompt {
+            if index == 0 { return .olderPrompt }
+            return listItem(entries[index - 1])
+        }
+        return listItem(entries[index])
+    }
 
     func contentSignature(for item: TimelineListItem) -> TimelineContentSignature {
+        if case .olderPrompt = item {
+            return .olderPrompt(pullReady: false, isLoading: false,
+                                keepsPrompt: true, hasOlderItems: true)
+        }
         guard let entry = entry(for: item) else {
             return .notice(id: "missing", status: .unknown, revision: 0)
         }
@@ -131,6 +146,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
+        // The pre-fix product estimate: the layout must ignore it for the
+        // sentinel and use `layoutFixedHeight` instead.
+        if case .olderPrompt = item { return .olderPrompt }
         guard let entry = entry(for: item) else { return .row }
         if item == .tail { return .tail(statusLine: entry.statusLine) }
         // The gesture fixtures start with only the card header. Pre-seeding
@@ -151,8 +169,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return .row
     }
 
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        // The idle paging sentinel draws nothing; the official 36 pt header
+        // exists only while a page loads.
+        if case .olderPrompt = item { return 0 }
+        return nil
+    }
+
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
-        zeroSpacingItemIDs.contains(item.itemID)
+        if case .olderPrompt = item { return 0 }
+        return zeroSpacingItemIDs.contains(item.itemID)
             ? 0 : TimelineListMetrics.itemSpacing
     }
 
@@ -173,6 +199,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
+        if case .olderPrompt = item { return .plainText }
         guard let entry = entry(for: item) else { return .markdown }
         switch entry.kind {
         case .plain: return .plainText
@@ -205,6 +232,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     func item(containingRow rowID: String) -> TimelineListItem? {
         if rowID == "tail" { return .tail }
+        if rowID == "prompt:older" { return .olderPrompt }
         guard let entry = entries.first(where: { $0.id == rowID }) else { return nil }
         return listItem(entry)
     }
@@ -275,7 +303,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         entries[index].statusLine = present
     }
 
-    var allItems: [TimelineListItem] { entries.map(listItem) }
+    var allItems: [TimelineListItem] {
+        (includesOlderPrompt ? [.olderPrompt] : []) + entries.map(listItem)
+    }
 
     private var prependBatch = 0
 
@@ -351,6 +381,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await firstFitSeed(); persist(phase: "firstFitSeed")
         await streamingSeed(); persist(phase: "streamingSeed")
         await prependReadingAnchor(); persist(phase: "prependReadingAnchor")
+        // Last: it prepends the paging sentinel, and every earlier scenario
+        // assumes the synthetic row set starts with a message.
+        await statusBarTop(); persist(phase: "statusBarTop")
         writeReport()
     }
 
@@ -2557,6 +2590,69 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "hiddenReduced": hiddenReduced,
             "reducedFlips": reducedFlips,
         ]
+    }
+
+    /// The status-bar tap (`scrollViewShouldScrollToTop` → the anchor
+    /// driver's `requestStart`) must land on the first message, not on the
+    /// paging sentinel above it. The idle sentinel draws nothing, so its
+    /// height is a state constant (0), not the old 44 pt prompt estimate;
+    /// otherwise the tap stops one footer height short and the reader has
+    /// to swipe again (pp 2026-11-26).
+    private func statusBarTop() async {
+        guard let controller else { return }
+        includesOlderPrompt = true
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await settleLayout(controller)
+        controller.collectionView.layoutIfNeeded()
+        let promptHeight = controller.layout.attributes(for: "prompt:older")?.frame.height ?? -1
+        // Park mid-list so the tap has a real distance to travel.
+        let mid = controller.items.count / 2
+        if mid < controller.items.count {
+            controller.collectionView.scrollToItem(
+                at: IndexPath(item: mid, section: 0), at: .centeredVertically, animated: false)
+        }
+        await wait(500)
+        controller.collectionView.layoutIfNeeded()
+        _ = controller.scrollViewShouldScrollToTop(controller.collectionView)
+        // The tap runs a full-distance fly; wait until the offset stops.
+        var lastOffset = controller.collectionView.contentOffset.y
+        var stableTicks = 0
+        for _ in 0..<30 {
+            await wait(100)
+            controller.collectionView.layoutIfNeeded()
+            let now = controller.collectionView.contentOffset.y
+            if abs(now - lastOffset) <= 0.5 {
+                stableTicks += 1
+                if stableTicks >= 5 { break }
+            } else {
+                stableTicks = 0
+                lastOffset = now
+            }
+        }
+        await settleLayout(controller)
+        let inset = controller.collectionView.adjustedContentInset.top
+        let offset = controller.collectionView.contentOffset.y
+        let firstContent = controller.items.first { item in
+            if case .group = item { return true }
+            return false
+        }
+        let firstMinY = firstContent.flatMap {
+            controller.layout.attributes(for: $0.itemID)?.frame.minY
+        }
+        let topDelta = (firstMinY ?? .nan) - inset - offset
+        report["statusBarTop"] = [
+            "promptHeight": Double(promptHeight),
+            "topDelta": topDelta.isFinite ? Double(topDelta) : -1,
+            "offset": Double(offset),
+            "inset": Double(inset),
+        ]
+        if abs(promptHeight) > 0.5 {
+            failures.append("status bar: idle paging sentinel height \(promptHeight) != 0")
+        }
+        if !(abs(topDelta) <= 1) {
+            failures.append("status bar: tap landed \(topDelta) pt off the first message")
+        }
     }
 
     private func prepend() async {

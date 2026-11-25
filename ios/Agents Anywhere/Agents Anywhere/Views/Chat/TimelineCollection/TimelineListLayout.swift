@@ -193,11 +193,18 @@ final class TimelineListLayout: UICollectionViewLayout {
                 || heights.displayedHeight(for: item.itemID) != nil
             let estimate: TimelineHeightEstimateKind = hasResolved
                 ? .row : host.layoutEstimateKind(for: item)
+            // A state-constant row (the paging sentinel: 36 while loading,
+            // 0 idle) never takes a measurement, so the height cache would
+            // keep its first estimate forever — a loading→idle flip could not
+            // shrink it, and the old 44 pt prompt estimate left an invisible
+            // band at the top (pp 2026-11-26). The provider owns the value.
+            let fixedHeight = host.layoutFixedHeight(for: item)
             // A streaming row's per-frame clamped height is a display override:
             // it is used for this prepare but never written to the height
             // cache, so clearing it restores the measured height.
             let streamingHeight = streamingHeights[item.itemID]
-            let height = streamingHeight
+            let height = fixedHeight
+                ?? streamingHeight
                 ?? heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
             // Official 0x101a3ff20: the row's `isMeasured` is item-level and
             // a width change is the only thing that clears it. A same-width
@@ -207,8 +214,10 @@ final class TimelineListLayout: UICollectionViewLayout {
             let hasMeasuredHeight = heights.isMeasured(itemID: item.itemID, width: key.width)
             // Pending stays key-level: the controller still owes this key a
             // real measurement even when the row was measured under an
-            // earlier revision.
-            if heights.hasMeasuredOrPrecalcHeight(for: key) {
+            // earlier revision. A state-constant row is never owed one.
+            if fixedHeight != nil {
+                heights.resolvePending(item.itemID)
+            } else if heights.hasMeasuredOrPrecalcHeight(for: key) {
                 heights.resolvePending(item.itemID)
             } else {
                 pending.insert(item)

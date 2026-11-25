@@ -47,6 +47,9 @@ nonisolated struct TimelineLayoutInteractionState: Equatable {
     func layoutHeightKey(for item: TimelineListItem, width: CGFloat) -> TimelineHeightKey
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy
+    /// A state-constant height (paging sentinel: 36 while loading, 0 idle).
+    /// Non-nil bypasses the height cache for that row.
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat?
     func layoutContentKind(for item: TimelineListItem) -> TimelineMeasurementContent
     /// The gap between this item's frame and the next one. Code message rows
     /// already carry the official row margins, so they report 0.

@@ -409,7 +409,20 @@ final class TimelineCollectionController: UIViewController {
             contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
             readingAnchor: { [weak self] in self?.anchor(at: $0) },
-            firstRowID: { [weak self] in self?.currentItems.first?.itemID },
+            // The status-bar tap must land on the first message, not the
+            // paging sentinel: the sentinel is an AA-only row (the official
+            // header exists only while a page loads), and aligning to its
+            // top left a blank band its height tall above the first message
+            // (pp 2026-11-26).
+            firstRowID: { [weak self] in
+                guard let self else { return nil }
+                return self.currentItems.first { item in
+                    switch item {
+                    case .olderPrompt, .latestPrompt, .tail: return false
+                    default: return true
+                    }
+                }?.itemID
+            },
             onBottomArrived: { [weak self] in self?.onBottomArrived?() },
             onPlacementChanged: { [weak self] from, to, event in
                 guard let self else { return }
@@ -3606,6 +3619,10 @@ extension TimelineCollectionController: TimelineListLayoutHost {
 
     func layoutEstimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
         content?.estimateKind(for: item) ?? .row
+    }
+
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        content?.layoutFixedHeight(for: item)
     }
 
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {

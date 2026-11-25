@@ -1208,7 +1208,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // margins and the compaction divider carries its own 16 pt padding,
         // so none of them also pay the list gap (see `listSpacing`).
         case .group(let id): return groupsByID[id]?.listSpacing ?? TimelineListMetrics.itemSpacing
-        case .workingStatus, .notice, .pending: return 0
+        // The official paging sentinel adds no bottom gap (`paging` group
+        // returns 0.0, CANONICAL/05-layout-scroll.md:149); the row above it
+        // already carries its own margin.
+        case .olderPrompt, .workingStatus, .notice, .pending: return 0
         default: return TimelineListMetrics.itemSpacing
         }
     }
@@ -3847,11 +3850,11 @@ private struct TimelineCollectionOlderPromptRow: View {
             if isLoading {
                 HStack(spacing: 8) {
                     ProgressView().progressViewStyle(.circular).controlSize(.small)
-                    Text(String(localized: "正在加载较早的消息…"))
+                    Text(String(localized: "正在加载更早的消息…"))
                 }.accessibilityElement(children: .combine)
             } else if hasOlderItems {
                 Button { onLoad?() } label: {
-                    Text(pullReady ? String(localized: "松开加载较早的消息") : String(localized: "加载较早的消息"))
+                    Text(pullReady ? String(localized: "松开加载更早的消息") : String(localized: "加载更早的消息"))
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .contentShape(Rectangle())
                 }.disabled(onLoad == nil || isLoading)

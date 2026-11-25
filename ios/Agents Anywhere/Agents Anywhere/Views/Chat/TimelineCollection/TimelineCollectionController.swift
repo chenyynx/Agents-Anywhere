@@ -839,7 +839,16 @@ final class TimelineCollectionController: UIViewController {
             isHistoryPage = historyPageFirstRowID.map { currentFirstRowID == $0 }
                 ?? (currentFirstRowID != nil)
         } else {
-            isHistoryPage = currentFirstRowID != nil
+            // Outside history paging this is never a history page: the
+            // initial-row marker only exists while a page is in flight
+            // (`beginHistoryPaging` sets it, `endHistoryPaging` clears it).
+            // Without the guard a normal apply compared a real first row
+            // against nil, reported "history page", and kept both the
+            // snapshot-reuse branch and the stream fast path dark — the
+            // 2026-11-25 b1619 report recorded
+            // `apply.fastPath.miss.structure` on all 228 applies.
+            isHistoryPage = historyPaging
+                && currentFirstRowID != nil
                 && currentFirstRowID != historyInitialFirstRowID
         }
         let applyingHistoryPage = historyPaging && isHistoryPage

@@ -12,6 +12,9 @@ struct DevicesListPage: View {
     let onMenu: () -> Void
     let onOpen: (V2ConnectorID) -> Void
     var onRetry: () async -> Void = {}
+    var onPair: () -> Void = {}
+    /// Long-press menu on a device card, replacing the sidebar row's action.
+    var onCopyId: (V2ConnectorID) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -35,16 +38,31 @@ struct DevicesListPage: View {
                     .padding(.top, 48)
                     .padding(.horizontal, 24)
                 } else if devices.isEmpty {
-                    Text(String(localized: "No devices"))
-                        .font(.footnote)
-                        .foregroundStyle(DevicePageStyle.secondary(colorScheme))
-                        .padding(.top, 48)
+                    VStack(spacing: 12) {
+                        Text(String(localized: "No devices"))
+                            .font(.footnote)
+                            .foregroundStyle(DevicePageStyle.secondary(colorScheme))
+                        // The drawer no longer carries the pairing entry in
+                        // the tab shell, so an empty list must offer it here.
+                        Button(String(localized: "添加设备")) { onPair() }
+                            .font(.footnote.weight(.medium))
+                    }
+                    .padding(.top, 48)
                 } else {
                     ForEach(devices) { device in
                         Button { onOpen(device.id) } label: {
                             deviceCard(device)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button { onOpen(device.id) } label: {
+                                Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
+                            }
+                            Divider()
+                            Button { onCopyId(device.id) } label: {
+                                Label(String(localized: "Copy device ID"), menuSymbol: "anthropicon.copy")
+                            }
+                        }
                     }
                 }
             }
@@ -57,6 +75,16 @@ struct DevicesListPage: View {
         .scrollEdgeEffectStyle(.soft, for: .all)
         .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea())
         .modifier(ChatPageToolbar(title: String(localized: "Devices"), onMenu: onMenu))
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(String(localized: "添加设备"), systemImage: "plus") { onPair() }
+                } label: {
+                    AppSymbol("anthropicon.dotsHorizontal", size: 15)
+                }
+                .accessibilityLabel(String(localized: "Device actions"))
+            }
+        }
     }
 
     private func deviceCard(_ device: ChatSidebarDevice) -> some View {

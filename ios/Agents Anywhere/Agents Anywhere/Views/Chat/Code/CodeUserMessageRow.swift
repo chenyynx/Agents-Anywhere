@@ -16,6 +16,9 @@ struct CodeUserMessageRow: View {
     /// A steer the runtime has not read yet: the bubble keeps the queue's
     /// dashed waiting outline until its echo replaces this row.
     var waitingOutline = false
+    /// The settled bubble's copy / select-text menu. A held steer owns its
+    /// row-level removal menu instead.
+    var showsBubbleActions = true
     var onDeliveryIssue: (() -> Void)? = nil
     /// One attachment's display state. A settled message passes `.complete`;
     /// an optimistic send maps its uploaded/failed attachments here.
@@ -36,7 +39,8 @@ struct CodeUserMessageRow: View {
                 // The delivery state rides on the bubble itself (text is the
                 // last block), so it follows a short, right-aligned bubble and
                 // keeps the chat page's bubble-relative offsets.
-                CodeUserBubble(text: text, waitingOutline: waitingOutline) {
+                CodeUserBubble(text: text, waitingOutline: waitingOutline,
+                               showsActions: showsBubbleActions) {
                     CodeDeliveryGutter(
                         isPending: isPending,
                         onDeliveryIssue: onDeliveryIssue,

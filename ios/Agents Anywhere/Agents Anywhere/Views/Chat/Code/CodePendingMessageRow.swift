@@ -77,6 +77,9 @@ struct PendingMessageRow: View {
             // send queue uses. The echo retires this row and its settled
             // replacement is solid.
             waitingOutline: pending.isSteer,
+            // The held steer's escape hatch is the row-level removal menu; the
+            // bubble's copy/select menu would shadow it.
+            showsBubbleActions: steerStatus != .heldForNextTurn,
             onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true },
             attachmentState: { content in
                 pending.codeAttachmentState(for: content)

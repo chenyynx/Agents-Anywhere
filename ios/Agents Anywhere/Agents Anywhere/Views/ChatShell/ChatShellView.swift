@@ -10,6 +10,9 @@ struct ChatShellView: View {
     @State private var newSessionPresentationID = UUID()
     @State private var panes = ShellPanesModel()
     @State private var panesScope: V2ClientScope?
+    /// The Devices tab owns the pairing entry now that the phone drawer no
+    /// longer lists devices.
+    @State private var showsPairing = false
     /// Owns the chat tab's session model outside the tab page, like the
     /// official SessionRegistry keeps the store alive across tab switches.
     @State private var chatPane = ChatPaneStore()
@@ -92,6 +95,17 @@ struct ChatShellView: View {
                 }
             }
         }
+        // A second `.sheet` on the same view chain can shadow the agent-setup
+        // sheet; host this one on a zero-size background like the composer's
+        // pickers.
+        .background {
+            Color.clear
+                .sheet(isPresented: $showsPairing, onDismiss: {
+                    appState.nativeChatServices?.agentSetup.pairingFormPresented = false
+                }) {
+                    PairDeviceSheet()
+                }
+        }
         .onChange(of: visibleSessionID, initial: true) { _, id in
             appState.setVisibleSession(id)
         }
@@ -148,6 +162,9 @@ struct ChatShellView: View {
             agentSetup: services?.agentSetup,
             safeAreaInsets: safeAreaInsets,
             devices: sidebarDevices,
+            // The phone tab shell owns devices; the drawer keeps them only
+            // for iPad/the legacy shell, which has no Devices tab.
+            showsDevicesSection: !tabShellActive,
             pinnedSessions: sessions.filter(\.pinned),
             recentSessions: sessions.filter { !$0.pinned },
             repository: services?.dashboardRepository,
@@ -200,7 +217,9 @@ struct ChatShellView: View {
                 error: appState.connectorsError,
                 onMenu: toggleSidebar,
                 onOpen: { id in panes.openDevice(id) },
-                onRetry: { await appState.refreshDashboard() }
+                onRetry: { await appState.refreshDashboard() },
+                onPair: startPairing,
+                onCopyId: copyDeviceId
             )
             .navigationDestination(for: ShellDevicesRoute.self) { route in
                 switch route {
@@ -660,6 +679,11 @@ struct ChatShellView: View {
 
     private func copySessionId(_ id: V2SessionID) {
         UIPasteboard.general.string = id
+    }
+
+    private func startPairing() {
+        appState.nativeChatServices?.agentSetup.pairingFormPresented = true
+        showsPairing = true
     }
 
     private func toggleSidebar() {

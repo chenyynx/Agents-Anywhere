@@ -7,6 +7,9 @@ struct ChatSidebarView: View {
     let agentSetup: AgentSetupCoordinator?
     let safeAreaInsets: EdgeInsets
     let devices: [ChatSidebarDevice]
+    /// The phone tab shell has a Devices tab; the sidebar duplicates it only
+    /// where that tab does not exist (iPad / the legacy shell).
+    var showsDevicesSection = true
     let pinnedSessions: [ChatSidebarSession]
     let recentSessions: [ChatSidebarSession]
     let repository: V2DashboardRepository?
@@ -41,14 +44,16 @@ struct ChatSidebarView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 6) {
-                ChatSidebarDeviceSection(
-                    devices: devices,
-                    selectedDeviceId: selectedDeviceId,
-                    isLoading: isLoadingDevices,
-                    onOpen: onOpenDevice,
-                    onCopyId: onCopyDeviceId,
-                    onPair: startPairing
-                )
+                if showsDevicesSection {
+                    ChatSidebarDeviceSection(
+                        devices: devices,
+                        selectedDeviceId: selectedDeviceId,
+                        isLoading: isLoadingDevices,
+                        onOpen: onOpenDevice,
+                        onCopyId: onCopyDeviceId,
+                        onPair: startPairing
+                    )
+                }
 
                 if let setup = agentSetup {
                     ForEach(setup.requests) { request in

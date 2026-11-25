@@ -15,9 +15,10 @@ import UIKit
 struct CodeUserBubbleText: UIViewRepresentable {
     let text: String
     let color: Color
-    /// The chat bubbles keep selection on; a queued row owns a long-press
-    /// menu and must not start a text selection instead.
-    var isSelectable = true
+    /// Off until the message menu's "Select Text" asks for it: a settled
+    /// bubble owns a long-press menu (copy / select text), and a queued row
+    /// owns its own menu and must never start a selection instead.
+    var isSelectable = false
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -26,6 +27,14 @@ struct CodeUserBubbleText: UIViewRepresentable {
     private var traits: UITraitCollection {
         UITraitCollection(
             preferredContentSizeCategory: dynamicTypeSize.contentSizeCategory)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// Remembers the previous selectability so the menu's "Select Text" can
+    /// open the selection tools exactly on the transition.
+    final class Coordinator {
+        var wasSelectable = false
     }
 
     func makeUIView(context: Context) -> CodeUserBubbleTextView {
@@ -51,10 +60,24 @@ struct CodeUserBubbleText: UIViewRepresentable {
         let traits = traits
         let attributed = CodeUserBubbleTextMetrics.attributed(
             text, traits: traits, color: UIColor(color))
+        let becameSelectable = isSelectable && !context.coordinator.wasSelectable
+        context.coordinator.wasSelectable = isSelectable
+        uiView.isSelectable = isSelectable
+        if !isSelectable, uiView.isFirstResponder { uiView.resignFirstResponder() }
         uiView.attributedText = attributed
         uiView.userBubbleLineSpacing = CodeUserBubbleTextMetrics.lineSpacing(
             traits: traits)
         uiView.invalidateIntrinsicContentSize()
+        if becameSelectable {
+            // "Select Text" must show the tools now, not after a second long
+            // press. A non-editable text view takes focus without raising the
+            // keyboard.
+            DispatchQueue.main.async {
+                guard uiView.window != nil else { return }
+                uiView.becomeFirstResponder()
+                uiView.selectAll(nil)
+            }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize,

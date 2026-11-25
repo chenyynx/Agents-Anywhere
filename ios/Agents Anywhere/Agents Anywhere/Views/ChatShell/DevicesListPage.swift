@@ -32,7 +32,7 @@ struct DevicesListPage: View {
             .padding(.bottom, 24)
         }
         .scrollEdgeEffectStyle(.soft, for: .all)
-        .background(CodePageTheme.pageBackgroundUIColor.ignoresSafeArea())
+        .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea())
         .modifier(ChatPageToolbar(title: String(localized: "Devices"), onMenu: onMenu))
     }
 

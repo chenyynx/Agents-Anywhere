@@ -10,7 +10,7 @@ struct PlaceholderTabPage: View {
 
     var body: some View {
         ZStack {
-            CodePageTheme.pageBackgroundUIColor.ignoresSafeArea()
+            Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea()
             VStack(spacing: 10) {
                 Image(icon)
                     .resizable()

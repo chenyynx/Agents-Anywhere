@@ -304,6 +304,44 @@ enum TimelineTurnActions {
         return coverage
     }
 
+    /// One pass for the two row folds the adapter runs on every refresh: the
+    /// monotonic background latch and the state-coverage watermarks. They read
+    /// the same rows with the same per-row JSON probes (`parentItemId`,
+    /// background hand-off), and the 2026-11-25 streaming probe attributed
+    /// 12 ms per tick to this section; two full scans became one.
+    nonisolated struct FooterScanResult: Equatable {
+        var latchedBackgroundIDs: Set<String>
+        var coverage: FooterStateCoverage
+    }
+
+    static func footerScan<S: Sequence>(rows: S,
+                                        existing: Set<String>,
+                                        stateSeq: Int) -> FooterScanResult
+    where S.Element == V2TimelineItem {
+        var coverage = FooterStateCoverage()
+        var latched: Set<String> = []
+        var present: Set<String>? = existing.isEmpty ? nil : []
+        for item in rows {
+            present?.insert(item.id)
+            let backgroundFlag = isBackgroundHandoffRow(item)
+            if item.status.isActive, backgroundFlag { latched.insert(item.id) }
+            let seq = item.updatedSeq
+            if seq > coverage.maxAnySeq { coverage.maxAnySeq = seq }
+            guard SubAgentProgress.parentItemID(item) == nil else { continue }
+            let isBackground = existing.contains(item.id)
+                || latched.contains(item.id)
+                || backgroundFlag
+            if isBackground {
+                if seq > coverage.maxBackgroundSeq { coverage.maxBackgroundSeq = seq }
+                continue
+            }
+            if seq > coverage.maxMainSeq { coverage.maxMainSeq = seq }
+        }
+        if let present { latched.formUnion(existing.intersection(present)) }
+        coverage.coversMainRows = coverage.maxMainSeq <= stateSeq
+        return FooterScanResult(latchedBackgroundIDs: latched, coverage: coverage)
+    }
+
     /// The wire's durable answer for the latest bucket, or nil when it cannot
     /// answer.
     ///
@@ -383,6 +421,84 @@ enum TimelineTurnActions {
         var latestTurnEndSeq = 0
     }
 
+    /// What one group contributes to a `build` pass, computed in a single row
+    /// walk. The walk's per-row JSON probes (`parentItemId`, the background
+    /// hand-off flag) cost 4.7 ms per refresh at a 301-item device window
+    /// (2026-11-25 b1625), so the adapter memoizes these by
+    /// `GroupFactsKey` and only the group whose rows moved is walked again.
+    /// Row models are reference types with their own identity, so the facts
+    /// are memoized by `GroupFactsKey` rather than compared structurally.
+    struct GroupTurnFacts {
+        var startsTurn = false
+        var declaredTurnID: V2TurnID?
+        var replies: [ChatTimelineRowModel] = []
+        var changes: [ChatTimelineRowModel] = []
+        var maxMainSeq = 0
+        var activeRowIDs: [String] = []
+        var hasActive = false
+        /// The second half of `hostsFooter`: a non-turn-starting row that is
+        /// not a marker or system row (a divider never hosts the footer).
+        var hasFooterContentRow = false
+    }
+
+    /// The cheap identity of a group's rows for the facts memo. Every wire
+    /// update bumps `updatedSeq` past every earlier value, so the group's
+    /// maximum moves whenever any of its rows changed; a row inserted or
+    /// removed without a bump moves the count or an edge id.
+    struct GroupFactsKey: Equatable {
+        var rowCount: Int
+        var firstRowID: String?
+        var lastRowID: String?
+        var maxUpdatedSeq: Int
+
+        init(group: ChatTimelineGroup) {
+            rowCount = group.rows.count
+            firstRowID = group.rows.first?.id
+            lastRowID = group.rows.last?.id
+            var maximum = 0
+            for row in group.rows where row.value.updatedSeq > maximum {
+                maximum = row.value.updatedSeq
+            }
+            maxUpdatedSeq = maximum
+        }
+    }
+
+    /// One row walk for everything `build` needs from a group.
+    static func groupFacts(for group: ChatTimelineGroup,
+                           latchedBackgroundIDs: Set<String> = []) -> GroupTurnFacts {
+        var facts = GroupTurnFacts()
+        for row in group.rows {
+            if row.structure.startsTurn { facts.startsTurn = true }
+            if facts.declaredTurnID == nil, let turnID = row.value.turnId {
+                facts.declaredTurnID = turnID
+            }
+            let isChild = SubAgentProgress.parentItemID(row.value) != nil
+            if !isChild, row.structure.type == .message, row.structure.role == .assistant {
+                facts.replies.append(row)
+            }
+            if row.structure.isFileChange { facts.changes.append(row) }
+            if !row.structure.startsTurn, row.structure.type != .marker,
+               row.structure.type != .system {
+                facts.hasFooterContentRow = true
+            }
+            guard !isChild else { continue }
+            if latchedBackgroundIDs.contains(row.id) || isBackgroundHandoffRow(row.value) {
+                continue
+            }
+            if row.value.updatedSeq > facts.maxMainSeq {
+                facts.maxMainSeq = row.value.updatedSeq
+            }
+            if row.value.status.isActive,
+               !TimelineEntryPresentation.isCompactItem(row.value) {
+                facts.hasActive = true
+                if facts.activeRowIDs.count < 3, !facts.activeRowIDs.contains(row.id) {
+                    facts.activeRowIDs.append(row.id)
+                }
+            }
+        }
+        return facts
+    }
+
     /// A footer the state-coverage proof committed, remembered for its turn.
     ///
     /// The runtime state is the turn-end signal every client paints from; the
@@ -454,6 +570,7 @@ enum TimelineTurnActions {
                       connectorOffline: Bool = false,
                       stateCoversMain: Bool = false,
                       hasNewerItems: Bool = false,
+                      facts: ((ChatTimelineGroup) -> GroupTurnFacts)? = nil,
                       stateSeal: FooterStateSeal? = nil,
                       footerHostEligible: (ChatTimelineGroup) -> Bool = { _ in true },
                       report: ((FooterBuildReport) -> Void)? = nil)
@@ -478,21 +595,14 @@ enum TimelineTurnActions {
         /// opening group is reached; history before it splits as usual.
         var pastLiveTurnStart = false
 
-        func hostsFooter(_ group: ChatTimelineGroup) -> Bool {
+        func hostsFooter(_ group: ChatTimelineGroup,
+                         _ groupTurnFacts: GroupTurnFacts) -> Bool {
             guard footerHostEligible(group) else { return false }
             // A group with an assistant reply always hosts. Otherwise the
             // group must be real turn content: a turn-opening user bubble and
-            // a divider group have no reply a footer can belong to.
-            let hasReply = group.rows.contains { row in
-                row.structure.type == .message && row.structure.role == .assistant
-                    && SubAgentProgress.parentItemID(row.value) == nil
-            }
-            if hasReply { return true }
-            return group.rows.contains { row in
-                !row.structure.startsTurn
-                    && row.structure.type != .marker
-                    && row.structure.type != .system
-            }
+            // a divider group have no reply a footer can belong to. Both
+            // halves come from the group's single row walk.
+            return !groupTurnFacts.replies.isEmpty || groupTurnFacts.hasFooterContentRow
         }
 
         func commit() -> Bool {
@@ -511,12 +621,14 @@ enum TimelineTurnActions {
 
         for group in groups {
             if group.id == liveTurnGroupID { pastLiveTurnStart = true }
-            if group.rows.contains(where: { $0.structure.startsTurn }) {
+            let groupTurnFacts = facts?(group)
+                ?? Self.groupFacts(for: group, latchedBackgroundIDs: latchedBackgroundIDs)
+            if groupTurnFacts.startsTurn {
                 _ = commit()
                 turnOpen = true
                 startsMidTurn = false
             }
-            let declaredTurnID = group.rows.lazy.compactMap { $0.value.turnId }.first
+            let declaredTurnID = groupTurnFacts.declaredTurnID
             if let declaredTurnID, let currentTurnID = bucketTurnID,
                declaredTurnID != currentTurnID {
                 // The live user turn keeps its bubble-only split for a
@@ -548,55 +660,24 @@ enum TimelineTurnActions {
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
             // conversation (they can still place the footer via the group).
-            let messages = group.rows.filter {
-                $0.structure.type == .message && $0.structure.role == .assistant
-                    && SubAgentProgress.parentItemID($0.value) == nil
+            // The folds live in `groupFacts`, which the adapter memoizes per
+            // group: during a stream only the growing group is walked again.
+            if !groupTurnFacts.replies.isEmpty || !groupTurnFacts.changes.isEmpty {
+                turnOpen = true
             }
-            let fileChanges = group.rows.filter { $0.structure.isFileChange }
-            if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
             guard turnOpen else { continue }
             if bucketTurnID == nil { bucketTurnID = declaredTurnID }
-            // Same exclusions as the state-coverage gate: a sub-agent child
-            // and a background hand-off card keep publishing long after the
-            // main turn, and counting them would make every older bucket look
-            // newer than the recorded turn end.
-            for row in group.rows where SubAgentProgress.parentItemID(row.value) == nil {
-                if latchedBackgroundIDs.contains(row.id) || isBackgroundHandoffRow(row.value) {
-                    continue
-                }
-                if row.value.updatedSeq > bucketMaxMainSeq {
-                    bucketMaxMainSeq = row.value.updatedSeq
-                }
+            if groupTurnFacts.maxMainSeq > bucketMaxMainSeq {
+                bucketMaxMainSeq = groupTurnFacts.maxMainSeq
             }
-            if hostsFooter(group) { endGroupID = group.id }
-            replies.append(contentsOf: messages)
-            changes.append(contentsOf: fileChanges)
-            // A compaction marker is session maintenance, not turn content:
-            // while it runs, the finished turn keeps its footer and the 30 pt
-            // action bar with it (pp 2026-11-15: copy/share vanished for the
-            // whole compaction and the page jumped twice).
-            //
-            // A background hand-off row never counts as activity: its card
-            // stays `running` for the whole background run, exactly the wait
-            // pp ruled out — a reply finished after the hand-off must get its
-            // footer while the subagent is still working (pp 2026-11-18 需求
-            // 2: 不等子代理). Foreground rows — including a foreground tool
-            // that shares the same step group — still suppress
-            // (`aRunningToolKeepsTheFooterClosed`). `latchedBackgroundIDs`
-            // keeps that exemption once a card proved it was backgrounded:
-            // the wire can rewrite the card without the flag, and a flapping
-            // exemption withholds the finished turn's footer for as long as
-            // the card runs (pp 2026-11-24: four background agents, footer
-            // absent until a later rewrite restored the flag).
-            var active = false
-            for row in group.rows
-            where isLiveActivityRow(row.value, latchedBackgroundIDs: latchedBackgroundIDs) {
-                active = true
-                if activeItemIDs.count < 3, !activeItemIDs.contains(row.id) {
-                    activeItemIDs.append(row.id)
-                }
+            for id in groupTurnFacts.activeRowIDs where activeItemIDs.count < 3
+                && !activeItemIDs.contains(id) {
+                activeItemIDs.append(id)
             }
-            hasActiveItems = hasActiveItems || active
+            if hostsFooter(group, groupTurnFacts) { endGroupID = group.id }
+            replies.append(contentsOf: groupTurnFacts.replies)
+            changes.append(contentsOf: groupTurnFacts.changes)
+            hasActiveItems = hasActiveItems || groupTurnFacts.hasActive
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.

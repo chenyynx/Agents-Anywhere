@@ -41,7 +41,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     static let streamRowPrefix = "gesture-streamseed-"
 
     enum Kind: String, CaseIterable {
-        case message, longGroup, reasoning, toolExpanded, code, table, image, notice, pending, tail, plain
+        case message, longGroup, reasoning, growingCard, code, table, image, notice, pending, tail, plain
     }
 
     struct Entry: Identifiable, Equatable {
@@ -49,7 +49,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var kind: Kind
         var text: String
         var revision: Int = 0
-        var expanded = false
+        var showsDetail = false
         var statusLine = false
         /// The value the Code adapter's `measuredCodeGroupHeight` would return
         /// before apply. The hosted-height fixture sets 56 (the device
@@ -65,6 +65,11 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// product adapter returns 0 for Code message rows; this lets the gate
     /// prove the per-item spacing path itself.
     @ObservationIgnored var zeroSpacingItemIDs: Set<String> = []
+    /// The status-bar phase needs the product's paging sentinel above the
+    /// first message. Every earlier scenario assumes the synthetic row set
+    /// starts with a message, so the prompt is opt-in and only the last
+    /// phase turns it on.
+    @ObservationIgnored var includesOlderPrompt = false
     weak var controller: TimelineCollectionController?
     @ObservationIgnored private var failures: [String] = []
     @ObservationIgnored private var report: [String: Any] = [:]
@@ -88,11 +93,21 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     // MARK: - Content providing
 
-    var itemCount: Int { entries.count }
+    var itemCount: Int { entries.count + (includesOlderPrompt ? 1 : 0) }
 
-    func item(at index: Int) -> TimelineListItem { listItem(entries[index]) }
+    func item(at index: Int) -> TimelineListItem {
+        if includesOlderPrompt {
+            if index == 0 { return .olderPrompt }
+            return listItem(entries[index - 1])
+        }
+        return listItem(entries[index])
+    }
 
     func contentSignature(for item: TimelineListItem) -> TimelineContentSignature {
+        if case .olderPrompt = item {
+            return .olderPrompt(pullReady: false, isLoading: false,
+                                keepsPrompt: true, hasOlderItems: true)
+        }
         guard let entry = entry(for: item) else {
             return .notice(id: "missing", status: .unknown, revision: 0)
         }
@@ -131,33 +146,46 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
+        // The pre-fix product estimate: the layout must ignore it for the
+        // sentinel and use `layoutFixedHeight` instead.
+        if case .olderPrompt = item { return .olderPrompt }
         guard let entry = entry(for: item) else { return .row }
         if item == .tail { return .tail(statusLine: entry.statusLine) }
-        // The gesture fixtures collapse to a tool header. Pre-seeding the
-        // height keeps a scroll from materializing a dozen 200 pt estimates
-        // that then shrink and drag the phase's target out of the viewport.
-        if entry.kind == .toolExpanded,
+        // The gesture fixtures start with only the card header. Pre-seeding
+        // the height keeps a scroll from materializing a dozen 200 pt
+        // estimates that then shrink and drag the phase's target out of the
+        // viewport.
+        if entry.kind == .growingCard,
            entry.id.hasPrefix(Self.gestureRowPrefix),
            !entry.id.hasPrefix(Self.hostedRowPrefix),
-           // Only the collapsed header is pre-seeded: the expanded row's
-           // height comes from its own fitting. A fixed estimate for both
+           // Only the collapsed header is pre-seeded: the row with its
+           // detail showing takes its own fitting. A fixed estimate for both
            // states pinned the row at 17 pt once the content revision changed
-           // the height key (the fold phase kept `expanded 17.0 == collapsed`).
-           !entry.expanded {
+           // the height key (the content-update phase kept
+           // `detail shown 17.0 == header 17.0`).
+           !entry.showsDetail {
             return .fixed(17)
         }
         return .row
     }
 
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        // The idle paging sentinel draws nothing; the official 36 pt header
+        // exists only while a page loads.
+        if case .olderPrompt = item { return 0 }
+        return nil
+    }
+
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
-        zeroSpacingItemIDs.contains(item.itemID)
+        if case .olderPrompt = item { return 0 }
+        return zeroSpacingItemIDs.contains(item.itemID)
             ? 0 : TimelineListMetrics.itemSpacing
     }
 
     func heightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {
         guard let entry = entry(for: item) else { return .measured }
         if item == .tail { return .tail }
-        return [.toolExpanded, .notice].contains(entry.kind) ? .interactive : .measured
+        return [.growingCard, .notice].contains(entry.kind) ? .interactive : .measured
     }
 
     /// The gesture-freeze fixture rows opt into the official height contract:
@@ -171,11 +199,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     }
 
     func measurementContent(for item: TimelineListItem) -> TimelineMeasurementContent {
+        if case .olderPrompt = item { return .plainText }
         guard let entry = entry(for: item) else { return .markdown }
         switch entry.kind {
         case .plain: return .plainText
         case .code, .table, .image: return .complex
-        case .toolExpanded, .notice, .pending: return .interactive
+        case .growingCard, .notice, .pending: return .interactive
         case .tail: return .tail
         case .message, .longGroup, .reasoning: return .markdown
         }
@@ -203,6 +232,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
 
     func item(containingRow rowID: String) -> TimelineListItem? {
         if rowID == "tail" { return .tail }
+        if rowID == "prompt:older" { return .olderPrompt }
         guard let entry = entries.first(where: { $0.id == rowID }) else { return nil }
         return listItem(entry)
     }
@@ -254,15 +284,17 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         return true
     }
 
-    func setExpanded(_ id: String, _ expanded: Bool) {
+    func setDetailVisible(_ id: String, _ visible: Bool) {
         guard let index = entries.firstIndex(where: { $0.id == id }),
-              entries[index].expanded != expanded else { return }
-        entries[index].expanded = expanded
+              entries[index].showsDetail != visible else { return }
+        entries[index].showsDetail = visible
         // The product path reconfigures a row on a content-signature change,
         // and this provider's signature hashes `revision`. Without the bump
         // `reloadFromContent` saw the same input and never reconfigured the
-        // row: the collapse and gesture-freeze phases stayed at the expanded
-        // height on beta head (2026-11-24 baseline run 45456636689).
+        // row: the content-update and gesture-freeze phases stayed at the
+        // detail height and failed on beta head (2026-11-24 baseline run
+        // 45456636689), and the content-update-cycle phase reconfigured
+        // nothing.
         entries[index].revision += 1
     }
 
@@ -271,7 +303,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         entries[index].statusLine = present
     }
 
-    var allItems: [TimelineListItem] { entries.map(listItem) }
+    var allItems: [TimelineListItem] {
+        (includesOlderPrompt ? [.olderPrompt] : []) + entries.map(listItem)
+    }
 
     private var prependBatch = 0
 
@@ -322,12 +356,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await asyncMarkdown(); persist(phase: "asyncMarkdown")
         await measureConsistency(); persist(phase: "measureConsistency")
         await perItemSpacing(); persist(phase: "perItemSpacing")
-        await foldAndTail(); persist(phase: "foldAndTail")
+        await contentUpdateAndTail(); persist(phase: "contentUpdateAndTail")
         // Build the tool rows before the stream scenario, so the growing row
-        // has expanded rows below it — the shape of pp's device report.
+        // has rows with visible detail below it — the shape of pp's device
+        // report.
         await toolStorm(); persist(phase: "toolStorm")
-        await collapseGap(); persist(phase: "collapseGap")
-        await collapseWhileStreaming(); persist(phase: "collapseWhileStreaming")
+        await contentUpdateGap(); persist(phase: "contentUpdateGap")
+        await contentUpdateWhileStreaming(); persist(phase: "contentUpdateWhileStreaming")
         await streaming(); persist(phase: "streaming")
         await bottom(); persist(phase: "bottom")
         await scrollDownIndicator(); persist(phase: "scrollDownIndicator")
@@ -336,7 +371,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await owedRace(); persist(phase: "owedRace")
         await loadLatestReturn(); persist(phase: "loadLatestReturn")
         await tailFlap(); persist(phase: "tailFlap")
-        await foldCycles(); persist(phase: "foldCycles")
+        await contentUpdateCycles(); persist(phase: "contentUpdateCycles")
         await interleavedApplies(); persist(phase: "interleavedApplies")
         await scrollCost(); persist(phase: "scrollCost")
         await gestureFreeze(); persist(phase: "gestureFreeze")
@@ -346,6 +381,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         await firstFitSeed(); persist(phase: "firstFitSeed")
         await streamingSeed(); persist(phase: "streamingSeed")
         await prependReadingAnchor(); persist(phase: "prependReadingAnchor")
+        // Last: it prepends the paging sentinel, and every earlier scenario
+        // assumes the synthetic row set starts with a message.
+        await statusBarTop(); persist(phase: "statusBarTop")
         writeReport()
     }
 
@@ -624,14 +662,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                                    "afterRemeasure": snapshot()]
     }
 
-    private func foldAndTail() async {
+    private func contentUpdateAndTail() async {
         guard let controller else { return }
-        if let entry = entries.first(where: { $0.kind == .toolExpanded }) {
+        if let entry = entries.first(where: { $0.kind == .growingCard }) {
             let item = listItem(entry)
             await scrollToItem(item)
             let collapsed = cellHeight(controller, item)
             debugRowViewCalls.removeAll()
-            setExpanded(entry.id, true)
+            setDetailVisible(entry.id, true)
             controller.reconfigure([item])
             var expanded = await waitForCellHeight(controller, item: item,
                 timeout: 3) { $0 > collapsed + 1 }
@@ -650,16 +688,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             await wait(700)
             let sample = await sampleItem(controller, item: item)
             if expanded <= collapsed + 1 {
-                failures.append("fold: expanded \(expanded) not taller than collapsed \(collapsed)")
+                failures.append("content update: detail shown \(expanded) not taller than header \(collapsed)")
             }
             if let sample, sample.cell + 0.5 < sample.content {
-                failures.append("fold: cell \(sample.cell) clips content \(sample.content)")
+                failures.append("content update: cell \(sample.cell) clips content \(sample.content)")
             }
-            report["fold"] = ["collapsed": collapsed, "expanded": expanded,
+            report["contentUpdate"] = ["collapsed": collapsed, "expanded": expanded,
                               "content": sample?.content ?? 0,
                               "retried": retried,
                               "providerCalls": debugRowViewCalls,
-                              "entryExpanded": entries.first(where: { $0.id == entry.id })?.expanded ?? false,
+                              "entryShowsDetail": entries.first(where: { $0.id == entry.id })?.showsDetail ?? false,
                               "fitProbe": controller.debugPreferredFitProbe,
                               "diagnostics": controller.preferredDiagnostics,
                               "layoutDiagnostics": controller.layout.preferredHeightDiagnostics,
@@ -672,12 +710,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             let item = listItem(entry)
             await scrollToItem(item)
             let collapsed = cellHeight(controller, item)
-            setExpanded(entry.id, true)
+            setDetailVisible(entry.id, true)
             controller.reconfigure([item])
             let expanded = await waitForCellHeight(controller, item: item,
                 timeout: 3) { $0 > collapsed + 1 }
             if expanded <= collapsed + 1 {
-                failures.append("inline notice: expanded \(expanded) not taller than collapsed \(collapsed)")
+                failures.append("inline notice: detail shown \(expanded) not taller than header \(collapsed)")
             }
             report["inlineNotice"] = ["collapsed": collapsed, "expanded": expanded]
         }
@@ -695,16 +733,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         }
     }
 
-    /// Device report (cf130b1): a tool-heavy turn with expanded rows drew
-    /// text from neighbouring rows on top of each other. Expand eight tool
-    /// rows through the product path (signature change → reload) and assert
+    /// Device report (cf130b1): a tool-heavy turn with detail rows drew text
+    /// from neighbouring rows on top of each other. Show the detail on eight
+    /// cards through the product path (signature change → reload) and assert
     /// the frames stay disjoint and the visible cells contain their content.
     private func toolStorm() async {
         guard let controller else { return }
         let insertAt = max(0, entries.count - 1)
         var stormEntries: [Entry] = []
         for index in 0..<8 {
-            let entry = Entry(id: "storm-\(index)", kind: .toolExpanded,
+            let entry = Entry(id: "storm-\(index)", kind: .growingCard,
                               text: "工具组 \(index)")
             entries.insert(entry, at: insertAt + index)
             stormEntries.append(entry)
@@ -712,16 +750,17 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(400)
-        for entry in stormEntries { setExpanded(entry.id, true) }
+        for entry in stormEntries { setDetailVisible(entry.id, true) }
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(1500)
         controller.collectionView.layoutIfNeeded()
         // The follow is a spring now, so which rows are visible during the
-        // reload depends on timing; a row measured collapsed before the
-        // expansion can be off-screen when the cell would re-fit. Re-measure
-        // any still-collapsed storm row through the off-screen measurer so
-        // the assertion covers the expansion, not the resting offset.
+        // reload depends on timing; a row measured at header height before
+        // the detail arrived can be off-screen when the cell would re-fit.
+        // Re-measure any storm row still at header height through the
+        // off-screen measurer so the assertion covers the growth, not the
+        // resting offset.
         for entry in stormEntries {
             let item = listItem(entry)
             let height = controller.layout.attributes(for: item.itemID)?.frame.height ?? 0
@@ -774,7 +813,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("tool storm: \(stale) visible cells sit at stale frames")
         }
         if collapsed > 0 {
-            failures.append("tool storm: \(collapsed) expanded rows kept a collapsed height")
+            failures.append("tool storm: \(collapsed) rows with detail kept a header height")
         }
         if checked > 0, clipped > 0 {
             failures.append("tool storm: \(clipped)/\(checked) visible cells clip content")
@@ -835,16 +874,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                               "staleCells": stale]
     }
 
-    /// Device report (6a18aa3): after collapsing an expanded tool the content
-    /// below disappeared until a scroll. Collapse through the product path
+    /// Device report (6a18aa3): after clearing a card's detail the content
+    /// below disappeared until a scroll. Clear it through the product path
     /// and check that every row intersecting the viewport still has a cell
     /// and that the visible band has no holes. Also sample the row height
-    /// while expanding, for the animation report.
-    private func collapseGap() async {
+    /// while the detail is shown, for the animation report.
+    private func contentUpdateGap() async {
         guard let controller,
               let entry = entries.first(where: { $0.id == "storm-0" }) else { return }
         let item = listItem(entry)
-        setExpanded(entry.id, true)
+        setDetailVisible(entry.id, true)
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(500)
@@ -855,7 +894,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         controller.collectionView.layoutIfNeeded()
         let before = visibleCoverage(controller)
 
-        setExpanded(entry.id, false)
+        setDetailVisible(entry.id, false)
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(900)
@@ -863,12 +902,12 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let after = visibleCoverage(controller)
         let collapsedHeight = cellHeight(controller, item)
         if collapsedHeight > 100 {
-            failures.append("collapse: row is \(collapsedHeight)pt after collapsing, expected the header height")
+            failures.append("content update: row is \(collapsedHeight)pt after the detail cleared, expected the header height")
         }
 
         // Expansion samples: frame height over 500ms.
         let animationsBefore = controller.debugRowHeightAnimationsStarted
-        setExpanded(entry.id, true)
+        setDetailVisible(entry.id, true)
         contentGeneration += 1
         controller.reloadFromContent()
         var samples: [CGFloat] = []
@@ -888,14 +927,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             distinct.append(value)
         }
         if after.missing > 0 || after.gap > 1 {
-            failures.append("collapse: missing \(after.missing) cells, gap \(after.gap)pt")
+            failures.append("content update: missing \(after.missing) cells, gap \(after.gap)pt")
         }
         // A host-animated expansion must produce intermediate frames, not one
         // jump (the "not smooth" device report).
         if distinct.count < 3 {
-            failures.append("collapse: expansion jumped in \(distinct.count) step(s)")
+            failures.append("content update: growth jumped in \(distinct.count) step(s)")
         }
-        report["collapseGap"] = [
+        report["contentUpdateGap"] = [
             "collapsedHeight": Double(collapsedHeight),
             "animationsBefore": animationsBefore,
             "animationsAfter": animationsAfter,
@@ -909,16 +948,16 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         ]
     }
 
-    /// Device report (6a18aa3): collapsing a tool while its turn was still
-    /// streaming left the area below blank until a scroll. Run batches, then
-    /// collapse a tool above the live row and keep streaming; the visible
-    /// band must stay covered and every visible cell current.
-    private func collapseWhileStreaming() async {
+    /// Device report (6a18aa3): clearing a card's detail while its turn was
+    /// still streaming left the area below blank until a scroll. Run batches,
+    /// then clear a card's detail above the live row and keep streaming; the
+    /// visible band must stay covered and every visible cell current.
+    private func contentUpdateWhileStreaming() async {
         guard let controller,
               let stream = entries.last(where: { $0.kind == .plain }),
               let streamIndex = entries.firstIndex(where: { $0.id == stream.id }) else { return }
-        let tool = Entry(id: "stream-tool", kind: .toolExpanded,
-                         text: "工具组", expanded: true)
+        let tool = Entry(id: "stream-tool", kind: .growingCard,
+                         text: "工具组", showsDetail: true)
         entries.insert(tool, at: streamIndex)
         contentGeneration += 1
         controller.reloadFromContent()
@@ -935,7 +974,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             controller.reloadFromContent()
             await wait(120)
         }
-        setExpanded(tool.id, false)
+        setDetailVisible(tool.id, false)
         contentGeneration += 1
         controller.reloadFromContent()
         for _ in 0..<3 {
@@ -948,10 +987,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let coverage = visibleCoverage(controller)
         let stale = staleVisibleCells(controller)
         if coverage.missing > 0 || coverage.gap > 1 {
-            failures.append("stream collapse: missing \(coverage.missing), gap \(coverage.gap)")
+            failures.append("stream content update: missing \(coverage.missing), gap \(coverage.gap)")
         }
         if stale > 0 {
-            failures.append("stream collapse: \(stale) stale cells")
+            failures.append("stream content update: \(stale) stale cells")
         }
         report["streamCollapse"] = ["missing": coverage.missing,
                                     "gap": Double(coverage.gap),
@@ -1831,7 +1870,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         var fixtures: [Entry] = []
         for index in 0..<12 {
             let entry = Entry(id: "\(Self.gestureRowPrefix)\(index)",
-                              kind: .toolExpanded, text: "工具组 \(index)")
+                              kind: .growingCard, text: "工具组 \(index)")
             entries.insert(entry, at: insertAt + index)
             fixtures.append(entry)
         }
@@ -1932,7 +1971,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         // bottom target disarmed, phase `.interacting`.
         controller.setTestGestureState(tracking: tracking, decelerating: decelerating)
         let userScrolling = controller.isUserScrolling
-        setExpanded(target.id, true)
+        setDetailVisible(target.id, true)
         contentGeneration += 1
         controller.reloadFromContent()
         // One turn for the snapshot apply, its completion dispatch and the
@@ -2189,25 +2228,25 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
     /// move every following cell, not just the corrected one. Collapse and
     /// expand the same row repeatedly and check the visible cells against
     /// the layout's own attributes.
-    private func foldCycles() async {
+    private func contentUpdateCycles() async {
         guard let controller,
               let entry = entries.first(where: { $0.id == "storm-0" }) else { return }
         let item = listItem(entry)
         await scrollToItem(item)
         for cycle in 0..<4 {
-            setExpanded(entry.id, cycle % 2 == 0)
+            setDetailVisible(entry.id, cycle % 2 == 0)
             contentGeneration += 1
             controller.reloadFromContent()
             await wait(350)
         }
-        setExpanded(entry.id, true)
+        setDetailVisible(entry.id, true)
         contentGeneration += 1
         controller.reloadFromContent()
         await wait(700)
         controller.collectionView.layoutIfNeeded()
         let staleDetails = staleCellDetails(controller, limit: 3)
         if !staleDetails.isEmpty {
-            failures.append("fold cycles: \(staleDetails.count)+ visible cells sit at stale frames \(staleDetails)")
+            failures.append("content update cycles: \(staleDetails.count)+ visible cells sit at stale frames \(staleDetails)")
         }
         var overlaps = 0
         let attributes = controller.layout.orderedAttributes
@@ -2216,9 +2255,9 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             overlaps += 1
         }
         if overlaps > 0 {
-            failures.append("fold cycles: \(overlaps) adjacent frames overlap")
+            failures.append("content update cycles: \(overlaps) adjacent frames overlap")
         }
-        report["foldCycles"] = ["staleCells": staleDetails.count,
+        report["contentUpdateCycles"] = ["staleCells": staleDetails.count,
                                 "staleDetails": staleDetails,
                                 "overlaps": overlaps]
     }
@@ -2551,6 +2590,73 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             "hiddenReduced": hiddenReduced,
             "reducedFlips": reducedFlips,
         ]
+    }
+
+    /// The status-bar tap (`scrollViewShouldScrollToTop` → the anchor
+    /// driver's `requestStart`) must land on the first message, not on the
+    /// paging sentinel above it. The idle sentinel draws nothing, so its
+    /// height is a state constant (0), not the old 44 pt prompt estimate;
+    /// otherwise the tap stops one footer height short and the reader has
+    /// to swipe again (pp 2026-11-26).
+    private func statusBarTop() async {
+        guard let controller else { return }
+        includesOlderPrompt = true
+        contentGeneration += 1
+        controller.reloadFromContent()
+        await settleLayout(controller)
+        controller.collectionView.layoutIfNeeded()
+        let promptHeight = controller.layout.attributes(for: "prompt:older")?.frame.height ?? -1
+        // Park mid-list so the tap has a real distance to travel.
+        let mid = controller.items.count / 2
+        if mid < controller.items.count {
+            controller.collectionView.scrollToItem(
+                at: IndexPath(item: mid, section: 0), at: .centeredVertically, animated: false)
+        }
+        await wait(500)
+        controller.collectionView.layoutIfNeeded()
+        _ = controller.scrollViewShouldScrollToTop(controller.collectionView)
+        // The tap runs a full-distance fly; wait until the offset stops.
+        var lastOffset = controller.collectionView.contentOffset.y
+        var stableTicks = 0
+        for _ in 0..<30 {
+            await wait(100)
+            controller.collectionView.layoutIfNeeded()
+            let now = controller.collectionView.contentOffset.y
+            if abs(now - lastOffset) <= 0.5 {
+                stableTicks += 1
+                if stableTicks >= 5 { break }
+            } else {
+                stableTicks = 0
+                lastOffset = now
+            }
+        }
+        await settleLayout(controller)
+        let inset = controller.collectionView.adjustedContentInset.top
+        let offset = controller.collectionView.contentOffset.y
+        let firstContent = controller.items.first { item in
+            if case .group = item { return true }
+            return false
+        }
+        let firstMinY = firstContent.flatMap {
+            controller.layout.attributes(for: $0.itemID)?.frame.minY
+        }
+        // The tap must land on the resting top (offset = -inset), the same
+        // place a manual scroll stops — not on the first row's top, which
+        // cuts the list's own top inset (pp 2026-11-26).
+        let topDelta = offset + inset
+        report["statusBarTop"] = [
+            "promptHeight": Double(promptHeight),
+            "topDelta": topDelta.isFinite ? Double(topDelta) : -1,
+            "firstMinY": firstMinY.map(Double.init) ?? -1,
+            "offset": Double(offset),
+            "inset": Double(inset),
+        ]
+        if abs(promptHeight) > 0.5 {
+            failures.append("status bar: idle paging sentinel height \(promptHeight) != 0")
+        }
+        if !(abs(topDelta) <= 1) {
+            failures.append("status bar: tap landed \(topDelta) pt off the resting top")
+        }
     }
 
     private func prepend() async {
@@ -3002,7 +3108,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             return AnyView(EmptyView())
         }
         if debugRowViewCalls.count < 60 {
-            debugRowViewCalls.append("\(rawID):expanded=\(entry.expanded)")
+            debugRowViewCalls.append("\(rawID):expanded=\(entry.showsDetail)")
         }
         return view(for: entry)
     }
@@ -3027,13 +3133,13 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         case .reasoning:
             return AnyView(ChatMarkdownView(text: entry.text)
                 .environment(\.chatMarkdownFont, .caption2))
-        case .toolExpanded:
+        case .growingCard:
             return AnyView(VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "hammer").font(.caption)
-                    Text("工具调用").font(.caption).foregroundStyle(.secondary)
+                    Text("内容卡片").font(.caption).foregroundStyle(.secondary)
                 }
-                if entry.expanded {
+                if entry.showsDetail {
                     ForEach(0..<12, id: \.self) { line in
                         Text("output line \(line): " + String(repeating: "detail ", count: 6))
                             .font(.caption2.monospaced())
@@ -3061,7 +3167,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
                     Text("审批").font(.caption).foregroundStyle(.secondary)
                 }
                 Text(entry.text).font(.callout)
-                if entry.expanded {
+                if entry.showsDetail {
                     Text("details: " + String(repeating: "approval detail ", count: 8))
                         .font(.caption)
                     HStack {
@@ -3128,10 +3234,10 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             Entry(id: "long-group-1", kind: .longGroup,
                   text: longMessage + "\n\n" + longReasoning),
             Entry(id: "reasoning-1", kind: .reasoning, text: longReasoning),
-            Entry(id: "tools-1", kind: .toolExpanded, text: "工具组"),
+            Entry(id: "tools-1", kind: .growingCard, text: "工具组"),
             Entry(id: "code-1", kind: .code, text: code),
             Entry(id: "table-1", kind: .table, text: table),
-            Entry(id: "image-1", kind: .image, text: "image", expanded: false),
+            Entry(id: "image-1", kind: .image, text: "image", showsDetail: false),
             Entry(id: "notice-1", kind: .notice, text: "Allow the agent to run the tests?"),
             Entry(id: "pending-1", kind: .pending, text: "Queued message"),
         ]

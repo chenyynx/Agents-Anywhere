@@ -40,6 +40,9 @@ final class TimelineCollectionController: UIViewController {
     private(set) var measurer: (any TimelineHeightMeasuring)?
 
     private var currentItems: [TimelineListItem] = []
+    /// Bumped on every apply; the layout uses it to prove a height-only
+    /// invalidation arrived without a content/structure change.
+    private(set) var layoutStructureRevision = 0
     /// Anchor of the history page whose prepend target is installed. The
     /// projection is recomputed after the apply's measurement pass, because
     /// the budgeted pass at request time can leave rows on estimates.
@@ -155,6 +158,18 @@ final class TimelineCollectionController: UIViewController {
     /// arrival, records at most one `timeline.row.overlap` line, and stops
     /// after that. Remove once the root cause is fixed.
     private var flightProbeActive = false
+    /// Low-frequency production diagnostics for the update paths this branch
+    /// introduced. The probe overlay only exists in the AA_TIMELINE_PROBE
+    /// build, so a release build needs its own evidence: which path last
+    /// updated an item, how often each path ran, rows stuck at an estimate
+    /// height, and a facts-cache reset.
+    private var lastUpdatePath: (itemID: String, path: String)?
+    private var diagFastHits = 0
+    private var diagSnapshotApplies = 0
+    private var diagLastFastItem = "-"
+    private var diagLastSnapshotReason = "-"
+    private var estimateWatch: [String: CFTimeInterval] = [:]
+    private var estimateLogged: Set<String> = []
     private var flightProbeLogged = false
     private var flightProbeHeightChanges = 0
     private var flightProbeArmedAt: CFTimeInterval = 0
@@ -165,6 +180,11 @@ final class TimelineCollectionController: UIViewController {
     /// reported with the next sample.
     private var lastMoverScrollLogAt: CFTimeInterval = 0
     private var coalescedMoverScrolls = 0
+    /// `timeline.bottom.request` is throttled to one line per second: a
+    /// streaming follow can ask for the bottom on every response revision,
+    /// and the only question is which kind of request ran while the reader
+    /// was parked in history (pp 2026-11-26).
+    private var lastBottomRequestLogAt: CFTimeInterval = 0
     private var didStartAnchorDriver = false
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
@@ -343,6 +363,9 @@ final class TimelineCollectionController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification, object: nil)
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         // The SwiftUI timeline asked for `.scrollEdgeEffectStyle(.soft, for:
@@ -391,7 +414,20 @@ final class TimelineCollectionController: UIViewController {
             contentHeight: { [weak self] in self?.layout.contentHeight ?? 0 },
             rowStart: { [weak self] in self?.layout.attributes(for: $0)?.frame.minY },
             readingAnchor: { [weak self] in self?.anchor(at: $0) },
-            firstRowID: { [weak self] in self?.currentItems.first?.itemID },
+            // The status-bar tap must land on the first message, not the
+            // paging sentinel: the sentinel is an AA-only row (the official
+            // header exists only while a page loads), and aligning to its
+            // top left a blank band its height tall above the first message
+            // (pp 2026-11-26).
+            firstRowID: { [weak self] in
+                guard let self else { return nil }
+                return self.currentItems.first { item in
+                    switch item {
+                    case .olderPrompt, .latestPrompt, .tail: return false
+                    default: return true
+                    }
+                }?.itemID
+            },
             onBottomArrived: { [weak self] in self?.onBottomArrived?() },
             onPlacementChanged: { [weak self] from, to, event in
                 guard let self else { return }
@@ -508,70 +544,77 @@ final class TimelineCollectionController: UIViewController {
             }
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TimelineHostingCell.reuseIdentifier,
                                                           for: indexPath) as! TimelineHostingCell
-            if let self, let content = self.content {
-                // Official 0x101a3ff20: `isMeasured` is item-level and only a
-                // width change clears it. A same-width content revision keeps
-                // the row measured instead of reopening its one self-measure;
-                // the hosting geometry report supplies the new height.
-                let isMeasured = self.layout.heights.isMeasured(
-                    itemID: item.itemID, width: self.columnWidth)
-                // Seed an unmeasured cell-reported row's one self-measure.
-                // Official Part V §2.5: a placeholder row's height is the last
-                // measured value (`__height`/`__headerHeight` are
-                // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
-                // never-measured row only the estimate tier until the cell
-                // materializes. Code has no reveal and re-lays out as data
-                // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
-                // the provider's structural height is the real value when it
-                // exists. Without one (streaming or pre-layout content) the row
-                // keeps the height `prepare()` already recorded for it — the
-                // estimate for a never-shown row, the displayed height
-                // otherwise. Letting UIKit fit the pre-layout body instead
-                // collapsed a streaming row 44→18 (461 probe); the content's
-                // later geometry change supersedes the seed through the
-                // changed-only `onContentHeightReport` path.
-                let reportsContentHeight = content.usesCellReportedHeight(for: item)
-                let seed: CGFloat?
-                if !isMeasured, reportsContentHeight {
-                    if let structural = content.measuredCodeGroupHeight(
-                        for: item, width: self.columnWidth) {
-                        seed = structural
-                    } else if let displayed = self.layout.heights.displayedHeight(
-                        for: item.itemID), displayed > 1 {
-                        seed = displayed
-                    } else {
-                        seed = nil
-                    }
-                } else {
-                    seed = nil
-                }
-                // A hosted row's geometry value is its measurement (official
-                // `_GeometryActionModifier` → `rowMeasured`,
-                // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
-                // signature this configuration's content belongs to; a
-                // width/typography re-key of the same content (rotation does
-                // not reconfigure the cell) is still accepted. The Chat rows
-                // keep the controller polling path.
-                if reportsContentHeight {
-                    let reportKey = content.heightKey(for: item, width: self.columnWidth)
-                    let reportSignature = content.contentSignature(for: item)
-                    cell.onContentHeightReport = { [weak self] height in
-                        self?.hostedContentHeightReported(
-                            height, for: item,
-                            reportedKey: reportKey, reportedSignature: reportSignature)
-                    }
-                } else {
-                    cell.onContentHeightReport = nil
-                }
-                cell.configure(content.rowView(for: item, width: self.columnWidth),
-                               itemID: item.itemID,
-                               policy: content.heightPolicy(for: item),
-                               isMeasured: isMeasured,
-                               reportsContentHeight: reportsContentHeight,
-                               seededHeight: seed)
-            }
+            if let self { self.configureHostedCell(cell, for: item) }
             return cell
         }
+    }
+
+    /// The hosted row's one configuration path. Extracted so a stream tick can
+    /// re-configure the visible cell in place (a working row's reasoning text)
+    /// without a diffable reconfigure; the provider and the fast path must not
+    /// drift.
+    private func configureHostedCell(_ cell: TimelineHostingCell, for item: TimelineListItem) {
+        guard let content else { return }
+        // Official 0x101a3ff20: `isMeasured` is item-level and only a
+        // width change clears it. A same-width content revision keeps
+        // the row measured instead of reopening its one self-measure;
+        // the hosting geometry report supplies the new height.
+        let isMeasured = layout.heights.isMeasured(
+            itemID: item.itemID, width: columnWidth)
+        // Seed an unmeasured cell-reported row's one self-measure.
+        // Official Part V §2.5: a placeholder row's height is the last
+        // measured value (`__height`/`__headerHeight` are
+        // `LazyState<CGFloat>`), and 05-layout-scroll.md:93 gives a
+        // never-measured row only the estimate tier until the cell
+        // materializes. Code has no reveal and re-lays out as data
+        // arrives (11-motion-haptics.md:314, 10-chat-page.md:154), so
+        // the provider's structural height is the real value when it
+        // exists. Without one (streaming or pre-layout content) the row
+        // keeps the height `prepare()` already recorded for it — the
+        // estimate for a never-shown row, the displayed height
+        // otherwise. Letting UIKit fit the pre-layout body instead
+        // collapsed a streaming row 44→18 (461 probe); the content's
+        // later geometry change supersedes the seed through the
+        // changed-only `onContentHeightReport` path.
+        let reportsContentHeight = content.usesCellReportedHeight(for: item)
+        let seed: CGFloat?
+        if !isMeasured, reportsContentHeight {
+            if let structural = content.measuredCodeGroupHeight(
+                for: item, width: columnWidth) {
+                seed = structural
+            } else if let displayed = layout.heights.displayedHeight(
+                for: item.itemID), displayed > 1 {
+                seed = displayed
+            } else {
+                seed = nil
+            }
+        } else {
+            seed = nil
+        }
+        // A hosted row's geometry value is its measurement (official
+        // `_GeometryActionModifier` → `rowMeasured`,
+        // `CANONICAL/05-layout-scroll.md` §2.2). Capture the key and
+        // signature this configuration's content belongs to; a
+        // width/typography re-key of the same content (rotation does
+        // not reconfigure the cell) is still accepted. The Chat rows
+        // keep the controller polling path.
+        if reportsContentHeight {
+            let reportKey = content.heightKey(for: item, width: columnWidth)
+            let reportSignature = content.contentSignature(for: item)
+            cell.onContentHeightReport = { [weak self] height in
+                self?.hostedContentHeightReported(
+                    height, for: item,
+                    reportedKey: reportKey, reportedSignature: reportSignature)
+            }
+        } else {
+            cell.onContentHeightReport = nil
+        }
+        cell.configure(content.rowView(for: item, width: columnWidth),
+                       itemID: item.itemID,
+                       policy: content.heightPolicy(for: item),
+                       isMeasured: isMeasured,
+                       reportsContentHeight: reportsContentHeight,
+                       seededHeight: seed)
     }
 
     override func viewDidLayoutSubviews() {
@@ -655,6 +698,66 @@ final class TimelineCollectionController: UIViewController {
                 dedupe: false)
             return
         }
+    }
+
+    /// Which channel last updated one item (`fast` / `snapshot`), written only
+    /// when it changes. A row whose content stops matching its model shows up
+    /// here first: this is the last path that touched it.
+    private func noteUpdatePath(_ itemID: String, path: String, reason: String) {
+        if let last = lastUpdatePath, last.itemID == itemID, last.path == path { return }
+        lastUpdatePath = (itemID, path)
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.update.path",
+            sessionID: diagnosticSessionID,
+            detail: ["item": itemID, "path": path, "reason": reason],
+            dedupe: false)
+    }
+
+    /// One line per backgrounding: how often each update path ran, so a
+    /// release build shows whether the fast path silently stopped engaging.
+    private func noteUpdateSummary() {
+        guard diagFastHits > 0 || diagSnapshotApplies > 0 else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.update.summary",
+            sessionID: diagnosticSessionID,
+            detail: ["fast": String(diagFastHits),
+                     "apply": String(diagSnapshotApplies),
+                     "lastFastItem": diagLastFastItem,
+                     "lastApplyReason": diagLastSnapshotReason],
+            dedupe: false)
+    }
+
+    @objc private func appDidEnterBackground() { noteUpdateSummary() }
+
+    /// A visible row that still has no measured or precalc height seconds after
+    /// it appeared means the offscreen-measure parking never released it — its
+    /// height would stay an estimate. One line per item.
+    private func noteEstimateStalls() {
+        guard let content, let collectionView, columnWidth > 0 else { return }
+        let now = CACurrentMediaTime()
+        var live: Set<String> = []
+        for indexPath in collectionView.indexPathsForVisibleItems {
+            guard let item = dataSource.itemIdentifier(for: indexPath) else { continue }
+            live.insert(item.itemID)
+            let key = content.heightKey(for: item, width: columnWidth)
+            if layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
+                estimateWatch[item.itemID] = nil
+                estimateLogged.remove(item.itemID)
+                continue
+            }
+            let since = estimateWatch[item.itemID] ?? now
+            estimateWatch[item.itemID] = since
+            guard now - since >= 2, !estimateLogged.contains(item.itemID) else { continue }
+            estimateLogged.insert(item.itemID)
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.height.estimate",
+                sessionID: diagnosticSessionID,
+                detail: ["item": item.itemID,
+                         "heldMs": String(Int(((now - since) * 1000).rounded())),
+                         "visible": "1"],
+                dedupe: false)
+        }
+        estimateWatch = estimateWatch.filter { live.contains($0.key) }
     }
 
     /// A finger resting on the list is still `isDragging == true`, but the
@@ -818,6 +921,7 @@ final class TimelineCollectionController: UIViewController {
 #endif
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
+        let offsetAtApplyStart = collectionView.contentOffset.y
         // A window replacement drops the old dynamic rows; a prepend/append
         // keeps them. Compare the first *dynamic* item because `.olderPrompt`
         // / `.latestPrompt` / `.tail` have static identities and both windows
@@ -829,7 +933,16 @@ final class TimelineCollectionController: UIViewController {
             isHistoryPage = historyPageFirstRowID.map { currentFirstRowID == $0 }
                 ?? (currentFirstRowID != nil)
         } else {
-            isHistoryPage = currentFirstRowID != nil
+            // Outside history paging this is never a history page: the
+            // initial-row marker only exists while a page is in flight
+            // (`beginHistoryPaging` sets it, `endHistoryPaging` clears it).
+            // Without the guard a normal apply compared a real first row
+            // against nil, reported "history page", and kept both the
+            // snapshot-reuse branch and the stream fast path dark — the
+            // 2026-11-25 b1619 report recorded
+            // `apply.fastPath.miss.structure` on all 228 applies.
+            isHistoryPage = historyPaging
+                && currentFirstRowID != nil
                 && currentFirstRowID != historyInitialFirstRowID
         }
         let applyingHistoryPage = historyPaging && isHistoryPage
@@ -933,13 +1046,33 @@ final class TimelineCollectionController: UIViewController {
         // reader keeps its estimate until it can be seen. Without this, the
         // next ordinary apply (a stream tick) synchronously measures every
         // unmeasured row of the history page it just prepended.
+        //
+        // A first layout has no attributes, so the rule has no position to
+        // compare. Measuring every attribute-less row there would pay the
+        // whole history's text layout before the first frame (588 items,
+        // ~0.8 s on the 2026-11-24 device log); measure only the tail the
+        // opening lands on and leave the rest to the pending pass.
         let measurementTop = viewport.offsetY + viewport.topInset
         let measurementSkipAbove = measurementTop
             - max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
+        // A first layout or a window replacement leaves most rows without
+        // attributes; a mid-list insertion or a stream tick leaves only a
+        // few. Tail-only measurement is for the former. The latter keeps the
+        // old "measure anything without a height" rule: a row inserted above
+        // the viewport still needs its real height before the reader scrolls
+        // to it (the autorun seed fixture asserts exactly that).
+        var attributeLessCount = 0
+        for item in items where layout.attributes(for: item.itemID) == nil {
+            attributeLessCount += 1
+        }
+        let openingLayout = attributeLessCount > max(48, items.count / 2)
+        let measurementTailLimit = openingLayout
+            ? TimelineSynchronousMeasurementSelection.openingTailLimit
+            : items.count
 #if AA_TIMELINE_PROBE
         let probeHeightKeyStart = CACurrentMediaTime()
 #endif
-        for item in items {
+        for (index, item) in items.enumerated() {
             let key = content.heightKey(for: item, width: columnWidth)
             if layout.heights.currentKey(for: item.itemID) != key {
                 // Install the key before the snapshot applies. A hosted cell
@@ -952,12 +1085,41 @@ final class TimelineCollectionController: UIViewController {
                 hostedFallbackFirstSeenAt[item.itemID] = nil
                 reconfigure.insert(item)
             }
-            if changed.contains(item) || !layout.heights.hasMeasuredOrPrecalcHeight(for: key) {
-                if let attributes = layout.attributes(for: item.itemID),
-                   attributes.frame.maxY < measurementSkipAbove {
-                    continue
-                }
+            let needsMeasurement = changed.contains(item)
+                || !layout.heights.hasMeasuredOrPrecalcHeight(for: key)
+            if TimelineSynchronousMeasurementSelection.shouldMeasure(
+                index: index,
+                itemCount: items.count,
+                needsMeasurement: needsMeasurement,
+                attributesMaxY: layout.attributes(for: item.itemID)?.frame.maxY,
+                skipAbove: measurementSkipAbove,
+                tailLimit: measurementTailLimit) {
                 toMeasure.append(item)
+            }
+        }
+        // A history merge or window replacement can leave 100+ rows without a
+        // real height. Measuring them all before the snapshot cost 196 ms in
+        // one pass (probe 2026-11-25, n=145). Only the rows near the viewport
+        // belong in this pass; the rest stay pending and the offscreen pass
+        // measures them as they approach. Rows without attributes keep their
+        // opening rule (the tail is already bounded there).
+        if !applyingHistoryPage,
+           toMeasure.count > TimelineSynchronousMeasurementSelection.batchLimit {
+            let prefetch = max(Self.pendingMeasurementPrefetchMargin,
+                               viewport.visibleHeight * 1.5)
+            let top = measurementTop - prefetch
+            let bottom = measurementTop + viewport.visibleHeight + prefetch
+            toMeasure = toMeasure.filter { item in
+                // A changed row is a new or edited row, not leftover window
+                // backlog: a mid-list insertion must take its real height even
+                // outside the viewport (the autorun gesture fixture asserts
+                // exactly that). Only the merely-unmeasured backlog is
+                // trimmed to the viewport band.
+                if changed.contains(item) { return true }
+                guard let attributes = layout.attributes(for: item.itemID) else { return true }
+                return TimelineSynchronousMeasurementSelection.isNearViewport(
+                    minY: attributes.frame.minY, maxY: attributes.frame.maxY,
+                    top: top, bottom: bottom)
             }
         }
 #if AA_TIMELINE_PROBE
@@ -1020,11 +1182,130 @@ final class TimelineCollectionController: UIViewController {
         TimelineProbeStore.shared.noteStage(
             "apply.postMeasure", seconds: probeSnapshotStart - probePostMeasureStart)
 #endif
-        var snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
-        snapshot.appendSections([.main])
-        snapshot.appendItems(items)
+        // A stream tick changes one row's content but not the item list. The
+        // committed snapshot already holds exactly these identifiers, so ask
+        // it for those items and reconfigure the changed rows instead of
+        // rebuilding a ~590-item snapshot and letting the data source diff it
+        // again (the 2026-11-08 probe measured 19 ms for one such apply).
+        // Any structural change — a prepend, a window replacement, a prompt
+        // or tail identity move — keeps the full rebuild below.
         let existingChanges = items.filter { oldIDs.contains($0) && reconfigure.contains($0) }
-        if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        let structureUnchanged = !windowReplaced
+            && !isHistoryPage
+            && !applyingHistoryPage
+            && oldItems.count == items.count
+            && oldItems == items
+        // A stream tick that only rewrites the reply already on screen does
+        // not need the diffable machinery. `reconfigureItems` + `apply` costs
+        // a snapshot rebuild plus UIKit's commit wait (~5 ms + ~11 ms on the
+        // 2026-11-25 b1607 device probe), while the row's own content lives
+        // in one visible cell and the layout can patch its height directly.
+        // Everything else — a new row, a tail or prompt move, a hidden cell,
+        // an animated arrival — keeps the snapshot path below.
+        // An explicit 「回到底部」 fly animates the height corrections frame by
+        // frame; a cell grown in place would paint past a layout that has not
+        // caught up yet (the `timeline.row.overlap` probe exists for exactly
+        // that window, pp 2026-11-16). Keep the snapshot path while the fly
+        // runs.
+        if structureUnchanged, !animating, !flightProbeActive,
+           changed.count == 1,
+           reconfigure.count == 1, existingChanges.count == 1,
+           let streamedItem = changed.first {
+            let indexPath = dataSource.indexPath(for: streamedItem)
+            let visibleCell = indexPath.flatMap { collectionView.cellForItem(at: $0) }
+            // A working row's reasoning text is a hosted SwiftUI row. Run the
+            // provider's own configure on the cell already on screen; its
+            // geometry report owns the height exactly as after a reconfigure,
+            // and the item's structure did not move.
+            //
+            // The tail is excluded: its height comes from the queued-bubble
+            // rule the apply writes as a precalc, and re-configuring it alone
+            // settles at the spacer height (autorun `tail flap: settled at
+            // 12.0, expected 32`). The chat reply cell is excluded too — its
+            // reveal runs a per-frame clamp and the apply's measured height is
+            // not the displayed height (`textkit M4: stored 313.0 vs reveal
+            // clamp 174.0`).
+            let policy = content.heightPolicy(for: streamedItem)
+            let beforeHeight = layout.attributes(for: streamedItem.itemID)?.frame.height
+            if let hosting = visibleCell as? TimelineHostingCell, policy != .tail,
+               policy != .interactive || beforeHeight != nil {
+                configureHostedCell(hosting, for: streamedItem)
+                if policy == .interactive, let beforeHeight {
+                    // An interactive row's height is a fitting pass the
+                    // reconfigure path polls after the apply; run the same poll
+                    // here, or the row keeps its old frame (`content update:
+                    // row is 405.0pt after the detail cleared`).
+                    previousInteractiveHeights[streamedItem.itemID] = PreChangeHeight(
+                        height: beforeHeight, recordedAt: CACurrentMediaTime())
+                    applyPreferredHeights(for: [streamedItem],
+                                          beforeHeights: [streamedItem.itemID: beforeHeight])
+                }
+                currentItems = items
+                isPerformingSnapshot = false
+                diagFastHits += 1
+                diagLastFastItem = streamedItem.itemID
+                noteUpdatePath(streamedItem.itemID, path: "fast", reason: "ok")
+                noteEstimateStalls()
+                onApplyCompleted?()
+                schedulePendingMeasurements()
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteStage(
+                    "apply.fastPath.hit.hosted",
+                    seconds: CACurrentMediaTime() - probeApplyStart)
+#endif
+                return
+            }
+        }
+        // Why the tick kept the snapshot path. One stage per apply in the probe
+        // build; the same reason rides `timeline.update.path` in release.
+        let missReason: String
+        if !structureUnchanged {
+            missReason = "structure"
+        } else if animating {
+            missReason = "animating"
+        } else if flightProbeActive {
+            missReason = "flight"
+        } else if changed.count != 1 {
+            missReason = "count"
+        } else if reconfigure.count != 1 {
+            missReason = "reconfig"
+        } else if existingChanges.count != 1 {
+            missReason = "existing"
+        } else {
+            // The single changed item has no visible cell the fast path can
+            // drive (offscreen, or a cell type it does not own).
+            missReason = "cell"
+        }
+        diagSnapshotApplies += 1
+        diagLastSnapshotReason = missReason
+        noteUpdatePath(changed.count == 1 ? (changed.first?.itemID ?? "-") : "multi",
+                       path: "snapshot", reason: missReason)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.fastPath.miss.\(missReason)", seconds: 0)
+#endif
+        var snapshot: NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>
+        if structureUnchanged {
+            let committed = dataSource.snapshot()
+            if committed.itemIdentifiers == items {
+                snapshot = committed
+                if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+            } else {
+                snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
+                snapshot.appendSections([.main])
+                snapshot.appendItems(items)
+                if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+            }
+        } else {
+            snapshot = NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>()
+            snapshot.appendSections([.main])
+            snapshot.appendItems(items)
+            if !existingChanges.isEmpty { snapshot.reconfigureItems(existingChanges) }
+        }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "apply.snapshotBuild", seconds: CACurrentMediaTime() - probeSnapshotStart)
+#endif
         // The height a row displayed under the content this apply replaces. A
         // cell fit equal to it is the previous content, not the new height:
         // the hosting body updates on a later layout pass.
@@ -1036,6 +1317,7 @@ final class TimelineCollectionController: UIViewController {
         var probeApplyReturnedAt: CFTimeInterval = 0
 #endif
         currentItems = items
+        layoutStructureRevision &+= 1
         dataSource.apply(snapshot, animatingDifferences: animating) { [weak self] in
             guard let self else { return }
 #if AA_TIMELINE_PROBE
@@ -1064,6 +1346,7 @@ final class TimelineCollectionController: UIViewController {
             if resolveWindowBottom { self.resolveWindowReplacementBottom() }
             self.onApplyCompleted?()
             self.schedulePendingMeasurements()
+            self.noteEstimateStalls()
             // A reconfigured interactive row (fold, notice) changes height in
             // SwiftUI after the apply; the single visible-cell pass can see
             // the old content, stop early, and leave the row at its previous
@@ -1122,6 +1405,25 @@ final class TimelineCollectionController: UIViewController {
                self.anchorDriver?.state.placement != .end {
                 self.collectionView.layoutIfNeeded()
                 self.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
+                // A prepend/window fill compensates the offset inside this
+                // update, but UIKit materializes cells for the update's own
+                // visible rect: the band the reader ends up looking at can
+                // still hold the previous coordinates' cells — a blank
+                // viewport until the next scroll (pp 2026-11-26: load-older
+                // plus a fill added 11 rows above, the offset jumped +9,661
+                // with the anchor held at −87, and the screen stayed blank).
+                // Repeat the forced rebind once, after the update cycle has
+                // committed the new offset and cell frames.
+                if items.count != oldItems.count
+                    || abs(self.collectionView.contentOffset.y - offsetAtApplyStart) > 200 {
+                    let controller = self
+                    DispatchQueue.main.async {
+                        guard controller.isViewLoaded,
+                              !controller.navigationSuspended else { return }
+                        controller.collectionView.layoutIfNeeded()
+                        controller.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
+                    }
+                }
             }
             self.performPendingSnapshotUpdate()
         }
@@ -1720,6 +2022,9 @@ final class TimelineCollectionController: UIViewController {
             ? 0
             : max(Self.pendingMeasurementPrefetchMargin, viewport.visibleHeight * 1.5)
         let skipAbove = viewportTop - prefetchMargin
+        // Same rule below the viewport: measuring a hundred rows that cannot
+        // be seen yet is invisible work; they are measured when they approach.
+        let skipBelow = viewportTop + viewport.visibleHeight + prefetchMargin
         pendingMeasurementTask = Task { @MainActor [weak self] in
 #if AA_TIMELINE_PROBE
             let probeStart = CACurrentMediaTime()
@@ -1748,7 +2053,7 @@ final class TimelineCollectionController: UIViewController {
                 // unmeasured. Measuring them offscreen is invisible work and
                 // moves the page's estimated height one row at a time.
                 if let attributes = self.layout.attributes(for: item.itemID),
-                   attributes.frame.maxY < skipAbove {
+                   attributes.frame.maxY < skipAbove || attributes.frame.minY > skipBelow {
 #if AA_TIMELINE_PROBE
                     probeSkipped += 1
 #endif
@@ -2874,9 +3179,35 @@ final class TimelineCollectionController: UIViewController {
         anchorDriver?.beginStickyFollow()
     }
 
+    /// One line per second at most. A return request is the only record of
+    /// what pulled the page to the bottom when the reader did not: a
+    /// `forced=0` request on a reading placement is refused by the gate and
+    /// must never move the page, while a `forced=1` one with no tap in sight
+    /// is the device report's suspect (pp 2026-11-26: the page flew to the
+    /// bottom while the reader had parked 185 pt above it, runtime idle).
+    private func noteBottomRequest(animated: Bool, forced: Bool) {
+        let now = CACurrentMediaTime()
+        guard now - lastBottomRequestLogAt >= 1 else { return }
+        lastBottomRequestLogAt = now
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.bottom.request",
+            sessionID: diagnosticSessionID,
+            detail: [
+                "animated": animated ? "1" : "0",
+                "forced": forced ? "1" : "0",
+                "placement": anchorDriver?.state.placement == .end ? "end" : "anchor",
+                "tracking": collectionView?.isTracking == true ? "1" : "0",
+                "decelerating": phase.phase == .decelerating ? "1" : "0",
+                "offsetY": String(format: "%.1f", collectionView?.contentOffset.y ?? -1),
+                "atBottom": viewport.measuredAtBottom ? "1" : "0",
+            ],
+            dedupe: false)
+    }
+
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
     func requestBottom(animated: Bool, forced: Bool = true) {
+        noteBottomRequest(animated: animated, forced: forced)
         if navigationSuspended {
             suspendedBottomRequest = (animated, forced || (suspendedBottomRequest?.forced ?? false))
             return
@@ -2938,6 +3269,17 @@ final class TimelineCollectionController: UIViewController {
             guard !Task.isCancelled else { return }
             self?.pagingPolicy.openingFallbackExpired()
         }
+        // The first placement is the cold landing and must be direct (a
+        // 100k animated glide would fly through the whole list under the
+        // opening mask). Once the landing has been reported, a later
+        // re-assert — the opening-ready flip, a window re-assert, or an
+        // apply completion — must not place directly: the window is still
+        // filling, and the direct write lands whatever bottom the height is
+        // at that instant, in one frame. That was the visible jump right
+        // after entering a session (pp 2026-11-26: +727 pt at t≈2.1 s, then
+        // a spring for the remaining 261 pt). From here the content follow
+        // owns the bottom and animates it.
+        guard anchorDriver?.hasReportedOpeningArrival != true else { return }
         anchorDriver?.requestEnd(animated: false)
     }
 
@@ -3341,6 +3683,10 @@ extension TimelineCollectionController: TimelineListLayoutHost {
         content?.estimateKind(for: item) ?? .row
     }
 
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        content?.layoutFixedHeight(for: item)
+    }
+
     func layoutHeightPolicy(for item: TimelineListItem) -> TimelineRowHeightPolicy {
         content?.heightPolicy(for: item) ?? .measured
     }
@@ -3583,6 +3929,10 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probePublish = CACurrentMediaTime()
 #endif
         publishViewport()
+        // Parked first measurements (rows above the viewport that have never
+        // been on screen) come back as soon as their row approaches the
+        // viewport, so the reader never sees a parked height.
+        layout.promoteDeferredHeightsNearViewport()
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("didScroll.publish", since: probePublish)
         let probeAnchor = CACurrentMediaTime()
@@ -3621,6 +3971,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probeLayout = CACurrentMediaTime()
 #endif
         layout.noteDragDidEnd(willDecelerate: decelerate)
+        if !decelerate { layout.flushDeferredHeights() }
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("endDragging.layout", since: probeLayout)
         let probeSchedule = CACurrentMediaTime()
@@ -3668,6 +4019,7 @@ extension TimelineCollectionController: UICollectionViewDelegate {
         let probeLayout = CACurrentMediaTime()
 #endif
         layout.noteDecelerationDidEnd()
+        layout.flushDeferredHeights()
 #if AA_TIMELINE_PROBE
         TimelineProbeStore.shared.noteScrollSegment("endDecel.layout", since: probeLayout)
         let probeSchedule = CACurrentMediaTime()

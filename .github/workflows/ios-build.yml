@@ -310,6 +310,16 @@ jobs:
               check(f"gestureFreeze {name}: release has no adjacent overlap",
                     release.get("overlaps") == 0, release)
 
+          # The status-bar tap must land on the first message. The idle
+          # paging sentinel draws nothing, so it must be zero height and the
+          # tap must skip it (pp 2026-11-26: the tap stopped one footer
+          # height short of the top).
+          s = r.get("statusBarTop") or {}
+          check("status bar: idle paging sentinel is zero height",
+                s.get("promptHeight") == 0, s)
+          check("status bar: tap lands on the resting top",
+                abs(s.get("topDelta", 99)) <= 1, s)
+
           failed = [c for c in checks if not c[1]]
           for name, ok, detail in checks:
               print(("PASS " if ok else "FAIL ") + name + ("" if ok else f" | {detail}"))

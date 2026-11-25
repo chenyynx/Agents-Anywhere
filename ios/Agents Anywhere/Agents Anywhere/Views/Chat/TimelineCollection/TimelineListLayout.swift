@@ -37,6 +37,13 @@ final class TimelinePreferredHeightInvalidationContext: UICollectionViewLayoutIn
     var preferredHeight: CGFloat?
 }
 
+/// A height-only invalidation. It carries the item and the height the writer
+/// wants the frame to take, so `prepare` can move the prepared frames in place
+/// instead of rebuilding every attribute. Streaming frames land here.
+final class TimelineHeightInvalidationContext: UICollectionViewLayoutInvalidationContext {
+    var heights: [String: CGFloat] = [:]
+}
+
 /// Optional host capability: rows that follow the official hosted-cell
 /// contract. Kept out of `TimelineListLayoutHost` so a host without Code rows
 /// does not need a new method.
@@ -66,6 +73,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     private var attributesByIndex: [TimelineListLayoutAttributes] = []
     private var attributesByItemID: [String: TimelineListLayoutAttributes] = [:]
     private var lastLayoutWidth: CGFloat = 0
+    /// Height-only patches recorded by an invalidation outside an update
+    /// transaction. `prepare` applies them in place when the host's structure
+    /// revision has not moved; an update transaction always rebuilds.
+    private var pendingHeightPatches: [String: CGFloat] = [:]
+    private var lastStructureRevision = -1
     /// Previous snapshot's identity and keys, for longest-common-prefix reuse.
     private var isInsideUpdate = false
     private var insertionOwed: TimelineInsertionOwed?
@@ -75,6 +87,11 @@ final class TimelineListLayout: UICollectionViewLayout {
         let height: CGFloat
     }
     private var deferredHeights: [String: DeferredHeight] = [:]
+    /// First measurements parked while the reader scrolls (never-displayed
+    /// rows above the viewport). Kept apart from `deferredHeights` so the pull
+    /// corrections keep their settle ordering; these are promoted as soon as
+    /// the row nears the viewport and flushed when the gesture ends.
+    private var parkedFirstMeasures: [String: DeferredHeight] = [:]
     /// Per-frame reveal heights for streaming rows. Display-only: never
     /// written to `heights`, so the row returns to its measured height when
     /// the reveal finishes.
@@ -139,6 +156,14 @@ final class TimelineListLayout: UICollectionViewLayout {
         // when the view returns to a width used earlier. The height tiers stay
         // as estimates; only the measured state is cleared.
         if widthChanged { heights.forgetMeasuredWidths() }
+        // A height-only invalidation (the per-frame streaming/reveal path)
+        // moves the prepared frames; it does not need the ~590-attribute
+        // rebuild below. The host's structure revision proves no apply landed
+        // since the last prepare, and an update transaction always rebuilds.
+        if !widthChanged, !isInsideUpdate, applyPendingHeightPatches(width: width) {
+            return
+        }
+        pendingHeightPatches.removeAll()
         let column = TimelineListMetrics.column(containerWidth: width)
         let count = host.layoutItemCount
         var items: [TimelineListItem] = []
@@ -168,11 +193,18 @@ final class TimelineListLayout: UICollectionViewLayout {
                 || heights.displayedHeight(for: item.itemID) != nil
             let estimate: TimelineHeightEstimateKind = hasResolved
                 ? .row : host.layoutEstimateKind(for: item)
+            // A state-constant row (the paging sentinel: 36 while loading,
+            // 0 idle) never takes a measurement, so the height cache would
+            // keep its first estimate forever — a loading→idle flip could not
+            // shrink it, and the old 44 pt prompt estimate left an invisible
+            // band at the top (pp 2026-11-26). The provider owns the value.
+            let fixedHeight = host.layoutFixedHeight(for: item)
             // A streaming row's per-frame clamped height is a display override:
             // it is used for this prepare but never written to the height
             // cache, so clearing it restores the measured height.
             let streamingHeight = streamingHeights[item.itemID]
-            let height = streamingHeight
+            let height = fixedHeight
+                ?? streamingHeight
                 ?? heights.resolvedHeight(for: key, itemID: item.itemID, fallback: estimate)
             // Official 0x101a3ff20: the row's `isMeasured` is item-level and
             // a width change is the only thing that clears it. A same-width
@@ -182,8 +214,10 @@ final class TimelineListLayout: UICollectionViewLayout {
             let hasMeasuredHeight = heights.isMeasured(itemID: item.itemID, width: key.width)
             // Pending stays key-level: the controller still owes this key a
             // real measurement even when the row was measured under an
-            // earlier revision.
-            if heights.hasMeasuredOrPrecalcHeight(for: key) {
+            // earlier revision. A state-constant row is never owed one.
+            if fixedHeight != nil {
+                heights.resolvePending(item.itemID)
+            } else if heights.hasMeasuredOrPrecalcHeight(for: key) {
                 heights.resolvePending(item.itemID)
             } else {
                 pending.insert(item)
@@ -246,9 +280,11 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributesByItemID = byID
         contentHeight = next.last?.frame.maxY ?? 0
         lastLayoutWidth = width
+        lastStructureRevision = host.layoutStructureRevision
         pendingMeasurements = pending
         heights.prune(keeping: Set(byID.keys))
         deferredHeights = deferredHeights.filter { byID[$0.key] != nil }
+        parkedFirstMeasures = parkedFirstMeasures.filter { byID[$0.key] != nil }
         streamingHeights = streamingHeights.filter { byID[$0.key] != nil }
         lastAppliedHeight = lastAppliedHeight.filter { byID[$0.key] != nil }
         if abs(previousHeight - contentHeight) > 0.5 {
@@ -585,7 +621,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: suppressOffsetAdjustment ? nil : decision.correction,
                          contentSizeDelta: delta,
-                         state: state, probeSource: probeSource)
+                         state: state, probeSource: probeSource,
+                         patchHeight: height)
     }
 
     /// The changed item plus the visible rows below it. A height change moves
@@ -639,7 +676,8 @@ final class TimelineListLayout: UICollectionViewLayout {
     private func invalidateHeight(itemID: String, attributes: TimelineListLayoutAttributes,
                                   correction: CGFloat?, contentSizeDelta: CGFloat,
                                   state: TimelineLayoutInteractionState,
-                                  probeSource: String) {
+                                  probeSource: String,
+                                  patchHeight: CGFloat? = nil) {
         guard let collectionView else { return }
 #if DEBUG
         if let state = host?.layoutInteractionState(),
@@ -656,7 +694,19 @@ final class TimelineListLayout: UICollectionViewLayout {
                 source: probeSource)
         }
 #endif
-        let context = UICollectionViewLayoutInvalidationContext()
+        // The patch carries the absolute height the writer measured, never
+        // `frame + delta`: the delta is computed against the displayed/cached
+        // height, which can differ from the attribute frame (a 40 pt seed was
+        // added to the fit without this). No patch is recorded when the writer
+        // has no absolute value; that pass rebuilds.
+        let context: UICollectionViewLayoutInvalidationContext
+        if let patchHeight, abs(contentSizeDelta) > 0.5 {
+            let heightContext = TimelineHeightInvalidationContext()
+            heightContext.heights[itemID] = patchHeight
+            context = heightContext
+        } else {
+            context = UICollectionViewLayoutInvalidationContext()
+        }
         context.invalidateItems(at: invalidatablePaths(by: attributes))
 #if DEBUG
         let traceBefore = collectionView.contentOffset.y
@@ -800,7 +850,8 @@ final class TimelineListLayout: UICollectionViewLayout {
         attributes.isMeasured = true
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: decision.correction, contentSizeDelta: delta,
-                         state: state, probeSource: "preferred")
+                         state: state, probeSource: "preferred",
+                         patchHeight: height)
     }
 
     // MARK: - Streaming reveal height (per frame)
@@ -843,7 +894,8 @@ final class TimelineListLayout: UICollectionViewLayout {
 #endif
         invalidateHeight(itemID: itemID, attributes: attributes,
                          correction: adjustOffset ? decision.correction : nil,
-                         contentSizeDelta: delta, state: state, probeSource: "")
+                         contentSizeDelta: delta, state: state, probeSource: "",
+                         patchHeight: height)
     }
 
     /// Drop the override without invalidating. The controller calls this
@@ -906,11 +958,12 @@ final class TimelineListLayout: UICollectionViewLayout {
             keyboardTransition: state.keyboardTransition,
             suppressContentOffsetAdjustment: state.suppressContentOffsetAdjustment,
             hasCachedHeight: heights.isMeasured(itemID: itemID, width: key.width))
-        let context = UICollectionViewLayoutInvalidationContext()
-        context.invalidateItems(at: invalidatablePaths(by: attributes))
+        let context = TimelineHeightInvalidationContext()
         if abs(delta) > 0.5 {
+            context.heights[itemID] = resolved
             context.contentSizeAdjustment = CGSize(width: 0, height: delta)
         }
+        context.invalidateItems(at: invalidatablePaths(by: attributes))
         if decision.height == .accept, let correction = decision.correction,
            !state.suppressContentOffsetAdjustment {
             context.contentOffsetAdjustment = CGPoint(x: 0, y: correction)
@@ -967,7 +1020,58 @@ final class TimelineListLayout: UICollectionViewLayout {
         if let preferred = context as? TimelinePreferredHeightInvalidationContext {
             applySelfMeasuredHeight(from: preferred)
         }
+        // An update transaction keeps its own offset accounting; patches
+        // recorded inside one would apply against frames UIKit is about to
+        // replace. Those passes rebuild.
+        if let heightContext = context as? TimelineHeightInvalidationContext, !isInsideUpdate {
+            for (itemID, height) in heightContext.heights {
+                pendingHeightPatches[itemID] = height
+            }
+        }
         super.invalidateLayout(with: context)
+    }
+
+    /// Moves the prepared frames for height-only invalidations. Returns false
+    /// (and leaves the work to the full `prepare`) when the item list or the
+    /// width moved, or a patch does not describe a prepared row.
+    private func applyPendingHeightPatches(width: CGFloat) -> Bool {
+        guard let host,
+              !pendingHeightPatches.isEmpty,
+              lastLayoutWidth == width,
+              lastStructureRevision == host.layoutStructureRevision,
+              attributesByIndex.count == host.layoutItemCount else { return false }
+        var work: [(index: Int, height: CGFloat)] = []
+        work.reserveCapacity(pendingHeightPatches.count)
+        for (itemID, height) in pendingHeightPatches {
+            guard height.isFinite, height > 0,
+                  let attributes = attributesByItemID[itemID] else { return false }
+            let index = attributes.indexPath.item
+            guard attributesByIndex.indices.contains(index) else { return false }
+            work.append((index, height))
+        }
+        work.sort { $0.index < $1.index }
+        var totalDelta: CGFloat = 0
+        for patch in work {
+            let attributes = attributesByIndex[patch.index]
+            let delta = patch.height - attributes.frame.height
+            guard abs(delta) > 0.5 else { continue }
+            attributes.frame.size.height = patch.height
+            var index = patch.index + 1
+            while index < attributesByIndex.count {
+                attributesByIndex[index].frame.origin.y += delta
+                index += 1
+            }
+            contentHeight += delta
+            totalDelta += delta
+            if let item = attributes.item {
+                lastPreparedHeight[item.itemID] = patch.height
+            }
+        }
+        pendingHeightPatches.removeAll()
+        if abs(totalDelta) > 0.5 {
+            host.layoutDidChangeContentHeight(contentHeight)
+        }
+        return true
     }
 
     /// The cell fitted its real content for an unmeasured row. Write the
@@ -996,6 +1100,21 @@ final class TimelineListLayout: UICollectionViewLayout {
             debugSelfMeasureHeights.removeFirst(debugSelfMeasureHeights.count - 64)
         }
 #endif
+        // A never-displayed row above the viewport has no visible stake in
+        // this pass; applying it would shift every row below and re-lay the
+        // reader's band (77 such corrections in 33 s of coasting, probe
+        // 2026-11-25). Park it; the scroll callbacks promote it when it nears
+        // the viewport and flush the rest when the gesture ends.
+        let browsing = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
+        if TimelineOffscreenMeasureDeferral.shouldPark(
+            isBrowsing: browsing.isTracking || browsing.isDecelerating,
+            isInsideUpdate: isInsideUpdate,
+            hasEverBeenDisplayed: heights.hasEverBeenDisplayed(itemID),
+            cellMaxY: attributes.frame.maxY,
+            viewportTop: viewportTop) {
+            parkedFirstMeasures[itemID] = DeferredHeight(key: key, height: measured)
+            return
+        }
         let delta = measured - displayedHeight(for: itemID, key: key, attributes: attributes)
         lastAppliedHeight[itemID] = AppliedHeight(key: key, height: measured)
         if abs(delta) <= 0.5 {
@@ -1040,10 +1159,62 @@ final class TimelineListLayout: UICollectionViewLayout {
         }
     }
 
+    /// Apply parked first measurements whose row is approaching the viewport,
+    /// before the row can become visible. Cheap when nothing is parked; the
+    /// controller calls it from every scroll callback.
+    func promoteDeferredHeightsNearViewport() {
+        guard !parkedFirstMeasures.isEmpty, let collectionView else { return }
+        let top = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        let rect = CGRect(x: 0,
+                          y: top - collectionView.bounds.height,
+                          width: collectionView.bounds.width,
+                          height: collectionView.bounds.height * 3)
+        var updates: [HeightUpdate] = []
+        var promoted: [String] = []
+        for (itemID, deferred) in parkedFirstMeasures {
+            guard let attributes = attributesByItemID[itemID],
+                  attributes.frame.intersects(rect),
+                  heights.currentKey(for: itemID) == deferred.key else { continue }
+            let delta = deferred.height
+                - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
+            promoted.append(itemID)
+            guard abs(delta) > 0.5 else { continue }
+            let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
+                delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: top)
+            updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
+                height: deferred.height, attributes: attributes,
+                offsetDelta: offset, contentSizeDelta: delta, source: "promoted"))
+        }
+        for itemID in promoted { parkedFirstMeasures.removeValue(forKey: itemID) }
+        if !updates.isEmpty { applyHeightUpdates(updates) }
+    }
+
+    /// Apply everything still parked. Called when the gesture really ends;
+    /// drag-end into deceleration keeps parking until deceleration ends.
+    func flushDeferredHeights() {
+        guard !parkedFirstMeasures.isEmpty else { return }
+        var updates: [HeightUpdate] = []
+        for (itemID, deferred) in parkedFirstMeasures {
+            guard heights.currentKey(for: itemID) == deferred.key,
+                  let attributes = attributesByItemID[itemID] else { continue }
+            let delta = deferred.height
+                - displayedHeight(for: itemID, key: deferred.key, attributes: attributes)
+            guard abs(delta) > 0.5 else { continue }
+            let offset = TimelinePreferredAttributesDecision.heightChangeCorrection(
+                delta: delta, cellMaxY: attributes.frame.maxY, viewportTop: viewportTop)
+            updates.append(HeightUpdate(itemID: itemID, key: deferred.key,
+                height: deferred.height, attributes: attributes,
+                offsetDelta: offset, contentSizeDelta: delta, source: "flushed"))
+        }
+        parkedFirstMeasures.removeAll()
+        if !updates.isEmpty { applyHeightUpdates(updates) }
+    }
+
     /// Navigation suspension: parked corrections belong to the old viewport.
     func cancelBrowsingCorrections() {
         deferral.cancel()
         deferredHeights.removeAll()
+        parkedFirstMeasures.removeAll()
         heightOwedToUpdate = nil
         insertionOwed?.cancel()
         insertionOwed = nil
@@ -1136,7 +1307,7 @@ final class TimelineListLayout: UICollectionViewLayout {
     ) {
         guard !updates.isEmpty, let collectionView else { return }
         let state = host?.layoutInteractionState() ?? TimelineLayoutInteractionState()
-        let context = existingContext ?? UICollectionViewLayoutInvalidationContext()
+        let context = existingContext ?? TimelineHeightInvalidationContext()
         var affected: Set<IndexPath> = []
         var offset: CGFloat = 0
         var contentSize: CGFloat = 0
@@ -1150,6 +1321,9 @@ final class TimelineListLayout: UICollectionViewLayout {
                                                              height: update.height)
             guard abs(update.contentSizeDelta) > 0.5 else { continue }
             changed = true
+            if let heightContext = context as? TimelineHeightInvalidationContext {
+                heightContext.heights[update.itemID] = update.height
+            }
             contentSize += update.contentSizeDelta
             if let offsetDelta = update.offsetDelta { offset += offsetDelta }
             affected.formUnion(cellUpdatesAffected(by: update.attributes))

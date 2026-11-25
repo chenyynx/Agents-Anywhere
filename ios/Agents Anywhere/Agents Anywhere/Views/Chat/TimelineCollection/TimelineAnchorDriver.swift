@@ -117,6 +117,13 @@ final class TimelineAnchorDriver {
         TimelineSpringFollow.pixel(displayScale: scrollView?.traitCollection.displayScale ?? 2)
     }
 
+    /// The opening's first real landing has been placed and reported. The
+    /// controller uses it to stop direct-placing the bottom on later
+    /// re-asserts: once the landing is done, the window may still be filling
+    /// and a direct write lands a mid-fill bottom in one frame (the jump a
+    /// reader sees right after entering a session, pp 2026-11-26).
+    var hasReportedOpeningArrival: Bool { didReportOpeningArrival }
+
     private func geometry(titleTop: CGFloat? = nil, bottom: CGFloat? = nil) -> TimelineAnchorGeometry {
         let view = scrollView
         return TimelineAnchorGeometry(
@@ -542,6 +549,27 @@ final class TimelineAnchorDriver {
             return
         }
         guard let anchor = currentAnchor() else { return }
+        // Resting at the bottom is `.end`, whatever earlier event left the
+        // model in `.reading` (a lift a hair above the bottom, a restore, a
+        // missed coasting-end). Without this, a handless layout nudge at the
+        // bottom is read as reader intent: the placement stays `.reading`,
+        // the 16–26 pt shift sticks, and only a later return flight puts the
+        // page back (pp 2026-11-26: the page moved a little while parked at
+        // the bottom; the mover log shows `previous` 120897.7 — 0.3 pt from
+        // the bottom — with a reading placement, then 120877.0). Snap the
+        // artifact away before it is drawn. VoiceOver's three-finger scroll
+        // is the one handless move that is reader intent; it keeps the
+        // tolerance path below.
+        let previousAtEnd = previousOffset.map {
+            geometry().isAtEnd(offset: $0,
+                               displayScale: scrollView?.traitCollection.displayScale ?? 1)
+        } ?? false
+        if previousAtEnd, state.placement != .end, !UIAccessibility.isVoiceOverRunning {
+            perform(.scrolledWithoutAHand(atEnd: true, id: anchor.id,
+                                          offsetIntoRow: anchor.offsetIntoRow))
+            placeDirect()
+            return
+        }
         // While the page follows `.end`, a handless move is a layout artifact —
         // the content height changed under the page, a Mover's final settle —
         // not the reader. Reading it as a reader scroll flipped the placement
@@ -773,8 +801,14 @@ final class TimelineAnchorDriver {
         }
         // A scroll-to-top keeps the full distance so the reader can see the
         // whole list travel. Every other long jump keeps the official
-        // one-viewport pre-placement.
-        let preplaced = fullDistance
+        // one-viewport pre-placement — but only an explicit return: it is
+        // the reader's own command and the official motion is a jump plus a
+        // screen glide. A content-driven follow must ease from wherever the
+        // reader is; pre-placing it wrote the offset one screen above the
+        // bottom in a single frame, which read as a teleport mid-scroll
+        // (pp 2026-11-26; the mover log's content starts all showed
+        // `position = target − 645`).
+        let preplaced = (fullDistance || contentMove)
             ? current
             : TimelineSpringFollow.preplacedOffset(
                 target: target, current: current, visibleHeight: visible)

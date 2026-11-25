@@ -373,7 +373,22 @@ final class CodeMarkdownTextStackView: UIView {
 
     private var pendingBuild: PendingBuild?
     private var chunkScheduled = false
-    private static let chunkSize = 3
+    /// Reset whenever a new spread build starts; see `timeline.leaf.partial`.
+    private var partialLogged = false
+    private static let minChunkSize = 3
+    private static let maxChunkSize = 18
+    /// Per-turn budget for the spread build. A big message that only built 3
+    /// blocks per turn could still be dozens of blocks behind when its row
+    /// reached the viewport, and the forced finish cost up to 52 ms (probe
+    /// 2026-11-25). Building more per offscreen turn shortens that lead
+    /// without turning one turn into a frame drop.
+    ///
+    /// Raised from 4 ms with a third-per-turn ramp after the b1625 scroll
+    /// report: the prebuild still left 14.5 ms of forced finish at entry and
+    /// one 20.6 ms fresh build, i.e. the prefetch window was not being used
+    /// up. 6 ms is still under one 120 Hz frame (8.3 ms) even with the scroll
+    /// itself on screen.
+    private static let chunkBudget: CFTimeInterval = 0.006
 
     /// The latest document. Building normally happens on the next layout pass,
     /// when the representable has its real width. When the adapter already
@@ -394,7 +409,7 @@ final class CodeMarkdownTextStackView: UIView {
         if let width, width > 0, width.isFinite,
            window == nil,
            let document,
-           document.blocks.count > Self.chunkSize * 2,
+           document.blocks.count > Self.minChunkSize * 2,
            key != builtKey || abs(width - builtWidth) > 0.5 {
             // The same content may arrive again while its chunks are running
             // (SwiftUI re-runs the update); keep the in-flight build.
@@ -409,6 +424,7 @@ final class CodeMarkdownTextStackView: UIView {
             builtKey = ""
             builtWidth = -1
             builtGeneration = -1
+            partialLogged = false
             pendingBuild = PendingBuild(
                 document: document,
                 key: key,
@@ -435,11 +451,33 @@ final class CodeMarkdownTextStackView: UIView {
 
     private func buildNextChunk() {
         guard var pending = pendingBuild else { return }
+        // A row that reached the screen more than a second ago and is still
+        // filling in means the spread build is not keeping up — the sliced
+        // first frame (`applyDocument`) would leave it visibly incomplete.
+        // One line per pending build; release builds only.
+        if window != nil, !partialLogged,
+           CACurrentMediaTime() - pending.startedAt > 1 {
+            partialLogged = true
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.leaf.partial",
+                detail: ["built": String(pending.nextIndex),
+                         "total": String(pending.document.blocks.count),
+                         "width": String(Int(pending.width.rounded()))],
+                dedupe: false)
+        }
         var built = 0
+        let remaining = pending.document.blocks.count - pending.nextIndex
+        // Finish large documents in fewer turns: a quarter of what is left,
+        // clamped to [min, max], and never past the per-turn budget (the
+        // minimum still runs so progress cannot stall).
+        let target = min(Self.maxChunkSize,
+                         max(Self.minChunkSize, remaining / 3))
+        let deadline = CACurrentMediaTime() + Self.chunkBudget
         while pending.nextIndex < pending.document.blocks.count,
-              built < Self.chunkSize {
+              built < target {
             appendPendingRecord(&pending)
             built += 1
+            if built >= Self.minChunkSize, CACurrentMediaTime() >= deadline { break }
         }
         pendingBuild = pending
         if pending.nextIndex >= pending.document.blocks.count {
@@ -641,6 +679,28 @@ final class CodeMarkdownTextStackView: UIView {
             UIView.performWithoutAnimation { removeRecords(from: 0) }
             builtGeneration = generation
             refreshSelectionOverlay()
+            return
+        }
+        // A row that reaches its first layout with the spread build still in
+        // flight continues that build for one bounded slice instead of paying
+        // the whole document on the entry frame (b1625: `codeStack.build`
+        // 20.6 ms max, `leaf.prebuildLead` 14.5 ms of forced finish). The next
+        // layout pass picks up where this one stopped, so the row fills in
+        // over a frame or two; its height is already the document's height.
+        if let pending = pendingBuild, pending.key == documentKey,
+           abs(pending.width - width) <= 0.5 {
+            var continuing = pending
+            let deadline = CACurrentMediaTime() + Self.chunkBudget
+            while continuing.nextIndex < continuing.document.blocks.count,
+                  CACurrentMediaTime() < deadline {
+                appendPendingRecord(&continuing)
+            }
+            pendingBuild = continuing
+            if continuing.nextIndex >= continuing.document.blocks.count {
+                finishPendingBuild()
+            } else {
+                scheduleNextChunk()
+            }
             return
         }
         let blocks = document.blocks

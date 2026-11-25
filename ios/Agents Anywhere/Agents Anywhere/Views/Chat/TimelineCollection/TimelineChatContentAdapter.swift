@@ -281,6 +281,18 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// The last grouping shape written to diagnostics. A live turn changes it
     /// often; logging only changes keeps the trail useful without flooding it.
     private var lastGroupingSignature: String?
+    /// Cheap shape key for the grouping diagnostics. A stream tick rewrites
+    /// one row's text, so the grouping output is rebuilt every tick while the
+    /// rows/units/kind counts stay put. The full-window `validateUnits` sort
+    /// and `groupingSummary` filter only run when the shape moves, or once a
+    /// second so a row that changes unit without changing counts is still
+    /// reported.
+    private var lastDiagnosticsStructureKey = ""
+    private var lastDiagnosticsAt: TimeInterval = 0
+    /// Identity hash of the item list. The send-frame `timeline.rows.frame`
+    /// log builds two Sets and diffs them; the identity scan is O(items) and
+    /// allocation-free when nothing moved.
+    private var lastItemsFrameHash: Int?
 
     /// The last compact row's state and the words the divider would draw,
     /// logged when it changes. A compaction leaves a handful of lines; a
@@ -321,6 +333,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// publication carried the flag again). Monotonic for the row's window
     /// life; pruned when the row leaves the window.
     private var backgroundDispatchedItemIDs: Set<String> = []
+    /// Per-group turn facts, keyed by the group's cheap row identity
+    /// (`TimelineTurnActions.GroupFactsKey`). Only the group whose rows moved
+    /// is walked again on a stream tick.
+    private var groupFactsCache: [String: TimelineTurnActions.GroupTurnFacts] = [:]
+    private var groupFactsKeys: [String: TimelineTurnActions.GroupFactsKey] = [:]
+    private var groupFactsLatch: Set<String> = []
+    /// Whether this refresh recomputed any group's facts (diagnostics).
+    private var factsMissedThisRefresh = false
     /// The turn a covering idle state proved ended, kept until the durable
     /// ledger supersedes it or the session changes (`FooterStateSeal`). A row
     /// of this turn rewritten after the state can no longer withdraw the
@@ -447,6 +467,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             "replies=\(report.replyCount)",
             "changes=\(report.changeCount)",
             "commit=\(report.committed ? 1 : 0)",
+            "facts=\(factsMissedThisRefresh ? "miss" : "hit")",
             "stateSeal=\(report.stateSealKept ? 1 : 0)",
             "latestTurn=\(report.latestTurnID ?? "nil")",
             "bucketTurn=\(report.bucketTurnID ?? "nil")",
@@ -679,6 +700,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             signature: signature, width: quantized, typography: typographyRevision,
             scale: scale, streaming: streaming?.textsByRowID, value: value)
         return value
+    }
+
+    /// The official LoadOlderHeader is a 36 pt spinner row that exists only
+    /// while a page loads; the idle sentinel draws nothing. Its height is a
+    /// state constant, not a measurement — the row body is empty when idle,
+    /// so a measurement never arrives and the old 44 pt estimate stayed in
+    /// the cache forever (the status-bar scroll-to-top then stopped one
+    /// footer height short of the first message, pp 2026-11-26).
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? {
+        guard case .olderPrompt = item else { return nil }
+        return isLoadingOlder || isLoadingLatest ? 36 : 0
     }
 
     func estimateKind(for item: TimelineListItem) -> TimelineHeightEstimateKind {
@@ -1196,7 +1228,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // margins and the compaction divider carries its own 16 pt padding,
         // so none of them also pay the list gap (see `listSpacing`).
         case .group(let id): return groupsByID[id]?.listSpacing ?? TimelineListMetrics.itemSpacing
-        case .workingStatus, .notice, .pending: return 0
+        // The official paging sentinel adds no bottom gap (`paging` group
+        // returns 0.0, CANONICAL/05-layout-scroll.md:149); the row above it
+        // already carries its own margin.
+        case .olderPrompt, .workingStatus, .notice, .pending: return 0
         default: return TimelineListMetrics.itemSpacing
         }
     }
@@ -1238,6 +1273,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// on the hosting path for the rest of the turn. Flipping engines mid-stream
     /// would be a visible jump.
     private var streamingFallbacks: Set<String> = []
+    /// Row ids whose wire row currently carries live streaming text. Fed by
+    /// `updateCodeStreaming`, which already walks the rendered groups; the
+    /// refresh used to scan every held row (~2,900) for this flag, 12.6 ms per
+    /// stream tick on the 2026-11-25 probe.
+    private var liveStreamingRowIDs: Set<String> = []
 
     /// The TextKit path only takes a static assistant message: one row, no
     /// fold, no inline notice, no attachments, no streaming. A turn footer is
@@ -1450,10 +1490,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return AnyView(TimelineCollectionOlderPromptRow(
-                hasOlderItems: model.session.canLoadOlder,
-                isLoading: isLoadingOlder || isLoadingLatest,
-                pullReady: olderPullReady,
-                onLoad: { [weak self] in self?.onLoadOlder?() }))
+                isLoading: isLoadingOlder || isLoadingLatest))
         case .latestPrompt:
             return AnyView(TimelineCollectionLatestPromptRow(
                 hasNewerItems: model.session.hasNewerItems,
@@ -1689,8 +1726,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowsByID[row.id] = row
             }
         }
+        var liveStreaming: Set<String> = []
         for (rowID, row) in rowsByID {
             if row.value.isStreamingText {
+                liveStreaming.insert(rowID)
                 // A row that streams again must not keep an old completion
                 // snapshot; the live publisher is the only source now.
                 codeCompletedStreamingTexts.removeValue(forKey: rowID)
@@ -1722,6 +1761,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 codeStreamingPublishers.removeValue(forKey: rowID)
             }
         }
+        liveStreamingRowIDs = liveStreaming
         // A row that left the timeline (history page swap, recovery) stops
         // being fed immediately.
         codeStreamingPublishers = codeStreamingPublishers.filter { rowsByID[$0.key] != nil }
@@ -1991,6 +2031,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         /// the "a live turn with steps already has its mark" gate so the
         /// standalone `正在处理中` row takes the mark (pp 2026-11-17).
         var lastUnitIsSteeringRow = false
+        // One row index serves the live-turn scan and the group build. The
+        // steps branch used to build the same ~1,700-entry map twice per
+        // refresh.
+        var rowsByID: [String: ChatTimelineRowModel] = [:]
         if renderMode == .steps {
             // The chat profile groups chronologically: one step-group row per
             // run of thinking/tool steps, one message row per body run. It
@@ -2008,33 +2052,57 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 interactionTargets: interactionTargets,
                 standaloneTargets: standaloneTargets,
                 cwd: model.session.metadata?.cwd)
-            TimelineDiagnostics.validateUnits(
-                sessionID: model.session.id,
-                rows: timelineRows,
-                units: chatUnits)
-            let grouping = TimelineDiagnostics.groupingSummary(
-                rows: timelineRows, units: chatUnits)
-            let groupingSignature = grouping.keys.sorted()
-                .map { "\($0)=\(grouping[$0] ?? "")" }
-                .joined(separator: "&")
-            if groupingSignature != lastGroupingSignature {
-                lastGroupingSignature = groupingSignature
-                ClientDiagnosticsLog.shared.record(
-                    kind: "timeline.grouping",
+            // The validator sorts the whole window and the summary filters
+            // it; a stream tick changes one row's text without changing any
+            // count here. Run both when the shape moves, or at most once a
+            // second so a row that changes unit without changing counts is
+            // still reported. `timeline.grouping` keeps its own signature
+            // check inside the gate.
+            var stepGroupCount = 0
+            var messageUnitCount = 0
+            var standaloneCount = 0
+            for unit in chatUnits {
+                switch unit {
+                case .stepGroup: stepGroupCount += 1
+                case .message: messageUnitCount += 1
+                case .standalone: standaloneCount += 1
+                }
+            }
+            let diagnosticsKey = "\(timelineRows.count)|\(chatUnits.count)"
+                + "|\(stepGroupCount)|\(messageUnitCount)|\(standaloneCount)"
+                + "|\(chatUnits.first?.id ?? "-")|\(chatUnits.last?.id ?? "-")"
+            let diagnosticsNow = CACurrentMediaTime()
+            if diagnosticsKey != lastDiagnosticsStructureKey
+                || diagnosticsNow - lastDiagnosticsAt >= 1 {
+                lastDiagnosticsStructureKey = diagnosticsKey
+                lastDiagnosticsAt = diagnosticsNow
+                TimelineDiagnostics.validateUnits(
                     sessionID: model.session.id,
-                    detail: grouping,
-                    dedupe: false)
+                    rows: timelineRows,
+                    units: chatUnits)
+                let grouping = TimelineDiagnostics.groupingSummary(
+                    rows: timelineRows, units: chatUnits)
+                let groupingSignature = grouping.keys.sorted()
+                    .map { "\($0)=\(grouping[$0] ?? "")" }
+                    .joined(separator: "&")
+                if groupingSignature != lastGroupingSignature {
+                    lastGroupingSignature = groupingSignature
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.grouping",
+                        sessionID: model.session.id,
+                        detail: grouping,
+                        dedupe: false)
+                }
             }
 #if AA_TIMELINE_PROBE
             TimelineProbeStore.shared.noteStage(
                 "adapter.group", seconds: CACurrentMediaTime() - probeGroupStart)
 #endif
-            var rowsByID: [String: ChatTimelineRowModel] = [:]
-            for row in model.timeline.rows where rowsByID[row.id] == nil {
-                rowsByID[row.id] = row
-            }
-            for row in model.timeline.rows where row.value.startsVisibleTurn {
-                chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
+            for row in model.timeline.rows {
+                if rowsByID[row.id] == nil { rowsByID[row.id] = row }
+                if row.value.startsVisibleTurn {
+                    chatLastUserOrder = max(chatLastUserOrder, row.value.orderSeq)
+                }
             }
             let turnGroupIDs = TimelineRunningTurnStepGroups.ids(
                 units: chatUnits,
@@ -2213,8 +2281,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var groups: [ChatTimelineGroup] = []
         var stepGroupsByID: [String: TimelineStepGroup] = [:]
         if renderMode == .steps {
-            var rowsByID: [String: ChatTimelineRowModel] = [:]
-            for row in model.timeline.rows where rowsByID[row.id] == nil { rowsByID[row.id] = row }
             groups.reserveCapacity(chatUnits.count)
             var lastStepGroupID: String?
             // Units the cache carried over unchanged are rebuilt from last
@@ -2419,20 +2485,50 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
 #if AA_TIMELINE_PROBE
         let probeIndexStart = CACurrentMediaTime()
 #endif
-        let timelineRowIDs = Set(model.timeline.rows.map(\.id))
-        let tailNotices = SessionNoticeRouting.tailNotices(notices, sessionID: model.session.id,
-                                                          timelineRowIDs: timelineRowIDs)
+        // The routing set only exists for notices. Most streaming refreshes
+        // carry none, and building it cost a ~2,900-row set on every tick.
+#if AA_TIMELINE_PROBE
+        let probeNoticesStart = CACurrentMediaTime()
+#endif
+        let tailNotices: [SessionNoticeModel]
+        if notices.isEmpty {
+            tailNotices = []
+        } else {
+            let timelineRowIDs = Set(model.timeline.rows.map(\.id))
+            tailNotices = SessionNoticeRouting.tailNotices(
+                notices, sessionID: model.session.id,
+                timelineRowIDs: timelineRowIDs)
+        }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.notices", seconds: CACurrentMediaTime() - probeNoticesStart)
+#endif
         // The presentation retires a pending row one refresh after its echo
         // row publishes; hiding it as soon as the echo row is on screen keeps
         // one message from drawing as two bubbles (dashed + settled) for a
         // frame (pp 2026-11-17). The queue row already uses the same rule.
-        let echoedClientIDs = Set(model.timeline.rows.compactMap { row -> String? in
-            guard row.value.role == .user else { return nil }
-            return row.value.source["clientMessageId"]?.stringValue
-        })
-        let pending = model.timeline.pendingMessages.filter {
-            !echoedClientIDs.contains($0.id)
+        //
+        // Only pending records need the echo set. Most live refreshes carry
+        // none, and building it scanned every window row (2,900+) with a JSON
+        // field probe on each stream tick.
+#if AA_TIMELINE_PROBE
+        let probeEchoStart = CACurrentMediaTime()
+#endif
+        let pendingRecords = model.timeline.pendingMessages
+        let pending: [V2PendingMessage]
+        if pendingRecords.isEmpty {
+            pending = []
+        } else {
+            let echoedClientIDs = Set(model.timeline.rows.compactMap { row -> String? in
+                guard row.value.role == .user else { return nil }
+                return row.value.source["clientMessageId"]?.stringValue
+            })
+            pending = pendingRecords.filter { !echoedClientIDs.contains($0.id) }
         }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.echo", seconds: CACurrentMediaTime() - probeEchoStart)
+#endif
         let identity = TimelineItemIdentity.build(
             hasOlderPrompt: model.session.canLoadOlder || keepsOlderPrompt,
             groupIDs: groups.map(\.id),
@@ -2450,6 +2546,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         for message in pending where pendingByID[message.id] == nil {
             pendingByID[message.id] = message
         }
+#if AA_TIMELINE_PROBE
+        let probeRowMapStart = CACurrentMediaTime()
+#endif
         var rowToItem: [String: TimelineListItem] = [:]
         for group in groups {
             let item = TimelineListItem.group(group.id)
@@ -2457,6 +2556,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 rowToItem[row.id] = item
             }
         }
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.rowmap", seconds: CACurrentMediaTime() - probeRowMapStart)
+#endif
         // The interrupted-turn notice is a footer of the unit that carries the
         // stopped turn's last row (a message group when there is a partial
         // answer, otherwise the step group). A cold open can recover the
@@ -2517,9 +2620,6 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // returned when a later publication carried the flag again). The fold
         // is a pure function so `swift test` covers its wiring; the adapter
         // itself is outside the ClientCore target.
-        backgroundDispatchedItemIDs = TimelineTurnActions.footerBackgroundLatch(
-            existing: backgroundDispatchedItemIDs,
-            rows: model.timeline.rows.lazy.map(\.value))
         // A pending bubble whose echo row is already in the timeline is no
         // longer opening a new turn; it must not force the previous turn's
         // commit or the new turn's footer.
@@ -2569,6 +2669,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             case .inactive, .connecting, .connected, .reconnecting: return false
             }
         }()
+        // One pass for the latch and the coverage watermarks; both read the
+        // same rows with the same per-row JSON probes (2026-11-25 probe:
+        // 12 ms per stream tick in `adapter.index`).
+#if AA_TIMELINE_PROBE
+        let probeFooterStart = CACurrentMediaTime()
+#endif
+        let footerScan = TimelineTurnActions.footerScan(
+            rows: model.timeline.rows.lazy.map(\.value),
+            existing: backgroundDispatchedItemIDs,
+            stateSeq: model.session.runtime.state?.updatedSeq ?? 0)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.footer", seconds: CACurrentMediaTime() - probeFooterStart)
+#endif
+        backgroundDispatchedItemIDs = footerScan.latchedBackgroundIDs
         let runtimeState = model.session.runtime.state
         // A stale state still seals when it was written after the newest row
         // that can move the main turn; a main row newer than the state is
@@ -2581,10 +2696,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // only rows newer than the idle state were the child rows and the
         // card of the running background agent). The latch covers a card
         // whose wire flag was dropped by a later publication.
-        let coverage = TimelineTurnActions.footerStateCoverage(
-            rows: model.timeline.rows.lazy.map(\.value),
-            stateSeq: runtimeState?.updatedSeq ?? 0,
-            latchedBackgroundIDs: backgroundDispatchedItemIDs)
+        let coverage = footerScan.coverage
         // `footerRuntimeStateIsTrustworthy` already handles the missing state
         // and the fresh state; only the stale-state coverage decision lives
         // here.
@@ -2614,6 +2726,54 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                               groups: groups,
                               gateLiveUserTurn: turnFooterGate.isLiveUserTurn,
                               latchedBackgroundIDs: backgroundDispatchedItemIDs)
+#if AA_TIMELINE_PROBE
+        let probeTurnActionsStart = CACurrentMediaTime()
+#endif
+        // Per-group facts memo (`GroupFactsKey`). A stream tick rewrites one
+        // group's rows; every other group reuses last refresh's walk, which is
+        // where `adapter.index.turnActions` spent 4.7 ms (b1625, 301 items).
+        // The latch changes the facts' exclusions, so a latch change drops the
+        // whole table.
+        if groupFactsLatch != backgroundDispatchedItemIDs {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.turnfacts.reset",
+                sessionID: model.session.id,
+                detail: ["cleared": String(groupFactsCache.count),
+                         "latch": String(backgroundDispatchedItemIDs.count)],
+                dedupe: false)
+            groupFactsCache.removeAll(keepingCapacity: true)
+            groupFactsKeys.removeAll(keepingCapacity: true)
+            groupFactsLatch = backgroundDispatchedItemIDs
+        }
+        factsMissedThisRefresh = false
+        let factsLatch = backgroundDispatchedItemIDs
+        let groupFactsProvider: (ChatTimelineGroup) -> TimelineTurnActions.GroupTurnFacts = {
+            [weak self] group in
+            guard let self else {
+                return TimelineTurnActions.groupFacts(
+                    for: group, latchedBackgroundIDs: factsLatch)
+            }
+            let key = TimelineTurnActions.GroupFactsKey(group: group)
+            if self.groupFactsKeys[group.id] == key, let cached = self.groupFactsCache[group.id] {
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteStage("turnActions.memo.hit", seconds: 0)
+#endif
+                return cached
+            }
+            self.factsMissedThisRefresh = true
+#if AA_TIMELINE_PROBE
+            TimelineProbeStore.shared.noteStage("turnActions.memo.miss", seconds: 0)
+#endif
+            let facts = TimelineTurnActions.groupFacts(
+                for: group, latchedBackgroundIDs: self.backgroundDispatchedItemIDs)
+            self.groupFactsKeys[group.id] = key
+            self.groupFactsCache[group.id] = facts
+            if self.groupFactsCache.count > groups.count * 2 {
+                self.groupFactsCache = self.groupFactsCache.filter { groupsByID[$0.key] != nil }
+                self.groupFactsKeys = self.groupFactsKeys.filter { groupsByID[$0.key] != nil }
+            }
+            return facts
+        }
         if stateSealSessionID != model.session.id {
             stateSealCommit = nil
             stateSealSessionID = model.session.id
@@ -2670,6 +2830,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // An older page's trailing bucket is cut by the window, not by
             // its turn end; the durable watermark cannot prove it complete.
             hasNewerItems: model.session.hasNewerItems,
+            // Memoized per-group row facts (see `groupFactsProvider` above).
+            facts: groupFactsProvider,
             // The turn this session's covering idle state already proved
             // over. A row of that same turn rewritten afterwards must not
             // withdraw the footer while the ledger id is still in flight (the
@@ -2703,6 +2865,10 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                     runtimeStateSeq: runtimeState?.updatedSeq ?? 0,
                     connection: self.model.session.connection)
             })
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.turnActions", seconds: CACurrentMediaTime() - probeTurnActionsStart)
+#endif
         // A userless episode must not take the finished turn's footer away:
         // the build suppresses the latest bucket, but the bucket on screen is
         // already finished, so the closed state's footers stay. Browsing an
@@ -2765,13 +2931,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         noteTurnFooterState(groups: groups)
         // Feed the publishers from the rows' full text before any
         // signature/measurement pass reads `codeStreamingText`.
+#if AA_TIMELINE_PROBE
+        let probeStreamingStart = CACurrentMediaTime()
+#endif
         updateCodeStreaming(groups: groups)
+#if AA_TIMELINE_PROBE
+        TimelineProbeStore.shared.noteStage(
+            "adapter.index.streaming", seconds: CACurrentMediaTime() - probeStreamingStart)
+#endif
         // Parsed documents are keyed by row id; drop rows that left the
         // timeline so a long session does not retain old replies.
         assistantDocuments = assistantDocuments.filter { rowToItem[$0.key] != nil }
         let streamingNow = ProcessInfo.processInfo.systemUptime
-        let presentRowIDs = Set(model.timeline.rows.map(\.id))
-        rendererRevealOwnership.prune(keeping: presentRowIDs)
+        // Only ownership needs the full present set. When nothing is owned —
+        // the Code page's normal state — the ~2,900-row id set is dead work on
+        // every stream tick.
+        if !rendererRevealOwnership.activeRowIDs.isEmpty {
+            rendererRevealOwnership.prune(keeping: Set(model.timeline.rows.map(\.id)))
+        }
         for rowID in Array(rendererRevealOwnership.activeRowIDs) {
             guard let timeline = revealTimelines[rowID], timeline.total > 0 else { continue }
             if timeline.shownThrough(at: streamingNow) < timeline.total {
@@ -2782,18 +2959,16 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             revealCaughtUpAt[rowID] = caught
             if streamingNow - caught > 1.5 { rendererRevealOwnership.finish(rowID) }
         }
-        let streamingRowIDs = Set(model.timeline.rows.compactMap { row -> String? in
-            if row.value.isStreamingText || rendererRevealOwnership.isActive(row.id) {
-                return row.id
-            }
-            // A done row whose cursor is still behind the received text keeps
-            // its document and builder until the reveal hands back.
-            if let timeline = revealTimelines[row.id], timeline.total > 0,
-               timeline.shownThrough(at: streamingNow) < timeline.total {
-                return row.id
-            }
-            return nil
-        })
+        // Same set the full scan used to build, from the sources that already
+        // know it: live wire text rows (fed above), owned rows, publishers,
+        // and reveal cursors still behind their received text.
+        var streamingRowIDs = liveStreamingRowIDs
+        streamingRowIDs.formUnion(rendererRevealOwnership.activeRowIDs)
+        streamingRowIDs.formUnion(codeStreamingPublishers.keys)
+        for (rowID, timeline) in revealTimelines
+        where timeline.total > 0 && timeline.shownThrough(at: streamingNow) < timeline.total {
+            streamingRowIDs.insert(rowID)
+        }
         streamingDocuments = streamingDocuments.filter { streamingRowIDs.contains($0.key) }
         streamingBuilders = streamingBuilders.filter { streamingRowIDs.contains($0.key) }
         streamingFallbacks.formIntersection(streamingRowIDs)
@@ -2831,28 +3006,38 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // send reads "bubble lands, working row follows", the next reads
         // "working row already there". One line per item-set change names the
         // order and the two sources; read it beside `timeline.mover`.
-        let previousItemIDs = Set(itemsValue.map(\.itemID))
-        let nextItemIDs = Set(identity.items.map(\.itemID))
-        if previousItemIDs != nextItemIDs {
-            ClientDiagnosticsLog.shared.record(
-                kind: "timeline.rows.frame",
-                sessionID: model.session.id,
-                detail: [
-                    "added": identity.items.map(\.itemID)
-                        .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
-                    "removed": itemsValue.map(\.itemID)
-                        .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
-                    "items": String(identity.items.count),
-                    "working": model.isAwaitingReply ? "1" : "0",
-                    "workingText": workingStatusShowsText ? "1" : "0",
-                    "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
-                    "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
-                    "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
-                    "queue": String(model.session.sendQueue.items.count),
-                    "running": model.isRunning ? "1" : "0",
-                    "status": String(describing: model.session.runtime.state?.status),
-                ],
-                dedupe: false)
+        // The frame log needs two Sets and their diff. Its trigger is an
+        // identity move, so hash the ordered ids first (allocation-free) and
+        // build the Sets only when the hash moved this refresh.
+        var itemsFrameHasher = Hasher()
+        itemsFrameHasher.combine(identity.items.count)
+        for item in identity.items { itemsFrameHasher.combine(item.itemID) }
+        let nextItemsFrameHash = itemsFrameHasher.finalize()
+        if nextItemsFrameHash != lastItemsFrameHash {
+            lastItemsFrameHash = nextItemsFrameHash
+            let previousItemIDs = Set(itemsValue.map(\.itemID))
+            let nextItemIDs = Set(identity.items.map(\.itemID))
+            if previousItemIDs != nextItemIDs {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.rows.frame",
+                    sessionID: model.session.id,
+                    detail: [
+                        "added": identity.items.map(\.itemID)
+                            .filter { !previousItemIDs.contains($0) }.joined(separator: ","),
+                        "removed": itemsValue.map(\.itemID)
+                            .filter { !nextItemIDs.contains($0) }.joined(separator: ","),
+                        "items": String(identity.items.count),
+                        "working": model.isAwaitingReply ? "1" : "0",
+                        "workingText": workingStatusShowsText ? "1" : "0",
+                        "pendingSession": model.session.pendingMessages.map(\.id).joined(separator: ","),
+                        "pendingTimeline": model.timeline.pendingMessages.map(\.id).joined(separator: ","),
+                        "awaiting": model.session.awaitingReplyID != nil ? "1" : "0",
+                        "queue": String(model.session.sendQueue.items.count),
+                        "running": model.isRunning ? "1" : "0",
+                        "status": String(describing: model.session.runtime.state?.status),
+                    ],
+                    dedupe: false)
+            }
         }
         itemsValue = identity.items
         signaturesByItem = signatures
@@ -3711,30 +3896,31 @@ private struct WorkingStatusRowHost: View {
 
 // MARK: - History prompts (rendered, not yet loaded in C4)
 
+/// The official `LoadOlderHeader`: a paging sentinel, not a button. It draws
+/// only while a page is loading and is otherwise empty — the list loads when
+/// the reader nears the top (`LoadsOlderHistoryNearTop`), so there is no
+/// tap affordance and no end-of-history label (pp 2026-11-25: match the
+/// official row exactly). Geometry from the official device screenshot:
+/// spinner 20.3x20.0 pt centred on the column axis, row content 44 pt tall,
+/// standard 5 pt row margin above and the paging row's zero list gap below.
 private struct TimelineCollectionOlderPromptRow: View {
-    let hasOlderItems: Bool
     let isLoading: Bool
-    let pullReady: Bool
-    let onLoad: (() -> Void)?
 
     var body: some View {
-        Group {
-            if isLoading {
-                HStack(spacing: 8) {
-                    ProgressView().progressViewStyle(.circular).controlSize(.small)
-                    Text(String(localized: "正在加载较早的消息…"))
-                }.accessibilityElement(children: .combine)
-            } else if hasOlderItems {
-                Button { onLoad?() } label: {
-                    Text(pullReady ? String(localized: "松开加载较早的消息") : String(localized: "加载较早的消息"))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
-                }.disabled(onLoad == nil || isLoading)
-            } else {
-                Text(String(localized: "已到达会话开头")).foregroundStyle(.secondary)
-            }
+        if isLoading {
+            // Disassembly of `LoadOlderHeader.body` (build 1.261109.19,
+            // 0x101c366cc): `UIActivityIndicatorView(style: .medium)` in a
+            // UIViewRepresentable — 20x20 pt, both hugging priorities 1000 —
+            // with `.padding(.vertical, 8)` and
+            // `.frame(maxWidth: .infinity, alignment: .center)`. No font, no
+            // tint; the words are the accessibility label only. Row content is
+            // therefore 36 pt (8 + 20 + 8).
+            ProgressView()
+                .progressViewStyle(.circular)
+                .accessibilityLabel(Text(String(localized: "正在加载更早的消息")))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
         }
-        .font(.footnote).frame(maxWidth: .infinity, minHeight: 44)
     }
 }
 

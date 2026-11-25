@@ -61,6 +61,14 @@ protocol TimelineCollectionContentProviding: AnyObject {
     /// migrated.
     func usesCellReportedHeight(for item: TimelineListItem) -> Bool
 
+    /// A row whose height is a state constant rather than a measurement
+    /// (the paging sentinel: 36 pt while a page loads, 0 pt when idle).
+    /// The layout uses this value directly instead of the height cache, so a
+    /// loading→idle flip cannot keep the previous height. Nil means the row
+    /// is measured/estimated as usual. A protocol requirement, not an
+    /// extension-only helper: the layout reads it through an existential.
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat?
+
     /// The C5/M4 streaming path: the same TextKit cell renders settled blocks
     /// and hosts the revealing tail in the existing Markdown view. Nil means
     /// the row stays on the hosting path (unsupported blocks, attachments,
@@ -132,6 +140,9 @@ extension TimelineCollectionContentProviding {
     func itemSpacing(after item: TimelineListItem) -> CGFloat {
         TimelineListMetrics.itemSpacing
     }
+
+    /// No state-constant rows in the C3 model.
+    func layoutFixedHeight(for item: TimelineListItem) -> CGFloat? { nil }
 
     /// The C3 synthetic model keeps every row on the hosting path.
     func assistantMarkdown(for item: TimelineListItem) -> AssistantMarkdownDocument? { nil }

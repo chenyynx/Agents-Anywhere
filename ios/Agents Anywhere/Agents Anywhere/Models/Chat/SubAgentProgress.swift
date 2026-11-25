@@ -584,15 +584,27 @@ enum SubAgentProgress {
         }
     }
 
+    /// Shared parsers, not a fresh `ISO8601DateFormatter` per call: building
+    /// one costs far more than parsing with it, and this runs for every
+    /// sub-agent card on each row build (`ChatTimestamp.parse` carries the
+    /// same rule since the 2026-11-25 scroll probe). Formatters are mutable
+    /// classes, so they are only touched under the lock.
+    private static let dateLock = NSLock()
+    private static let fractionalParser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let plainParser = ISO8601DateFormatter()
+
     /// An ISO-8601 wire timestamp; the server writes it with and without
     /// fractional seconds.
     static func date(_ text: String?) -> Date? {
         guard let text, !text.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: text) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: text)
+        dateLock.lock()
+        defer { dateLock.unlock() }
+        if let date = fractionalParser.date(from: text) { return date }
+        return plainParser.date(from: text)
     }
 
     /// A terminal card's end: the overlay's epoch-ms `endTime`, else the

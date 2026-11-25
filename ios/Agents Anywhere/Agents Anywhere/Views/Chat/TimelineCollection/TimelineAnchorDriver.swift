@@ -542,6 +542,27 @@ final class TimelineAnchorDriver {
             return
         }
         guard let anchor = currentAnchor() else { return }
+        // Resting at the bottom is `.end`, whatever earlier event left the
+        // model in `.reading` (a lift a hair above the bottom, a restore, a
+        // missed coasting-end). Without this, a handless layout nudge at the
+        // bottom is read as reader intent: the placement stays `.reading`,
+        // the 16–26 pt shift sticks, and only a later return flight puts the
+        // page back (pp 2026-11-26: the page moved a little while parked at
+        // the bottom; the mover log shows `previous` 120897.7 — 0.3 pt from
+        // the bottom — with a reading placement, then 120877.0). Snap the
+        // artifact away before it is drawn. VoiceOver's three-finger scroll
+        // is the one handless move that is reader intent; it keeps the
+        // tolerance path below.
+        let previousAtEnd = previousOffset.map {
+            geometry().isAtEnd(offset: $0,
+                               displayScale: scrollView?.traitCollection.displayScale ?? 1)
+        } ?? false
+        if previousAtEnd, state.placement != .end, !UIAccessibility.isVoiceOverRunning {
+            perform(.scrolledWithoutAHand(atEnd: true, id: anchor.id,
+                                          offsetIntoRow: anchor.offsetIntoRow))
+            placeDirect()
+            return
+        }
         // While the page follows `.end`, a handless move is a layout artifact —
         // the content height changed under the page, a Mover's final settle —
         // not the reader. Reading it as a reader scroll flipped the placement

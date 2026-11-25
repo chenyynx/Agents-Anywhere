@@ -124,6 +124,13 @@ final class TimelineAnchorDriver {
     /// reader sees right after entering a session, pp 2026-11-26).
     var hasReportedOpeningArrival: Bool { didReportOpeningArrival }
 
+    /// A new opening starts: the "landed" fact belongs to the previous
+    /// session. The flag must reset per opening, or every session after the
+    /// first skips the cold landing and opens mid-list / glides from the top
+    /// (b1648 regression: begins flew from −113 to the bottom with the
+    /// `content` spring).
+    func resetOpeningArrival() { didReportOpeningArrival = false }
+
     private func geometry(titleTop: CGFloat? = nil, bottom: CGFloat? = nil) -> TimelineAnchorGeometry {
         let view = scrollView
         return TimelineAnchorGeometry(

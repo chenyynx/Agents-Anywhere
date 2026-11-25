@@ -750,7 +750,11 @@ final class TimelineChatBridge: ObservableObject {
 
     func beginOpening() {
         openingPending = true
-        controller?.beginOpeningBottom()
+        // A new opening: reset the driver's "landing reported" fact so the
+        // cold landing places directly again. Without it every session after
+        // the first skipped the direct landing and glided in from the top
+        // (b1648 regression).
+        controller?.beginOpeningBottom(resetLanding: true)
         // A cached snapshot can already be applied before `isOpeningReady`
         // flips; no later apply completion would settle the mask. Defer one
         // main-queue turn so the newly built representable has laid out.

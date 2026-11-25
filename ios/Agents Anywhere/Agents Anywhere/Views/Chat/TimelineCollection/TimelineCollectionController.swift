@@ -921,6 +921,7 @@ final class TimelineCollectionController: UIViewController {
 #endif
         let oldItems = currentItems
         let oldIDs = Set(oldItems)
+        let offsetAtApplyStart = collectionView.contentOffset.y
         // A window replacement drops the old dynamic rows; a prepend/append
         // keeps them. Compare the first *dynamic* item because `.olderPrompt`
         // / `.latestPrompt` / `.tail` have static identities and both windows
@@ -1404,6 +1405,25 @@ final class TimelineCollectionController: UIViewController {
                self.anchorDriver?.state.placement != .end {
                 self.collectionView.layoutIfNeeded()
                 self.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
+                // A prepend/window fill compensates the offset inside this
+                // update, but UIKit materializes cells for the update's own
+                // visible rect: the band the reader ends up looking at can
+                // still hold the previous coordinates' cells — a blank
+                // viewport until the next scroll (pp 2026-11-26: load-older
+                // plus a fill added 11 rows above, the offset jumped +9,661
+                // with the anchor held at −87, and the screen stayed blank).
+                // Repeat the forced rebind once, after the update cycle has
+                // committed the new offset and cell frames.
+                if items.count != oldItems.count
+                    || abs(self.collectionView.contentOffset.y - offsetAtApplyStart) > 200 {
+                    let controller = self
+                    DispatchQueue.main.async {
+                        guard controller.isViewLoaded,
+                              !controller.navigationSuspended else { return }
+                        controller.collectionView.layoutIfNeeded()
+                        controller.syncVisibleCellFrames(forceHosted: true, layoutNow: true)
+                    }
+                }
             }
             self.performPendingSnapshotUpdate()
         }

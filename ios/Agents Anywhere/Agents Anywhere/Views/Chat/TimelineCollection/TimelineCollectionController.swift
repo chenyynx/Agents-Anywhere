@@ -180,6 +180,11 @@ final class TimelineCollectionController: UIViewController {
     /// reported with the next sample.
     private var lastMoverScrollLogAt: CFTimeInterval = 0
     private var coalescedMoverScrolls = 0
+    /// `timeline.bottom.request` is throttled to one line per second: a
+    /// streaming follow can ask for the bottom on every response revision,
+    /// and the only question is which kind of request ran while the reader
+    /// was parked in history (pp 2026-11-26).
+    private var lastBottomRequestLogAt: CFTimeInterval = 0
     private var didStartAnchorDriver = false
     /// A "load latest" return may span a full-window replacement. UIKit
     /// re-anchors a snapshot that replaces every id, and the animated target
@@ -3154,9 +3159,35 @@ final class TimelineCollectionController: UIViewController {
         anchorDriver?.beginStickyFollow()
     }
 
+    /// One line per second at most. A return request is the only record of
+    /// what pulled the page to the bottom when the reader did not: a
+    /// `forced=0` request on a reading placement is refused by the gate and
+    /// must never move the page, while a `forced=1` one with no tap in sight
+    /// is the device report's suspect (pp 2026-11-26: the page flew to the
+    /// bottom while the reader had parked 185 pt above it, runtime idle).
+    private func noteBottomRequest(animated: Bool, forced: Bool) {
+        let now = CACurrentMediaTime()
+        guard now - lastBottomRequestLogAt >= 1 else { return }
+        lastBottomRequestLogAt = now
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.bottom.request",
+            sessionID: diagnosticSessionID,
+            detail: [
+                "animated": animated ? "1" : "0",
+                "forced": forced ? "1" : "0",
+                "placement": anchorDriver?.state.placement == .end ? "end" : "anchor",
+                "tracking": collectionView?.isTracking == true ? "1" : "0",
+                "decelerating": phase.phase == .decelerating ? "1" : "0",
+                "offsetY": String(format: "%.1f", collectionView?.contentOffset.y ?? -1),
+                "atBottom": viewport.measuredAtBottom ? "1" : "0",
+            ],
+            dedupe: false)
+    }
+
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
     func requestBottom(animated: Bool, forced: Bool = true) {
+        noteBottomRequest(animated: animated, forced: forced)
         if navigationSuspended {
             suspendedBottomRequest = (animated, forced || (suspendedBottomRequest?.forced ?? false))
             return

@@ -256,6 +256,35 @@ import Testing
         #expect(vetoed["r-b"] == nil)
     }
 
+    /// Only a state-coverage commit is remembered across builds: an outgoing
+    /// bubble's commit does not depend on rows the state has seen, and the
+    /// durable id needs no memory.
+    @Test func onlyAStateCoverageCommitIsRemembered() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        var pendingReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false,
+            report: { pendingReport = $0 })
+        #expect(pendingReport?.committed == true)
+        #expect(pendingReport?.stateSealed == false)
+
+        var stateReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: true,
+            report: { stateReport = $0 })
+        #expect(stateReport?.stateSealed == true)
+    }
+
     /// A scheduled/wake turn has no user bubble; its first assistant row still
     /// names the bucket, so a matching durable id seals it.
     @Test func aScheduledTurnSealsOnAMatchingIdWithoutAUserBubble() throws {

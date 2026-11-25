@@ -367,6 +367,11 @@ enum TimelineTurnActions {
         /// Whether the commit was kept alive by `stickyCommit` rather than a
         /// fresh proof this pass.
         var stickyKept = false
+        /// Whether the commit rested on the state-coverage proof rather than
+        /// the durable id or an outgoing bubble. Only this kind is worth
+        /// remembering across builds (`FooterStickyCommit`): the other two do
+        /// not depend on rows the state may not have seen.
+        var stateSealed = false
         /// The wire's decision for the final bucket; nil means the contract
         /// was unavailable and the runtime-state rule decided.
         var latestTurnSeal: Bool?
@@ -623,6 +628,8 @@ enum TimelineTurnActions {
         if (latestIsOver || hasPendingUserMessage || stickyKeeps), !hasActiveItems {
             committed = commit()
         }
+        let stateSealed = committed && seal == nil && !suppressLatest
+            && !hasPendingUserMessage
         report?(FooterBuildReport(endGroupID: finalEndGroupID,
                                   replyCount: finalReplyCount,
                                   changeCount: finalChangeCount,
@@ -630,6 +637,7 @@ enum TimelineTurnActions {
                                   activeItemIDs: finalActiveItemIDs,
                                   committed: committed,
                                   stickyKept: stickyKeeps,
+                                  stateSealed: stateSealed,
                                   latestTurnSeal: seal,
                                   bucketTurnID: finalBucketTurnID,
                                   latestTurnID: latestTurnId,

@@ -2676,12 +2676,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             footerHostEligible: { stepGroupsByID[$0.id] == nil },
             report: { report in
                 if report.committed, let host = report.endGroupID {
-                    if report.latestTurnSeal == nil {
+                    if report.stateSealed {
                         // The state proved this one; the proof can break on
                         // the next row, so remember the host for the window.
+                        // An outgoing bubble is not that proof — it does not
+                        // depend on rows the state has seen.
                         self.stickyFooterCommit = TimelineTurnActions.FooterStickyCommit(
                             hostGroupID: host, decidedAt: footerClock)
-                    } else {
+                    } else if report.latestTurnSeal == true {
                         // The durable id proved it; nothing to keep alive.
                         self.stickyFooterCommit = nil
                     }

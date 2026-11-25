@@ -23,7 +23,7 @@ struct SessionLiveRunTests {
         run.start {
             await MainActor.run { counter.value += 100 }
         }
-        await eventually { counter.value == 1 }
+        try await eventually { counter.value == 1 }
         #expect(run.isRunning)
 
         // The second start was ignored while the first loop was alive.
@@ -31,17 +31,17 @@ struct SessionLiveRunTests {
         #expect(counter.value == 1)
 
         gate.release()
-        await eventually { !run.isRunning }
+        try await eventually { !run.isRunning }
 
         // A finished run can start again (a retried open after a transient
         // repository end must not leave the page permanently detached).
         run.start {
             await MainActor.run { counter.value += 1 }
         }
-        await eventually { counter.value == 2 && !run.isRunning }
+        try await eventually { counter.value == 2 && !run.isRunning }
     }
 
-    @Test func releasingTheRunCancelsItsTask() async {
+    @Test func releasingTheRunCancelsItsTask() async throws {
         let counter = Counter()
         do {
             let run = SessionLiveRun()
@@ -53,6 +53,6 @@ struct SessionLiveRunTests {
                 }
             }
         }
-        await eventually { counter.cancelled }
+        try await eventually { counter.cancelled }
     }
 }

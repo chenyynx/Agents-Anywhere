@@ -589,8 +589,16 @@ final class TimelineChatBridge: ObservableObject {
     }
 
     private func restoreLoadedAnchor(_ anchor: ChatScrollAnchor) -> Bool {
-        guard let controller,
-              let item = adapter.item(containingRow: anchor.rowID),
+        guard let controller else { return false }
+        // A retained tab page is already at the captured point. Re-scrolling
+        // there would run a full collection layout during the tab switch — a
+        // visible hitch for no move at all.
+        if let current = controller.anchor(at: controller.viewport.offsetY),
+           current.id == anchor.rowID,
+           abs(current.offsetIntoRow - anchor.offsetIntoRow) < 0.5 {
+            return true
+        }
+        guard let item = adapter.item(containingRow: anchor.rowID),
               let path = controller.indexPath(for: item) else { return false }
         // A settled bottom-follow target must not pull the reader back down
         // while the restored position is placed.

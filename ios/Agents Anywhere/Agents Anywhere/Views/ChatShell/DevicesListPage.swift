@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// Device tab root. Read-only overview for the first shell build; device pages
-/// and session navigation arrive with the device stack.
+/// Device tab root. Tapping a device pushes its page into this tab's stack;
+/// the session pages below it are pushed by the shell's navigation
+/// destinations so leaving this tab never drops the drill-down.
 struct DevicesListPage: View {
     let devices: [ChatSidebarDevice]
     let isLoading: Bool
     let onMenu: () -> Void
+    let onOpen: (V2ConnectorID) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -22,7 +24,10 @@ struct DevicesListPage: View {
                         .padding(.top, 48)
                 } else {
                     ForEach(devices) { device in
-                        deviceCard(device)
+                        Button { onOpen(device.id) } label: {
+                            deviceCard(device)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -58,7 +63,9 @@ struct DevicesListPage: View {
                         .foregroundStyle(DevicePageStyle.secondary(colorScheme))
                 }
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            AppSymbol("anthropicon.caretRight", size: 12)
+                .foregroundStyle(DevicePageStyle.secondary(colorScheme))
         }
         .padding(14)
         .background(DevicePageStyle.card(colorScheme), in: .rect(cornerRadius: DevicePageStyle.cardRadius))

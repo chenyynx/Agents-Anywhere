@@ -7,32 +7,44 @@ nonisolated struct ChatScrollAnchor: Equatable, Sendable {
     let offsetIntoRow: CGFloat
 }
 
-/// Shell-owned owner of the current chat pane's model.
+/// Shell-owned cache of chat pane models.
 ///
-/// The official app keeps the session store outside the tab page
-/// (`SessionRegistry`), so switching tabs never tears down the store or its
-/// live stream. AA mirrors that here: the tab page only renders; the model,
-/// its observer and its restore anchor outlive the page.
+/// The official app keeps session stores outside the tab page
+/// (`SessionRegistry`, capacity 10), so switching tabs or drilling into a
+/// device never tears down a store or its live stream. AA holds the chat root
+/// and the device stack's session here; the tab pages only render.
 @MainActor
 final class ChatPaneStore {
     private var services: V2ClientServices?
-    private var model: SessionChatModel?
+    private var models: [V2SessionID: SessionChatModel] = [:]
+    private var order: [V2SessionID] = []
+    /// The chat root plus a device stack session are the working set; a small
+    /// cache covers the transient overlap while one of them is replaced.
+    private static let limit = 4
 
     /// The shell creates this from a view body initializer, which is not
     /// main-actor isolated in the package's Swift 5 language mode.
     nonisolated init() {}
 
-    /// The model compares by its live session id, not a captured one: a local
-    /// creation is renamed to the server id in place, and the same pane must
-    /// survive that rename.
     func pane(for session: V2SessionModel, services: V2ClientServices) -> SessionChatModel {
-        if let model, model.session.id == session.id, self.services === services {
+        if self.services !== services {
+            models.removeAll()
+            order.removeAll()
+            self.services = services
+        }
+        // A local creation is renamed to the server id in place: the same
+        // session object can still sit under its old key.
+        if let (key, model) = models.first(where: {
+            $0.value.session === session
+                || $0.value.session.presentationKey == session.presentationKey
+        }) {
+            if key != session.id {
+                models.removeValue(forKey: key)
+                models[session.id] = model
+            }
+            touch(session.id)
             return model
         }
-        // Releasing the previous pane cancels its live observer with its model
-        // (`SessionLiveRun.deinit`), exactly like closing that chat.
-        model = nil
-        self.services = nil
         let created = SessionChatModel(
             session: session,
             repository: services.sessionRepository,
@@ -43,16 +55,33 @@ final class ChatPaneStore {
             if let session { services?.editCreation(session, pending: pending) }
         }
         created.onDiscardCreation = { [weak services] in services?.discardCreation(session.id) }
-        model = created
-        self.services = services
+        models[session.id] = created
+        touch(session.id)
+        while order.count > Self.limit, let oldest = order.first {
+            order.removeFirst()
+            models.removeValue(forKey: oldest)
+        }
         return created
     }
 
-    /// Drops the pane (and its live observer) unless the chat tab still shows
-    /// this session.
-    func release(unless id: V2SessionID?) {
-        guard let model, model.session.id != id else { return }
-        self.model = nil
-        services = nil
+    /// Drops panes that are neither the chat root nor on the device stack.
+    /// Releasing a pane cancels its live observer through
+    /// `SessionLiveRun.deinit`, exactly like closing that chat.
+    func retain(_ ids: Set<V2SessionID>) {
+        for (key, model) in Array(models) {
+            if key != model.session.id {
+                models.removeValue(forKey: key)
+                models[model.session.id] = model
+            }
+        }
+        for (key, model) in Array(models) where !ids.contains(model.session.id) {
+            models.removeValue(forKey: key)
+        }
+        order = order.filter { models[$0] != nil }
+    }
+
+    private func touch(_ id: V2SessionID) {
+        order.removeAll { $0 == id }
+        order.append(id)
     }
 }

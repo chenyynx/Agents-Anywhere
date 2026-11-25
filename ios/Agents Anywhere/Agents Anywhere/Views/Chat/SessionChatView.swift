@@ -12,6 +12,9 @@ struct SessionChatView: View, Equatable {
     let fallbackTitle: String?
     let fallbackRuntimeName: String?
     let onMenu: () -> Void
+    /// A pushed session leaves the leading slot to the system back button (and
+    /// its native swipe); the Chat-tab root keeps the drawer hamburger.
+    let showsMenuButton: Bool
     /// Pin/unpin from the trailing menu (pp 2026-11-19). The current value
     /// rides `session.metadata.pinned`, refreshed through the dashboard push,
     /// so the item's title flips without local state.
@@ -33,6 +36,10 @@ struct SessionChatView: View, Equatable {
     /// True from a keyboard's will-show until its did-hide: a hide still
     /// animating must never be recorded as a keyboard-free bottom.
     @State private var windowKeyboardVisible = false
+    /// Flips at will-show/will-hide (not did-hide) so the tab-bar gap moves
+    /// inside the keyboard animation instead of adding an 8 pt step after the
+    /// keyboard is already gone.
+    @State private var keyboardOnScreen = false
     /// The page's bottom inset last seen with no keyboard on screen.
     @State private var keyboardFreeBottomInset: CGFloat?
     /// The page's frame in global coordinates — a question card may fill it
@@ -364,6 +371,10 @@ struct SessionChatView: View, Equatable {
         (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY
     }
 
+    private static func keyboardAnimationDuration(_ note: Notification) -> Double {
+        (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
@@ -371,7 +382,7 @@ struct SessionChatView: View, Equatable {
     /// Liquid Glass bar. The keyboard owns the bottom edge when it is up, so
     /// the gap only applies keyboard-down.
     private var composerTabBarGap: CGFloat {
-        shellTabBarActive && !windowKeyboardVisible ? ShellTabBarMetrics.composerGap : 0
+        shellTabBarActive && !keyboardOnScreen ? ShellTabBarMetrics.composerGap : 0
     }
 
     private func composerDockArea(maximumEditorHeight: CGFloat,
@@ -496,6 +507,7 @@ struct SessionChatView: View, Equatable {
     init(model: SessionChatModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
          onMenu: @escaping () -> Void,
+         showsMenuButton: Bool = true,
          onTogglePinned: @escaping (Bool) -> Void) {
         self.model = model
         sessionIdentity = model.session
@@ -505,6 +517,7 @@ struct SessionChatView: View, Equatable {
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
+        self.showsMenuButton = showsMenuButton
         self.onTogglePinned = onTogglePinned
     }
     /// The collection engine's composer keeps the official Code measurements
@@ -560,7 +573,8 @@ struct SessionChatView: View, Equatable {
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? fallbackTitle ?? String(localized: "会话"),
             subtitle: SessionHeaderSubtitle.text(metadata: session.metadata, deviceName: deviceName,
                 fallbackRuntimeName: fallbackRuntimeName),
-            status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
+            status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu,
+            showsMenuButton: showsMenuButton))
         // [E] R21 chrome-verify.md — on iOS 26 the official session page sets
         // only `.toolbarBackgroundVisibility(.automatic)` and never paints a
         // `toolbarBackground` colour; the visible colour + page background is
@@ -645,6 +659,15 @@ struct SessionChatView: View, Equatable {
             for: UIResponder.keyboardWillShowNotification)) { note in
             windowKeyboardVisible = true
             keyboardTop = Self.keyboardTop(in: note)
+            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                keyboardOnScreen = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification)) { note in
+            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                keyboardOnScreen = false
+            }
         }
         // The keyboard can change frame without a fresh show (language
         // switch, candidate bar); the card's cap follows its top edge.
@@ -655,6 +678,7 @@ struct SessionChatView: View, Equatable {
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardDidHideNotification)) { _ in
             windowKeyboardVisible = false
+            keyboardOnScreen = false
             keyboardTop = nil
             if !isOutlineSheetPresented { outlineKeyboardInsetFreeze = false }
         }

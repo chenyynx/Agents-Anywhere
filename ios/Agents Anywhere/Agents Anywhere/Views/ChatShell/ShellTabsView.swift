@@ -20,7 +20,9 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 ShellTabLabel(title: "Chats", image: "anthropicon.chat")
             }
             Tab(value: ShellTab.devices) {
-                NavigationStack { devicesRoot }
+                // The shell supplies the Devices NavigationStack (it owns the
+                // path and the push destinations).
+                devicesRoot
             } label: {
                 ShellTabLabel(title: "Devices", image: "anthropicon.laptop.tab")
             }

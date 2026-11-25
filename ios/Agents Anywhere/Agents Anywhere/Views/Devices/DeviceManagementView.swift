@@ -14,6 +14,9 @@ struct DeviceManagementView: View {
     let workspaceFilesService: V2WorkspaceFilesService
     let serverURL: URL
     let onMenu: () -> Void
+    /// A pushed page leaves the leading slot to the system back button (and
+    /// its native swipe); the root page keeps the drawer hamburger.
+    var showsMenuButton = true
     let onOpenDevice: (V2ConnectorID) -> Void
     let onOpenSession: (V2SessionID) -> Void
     let onNewSession: (String?) -> Void
@@ -103,7 +106,7 @@ struct DeviceManagementView: View {
         // The device identity is persistent in the nav bar (pp 2026-11-23);
         // it no longer waits for the first scroll.
         .modifier(ChatPageToolbar(title: connector.name,
-            subtitle: connectionDescription, onMenu: onMenu))
+            subtitle: connectionDescription, onMenu: onMenu, showsMenuButton: showsMenuButton))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

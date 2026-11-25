@@ -23,9 +23,9 @@ struct NewSessionView: View, Equatable {
     /// Largest viewport seen — the keyboard-closed height. Only the *shrink*
     /// from it is used, so no absolute metric has to be known.
     @State private var closedViewportHeight: CGFloat = 0
-    /// Latest viewport height; only used to tell whether the composer is on a
-    /// keyboard (where the tab bar is off screen and the gap disappears).
-    @State private var viewportHeight: CGFloat = 0
+    /// Flips at will-show/will-hide so the tab-bar gap moves with the keyboard
+    /// animation instead of adding a late 8 pt step.
+    @State private var keyboardOnScreen = false
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -86,12 +86,8 @@ struct NewSessionView: View, Equatable {
                 // Seed on first layout — `onChange` never reports the initial
                 // value, and without a closed height every shrink would read
                 // as zero on the first keyboard.
-                .onAppear {
-                    viewportHeight = viewport.size.height
-                    closedViewportHeight = max(closedViewportHeight, viewport.size.height)
-                }
+                .onAppear { closedViewportHeight = max(closedViewportHeight, viewport.size.height) }
                 .onChange(of: viewport.size.height) { _, height in
-                    viewportHeight = height
                     closedViewportHeight = max(closedViewportHeight, height)
                 }
             }
@@ -145,14 +141,32 @@ struct NewSessionView: View, Equatable {
             Button(String(localized: "保留草稿并允许重新创建")) { model.acknowledgeUncertainCreation() }
             Button(String(localized: "取消"), role: .cancel) {}
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillShowNotification)) { note in
+            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                keyboardOnScreen = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification)) { note in
+            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                keyboardOnScreen = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardOnScreen = false
+        }
     }
 
     /// Tab-shell gap above the Liquid Glass bar; zero while the keyboard is
     /// up (the tab bar is off screen and the composer sits on the keyboard).
     private var composerTabBarGap: CGFloat {
-        guard shellTabBarActive, closedViewportHeight > 0,
-              viewportHeight >= closedViewportHeight - 1 else { return 0 }
-        return ShellTabBarMetrics.composerGap
+        shellTabBarActive && !keyboardOnScreen ? ShellTabBarMetrics.composerGap : 0
+    }
+
+    private static func keyboardAnimationDuration(_ note: Notification) -> Double {
+        (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
     }
 
     private var statusContent: some View {

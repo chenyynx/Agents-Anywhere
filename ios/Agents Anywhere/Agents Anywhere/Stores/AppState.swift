@@ -81,6 +81,10 @@ final class AppState {
     /// (OpenMinis `NotificationNavigationStore`); entries expire after 30 s.
     @ObservationIgnored private var notificationTarget: (session: V2SessionID, at: Date)?
     @ObservationIgnored private var visibleSessionID: V2SessionID?
+    /// The session the reader is on, independent of scene phase. The background
+    /// keep-alive uses it so a session open in the Devices tab stays on the
+    /// wire; `visibleSessionID` clears when the app leaves the foreground.
+    @ObservationIgnored private var watchedSessionID: V2SessionID?
 
     init() {
         let build = Bundle.main.object(
@@ -508,6 +512,12 @@ final class AppState {
         makeV2Services()?.sessionReads.setVisibleSession(sessionId?.hasPrefix("local:") == true ? nil : sessionId)
     }
 
+    /// The shell's scene-independent "reader is here" session. It survives the
+    /// app leaving the foreground, unlike `visibleSessionID`.
+    func setWatchedSession(_ sessionId: V2SessionID?) {
+        watchedSessionID = sessionId?.hasPrefix("local:") == true ? nil : sessionId
+    }
+
     /// Server/account scope the tab shell restores its pane state against.
     var clientScope: V2ClientScope? {
         guard let serverURL, let me else { return nil }
@@ -815,6 +825,7 @@ final class AppState {
         chatSelection = .newSession; restoreConnectionError = nil
         notificationTarget = nil
         visibleSessionID = nil
+        watchedSessionID = nil
         NotificationService.shared.reset()
         me = nil
         serverURL = nil
@@ -1023,10 +1034,13 @@ final class AppState {
             }
             // Keep the conversation the user is watching on the wire alongside
             // the dashboard channel; every other session socket closes.
+            let watchedSession: V2SessionID? = watchedSessionID ?? {
+                if case let .session(id) = chatSelection { return id }
+                return nil
+            }()
             let keptSession: Set<V2SessionID>
-            if keepAlive, NotificationSettings.sessionSocketEnabled,
-               case let .session(id) = chatSelection {
-                keptSession = [id]
+            if keepAlive, NotificationSettings.sessionSocketEnabled, let watchedSession {
+                keptSession = [watchedSession]
             } else {
                 keptSession = []
             }

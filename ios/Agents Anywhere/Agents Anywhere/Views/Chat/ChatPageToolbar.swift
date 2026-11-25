@@ -36,6 +36,9 @@ struct ChatPageToolbar: ViewModifier {
     var status: ChatHeaderStatus?
     var alignsTitleLeading = false
     let onMenu: () -> Void
+    /// Pushed pages (device → session) leave the leading slot to the system
+    /// back button so the native swipe-back and the path binding keep working.
+    var showsMenuButton = true
 
     func body(content: Content) -> some View {
         content
@@ -45,9 +48,11 @@ struct ChatPageToolbar: ViewModifier {
             .toolbar(.visible, for: .navigationBar)
             .toolbar(removing: .sidebarToggle)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onMenu) { SidebarMenuIcon() }
-                        .accessibilityLabel(String(localized: "打开侧栏"))
+                if showsMenuButton {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: onMenu) { SidebarMenuIcon() }
+                            .accessibilityLabel(String(localized: "打开侧栏"))
+                    }
                 }
                 if alignsTitleLeading {
                     // Use the title region's available width. A leading bar

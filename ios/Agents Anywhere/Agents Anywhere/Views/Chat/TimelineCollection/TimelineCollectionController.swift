@@ -1085,6 +1085,68 @@ final class TimelineCollectionController: UIViewController {
             && !applyingHistoryPage
             && oldItems.count == items.count
             && oldItems == items
+        // A stream tick that only rewrites the reply already on screen does
+        // not need the diffable machinery. `reconfigureItems` + `apply` costs
+        // a snapshot rebuild plus UIKit's commit wait (~5 ms + ~11 ms on the
+        // 2026-11-25 b1607 device probe), while the row's own content lives
+        // in one visible cell and the layout can patch its height directly.
+        // Everything else — a new row, a tail or prompt move, a hidden cell,
+        // an animated arrival — keeps the snapshot path below.
+        if structureUnchanged, !animating, changed.count == 1,
+           reconfigure.count == 1, existingChanges.count == 1,
+           let streamedItem = changed.first {
+            let indexPath = dataSource.indexPath(for: streamedItem)
+            let cell = indexPath.flatMap {
+                collectionView.cellForItem(at: $0) as? AssistantMarkdownCell
+            }
+            let streaming = content.assistantStreamingDocument(for: streamedItem)
+            let height = documentHeights[streamedItem.itemID]
+            if let cell, let streaming, let height {
+                cell.configure(streaming: streaming,
+                               reveal: content.assistantStreamingReveal(for: streamedItem))
+                cell.onStreamingRevealFrame = { [weak self] height in
+                    self?.streamingRevealFrame(height, for: streamedItem)
+                }
+                cell.onStreamingRevealCaughtUp = { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.content?.streamingRevealDidFinish(for: streamedItem)
+                        self.reloadFromContent()
+                    }
+                }
+                // The measured height for this tick, applied the same way the
+                // reveal's per-frame override is: the layout shifts the rows
+                // below it and the reader's bottom follow owns the offset.
+                let animatingPhase = phase.phase == .animating
+                let following = anchorDriver?.state.placement == .end && !animatingPhase
+                layout.applyStreamingHeight(height, for: streamedItem.itemID,
+                                            adjustOffset: !(following || animatingPhase))
+                currentItems = items
+                isPerformingSnapshot = false
+                onApplyCompleted?()
+                schedulePendingMeasurements()
+#if AA_TIMELINE_PROBE
+                TimelineProbeStore.shared.noteStage(
+                    "apply.fastPath.hit", seconds: CACurrentMediaTime() - probeApplyStart)
+#endif
+                return
+            }
+#if AA_TIMELINE_PROBE
+            let miss = cell == nil ? "offscreen"
+                : (streaming == nil ? "notStreaming" : "noHeight")
+            TimelineProbeStore.shared.noteStage(
+                "apply.fastPath.miss.\(miss)", seconds: CACurrentMediaTime() - probeApplyStart)
+#endif
+        }
+#if AA_TIMELINE_PROBE
+        else if structureUnchanged, !animating, changed.count > 1 {
+            // The tick touched more than the streamed reply (a tail notice, a
+            // status row): the fast path cannot carry it, but the count says
+            // how often a text-only tick really is single-item.
+            TimelineProbeStore.shared.noteStage(
+                "apply.fastPath.miss.multi", seconds: CACurrentMediaTime() - probeApplyStart)
+        }
+#endif
         var snapshot: NSDiffableDataSourceSnapshot<TimelineCollectionSection, TimelineListItem>
         if structureUnchanged {
             let committed = dataSource.snapshot()

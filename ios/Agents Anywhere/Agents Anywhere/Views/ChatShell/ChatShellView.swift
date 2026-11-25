@@ -48,10 +48,9 @@ struct ChatShellView: View {
             loadPanes(scope)
         }
         .onChange(of: appState.chatSelection) { _, next in
-            switch next {
-            case let .session(id): chatPane.release(unless: id)
-            case .newSession, .device: chatPane.release(unless: nil)
-            }
+            // The pane cache follows `panes`: syncing the Chat root below
+            // releases models that are neither the root nor on the device
+            // stack.
             syncPanesFromSelection(next)
         }
         .onChange(of: panes) { _, next in

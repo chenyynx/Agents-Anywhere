@@ -794,8 +794,14 @@ final class TimelineAnchorDriver {
         }
         // A scroll-to-top keeps the full distance so the reader can see the
         // whole list travel. Every other long jump keeps the official
-        // one-viewport pre-placement.
-        let preplaced = fullDistance
+        // one-viewport pre-placement — but only an explicit return: it is
+        // the reader's own command and the official motion is a jump plus a
+        // screen glide. A content-driven follow must ease from wherever the
+        // reader is; pre-placing it wrote the offset one screen above the
+        // bottom in a single frame, which read as a teleport mid-scroll
+        // (pp 2026-11-26; the mover log's content starts all showed
+        // `position = target − 645`).
+        let preplaced = (fullDistance || contentMove)
             ? current
             : TimelineSpringFollow.preplacedOffset(
                 target: target, current: current, visibleHeight: visible)

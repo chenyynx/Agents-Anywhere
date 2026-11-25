@@ -543,29 +543,21 @@ enum TimelineTurnActions {
             // L2: a SubAgent's intermediate text rows belong to its card, not
             // to the main agent's reply — the copied turn text stays the main
             // conversation (they can still place the footer via the group).
-            let messages = group.rows.filter {
-                $0.structure.type == .message && $0.structure.role == .assistant
-                    && SubAgentProgress.parentItemID($0.value) == nil
-            }
+            var messages: [ChatTimelineRowModel] = []
             let fileChanges = group.rows.filter { $0.structure.isFileChange }
-            if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
-            guard turnOpen else { continue }
-            if bucketTurnID == nil { bucketTurnID = declaredTurnID }
+            // One row pass for the three folds below. They all need the same
+            // two per-row JSON probes (`parentItemId`, the background
+            // hand-off flag); walking the group once and hoisting those two
+            // halved the cost the 2026-11-25 device probe attributed to
+            // `adapter.index.turnActions` (4.9 ms at a 295-item window).
+            // The accumulators stay local until the turn boundary is known:
+            // a group before the first reply row must not move the bucket.
+            //
             // Same exclusions as the state-coverage gate: a sub-agent child
             // and a background hand-off card keep publishing long after the
             // main turn, and counting them would make every older bucket look
             // newer than the recorded turn end.
-            for row in group.rows where SubAgentProgress.parentItemID(row.value) == nil {
-                if latchedBackgroundIDs.contains(row.id) || isBackgroundHandoffRow(row.value) {
-                    continue
-                }
-                if row.value.updatedSeq > bucketMaxMainSeq {
-                    bucketMaxMainSeq = row.value.updatedSeq
-                }
-            }
-            if hostsFooter(group) { endGroupID = group.id }
-            replies.append(contentsOf: messages)
-            changes.append(contentsOf: fileChanges)
+            //
             // A compaction marker is session maintenance, not turn content:
             // while it runs, the finished turn keeps its footer and the 30 pt
             // action bar with it (pp 2026-11-15: copy/share vanished for the
@@ -583,15 +575,42 @@ enum TimelineTurnActions {
             // exemption withholds the finished turn's footer for as long as
             // the card runs (pp 2026-11-24: four background agents, footer
             // absent until a later rewrite restored the flag).
-            var active = false
-            for row in group.rows
-            where isLiveActivityRow(row.value, latchedBackgroundIDs: latchedBackgroundIDs) {
-                active = true
-                if activeItemIDs.count < 3, !activeItemIDs.contains(row.id) {
-                    activeItemIDs.append(row.id)
+            var groupActive = false
+            var groupMaxMainSeq = 0
+            var groupActiveIDs: [String] = []
+            for row in group.rows {
+                let isChild = SubAgentProgress.parentItemID(row.value) != nil
+                if !isChild, row.structure.type == .message,
+                   row.structure.role == .assistant {
+                    messages.append(row)
+                }
+                guard !isChild else { continue }
+                if latchedBackgroundIDs.contains(row.id) || isBackgroundHandoffRow(row.value) {
+                    continue
+                }
+                if row.value.updatedSeq > groupMaxMainSeq {
+                    groupMaxMainSeq = row.value.updatedSeq
+                }
+                if row.value.status.isActive,
+                   !TimelineEntryPresentation.isCompactItem(row.value) {
+                    groupActive = true
+                    if groupActiveIDs.count < 3, !groupActiveIDs.contains(row.id) {
+                        groupActiveIDs.append(row.id)
+                    }
                 }
             }
-            hasActiveItems = hasActiveItems || active
+            if !messages.isEmpty || !fileChanges.isEmpty { turnOpen = true }
+            guard turnOpen else { continue }
+            if bucketTurnID == nil { bucketTurnID = declaredTurnID }
+            if groupMaxMainSeq > bucketMaxMainSeq { bucketMaxMainSeq = groupMaxMainSeq }
+            for id in groupActiveIDs where activeItemIDs.count < 3
+                && !activeItemIDs.contains(id) {
+                activeItemIDs.append(id)
+            }
+            if hostsFooter(group) { endGroupID = group.id }
+            replies.append(contentsOf: messages)
+            changes.append(contentsOf: fileChanges)
+            hasActiveItems = hasActiveItems || groupActive
         }
         // The pending user bubble already starts the next turn, even before its
         // echo enters groups. A runtime "waiting" event belongs to that new turn.

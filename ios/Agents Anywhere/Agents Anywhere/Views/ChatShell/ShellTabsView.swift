@@ -11,16 +11,20 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
 
     var body: some View {
         TabView(selection: $panes.selectedTab) {
-            Tab("Chats", image: "anthropicon.chat", value: ShellTab.chat) {
+            Tab(value: ShellTab.chat) {
                 NavigationStack { chatRoot }
                     // The session page owns its keyboard insets (composer is a
                     // safeAreaBar); the shell must not move the whole page.
                     .ignoresSafeArea(.keyboard)
+            } label: {
+                ShellTabLabel(title: "Chats", image: "anthropicon.chat")
             }
-            Tab("Devices", image: "anthropicon.laptop", value: ShellTab.devices) {
+            Tab(value: ShellTab.devices) {
                 NavigationStack { devicesRoot }
+            } label: {
+                ShellTabLabel(title: "Devices", image: "anthropicon.laptop.tab")
             }
-            Tab("Wiki", image: "anthropicon.library", value: ShellTab.wiki) {
+            Tab(value: ShellTab.wiki) {
                 NavigationStack {
                     PlaceholderTabPage(
                         title: String(localized: "Wiki"),
@@ -28,8 +32,10 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                         onMenu: onMenu
                     )
                 }
+            } label: {
+                ShellTabLabel(title: "Wiki", image: "anthropicon.library")
             }
-            Tab("Artifacts", image: "anthropicon.artifacts", value: ShellTab.artifacts) {
+            Tab(value: ShellTab.artifacts) {
                 NavigationStack {
                     PlaceholderTabPage(
                         title: String(localized: "Artifacts"),
@@ -37,7 +43,28 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                         onMenu: onMenu
                     )
                 }
+            } label: {
+                ShellTabLabel(title: "Artifacts", image: "anthropicon.artifacts")
             }
+        }
+    }
+}
+
+/// Official tab labels draw the artwork at 20 pt (the sidebar session row's
+/// size); the system tab item otherwise renders the asset at its intrinsic
+/// size, which made the icons visibly smaller than the official bar.
+private struct ShellTabLabel: View {
+    let title: LocalizedStringKey
+    let image: String
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
         }
     }
 }

@@ -183,11 +183,12 @@ import Testing
         #expect(uncovered["r-b"] == nil)
     }
 
-    /// A state-coverage commit is withdrawn by the next row the state never
-    /// saw; the footer it already showed must not blink out and back while
-    /// the ledger id lands (device 2026-11-25 10:28:48.79 → 49.96 → 50.17,
-    /// content 57535 → 57505 → 57535).
-    @Test func aStateCommitOutlivesALateRowWithinTheStickyWindow() throws {
+    /// The state-coverage proof belongs to the turn it sealed, not to one
+    /// refresh. A row of the same turn rewritten after the idle state must not
+    /// withdraw the footer while the ledger id is still in flight (device
+    /// 2026-11-25 10:28:48.79 commit → 49.96 withdraw → 50.17 durable); a
+    /// different turn never inherits it.
+    @Test func aStateSealOutlivesARewriteOfTheSameTurn() throws {
         let rows = try [
             row("u-a", role: "user", turnId: "turn-a", seq: 10),
             row("r-a", text: "A", turnId: "turn-a", seq: 11),
@@ -195,32 +196,54 @@ import Testing
             row("r-b", text: "B", turnId: "turn-b", seq: 21),
         ]
         let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+        var firstReport: TimelineTurnActions.FooterBuildReport?
         let first = TimelineTurnActions.build(
             groups: groups, suppressLatest: false,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: true)
+            stateCoversMain: true,
+            report: { firstReport = $0 })
         #expect(first["r-b"]?.copyText == "B")
-        // A row newer than that state withdraws the proof, and the ledger id
-        // still names the previous turn.
-        let sticky = TimelineTurnActions.FooterStickyCommit(
-            hostGroupID: "r-b", decidedAt: 100)
+        #expect(firstReport?.stateSealed == true)
+        #expect(firstReport?.bucketTurnID == "turn-b")
+
+        let seal = TimelineTurnActions.FooterStateSeal(turnID: "turn-b")
+        // The rewrite adds no declared turn: coverage is gone and the ledger
+        // id is still one turn behind.
+        var keptReport: TimelineTurnActions.FooterBuildReport?
         let kept = TimelineTurnActions.build(
             groups: groups, suppressLatest: false,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false, stickyCommit: sticky, now: 101)
+            stateCoversMain: false, stateSeal: seal,
+            report: { keptReport = $0 })
         #expect(kept["r-b"]?.copyText == "B")
-        // Past the window the ordinary rule decides again.
-        let expired = TimelineTurnActions.build(
+        #expect(keptReport?.stateSealKept == true)
+
+        // The durable id arrives: the commit stands on its own, and the probe
+        // must say the seal did not decide it.
+        var durableReport: TimelineTurnActions.FooterBuildReport?
+        let durable = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-b", latestTurnEndSeq: 21,
+            stateCoversMain: false, stateSeal: seal,
+            report: { durableReport = $0 })
+        #expect(durable["r-b"]?.copyText == "B")
+        #expect(durableReport?.latestTurnSeal == true)
+        #expect(durableReport?.stateSealKept == false)
+
+        // A different declared turn never inherits the seal, even on the same
+        // host group.
+        let otherTurn = TimelineTurnActions.build(
             groups: groups, suppressLatest: false,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false, stickyCommit: sticky,
-            now: 100 + TimelineTurnActions.footerStickyWindow + 0.5)
-        #expect(expired["r-b"] == nil)
+            stateCoversMain: false,
+            stateSeal: TimelineTurnActions.FooterStateSeal(turnID: "turn-a"))
+        #expect(otherTurn["r-b"] == nil)
     }
 
-    /// The remembered commit must not outlive a resumed turn, a different
-    /// bucket, or a visible running row.
-    @Test func theStickyCommitDoesNotSurviveAResumedTurnOrANewBucket() throws {
+    /// The seal must not outlive a running gate or a visible running row, and
+    /// a runtime that declares no turn id must never be sealed (the adapter
+    /// needs the id to tell a new bubble-less turn from a rewrite).
+    @Test func theStateSealDoesNotSurviveAResumedTurnOrAnActiveRow() throws {
         let rows = try [
             row("u-a", role: "user", turnId: "turn-a", seq: 10),
             row("r-a", text: "A", turnId: "turn-a", seq: 11),
@@ -228,22 +251,13 @@ import Testing
             row("r-b", text: "B", turnId: "turn-b", seq: 21),
         ]
         let groups = TimelineGrouping.groups(rows, interactionTargets: [])
-        let sticky = TimelineTurnActions.FooterStickyCommit(
-            hostGroupID: "r-b", decidedAt: 100)
+        let seal = TimelineTurnActions.FooterStateSeal(turnID: "turn-b")
         // The gate reopened: the turn is running again.
         let running = TimelineTurnActions.build(
             groups: groups, suppressLatest: true,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false, stickyCommit: sticky, now: 101)
+            stateCoversMain: false, stateSeal: seal)
         #expect(running["r-b"] == nil)
-        // The remembered host is not this bucket's end group.
-        let moved = TimelineTurnActions.build(
-            groups: groups, suppressLatest: false,
-            latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false,
-            stickyCommit: TimelineTurnActions.FooterStickyCommit(
-                hostGroupID: "r-a", decidedAt: 100), now: 101)
-        #expect(moved["r-b"] == nil)
         // A visible running row still vetoes.
         let active = try rows + [row("tool", type: "tool", status: "running",
                                      turnId: "turn-b", seq: 22)]
@@ -251,15 +265,27 @@ import Testing
             groups: TimelineGrouping.groups(active, interactionTargets: []),
             suppressLatest: false,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false, stickyCommit: sticky, now: 101,
+            stateCoversMain: false, stateSeal: seal,
             footerHostEligible: { $0.id != "tool" })
         #expect(vetoed["r-b"] == nil)
+        // No declared turn id: the coverage commit still commits, but there
+        // is nothing the adapter could remember as a seal.
+        var unnamedReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: TimelineGrouping.groups(
+                try [row("u", role: "user", seq: 10), row("r", text: "R", seq: 11)],
+                interactionTargets: []),
+            suppressLatest: false, stateCoversMain: true,
+            report: { unnamedReport = $0 })
+        #expect(unnamedReport?.stateSealed == true)
+        #expect(unnamedReport?.bucketTurnID == nil)
     }
 
-    /// Only a state-coverage commit is remembered across builds: an outgoing
-    /// bubble's commit does not depend on rows the state has seen, and the
-    /// durable id needs no memory.
-    @Test func onlyAStateCoverageCommitIsRemembered() throws {
+    /// Only a state-coverage commit is sealed: an outgoing bubble's commit
+    /// does not depend on rows the state has seen, and the durable id needs no
+    /// memory. The pending case is the one that needs the state to cover the
+    /// rows, so the exclusion is observable only with `seal == nil`.
+    @Test func onlyAStateCoverageCommitIsSealed() throws {
         let rows = try [
             row("u-a", role: "user", turnId: "turn-a", seq: 10),
             row("r-a", text: "A", turnId: "turn-a", seq: 11),
@@ -269,9 +295,9 @@ import Testing
         let groups = TimelineGrouping.groups(rows, interactionTargets: [])
         var pendingReport: TimelineTurnActions.FooterBuildReport?
         _ = TimelineTurnActions.build(
-            groups: groups, suppressLatest: true, hasPendingUserMessage: true,
+            groups: groups, suppressLatest: false, hasPendingUserMessage: true,
             latestTurnId: "turn-a", latestTurnEndSeq: 15,
-            stateCoversMain: false,
+            stateCoversMain: true,
             report: { pendingReport = $0 })
         #expect(pendingReport?.committed == true)
         #expect(pendingReport?.stateSealed == false)
@@ -283,6 +309,61 @@ import Testing
             stateCoversMain: true,
             report: { stateReport = $0 })
         #expect(stateReport?.stateSealed == true)
+        #expect(stateReport?.bucketTurnID == "turn-b")
+    }
+
+    /// The adapter's recording rule: a state commit starts the seal, a durable
+    /// answer clears it, and a refresh that decides nothing keeps it (the same
+    /// turn may be the final bucket again on the next refresh).
+    @Test func theStateSealFollowsTheBuildReport() throws {
+        let rows = try [
+            row("u-a", role: "user", turnId: "turn-a", seq: 10),
+            row("r-a", text: "A", turnId: "turn-a", seq: 11),
+            row("u-b", role: "user", turnId: "turn-b", seq: 20),
+            row("r-b", text: "B", turnId: "turn-b", seq: 21),
+        ]
+        let groups = TimelineGrouping.groups(rows, interactionTargets: [])
+
+        var stateReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: true,
+            report: { stateReport = $0 })
+        let started = TimelineTurnActions.nextStateSeal(
+            previous: nil, report: try #require(stateReport))
+        #expect(started?.turnID == "turn-b")
+
+        // A running refresh decides nothing and must not drop the seal.
+        var runningReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: true,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: false, stateSeal: started,
+            report: { runningReport = $0 })
+        #expect(TimelineTurnActions.nextStateSeal(
+            previous: started, report: try #require(runningReport))?.turnID == "turn-b")
+
+        // An outgoing bubble's commit is not the state proof either: it must
+        // not start a seal of its own nor replace the one already held.
+        var pendingReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false, hasPendingUserMessage: true,
+            latestTurnId: "turn-a", latestTurnEndSeq: 15,
+            stateCoversMain: true,
+            report: { pendingReport = $0 })
+        #expect(TimelineTurnActions.nextStateSeal(
+            previous: started, report: try #require(pendingReport))?.turnID == "turn-b")
+
+        // The durable id proves the same bucket; the seal is no longer needed.
+        var durableReport: TimelineTurnActions.FooterBuildReport?
+        _ = TimelineTurnActions.build(
+            groups: groups, suppressLatest: false,
+            latestTurnId: "turn-b", latestTurnEndSeq: 21,
+            stateCoversMain: false, stateSeal: started,
+            report: { durableReport = $0 })
+        #expect(TimelineTurnActions.nextStateSeal(
+            previous: started, report: try #require(durableReport)) == nil)
     }
 
     /// A scheduled/wake turn has no user bubble; its first assistant row still
@@ -545,6 +626,28 @@ import Testing
         let untouched = TimelineTurnActions.restoringFinishedFooters(
             own, from: closed, groupIDs: ["user", "gone"])
         #expect(untouched["gone"]?.copyText == "New")
+    }
+
+    /// A userless episode that is the same declared turn resuming must not put
+    /// the closed footer back on the live bucket. A wake/compaction turn (a
+    /// different id) and a bucket with no activity still restore — that is the
+    /// 2026-11-16 background-wake fix.
+    @Test func theRestoreStaysAwayFromAResumingTurn() {
+        #expect(TimelineTurnActions.restoreWouldCoverAResumingTurn(
+            hasActiveItems: true, bucketTurnID: "turn-b",
+            sealedOrLedgerTurnID: "turn-b"))
+        #expect(!TimelineTurnActions.restoreWouldCoverAResumingTurn(
+            hasActiveItems: false, bucketTurnID: "turn-b",
+            sealedOrLedgerTurnID: "turn-b"))
+        #expect(!TimelineTurnActions.restoreWouldCoverAResumingTurn(
+            hasActiveItems: true, bucketTurnID: "turn-c",
+            sealedOrLedgerTurnID: "turn-b"))
+        #expect(!TimelineTurnActions.restoreWouldCoverAResumingTurn(
+            hasActiveItems: true, bucketTurnID: nil,
+            sealedOrLedgerTurnID: "turn-b"))
+        #expect(!TimelineTurnActions.restoreWouldCoverAResumingTurn(
+            hasActiveItems: true, bucketTurnID: "turn-b",
+            sealedOrLedgerTurnID: nil))
     }
 
     @Test func pendingUserMessageKeepsThePreviousReplyActionsThroughItsEcho() throws {

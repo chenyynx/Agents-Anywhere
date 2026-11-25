@@ -3897,10 +3897,18 @@ private struct TimelineCollectionOlderPromptRow: View {
 
     var body: some View {
         if isLoading {
+            // Disassembly of `LoadOlderHeader.body` (build 1.261109.19,
+            // 0x101c366cc): `UIActivityIndicatorView(style: .medium)` in a
+            // UIViewRepresentable — 20x20 pt, both hugging priorities 1000 —
+            // with `.padding(.vertical, 8)` and
+            // `.frame(maxWidth: .infinity, alignment: .center)`. No font, no
+            // tint; the words are the accessibility label only. Row content is
+            // therefore 36 pt (8 + 20 + 8).
             ProgressView()
                 .progressViewStyle(.circular)
                 .accessibilityLabel(Text(String(localized: "正在加载更早的消息")))
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
         }
     }
 }

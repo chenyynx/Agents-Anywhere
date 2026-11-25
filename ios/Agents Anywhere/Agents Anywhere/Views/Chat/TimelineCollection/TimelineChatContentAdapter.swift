@@ -1470,10 +1470,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         switch item {
         case .olderPrompt:
             return AnyView(TimelineCollectionOlderPromptRow(
-                hasOlderItems: model.session.canLoadOlder,
-                isLoading: isLoadingOlder || isLoadingLatest,
-                pullReady: olderPullReady,
-                onLoad: { [weak self] in self?.onLoadOlder?() }))
+                isLoading: isLoadingOlder || isLoadingLatest))
         case .latestPrompt:
             return AnyView(TimelineCollectionLatestPromptRow(
                 hasNewerItems: model.session.hasNewerItems,
@@ -3839,36 +3836,23 @@ private struct WorkingStatusRowHost: View {
 
 // MARK: - History prompts (rendered, not yet loaded in C4)
 
+/// The official `LoadOlderHeader`: a paging sentinel, not a button. It draws
+/// only while a page is loading and is otherwise empty — the list loads when
+/// the reader nears the top (`LoadsOlderHistoryNearTop`), so there is no
+/// tap affordance and no end-of-history label (pp 2026-11-25: match the
+/// official row exactly). Geometry from the official device screenshot:
+/// spinner 20.3x20.0 pt centred on the column axis, row content 44 pt tall,
+/// standard 5 pt row margin above and the paging row's zero list gap below.
 private struct TimelineCollectionOlderPromptRow: View {
-    let hasOlderItems: Bool
     let isLoading: Bool
-    let pullReady: Bool
-    let onLoad: (() -> Void)?
 
     var body: some View {
-        Group {
-            if isLoading {
-                // Official `LoadOlderHeader` draws the spinner alone: 20x20 pt,
-                // horizontally centred, no label (device screenshot 2026-11-25:
-                // bbox 560–620 x 363–422 px at 3x = 20.3x20.0 pt, centre on the
-                // column axis; the row content is 44 pt tall with the standard
-                // 5 pt row margin above and the paging row's zero list gap
-                // below). The words stay as the accessibility label.
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .accessibilityLabel(Text(String(localized: "正在加载更早的消息")))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            } else if hasOlderItems {
-                Button { onLoad?() } label: {
-                    Text(pullReady ? String(localized: "松开加载更早的消息") : String(localized: "加载更早的消息"))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
-                }.disabled(onLoad == nil || isLoading)
-            } else {
-                Text(String(localized: "已到达会话开头")).foregroundStyle(.secondary)
-            }
+        if isLoading {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .accessibilityLabel(Text(String(localized: "正在加载更早的消息")))
+                .frame(maxWidth: .infinity, minHeight: 44)
         }
-        .font(.footnote).frame(maxWidth: .infinity, minHeight: 44)
     }
 }
 

@@ -317,7 +317,7 @@ jobs:
           s = r.get("statusBarTop") or {}
           check("status bar: idle paging sentinel is zero height",
                 s.get("promptHeight") == 0, s)
-          check("status bar: tap lands on the first message",
+          check("status bar: tap lands on the resting top",
                 abs(s.get("topDelta", 99)) <= 1, s)
 
           failed = [c for c in checks if not c[1]]

@@ -118,9 +118,13 @@ import Testing
         #expect(result.action == .placeDirect)
     }
 
-    @Test func askedForStartPlacesTheFirstRowAtTheTop() {
+    @Test func askedForStartPlacesTheRestingTop() {
+        // The list owns a top inset above its first row; the status-bar tap
+        // must land on the resting top (the inset visible), not on the first
+        // row's top. The two differed by one inset on device (pp 2026-11-26).
         let result = reduce(landed(.end), .askedForStart(id: "u0"))
-        #expect(result.state.placement == .reading(id: "u0", offsetIntoRow: 0))
+        #expect(result.state.placement == .reading(id: "u0",
+                                                   offsetIntoRow: -TimelineListMetrics.topInset))
         #expect(result.action == .move)
         #expect(!result.state.isFollowingCatchUp)
     }

@@ -221,10 +221,15 @@ nonisolated enum TimelineAnchorReducer {
             action = animated ? .move : .placeDirect
 
         case .askedForStart(let id):
-            // Official status-bar tap: placement becomes the first row at the
-            // viewport top. A finger on the list owns it; the tap is ignored.
+            // Official status-bar tap. Land on the resting top, not on the
+            // first row's top: the list owns a 16 pt top inset above the
+            // first row, and putting the row's top at the viewport top cut
+            // that inset — the tap stopped 16 pt above the manual top (pp
+            // 2026-11-26: tap and swipe tops differed by one list inset).
+            // A finger on the list owns it; the tap is ignored.
             guard next.motion != .dragging else { break }
-            next.placement = .reading(id: id, offsetIntoRow: 0)
+            next.placement = .reading(id: id,
+                                      offsetIntoRow: -TimelineListMetrics.topInset)
             next.isFollowingCatchUp = false
             action = .move
 

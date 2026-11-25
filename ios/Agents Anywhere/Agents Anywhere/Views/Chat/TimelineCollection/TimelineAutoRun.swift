@@ -2640,10 +2640,14 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
         let firstMinY = firstContent.flatMap {
             controller.layout.attributes(for: $0.itemID)?.frame.minY
         }
-        let topDelta = (firstMinY ?? .nan) - inset - offset
+        // The tap must land on the resting top (offset = -inset), the same
+        // place a manual scroll stops — not on the first row's top, which
+        // cuts the list's own top inset (pp 2026-11-26).
+        let topDelta = offset + inset
         report["statusBarTop"] = [
             "promptHeight": Double(promptHeight),
             "topDelta": topDelta.isFinite ? Double(topDelta) : -1,
+            "firstMinY": firstMinY.map(Double.init) ?? -1,
             "offset": Double(offset),
             "inset": Double(inset),
         ]
@@ -2651,7 +2655,7 @@ final class TimelineAutoRunModel: TimelineCollectionContentProviding {
             failures.append("status bar: idle paging sentinel height \(promptHeight) != 0")
         }
         if !(abs(topDelta) <= 1) {
-            failures.append("status bar: tap landed \(topDelta) pt off the first message")
+            failures.append("status bar: tap landed \(topDelta) pt off the resting top")
         }
     }
 

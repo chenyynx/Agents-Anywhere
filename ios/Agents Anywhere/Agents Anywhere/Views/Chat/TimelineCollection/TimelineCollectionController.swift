@@ -3249,6 +3249,17 @@ final class TimelineCollectionController: UIViewController {
             guard !Task.isCancelled else { return }
             self?.pagingPolicy.openingFallbackExpired()
         }
+        // The first placement is the cold landing and must be direct (a
+        // 100k animated glide would fly through the whole list under the
+        // opening mask). Once the landing has been reported, a later
+        // re-assert — the opening-ready flip, a window re-assert, or an
+        // apply completion — must not place directly: the window is still
+        // filling, and the direct write lands whatever bottom the height is
+        // at that instant, in one frame. That was the visible jump right
+        // after entering a session (pp 2026-11-26: +727 pt at t≈2.1 s, then
+        // a spring for the remaining 261 pt). From here the content follow
+        // owns the bottom and animates it.
+        guard anchorDriver?.hasReportedOpeningArrival != true else { return }
         anchorDriver?.requestEnd(animated: false)
     }
 

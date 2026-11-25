@@ -117,6 +117,13 @@ final class TimelineAnchorDriver {
         TimelineSpringFollow.pixel(displayScale: scrollView?.traitCollection.displayScale ?? 2)
     }
 
+    /// The opening's first real landing has been placed and reported. The
+    /// controller uses it to stop direct-placing the bottom on later
+    /// re-asserts: once the landing is done, the window may still be filling
+    /// and a direct write lands a mid-fill bottom in one frame (the jump a
+    /// reader sees right after entering a session, pp 2026-11-26).
+    var hasReportedOpeningArrival: Bool { didReportOpeningArrival }
+
     private func geometry(titleTop: CGFloat? = nil, bottom: CGFloat? = nil) -> TimelineAnchorGeometry {
         let view = scrollView
         return TimelineAnchorGeometry(

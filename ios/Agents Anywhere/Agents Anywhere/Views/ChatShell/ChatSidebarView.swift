@@ -31,9 +31,7 @@ struct ChatSidebarView: View {
 
     @State private var isShowingPairing = false
     @State private var showsArchives = false
-    /// "Recent" shows a short preview by default (pp 2026-11-26); the whole
-    /// list stays one tap away instead of being cut off at ten rows.
-    @State private var showsAllRecent = false
+    /// "Recent" shows a fixed ten rows (pp 2026-11-26).
     private static let recentPreviewLimit = 10
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     /// Flat list only: one line per session, without the project · device line.
@@ -109,12 +107,9 @@ struct ChatSidebarView: View {
                         // below; we drew 57.7/43.3 because the ⋯ menu's 44pt
                         // tap target centres the title 13pt low).
                         .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -5)
-                        let visibleRecent = showsAllRecent
-                            ? recentSessions
-                            : Array(recentSessions.prefix(Self.recentPreviewLimit))
                         ChatSidebarSessionSection(
                             title: nil,
-                            sessions: visibleRecent,
+                            sessions: Array(recentSessions.prefix(Self.recentPreviewLimit)),
                             selectedSessionId: selectedSessionId,
                             isLoading: isLoadingSessions,
                             emptyMessage: "No sessions yet",
@@ -125,27 +120,6 @@ struct ChatSidebarView: View {
                             onArchive: onArchiveSession,
                             onCopyId: onCopySessionId
                         )
-                        // The preview is a cap, not a dead end: the remaining
-                        // sessions stay one tap away.
-                        if !showsAllRecent, recentSessions.count > Self.recentPreviewLimit {
-                            Button {
-                                withAnimation(.snappy) { showsAllRecent = true }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(String(localized: "显示全部会话"))
-                                    Text("\(recentSessions.count)")
-                                        .foregroundStyle(AppTheme.sidebarRowText(colorScheme).opacity(0.55))
-                                    Spacer(minLength: 0)
-                                }
-                                .font(.system(size: 15))
-                                .foregroundStyle(AppTheme.sidebarRowText(colorScheme))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.opacity)
-                        }
                     } else {
                         ChatSidebarProjects(repository: repository, showsSessionList: $showsSessionList,
                             selectedSessionID: selectedSessionId, onShowArchives: { showsArchives = true },

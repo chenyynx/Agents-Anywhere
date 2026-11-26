@@ -415,6 +415,28 @@ struct SessionChatView: View, Equatable {
 
     /// Focus transitions are the signal for the keyboard that dismisses
     /// itself; the keyboard flags say whether the page believed it was up.
+    /// One line per keyboard transition plus a frame window through its
+    /// animation. The b1668 log showed the list inset arriving in steps
+    /// (68 → 109 → 355, then a 96 pt jump 2.3 s later with the keyboard
+    /// already up); this pair says whether a step belongs to the
+    /// notification's own curve or to a later layout pass.
+    private func recordKeyboardNotification(_ phase: String, note: Notification) {
+        TabSwitchProbe.shared.begin(tab: phase == "willShow" ? "show" : "hide",
+                                    kind: "keyboard.frame")
+        let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
+        ClientDiagnosticsLog.shared.record(
+            kind: "keyboard.notify",
+            sessionID: session.id,
+            detail: [
+                "phase": phase,
+                "pane": paneRole.rawValue,
+                "durationMs": String(format: "%.0f", Self.keyboardAnimationDuration(note) * 1000),
+                "curve": String(curve),
+                "top": Self.keyboardTop(in: note).map { String(Int($0.rounded())) } ?? "nil",
+            ],
+            dedupe: false)
+    }
+
     private func recordComposerFocus(_ focused: Bool) {
         ClientDiagnosticsLog.shared.record(
             kind: "composer.focus",
@@ -717,6 +739,7 @@ struct SessionChatView: View, Equatable {
         // the keyboard height cannot be mistaken for the resting bottom.
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardWillShowNotification)) { note in
+            recordKeyboardNotification("willShow", note: note)
             windowKeyboardVisible = true
             keyboardTop = Self.keyboardTop(in: note)
             withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
@@ -727,6 +750,7 @@ struct SessionChatView: View, Equatable {
             for: UIResponder.keyboardWillHideNotification)) { note in
             // A hide while the composer still owns focus is the keyboard
             // dismissing itself; record the pane that saw it.
+            recordKeyboardNotification("willHide", note: note)
             if session.composer.isFocused {
                 ClientDiagnosticsLog.shared.record(
                     kind: "composer.keyboard.hide_focused",

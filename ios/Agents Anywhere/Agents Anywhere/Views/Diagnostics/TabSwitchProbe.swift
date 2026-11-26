@@ -39,6 +39,9 @@ final class TabSwitchProbe: NSObject {
     /// Milliseconds from the window start to the beginning of the worst gap.
     private var worstAtMs: Double = 0
     private var tab = ""
+    /// The kind this window reports under: `shell.tabs.frame` for tab
+    /// switches, `keyboard.frame` for the keyboard's show/hide windows.
+    private var kind = "shell.tabs.frame"
     private var isIdleWindow = false
     private var idleWorkItem: DispatchWorkItem?
 
@@ -48,16 +51,17 @@ final class TabSwitchProbe: NSObject {
 
     /// A selection write the bar made. Called from the binding's setter, so
     /// the window starts at the tap, not at the first SwiftUI update.
-    func begin(tab: String) {
+    func begin(tab: String, kind: String = "shell.tabs.frame") {
         guard ClientDiagnosticsLog.shared.isEnabled else { return }
         idleWorkItem?.cancel()
         idleWorkItem = nil
-        startWindow(tab: tab, idle: false)
+        startWindow(tab: tab, kind: kind, idle: false)
     }
 
-    private func startWindow(tab: String, idle: Bool) {
+    private func startWindow(tab: String, kind: String = "shell.tabs.frame", idle: Bool) {
         link?.invalidate()
         self.tab = tab
+        self.kind = kind
         isIdleWindow = idle
         startedAt = CACurrentMediaTime()
 #if AA_TIMELINE_PROBE
@@ -111,7 +115,7 @@ final class TabSwitchProbe: NSObject {
         link = nil
         let seconds = max(0.001, CACurrentMediaTime() - startedAt)
         ClientDiagnosticsLog.shared.record(
-            kind: "shell.tabs.frame",
+            kind: kind,
             detail: [
                 "tab": isIdleWindow ? "idle" : tab,
                 "frames": String(frames),
@@ -142,7 +146,7 @@ final class TabSwitchProbe: NSObject {
             }
         }
 #endif
-        if !isIdleWindow { scheduleIdleWindow() }
+        if !isIdleWindow, kind == "shell.tabs.frame" { scheduleIdleWindow() }
     }
 
     /// The control sample: a switch window just closed and the reader has not

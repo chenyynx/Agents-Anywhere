@@ -14,9 +14,18 @@ final class ComposerEditorController {
     /// shares the draft with the visible page, so it must not mirror (or
     /// clear) the shared focus flag.
     @ObservationIgnored var allowsFocus = true
+    /// True from the moment UIKit starts ending editing until the finish has
+    /// landed. `resignFirstResponder` returns before that happens, so for a
+    /// short window `isFirstResponder` still reads true while the keyboard is
+    /// already going down. Everything that mirrors or drives the responder
+    /// must treat the editor as unfocused during it.
+    @ObservationIgnored var isEndingEditing = false
 
     func finishEditing() {
         guard let textView else { return }
+        // The resign sets `isEndingEditing` through `textViewShouldEndEditing`
+        // before UIKit starts the teardown, so the mirror below and any
+        // SwiftUI update in the window treat the editor as unfocused.
         textView.resignFirstResponder()
         synchronize()
     }
@@ -125,7 +134,13 @@ final class ComposerEditorController {
         // A hidden page's editor resignation must not clear the visible page's
         // focus flag.
         guard allowsFocus else { return }
-        let focused = textView.isFirstResponder
+        // During the deferred finish `isFirstResponder` still reads true even
+        // though the keyboard is going down. Mirroring that stale value
+        // re-expanded the bar the reader had just swiped away and flushed a
+        // SwiftUI update that re-entered the responder — the b1678 freeze:
+        // updateUIView → resignFirstResponder → UICoreKeyboardTracking →
+        // SwiftUI render → AttributeGraph push_slow (pp 2026-11-27 01:42:45).
+        let focused = isEndingEditing ? false : textView.isFirstResponder
         guard draft.isFocused != focused else { return }
         if ComposerFocusTransition.animates(previous: draft.isFocused, next: focused,
                                             reduceMotion: UIAccessibility.isReduceMotionEnabled) {
@@ -347,10 +362,22 @@ struct NativeComposerEditor: UIViewRepresentable {
             view.selectedRange = NSRange(location: location, length: 0)
         }
         controller.allowsFocus = allowsFocus
-        if allowsFocus, draft.isFocused, !view.isFirstResponder {
-            view.becomeFirstResponder()
-        } else if (!draft.isFocused || !allowsFocus), view.isFirstResponder {
-            view.resignFirstResponder()
+        // Never drive the responder while UIKit is finishing a resignation.
+        // `resignFirstResponder` returns before the finish lands, so an
+        // update in that window still sees `isFirstResponder == true` while
+        // the draft already reads "not focused"; calling resign again from
+        // here re-enters UIKit's keyboard teardown from inside a SwiftUI
+        // update. The b1678 freeze (pp 2026-11-27 01:42:45; the watchdog
+        // killed the process with 0x8BADF00D at 01:44:14) is exactly that:
+        // updateUIView → resignFirstResponder → UICoreKeyboardTracking →
+        // ViewGraphRootValueUpdater.render → AttributeGraph push_slow, stuck
+        // for 89 s. `didEndEditing` clears the flag.
+        if !controller.isEndingEditing {
+            if allowsFocus, draft.isFocused, !view.isFirstResponder {
+                view.becomeFirstResponder()
+            } else if (!draft.isFocused || !allowsFocus), view.isFirstResponder {
+                view.resignFirstResponder()
+            }
         }
     }
 
@@ -374,8 +401,24 @@ struct NativeComposerEditor: UIViewRepresentable {
             textView.invalidateIntrinsicContentSize()
         }
         func textViewDidChangeSelection(_ textView: UITextView) { synchronize() }
-        func textViewDidBeginEditing(_ textView: UITextView) { synchronize() }
-        func textViewDidEndEditing(_ textView: UITextView) { synchronize() }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            // A cancelled interactive dismissal resumes editing without ever
+            // reaching didEndEditing; the flag must not survive it.
+            parent.controller.isEndingEditing = false
+            synchronize()
+        }
+        func textViewShouldEndEditing(_ textView: UITextView) -> Bool {
+            // From here until didEndEditing, `isFirstResponder` can still
+            // read true while the keyboard is already going down.
+            parent.controller.isEndingEditing = true
+            return true
+        }
+        func textViewDidEndEditing(_ textView: UITextView) {
+            // Mirror first, while the finish still counts as in flight, then
+            // release the guard.
+            synchronize()
+            parent.controller.isEndingEditing = false
+        }
         private func synchronize() {
             parent.controller.synchronize()
             parent.onTextChange?(parent.draft.text, parent.draft.isComposing)

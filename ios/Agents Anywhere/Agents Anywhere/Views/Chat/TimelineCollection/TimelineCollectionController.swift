@@ -230,12 +230,12 @@ final class TimelineCollectionController: UIViewController {
     /// Commands that arrive while the drawer owns navigation. The old state
     /// machine refused the native command but kept the intent; resume replays
     /// it exactly once instead of silently dropping a pending/approval return.
-    private var suspendedBottomRequest: (animated: Bool, forced: Bool)?
+    private var suspendedBottomRequest: (animated: Bool, forced: Bool, source: String, at: CFTimeInterval)?
     /// A bottom request that arrived with the reader's finger on the list.
     /// Official `askedForEnd` is ignored while dragging (part-ag §1.7);
     /// replay it when the gesture ends instead of starting a spring that
     /// would fight the finger.
-    private var pendingGestureBottomRequest: (animated: Bool, forced: Bool, generation: Int)?
+    private var pendingGestureBottomRequest: (animated: Bool, forced: Bool, generation: Int, source: String, at: CFTimeInterval)?
     private var suspendedOpeningRequest = false
     private var lastContainerHeight: CGFloat = 0
     /// The old path passed `nil` to `withAnimation` under Reduce Motion, so a
@@ -3185,7 +3185,7 @@ final class TimelineCollectionController: UIViewController {
     /// must never move the page, while a `forced=1` one with no tap in sight
     /// is the device report's suspect (pp 2026-11-26: the page flew to the
     /// bottom while the reader had parked 185 pt above it, runtime idle).
-    private func noteBottomRequest(animated: Bool, forced: Bool) {
+    private func noteBottomRequest(animated: Bool, forced: Bool, source: String) {
         let now = CACurrentMediaTime()
         guard now - lastBottomRequestLogAt >= 1 else { return }
         lastBottomRequestLogAt = now
@@ -3200,16 +3200,18 @@ final class TimelineCollectionController: UIViewController {
                 "decelerating": phase.phase == .decelerating ? "1" : "0",
                 "offsetY": String(format: "%.1f", collectionView?.contentOffset.y ?? -1),
                 "atBottom": viewport.measuredAtBottom ? "1" : "0",
+                "source": source,
             ],
             dedupe: false)
     }
 
     /// Forced commands (pill / loadLatest / approval dismissed / window
     /// re-assert) arm unconditionally; follow requests use the gated arm.
-    func requestBottom(animated: Bool, forced: Bool = true) {
-        noteBottomRequest(animated: animated, forced: forced)
+    func requestBottom(animated: Bool, forced: Bool = true, source: String = "other") {
+        noteBottomRequest(animated: animated, forced: forced, source: source)
         if navigationSuspended {
-            suspendedBottomRequest = (animated, forced || (suspendedBottomRequest?.forced ?? false))
+            suspendedBottomRequest = (animated, forced || (suspendedBottomRequest?.forced ?? false),
+                                      source, CACurrentMediaTime())
             return
         }
         guard collectionView != nil else { return }
@@ -3225,7 +3227,8 @@ final class TimelineCollectionController: UIViewController {
             pendingGestureBottomRequest = (
                 animated,
                 forced || (pendingGestureBottomRequest?.forced ?? false),
-                pagingPolicy.readerIntentGeneration)
+                pagingPolicy.readerIntentGeneration,
+                source, CACurrentMediaTime())
             return
         }
         if forced { armWindowReplacementReturn() }
@@ -3645,7 +3648,14 @@ final class TimelineCollectionController: UIViewController {
                 beginOpeningBottom()
             } else if let request = suspendedBottomRequest {
                 suspendedBottomRequest = nil
-                requestBottom(animated: request.animated, forced: request.forced)
+                // Transition-parked requests expire: a send or latest-page
+                // return that waited out a switch must not fire seconds
+                // later and yank the page (b1675 log: three forced returns
+                // with no tap, 6–18 s apart).
+                if CACurrentMediaTime() - request.at <= 0.75 {
+                    requestBottom(animated: request.animated, forced: request.forced,
+                                  source: request.source + "/replay")
+                }
             }
         }
         // Suspension hides the return control without a viewport change;

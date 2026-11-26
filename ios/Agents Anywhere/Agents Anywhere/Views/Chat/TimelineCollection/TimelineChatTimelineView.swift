@@ -234,7 +234,7 @@ struct TimelineChatTimelineView: View {
                         sessionID: model.session.id,
                         detail: ["pane": paneRole.rawValue])
                     bridge.controller?.allowLatestAfterHistoryGesture()
-                    bridge.controller?.requestBottom(animated: true, forced: true)
+                    bridge.controller?.requestBottom(animated: true, forced: true, source: "pill")
                 }
                 .padding(.bottom, safeAreaInsets.bottom + 8)
             }
@@ -307,7 +307,7 @@ struct TimelineChatTimelineView: View {
             // follow exists at all.
             .onChange(of: model.responseRevision) { _, _ in
                 if model.isOpeningReady {
-                    bridge.controller?.requestBottom(animated: true, forced: false)
+                    bridge.controller?.requestBottom(animated: true, forced: false, source: "response")
                 }
             }
             // A send made while the window does not reach the newest edge
@@ -339,7 +339,7 @@ struct TimelineChatTimelineView: View {
                     // the pending row's insert already lands through the
                     // content change, and a second spring on top of the
                     // composer collapse is exactly what this path avoids.
-                    controller.requestBottom(animated: true, forced: true)
+                    controller.requestBottom(animated: true, forced: true, source: "send")
                 }
             }
             // A queued message is the same intent while a turn is running.
@@ -350,7 +350,7 @@ struct TimelineChatTimelineView: View {
                 guard !added.isEmpty, model.isOpeningReady, !hasInteractions,
                       let controller = bridge.controller, controller.isViewLoaded,
                       !controller.viewport.measuredAtBottom else { return }
-                controller.requestBottom(animated: true, forced: true)
+                controller.requestBottom(animated: true, forced: true, source: "queue")
             }
             .onChange(of: model.timeline.windowRevision) { _, _ in
                 bridge.reassertOpening()
@@ -938,7 +938,7 @@ final class TimelineChatBridge: ObservableObject {
             // into history while it was in flight. A manual latest request
             // owns the return as before.
             if !auto || self.controller?.viewport.measuredAtBottom == true {
-                self.controller?.requestBottom(animated: true, forced: true)
+                self.controller?.requestBottom(animated: true, forced: true, source: "latest")
             }
         }
     }

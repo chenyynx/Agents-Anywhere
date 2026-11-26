@@ -148,7 +148,7 @@ struct DeviceSessionList: View {
         let sessions = model.filteredSessions
         DeviceSection(String(localized: "Sessions")) {
             // The official header carries one control only ("Alle ⌄").
-            filterMenu
+            filterMenu(isEmpty: sessions.isEmpty)
                 .padding(.trailing, 6)
         } content: {
             // Lazy: a plain VStack built every session card on every body
@@ -188,7 +188,7 @@ struct DeviceSessionList: View {
     /// The official single "Alle ⌄" control: status filter and project scope
     /// live in one menu so the section header stays one line. The chip row the
     /// previous design carried is gone (pp 2026-11-23).
-    private var filterMenu: some View {
+    private func filterMenu(isEmpty: Bool) -> some View {
         Menu {
             Picker(String(localized: "Sessions"),
                    selection: Binding(get: { model.sessionFilter }, set: model.setSessionFilter)) {

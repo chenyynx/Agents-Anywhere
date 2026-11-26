@@ -160,8 +160,7 @@ struct SessionChatView: View, Equatable {
                 jumpRequest: outlineJump,
                 safeAreaInsets: timelineSafeAreaInsets(proxy),
                 renderMode: renderMode,
-                paneRole: paneRole,
-                isPageActive: isActive)
+                paneRole: paneRole)
                 // The command card floats over the page, not inside the
                 // composer's overlay: an overlay drawn outside its base frame
                 // renders but cannot be tapped. The timeline fills the screen,

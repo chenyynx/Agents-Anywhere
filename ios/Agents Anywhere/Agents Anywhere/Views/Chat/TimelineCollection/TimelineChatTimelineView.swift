@@ -15,12 +15,6 @@ struct TimelineChatTimelineView: View {
     /// The tab page this bridge belongs to; its reader position is stored per
     /// page so two tabs showing one session restore independently.
     private let paneRole: ChatPaneRole
-    /// Whether this page is the selected tab. A hidden page keeps its stream
-    /// data (the model stays live) but parks every apply: streaming flushes
-    /// otherwise re-group and re-lay the whole off-screen window on the main
-    /// thread — the frames the Devices page dropped while scrolling during a
-    /// stream (pp 2026-11-26). The parked content lands when the tab returns.
-    private let isPageActive: Bool
     /// The renderer this bridge built, in the model's raw-value terms.
     private let renderModeName: String
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
@@ -58,13 +52,6 @@ struct TimelineChatTimelineView: View {
     /// showing the session; a second pane (or a rebuilt page) still has to
     /// land somewhere instead of leaving the new collection at offset zero.
     @State private var didPlaceOpening = false
-    /// While the page is hidden, a catch-up pulse lets the parked content land
-    /// about once every 1.5 s instead of accumulating until the tab returns.
-    /// Parking everything froze the display for ~1.1 s when the reader came
-    /// back after 27–94 s away (b1673 log: one grouping of 1485 rows plus a
-    /// whole-window rebuild); a bounded catch-up keeps the return cheap.
-    @State private var inactiveCatchUp = false
-    @State private var catchUpTask: Task<Void, Never>?
 
     init(model: SessionChatModel,
          onAttachment: @escaping (V2AttachmentContent, UIImage?) -> Void,
@@ -74,13 +61,11 @@ struct TimelineChatTimelineView: View {
          jumpRequest: ConversationOutlineJumpRequest,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
          renderMode: TimelineRenderMode = .merged,
-         paneRole: ChatPaneRole = .chat,
-         isPageActive: Bool = true) {
+         paneRole: ChatPaneRole = .chat) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         self.renderModeName = renderMode.rawValue
         self.paneRole = paneRole
-        self.isPageActive = isPageActive
         _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onOpenLink: onOpenLink,
@@ -93,7 +78,6 @@ struct TimelineChatTimelineView: View {
     }
     private var navigationIsSuspended: Bool {
         sidebarIsTransitioning || sidebarObscuresDetail || shellTabTransitioning
-            || (!isPageActive && !inactiveCatchUp)
     }
     /// The official turn phase, from the same live signals the orb reads.
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a
@@ -262,26 +246,6 @@ struct TimelineChatTimelineView: View {
                     bridge.beginOpening()
                 }
             }
-            // A hidden page lands its parked content on a slow pulse; the
-            // pulse is a normal resume, so the apply goes through the same
-            // path the tab return uses.
-            .onChange(of: isPageActive, initial: true) { _, active in
-                catchUpTask?.cancel()
-                guard !active else { inactiveCatchUp = false; return }
-                catchUpTask = Task { @MainActor in
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        guard !Task.isCancelled else { return }
-                        inactiveCatchUp = true
-                        // The resume applies synchronously on the main actor;
-                        // this window only has to cover the state hop.
-                        try? await Task.sleep(for: .milliseconds(60))
-                        guard !Task.isCancelled else { return }
-                        inactiveCatchUp = false
-                    }
-                }
-            }
-            .onDisappear { catchUpTask?.cancel() }
             .onChange(of: jumpRequest.token) { _, _ in
                 guard let rowID = jumpRequest.rowID else { return }
                 Task { await bridge.jump(toRowID: rowID) }

@@ -14,17 +14,13 @@ struct SessionChatView: View, Equatable {
     /// The tab page this page is mounted in; reader positions are kept per
     /// page so both tabs can show the same session.
     let paneRole: ChatPaneRole
-    /// False when this page's tab is not the selected one. The page stays
-    /// mounted (scroll/state), but its composer must not mirror the shared
-    /// draft's focus — the visible page owns it.
-    let isActive: Bool
     /// A per view-instance token. `session.page.appear`/`disappear` carry it:
     /// the same token across a disappear/appear pair proves the tab switch kept
     /// the page mounted, while a new token proves the page was rebuilt.
-    /// `isActive` cannot tell those apart — the bar's commit can land after the
-    /// hidden page's onDisappear (b1660 log: 24 switches, every disappearing
-    /// page still read active=1 at onDisappear and then received active=0,
-    /// which is only possible while the page is alive).
+    /// The selection cannot tell those apart — the bar's commit can land after
+    /// the hidden page's onDisappear (b1660 log: 24 switches, every
+    /// disappearing page still read active=1 at onDisappear), which is only
+    /// possible while the page is alive.
     @State private var pageMountToken = SessionChatView.newMountToken()
     let onMenu: () -> Void
     /// A pushed session leaves the leading slot to the system back button (and
@@ -416,7 +412,7 @@ struct SessionChatView: View, Equatable {
                      "model": String(describing: ObjectIdentifier(model)),
                      "others": otherNames,
                      "mount": pageMountToken,
-                     "active": isActive ? "1" : "0"],
+                     "active": "1"],
             dedupe: false)
     }
 
@@ -589,7 +585,6 @@ struct SessionChatView: View, Equatable {
     init(model: SessionChatModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
          paneRole: ChatPaneRole = .chat,
-         isActive: Bool = true,
          onMenu: @escaping () -> Void,
          showsMenuButton: Bool = true,
          onTogglePinned: @escaping (Bool) -> Void) {
@@ -600,7 +595,6 @@ struct SessionChatView: View, Equatable {
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
         self.paneRole = paneRole
-        self.isActive = isActive
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
@@ -642,7 +636,7 @@ struct SessionChatView: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sessionIdentity === rhs.sessionIdentity && lhs.deviceName == rhs.deviceName
             && lhs.fallbackTitle == rhs.fallbackTitle && lhs.fallbackRuntimeName == rhs.fallbackRuntimeName
-            && lhs.paneRole == rhs.paneRole && lhs.isActive == rhs.isActive
+            && lhs.paneRole == rhs.paneRole
     }
     var body: some View {
         GeometryReader { geometry in
@@ -809,20 +803,6 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
-        .environment(\.composerFocusEnabled, isActive)
-        .onChange(of: isActive) { _, active in
-            ClientDiagnosticsLog.shared.record(
-                kind: "session.page.active",
-                sessionID: session.id,
-                detail: ["pane": paneRole.rawValue, "active": active ? "1" : "0"],
-                dedupe: false)
-            // The page keeps its view and scroll while hidden; only focus is
-            // page-owned. Leaving the tab drops the keyboard and clears the
-            // shared flag so returning does not pop it back up.
-            guard !active else { return }
-            composerEditor.finishEditing()
-            session.composer.isFocused = false
-        }
         .onAppear { recordPageAppear() }
         .onChange(of: session.composer.isFocused) { _, focused in
             recordComposerFocus(focused)
@@ -832,16 +812,23 @@ struct SessionChatView: View, Equatable {
             // `mount` is the rebuild verdict: the next appear for this pane
             // carries the same token when the tab switch merely hid the page
             // (SwiftUI keeps tab content mounted), and a new token when the
-            // page itself was torn down. `active` is just the page's last
-            // isActive — the shell's commit can land after this call.
+            // page itself was torn down.
             ClientDiagnosticsLog.shared.record(
                 kind: "session.page.disappear",
                 sessionID: session.id,
                 detail: ["pane": paneRole.rawValue,
-                         "active": isActive ? "1" : "0",
+                         "active": "0",
                          "mount": pageMountToken,
-                         "reason": isActive ? "active" : "inactive"],
+                         "reason": "inactive"],
                 dedupe: false)
+            // The page keeps its view and scroll while hidden; only focus is
+            // page-owned. Leaving the tab drops the keyboard and clears the
+            // shared flag so returning does not pop it back up. This used to
+            // hang off the isActive input; the page no longer takes that input
+            // (a tab switch must not re-evaluate this body — the official page
+            // never does), so the visibility transition itself carries it.
+            composerEditor.finishEditing()
+            session.composer.isFocused = false
             if previewURL == nil { cleanPreview() }
             // A deferred-item read belongs to the page visit: leaving the page
             // abandons an in-flight read instead of running it out behind the

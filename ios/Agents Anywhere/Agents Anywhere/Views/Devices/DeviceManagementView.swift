@@ -66,22 +66,27 @@ struct DeviceManagementView: View {
     private var fabBottomPadding: CGFloat {
         shellTabBarActive ? ShellTabBarMetrics.composerGap : 2
     }
-    private var workspaceChoices: [WorkspaceDirectoryChoice] {
+    /// One sort per body evaluation: `deviceProjects` is read by the
+    /// workspace choices, the project list and the session list, and each
+    /// read used to re-filter and re-sort with `localizedStandardCompare`
+    /// (the b1664 probe stack that owned a tab-switch stall).
+    private func workspaceChoices(_ projects: [V2Project]) -> [WorkspaceDirectoryChoice] {
         WorkspaceDirectoryChoice.recent(connectorID: connector.id, deviceOS: connector.deviceOs,
-            home: nil, projects: deviceProjects, sessions: model.sessions)
+            home: nil, projects: projects, sessions: model.sessions)
     }
     var body: some View {
+        let sortedProjects = deviceProjects
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     deviceSection
                     agentsSection
                     if showsSessionList {
-                        DeviceWorkspaceList(workspaces: workspaceChoices, canReadFiles: canReadFiles,
+                        DeviceWorkspaceList(workspaces: workspaceChoices(sortedProjects), canReadFiles: canReadFiles,
                             onBrowse: { choosesDirectory = true }, onOpen: openWorkspace,
                             onNewSession: { onNewSession($0.path) })
                     } else {
-                        DeviceProjectList(projects: deviceProjects, canManage: canManage, canReadFiles: canReadFiles,
+                        DeviceProjectList(projects: sortedProjects, canManage: canManage, canReadFiles: canReadFiles,
                             onCreate: { createsProject = true },
                             onOpen: { project in
                                 openProjectSessions(project)
@@ -93,7 +98,7 @@ struct DeviceManagementView: View {
                             onArchive: { pendingProject = $0; projectActionIsDeletion = false },
                             onDelete: { pendingProject = $0; projectActionIsDeletion = true })
                     }
-                    DeviceSessionList(model: model, projects: deviceProjects, deviceName: connector.name,
+                    DeviceSessionList(model: model, projects: sortedProjects, deviceName: connector.name,
                         showsProjectNames: !showsSessionList, canManage: canManage,
                         onOpen: selectSession,
                         onArchive: { performArchive([$0.id], archived: !$0.archived) },

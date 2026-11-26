@@ -141,15 +141,24 @@ struct DeviceSessionList: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var restores: Bool { model.sessionFilter == .archived }
-    private var isEmpty: Bool { model.filteredSessions.isEmpty }
 
     var body: some View {
+        // One filter pass per body: `filteredSessions` used to be read by
+        // `isEmpty` and by the ForEach (twice).
+        let sessions = model.filteredSessions
         DeviceSection(String(localized: "Sessions")) {
             // The official header carries one control only ("Alle ⌄").
             filterMenu
                 .padding(.trailing, 6)
         } content: {
-            VStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
+            // Lazy: a plain VStack built every session card on every body
+            // evaluation, and the Devices page re-evaluates whenever the
+            // shell's panes change — so switching to Wiki rebuilt hundreds of
+            // off-screen cards (ISO date parsing per card, status and project
+            // text) on the main thread: the 200–500 ms tab-switch stall the
+            // b1664 probe stacks point at (DeviceSessionCard.body /
+            // DeviceSessionTime.compact / DeviceManagementView.deviceProjects).
+            LazyVStack(alignment: .leading, spacing: DevicePageStyle.cardGap) {
                 if model.isSelectingSessions {
                     Button(String(localized: "Select up to 200 sessions"), action: model.toggleSelectAll)
                         .font(SettingsStyle.text(15))
@@ -159,10 +168,10 @@ struct DeviceSessionList: View {
                         .padding(.horizontal, 2)
                         .disabled(!canManage)
                 }
-                if isEmpty {
+                if sessions.isEmpty {
                     DeviceEmptyCard(text: String(localized: "No sessions here"))
                 } else {
-                    ForEach(model.filteredSessions) { session in
+                    ForEach(sessions) { session in
                         DeviceSessionCard(session: session, deviceName: deviceName,
                             projectName: scopeSubtitle(session),
                             isSelecting: model.isSelectingSessions,

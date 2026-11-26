@@ -240,6 +240,14 @@ struct SessionChatView: View, Equatable {
         if outlineKeyboardInsetFreeze, let frozen = keyboardFreeBottomInset {
             insets.bottom = frozen
         }
+        // A keyboard transition can deliver a transient bottom of 0 (b1673
+        // probe: 68 → 0 → 68 inside one dismissal) and the list followed it
+        // down and back. The page always rides above the composer and the
+        // home indicator, so 0 is never a resting value — hold the last
+        // keyboard-free one through the dip.
+        if insets.bottom <= 0.5, let last = keyboardFreeBottomInset, last > 0.5 {
+            insets.bottom = last
+        }
         return insets
     }
 
@@ -742,8 +750,14 @@ struct SessionChatView: View, Equatable {
             recordKeyboardNotification("willShow", note: note)
             windowKeyboardVisible = true
             keyboardTop = Self.keyboardTop(in: note)
-            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
-                keyboardOnScreen = true
+            // A 0-duration show is a transient UIKit notification inside a
+            // dismissal (the b1673 probe caught three per dismissal); toggling
+            // the composer's tab-bar gap on each made the list inset flap
+            // 68 ↔ 60 several times in 150 ms.
+            if Self.keyboardAnimationDuration(note) > 0 {
+                withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                    keyboardOnScreen = true
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(
@@ -758,8 +772,10 @@ struct SessionChatView: View, Equatable {
                     detail: ["pane": paneRole.rawValue],
                     dedupe: false)
             }
-            withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
-                keyboardOnScreen = false
+            if Self.keyboardAnimationDuration(note) > 0 {
+                withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
+                    keyboardOnScreen = false
+                }
             }
         }
         // The keyboard can change frame without a fresh show (language

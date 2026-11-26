@@ -23,9 +23,6 @@ struct DiagnosticsStatusDot: View {
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = true
-    /// Escape hatch for the shell's own tab bar (official `ClaudeMinimalTabBar`
-    /// design). Off = the system bar comes back, no rebuild needed.
-    @AppStorage(ShellTabBarMetrics.drawnBarDefaultsKey) private var drawnTabBar = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var days: [DiagnosticsDay] = []
     @State private var didLoad = false
@@ -40,16 +37,6 @@ struct DiagnosticsLogSettingsView: View {
                 SettingsToggleRow(icon: "anthropicon.research",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
-            }
-
-            // The shell draws the bottom tab bar itself (the official app's
-            // design); the system bar's selection transition is the 200–400 ms
-            // stall from the b1661 log. This switch is the way back if the
-            // drawn bar misbehaves on a device.
-            SettingsSection(footer: String(localized: "The tab bar is drawn by the app. Turn this off to fall back to the system tab bar.")) {
-                SettingsToggleRow(icon: "anthropicon.laptop.tab",
-                                  title: String(localized: "Drawn tab bar"),
-                                  isOn: $drawnTabBar)
             }
 
             SettingsSection(footer: String(localized: "P0 probe: the keep-alive ladder runs continued processing → silent audio → coarse location. Start it, send the app to the background, then read the keepalive.* lines in today's log. Test only.")) {

@@ -60,6 +60,16 @@ final class TabSwitchProbe: NSObject {
         self.tab = tab
         isIdleWindow = idle
         startedAt = CACurrentMediaTime()
+#if AA_TIMELINE_PROBE
+        // Probe builds sample the main thread's stack through the same
+        // window. b1663 proved the stall starts at the tap (worstAt ≈ 0)
+        // while every piece we timed stayed under its threshold, so only a
+        // stack can name the code that owns the 200–500 ms.
+        if !idle {
+            MainThreadStackSampler.shared.clear()
+            MainThreadStackSampler.shared.noteActivity(scrolling: true)
+        }
+#endif
         // Measure from the window start: a main thread that blocks inside the
         // tap handler must show up as the first gap, not be skipped.
         lastTick = startedAt
@@ -85,6 +95,13 @@ final class TabSwitchProbe: NSObject {
             worstAtMs = (lastTick - startedAt) * 1000
         }
         lastTick = now
+#if AA_TIMELINE_PROBE
+        // Keep the sampler recording for the whole window: it pauses 0.25 s
+        // after the last activity, and the stall can start late.
+        if !isIdleWindow {
+            MainThreadStackSampler.shared.noteActivity(scrolling: true)
+        }
+#endif
         if now - startedAt >= Self.window { finish() }
     }
 
@@ -104,6 +121,27 @@ final class TabSwitchProbe: NSObject {
                 "ms": String(format: "%.0f", seconds * 1000),
             ],
             dedupe: false)
+#if AA_TIMELINE_PROBE
+        if !isIdleWindow {
+            if worstMs > 80 {
+                // `reportLines` closes the session and waits briefly for the
+                // sampling thread; the decoded report names the stacks that
+                // owned the stall (our frames keep their symbols because a
+                // probe build disables stripping).
+                let report = MainThreadStackSampler.shared
+                    .reportLines(hitches: [])
+                    .joined(separator: "\n")
+                ClientDiagnosticsLog.shared.record(
+                    kind: "tab.stack",
+                    detail: ["tab": tab,
+                             "worstMs": String(format: "%.0f", worstMs),
+                             "report": report],
+                    dedupe: false)
+            } else {
+                MainThreadStackSampler.shared.clear()
+            }
+        }
+#endif
         if !isIdleWindow { scheduleIdleWindow() }
     }
 

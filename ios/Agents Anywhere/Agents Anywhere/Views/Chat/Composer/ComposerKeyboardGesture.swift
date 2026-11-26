@@ -43,7 +43,27 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
             // is the documented fallback.
             let inFlight = context.converter.localTranslation ?? recognizer.translation(in: recognizer.view)
             context.coordinator.record(translationY: inFlight.y, time: ProcessInfo.processInfo.systemUptime)
+            if recognizer.state == .began {
+                context.coordinator.resignedDuringDrag = false
+            }
+            // The release-time decision left a deliberate swipe feeling slow:
+            // the keyboard waited out the whole drag and then ran the system
+            // hide animation, while the tap path (immediate resign) felt
+            // instant. Once the drag itself claims the dismissal, resign now.
+            if recognizer.state == .changed,
+               !context.coordinator.resignedDuringDrag,
+               ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+                   dx: inFlight.x, dy: inFlight.y,
+                   keyboardIsVisible: draft.isFocused,
+                   isSelecting: context.coordinator.isTextSelectionActive) {
+                context.coordinator.resignedDuringDrag = true
+                editor.finishEditing()
+                draft.isFocused = false
+            }
         case .ended, .cancelled:
+            // An early resign already carried this drag; the release has
+            // nothing left to decide.
+            if context.coordinator.resignedDuringDrag { break }
             let translation = context.converter.localTranslation ?? recognizer.translation(in: recognizer.view)
             // The converter's release velocity can be missing (a fast flick
             // barely reaches it): a non-zero converter value always wins,
@@ -104,6 +124,10 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
         /// In-flight translation samples for the release-velocity estimate,
         /// most recent last; only the last pair is ever read.
         private(set) var samples: [ComposerGestureKinematics.Sample] = []
+
+        /// The drag already resigned the keyboard mid-flight (early claim);
+        /// the release must not judge it a second time.
+        var resignedDuringDrag = false
 
         /// Record one in-flight translation for the release estimate: the
         /// converter can hand the release a missing velocity, and a fast

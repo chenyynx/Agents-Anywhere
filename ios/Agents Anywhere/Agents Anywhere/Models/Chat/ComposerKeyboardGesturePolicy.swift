@@ -62,6 +62,21 @@ nonisolated struct ComposerKeyboardGesturePolicy {
             && abs(dy) >= ComposerKeyboardGestureThresholds.claimDistance
     }
 
+    /// Early claim, read on every `.changed` sample: the release-time decision
+    /// made a deliberate swipe feel delayed — the keyboard waited for the
+    /// whole drag *and* then ran the system hide animation, while the tap
+    /// path (which resigns immediately) always felt instant. Once the drag
+    /// itself has claimed a downward dismissal, the keyboard may leave while
+    /// the finger is still moving. Flicks that never reach the distance still
+    /// decide on release through the velocity rule above.
+    static func shouldResignDuringDrag(dx: CGFloat, dy: CGFloat,
+                                       keyboardIsVisible: Bool,
+                                       isSelecting: Bool) -> Bool {
+        guard keyboardIsVisible, !isSelecting else { return false }
+        guard claims(dx: dx, dy: dy) else { return false }
+        return dy >= ComposerKeyboardGestureThresholds.dismissDisplacement
+    }
+
     /// The one-shot, trigger-style decision. Each rule is directional by the
     /// sign of its own sample, so an upward release never dismisses and a
     /// downward release never focuses.

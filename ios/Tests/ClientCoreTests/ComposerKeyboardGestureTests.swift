@@ -48,6 +48,30 @@ import Testing
         #expect(!ComposerKeyboardGesturePolicy.claims(dx: -10, dy: -10))
     }
 
+    // MARK: - Early resign while the finger is still down
+
+    @Test func earlyResignWaitsForTheSameDistanceAndOwnership() {
+        // A deliberate downward drag resigns at the same 60pt distance the
+        // release rule uses, but while the finger is still moving, so the
+        // keyboard leaves with the swipe instead of after it.
+        #expect(ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 0, dy: 60, keyboardIsVisible: true, isSelecting: false))
+        #expect(!ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 0, dy: 59.9, keyboardIsVisible: true, isSelecting: false))
+        // Horizontal dominance never resigns, however long the travel.
+        #expect(!ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 80, dy: 60, keyboardIsVisible: true, isSelecting: false))
+        // A selection drag owns the touch.
+        #expect(!ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 0, dy: 80, keyboardIsVisible: true, isSelecting: true))
+        // Nothing to resign while the keyboard is down.
+        #expect(!ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 0, dy: 80, keyboardIsVisible: false, isSelecting: false))
+        // Upward travel is never a dismiss.
+        #expect(!ComposerKeyboardGesturePolicy.shouldResignDuringDrag(
+            dx: 0, dy: -80, keyboardIsVisible: true, isSelecting: false))
+    }
+
     // MARK: - Release claim: direction and distance over the whole drag
 
     @Test func diagonalTravelNeedsVerticalDominanceOnRelease() {

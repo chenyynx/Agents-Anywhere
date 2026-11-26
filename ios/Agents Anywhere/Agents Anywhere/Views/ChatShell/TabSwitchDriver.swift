@@ -14,7 +14,24 @@ import UIKit
 /// by driving the controller itself.
 @MainActor
 final class TabSwitchDriver {
+    /// One kept picture per tab: the page's snapshot taken when the reader
+    /// left it (the official's `TabPageMover.kept: [Int: PagePicture]`).
+    private struct Picture {
+        let view: UIView
+        let at: CFTimeInterval
+    }
+
+    private static let pictureFreshSeconds: TimeInterval = 20
+
     private weak var host: UIView?
+    private var pictures: [Int: Picture] = [:]
+    private var cover: UIView?
+    private var coverSource = "none"
+    private var coverBegan: CFTimeInterval = 0
+    private var revealLink: CADisplayLink?
+    private var revealTicker: DisplayTicker?
+    private var revealTicks = 0
+    private var revealFallback: DispatchWorkItem?
 
     func attach(host: UIView) {
         self.host = host
@@ -53,9 +70,15 @@ final class TabSwitchDriver {
                        tabs: tabs, root: root, count: items.count)
                 return false
             }
+            // Hold the destination's kept picture (or the outgoing page, as
+            // a fallback) while the switch's first frame is being produced;
+            // the b1691 logs show that first frame can take 200–400 ms with
+            // the whole screen (tab bar included) frozen.
+            installCover(tabs: tabs, to: index)
             UIView.performWithoutAnimation {
                 tabs.selectedTab = items[index]
             }
+            scheduleReveal()
             report(reason: "ok", tab: tab, started: started,
                    tabs: tabs, root: root, count: items.count)
             return true
@@ -90,6 +113,122 @@ final class TabSwitchDriver {
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.switch",
             detail: detail,
+            dedupe: false)
+    }
+
+    // MARK: - Kept pictures and cover
+
+    private func pageView(of tabs: UITabBarController) -> UIView? {
+        tabs.selectedViewController?.view ?? tabs.selectedTab?.viewController?.view
+    }
+
+    private func installCover(tabs: UITabBarController, to index: Int) {
+        cover?.removeFromSuperview()
+        cover = nil
+        revealLink?.invalidate()
+        revealLink = nil
+        revealTicker = nil
+        revealFallback?.cancel()
+        revealFallback = nil
+
+        let now = CACurrentMediaTime()
+        let from = tabs.tabs.firstIndex { $0 === tabs.selectedTab }
+        // Keep the picture of the page being left: the next switch back shows
+        // it at once (the official's `kept: [Int: PagePicture]`).
+        if let from, let view = pageView(of: tabs),
+           let snap = view.snapshotView(afterScreenUpdates: false) {
+            pictures[from] = Picture(view: snap, at: now)
+        }
+
+        var content: UIView?
+        var source = "none"
+        if index != from, let kept = pictures.removeValue(forKey: index),
+           now - kept.at <= Self.pictureFreshSeconds {
+            content = kept.view
+            source = "kept"
+        } else if let view = pageView(of: tabs),
+                  let snap = view.snapshotView(afterScreenUpdates: false) {
+            content = snap
+            source = "outgoing"
+        }
+
+        let cover = UIView(frame: tabs.view.bounds)
+        cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cover.isUserInteractionEnabled = false
+        cover.backgroundColor = pageView(of: tabs)?.backgroundColor ?? .systemBackground
+        if let content {
+            content.frame = cover.bounds
+            content.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            cover.addSubview(content)
+        }
+        // Never hide the tab bar: insert below its top-level container, or
+        // clip to the area above it when the bar is not a direct subview.
+        let bar = tabs.tabBar
+        var anchor: UIView? = bar
+        while let superview = anchor?.superview, superview !== tabs.view {
+            anchor = superview
+        }
+        let barBelow = anchor?.superview === tabs.view && !bar.isHidden
+        if barBelow, let anchor {
+            cover.frame = tabs.view.bounds
+            tabs.view.insertSubview(cover, belowSubview: anchor)
+        } else {
+            let barFrame = bar.convert(bar.bounds, to: tabs.view)
+            let height = max(0, min(tabs.view.bounds.height, barFrame.minY))
+            cover.frame = CGRect(x: 0, y: 0,
+                                 width: tabs.view.bounds.width, height: height)
+            tabs.view.addSubview(cover)
+        }
+        self.cover = cover
+        coverSource = source
+        coverBegan = now
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.cover",
+            detail: ["phase": "begin",
+                     "source": source,
+                     "picture": content == nil ? "0" : "1",
+                     "barBelow": barBelow ? "1" : "0"],
+            dedupe: false)
+    }
+
+    /// Reveal on the second display tick after the switch: the ticks stop
+    /// while frames are stalled, so this is "the destination's first frame
+    /// has landed" (the official's `isPageInPlace`), not a fixed timer.
+    private func scheduleReveal() {
+        guard cover != nil else { return }
+        revealTicks = 0
+        let ticker = DisplayTicker()
+        ticker.onTick = { [weak self] in self?.revealTick() }
+        let link = CADisplayLink(target: ticker, selector: #selector(DisplayTicker.tick))
+        link.add(to: .main, forMode: .common)
+        revealLink = link
+        revealTicker = ticker
+        let fallback = DispatchWorkItem { [weak self] in self?.reveal(why: "timeout") }
+        revealFallback = fallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: fallback)
+    }
+
+    private func revealTick() {
+        revealTicks += 1
+        if revealTicks >= 2 { reveal(why: "frame") }
+    }
+
+    private func reveal(why: String) {
+        revealLink?.invalidate()
+        revealLink = nil
+        revealTicker = nil
+        revealFallback?.cancel()
+        revealFallback = nil
+        guard let cover else { return }
+        cover.removeFromSuperview()
+        self.cover = nil
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.cover",
+            detail: ["phase": "reveal",
+                     "source": coverSource,
+                     "why": why,
+                     "ticks": String(revealTicks),
+                     "ms": String(Int((CACurrentMediaTime() - coverBegan) * 1000))],
             dedupe: false)
     }
 
@@ -141,4 +280,10 @@ struct TabSwitchDriverHost: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         driver.attach(host: view)
     }
+}
+
+/// CADisplayLink target helper (the link needs an ObjC selector target).
+private final class DisplayTicker: NSObject {
+    var onTick: (() -> Void)?
+    @objc func tick() { onTick?() }
 }

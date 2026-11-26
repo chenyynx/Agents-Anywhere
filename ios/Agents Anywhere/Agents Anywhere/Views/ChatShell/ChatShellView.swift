@@ -48,7 +48,7 @@ struct ChatShellView: View {
             dedupe: false)
     }
 
-    private func shellBody() -> some View {
+    @ViewBuilder private func shellBody() -> some View {
         // NavigationSplitView adapts to a single stack in a compact system size
         // class. Use that same system trait for the drawer fallback, never a
         // device model, screen measurement or custom window-width breakpoint.

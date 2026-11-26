@@ -2,17 +2,19 @@ import Foundation
 import QuartzCore
 import UIKit
 
-/// Frame cadence around one bottom-tab switch.
+/// Frame cadence around one bottom-tab switch, plus an idle control sample.
 ///
 /// "切 tab 卡" has to be a number before it can be fixed. The switch already
 /// logs when the bar wrote the selection and when the pages committed it, but
 /// neither line can show whether the transition itself dropped frames: a
 /// display link samples the main thread across the whole window and reports
-/// the longest gap at the end. A clean cadence with a late `shell.tabs.active`
-/// points at the activation policy; a long `worstMs` points at main-thread
-/// work inside the transition.
+/// the longest gap at the end. `worstAt` says *when* that gap started (from
+/// the tap), which separates a stall inside the tap/transition (near 0 ms)
+/// from one at the transition's tail (200–400 ms); the idle window samples a
+/// quiet stretch with no switch so a stall that also happens when nobody is
+/// switching is not misread as the tab bar's fault.
 ///
-/// One line per switch (`shell.tabs.frame`), written after the window closes.
+/// One line per switch and one per idle window (`shell.tabs.frame`).
 @MainActor
 final class TabSwitchProbe: NSObject {
     static let shared = TabSwitchProbe()
@@ -23,6 +25,10 @@ final class TabSwitchProbe: NSObject {
     /// Two 60 Hz frames: one dropped frame at 120 Hz reads as ~16.7 ms and
     /// ordinary scheduling noise must not count.
     private static let hitchMs: Double = 33.4
+    /// Quiet time after a switch window before the idle control sample runs.
+    /// Shorter windows overlap the transition's own tail; longer ones rarely
+    /// fit between the reader's taps.
+    private static let idleDelay: TimeInterval = 2.0
 
     private var link: CADisplayLink?
     private var startedAt: CFTimeInterval = 0
@@ -30,7 +36,11 @@ final class TabSwitchProbe: NSObject {
     private var frames = 0
     private var hitches = 0
     private var worstMs: Double = 0
+    /// Milliseconds from the window start to the beginning of the worst gap.
+    private var worstAtMs: Double = 0
     private var tab = ""
+    private var isIdleWindow = false
+    private var idleWorkItem: DispatchWorkItem?
 
     // The display link targets this object through ObjC; `private` keeps
     // callers on `shared`.
@@ -40,15 +50,23 @@ final class TabSwitchProbe: NSObject {
     /// the window starts at the tap, not at the first SwiftUI update.
     func begin(tab: String) {
         guard ClientDiagnosticsLog.shared.isEnabled else { return }
+        idleWorkItem?.cancel()
+        idleWorkItem = nil
+        startWindow(tab: tab, idle: false)
+    }
+
+    private func startWindow(tab: String, idle: Bool) {
         link?.invalidate()
         self.tab = tab
+        isIdleWindow = idle
         startedAt = CACurrentMediaTime()
-        // Measure from the tap itself: a main thread that blocks inside the
+        // Measure from the window start: a main thread that blocks inside the
         // tap handler must show up as the first gap, not be skipped.
         lastTick = startedAt
         frames = 0
         hitches = 0
         worstMs = 0
+        worstAtMs = 0
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.preferredFrameRateRange = CAFrameRateRange(
             minimum: 60, maximum: 120, preferred: 120
@@ -59,11 +77,12 @@ final class TabSwitchProbe: NSObject {
 
     @objc private func tick(_ link: CADisplayLink) {
         let now = link.timestamp
-        if lastTick > 0 {
-            let ms = (now - lastTick) * 1000
-            frames += 1
-            if ms > Self.hitchMs { hitches += 1 }
-            if ms > worstMs { worstMs = ms }
+        let ms = (now - lastTick) * 1000
+        frames += 1
+        if ms > Self.hitchMs { hitches += 1 }
+        if ms > worstMs {
+            worstMs = ms
+            worstAtMs = (lastTick - startedAt) * 1000
         }
         lastTick = now
         if now - startedAt >= Self.window { finish() }
@@ -77,12 +96,27 @@ final class TabSwitchProbe: NSObject {
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.frame",
             detail: [
-                "tab": tab,
+                "tab": isIdleWindow ? "idle" : tab,
                 "frames": String(frames),
                 "hitches": String(hitches),
                 "worstMs": String(format: "%.0f", worstMs),
+                "worstAt": String(format: "%.0f", worstAtMs),
                 "ms": String(format: "%.0f", seconds * 1000),
             ],
             dedupe: false)
+        if !isIdleWindow { scheduleIdleWindow() }
+    }
+
+    /// The control sample: a switch window just closed and the reader has not
+    /// tapped another tab. If the same stall shows up here, it belongs to the
+    /// app's steady-state work, not to the tab transition.
+    private func scheduleIdleWindow() {
+        idleWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.link == nil else { return }
+            self.startWindow(tab: "idle", idle: true)
+        }
+        idleWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleDelay, execute: item)
     }
 }

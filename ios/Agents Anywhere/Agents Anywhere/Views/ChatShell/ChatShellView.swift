@@ -30,6 +30,25 @@ struct ChatShellView: View {
     }
 
     var body: some View {
+        let bodyStartedAt = CACurrentMediaTime()
+        let content = shellBody()
+        let _ = noteBodyBuild(startedAt: bodyStartedAt)
+        content
+    }
+
+    /// Times the shell's view-tree construction. Every `panes` write
+    /// re-evaluates this body, so a slow build here would put a tab switch's
+    /// stall on our side of the line instead of on the bar's transition.
+    private func noteBodyBuild(startedAt: CFTimeInterval) {
+        let ms = (CACurrentMediaTime() - startedAt) * 1000
+        guard ms >= 10 else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.body.build",
+            detail: ["ms": String(format: "%.1f", ms)],
+            dedupe: false)
+    }
+
+    private func shellBody() -> some View {
         // NavigationSplitView adapts to a single stack in a compact system size
         // class. Use that same system trait for the drawer fallback, never a
         // device model, screen measurement or custom window-width breakpoint.

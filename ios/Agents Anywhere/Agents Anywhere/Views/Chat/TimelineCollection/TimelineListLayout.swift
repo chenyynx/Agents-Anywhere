@@ -131,6 +131,11 @@ final class TimelineListLayout: UICollectionViewLayout {
     }
 
     override func prepare() {
+        // A full prepare rebuilds every attribute in the window. The tab
+        // switch investigation (2026-11-26) needs to know whether one of
+        // those rebuilds lands inside a switch: one line when it is slow
+        // enough to matter.
+        let prepareStartedAt = CACurrentMediaTime()
 #if AA_TIMELINE_PROBE
         let probeStart = CACurrentMediaTime()
         TimelineProbeStore.shared.enterSection("layout.prepare")
@@ -294,6 +299,15 @@ final class TimelineListLayout: UICollectionViewLayout {
         // the controller's apply-time measurement cannot see these new keys.
         if widthChanged, !pending.isEmpty {
             host.layoutNeedsMeasurement(width: column.width)
+        }
+        let prepareMs = (CACurrentMediaTime() - prepareStartedAt) * 1000
+        if prepareMs >= 15 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.layout.prepare",
+                detail: ["ms": String(format: "%.1f", prepareMs),
+                         "items": String(attributesByIndex.count),
+                         "widthChanged": widthChanged ? "1" : "0"],
+                dedupe: false)
         }
     }
 

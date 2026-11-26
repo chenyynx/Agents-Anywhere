@@ -22,6 +22,11 @@ struct AgentsAnywhereApp: App {
         // BackgroundTasks requires the launch handler before the app finishes
         // launching (P0 probe; see Background/ContinuedRun.swift).
         ContinuedRun.registerAtLaunch()
+        // A frozen screen leaves no trace in the action log: the b1678 hang
+        // stopped at a keyboard willHide and went silent for 89 s. The
+        // watchdog writes the main-thread stack when the thread stops
+        // beating, so the next freeze names its own code.
+        MainThreadHangWatchdog.shared.start()
     }
 
     var body: some Scene {

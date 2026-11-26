@@ -1278,10 +1278,11 @@ jobs:
           path: agents-anywhere.ipa
           if-no-files-found: error
 
-      # Offline fallback: if dladdr returns only image offsets, the report's
-      # addresses can still be symbolicated against this build's dSYM.
-      - name: Upload dSYM (probe)
-        if: inputs.probe == true
+      # Offline fallback: the hang watchdog writes raw addresses plus the
+      # executable's load address. A stripped Release frame reads as
+      # `image+offset`, so every build uploads its dSYM — a freeze can land on
+      # a normal binary, not only on a probe one.
+      - name: Upload dSYM
         uses: actions/upload-artifact@v4
         with:
           name: agents-anywhere-dsym

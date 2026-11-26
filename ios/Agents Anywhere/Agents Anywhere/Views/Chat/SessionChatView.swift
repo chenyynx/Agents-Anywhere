@@ -177,6 +177,11 @@ struct SessionChatView: View, Equatable {
                 // The rebuilt bridge notices the renderer change itself
                 // (`takeOpeningRenderModeChange`) and lands at the bottom.
                 .id(renderModeRaw)
+                // K3: a tap on empty transcript space resigns the composer.
+                // The keyboard state lives in this leaf, so arming it never
+                // re-evaluates the page body (the retired Chat container kept
+                // the same rule; the Code timeline had lost the gesture).
+                .modifier(TranscriptKeyboardDismiss(pane: paneRole))
                 .ignoresSafeArea([.container, .keyboard], edges: [.top, .bottom])
                 // Measure the expanded base the card draws in. Global frames
                 // give the anchor one coordinate system: the card clears the
@@ -1197,5 +1202,28 @@ private struct CommandSuccessToast: View {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { onDismiss() }
         }
+    }
+}
+
+/// K3 companion for the Code timeline: a tap on empty transcript space
+/// resigns the first responder while the keyboard is visible. The visibility
+/// lives in this leaf so the page body is never re-evaluated by it; the
+/// recognizer cancels no touches and grants simultaneous recognition, so
+/// links, row taps and text selection keep working.
+private struct TranscriptKeyboardDismiss: ViewModifier {
+    let pane: ChatPaneRole
+    @State private var keyboardVisible = false
+
+    func body(content: Content) -> some View {
+        content
+            .keyboardDismissTapGesture(isEnabled: keyboardVisible, pane: pane.rawValue)
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardVisible = false
+            }
     }
 }

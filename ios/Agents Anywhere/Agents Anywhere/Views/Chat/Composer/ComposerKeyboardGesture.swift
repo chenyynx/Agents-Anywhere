@@ -57,6 +57,10 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
                    keyboardIsVisible: draft.isFocused,
                    isSelecting: context.coordinator.isTextSelectionActive) {
                 context.coordinator.resignedDuringDrag = true
+                ClientDiagnosticsLog.shared.record(
+                    kind: "keyboard.dismiss",
+                    detail: ["path": "k2-drag", "focused": draft.isFocused ? "1" : "0"],
+                    dedupe: false)
                 editor.finishEditing()
                 draft.isFocused = false
             }
@@ -100,6 +104,10 @@ struct ComposerKeyboardPanGesture: UIGestureRecognizerRepresentable {
             case .resign:
                 // Same path as the composer's own dismissal: resign the text
                 // view, then mirror the resulting focus into the draft.
+                ClientDiagnosticsLog.shared.record(
+                    kind: "keyboard.dismiss",
+                    detail: ["path": "k2-lift", "focused": draft.isFocused ? "1" : "0"],
+                    dedupe: false)
                 editor.finishEditing()
                 draft.isFocused = false
             case .none:
@@ -328,8 +336,12 @@ extension View {
     /// K3: while the keyboard is visible, a tap on empty message space resigns
     /// the first responder. The return pill is hidden during that state, so
     /// its region cannot overlap this gesture.
-    func keyboardDismissTapGesture(isEnabled: Bool) -> some View {
+    func keyboardDismissTapGesture(isEnabled: Bool, pane: String = "-") -> some View {
         gesture(TimelineKeyboardDismissGesture(isEnabled: isEnabled) {
+            ClientDiagnosticsLog.shared.record(
+                kind: "keyboard.dismiss",
+                detail: ["path": "k3", "pane": pane],
+                dedupe: false)
             UIApplication.shared.sendAction(
                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         })
@@ -343,7 +355,7 @@ extension View {
         self
     }
 
-    func keyboardDismissTapGesture(isEnabled: Bool) -> some View {
+    func keyboardDismissTapGesture(isEnabled: Bool, pane: String = "-") -> some View {
         self
     }
 }

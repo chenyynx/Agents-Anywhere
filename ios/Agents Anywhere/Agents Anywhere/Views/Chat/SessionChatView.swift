@@ -394,7 +394,8 @@ struct SessionChatView: View, Equatable {
             sessionID: session.id,
             detail: ["pane": paneRole.rawValue,
                      "model": String(describing: ObjectIdentifier(model)),
-                     "others": otherNames],
+                     "others": otherNames,
+                     "active": isActive ? "1" : "0"],
             dedupe: false)
     }
 
@@ -775,10 +776,14 @@ struct SessionChatView: View, Equatable {
         }
         .onDisappear {
             SessionPageRegistry.left(session.id, pane: paneRole)
+            // `active` separates a tab switch (the page was already told it is
+            // inactive) from a rebuild of a selected page (still active).
             ClientDiagnosticsLog.shared.record(
                 kind: "session.page.disappear",
                 sessionID: session.id,
-                detail: ["pane": paneRole.rawValue],
+                detail: ["pane": paneRole.rawValue,
+                         "active": isActive ? "1" : "0",
+                         "reason": isActive ? "rebuilt" : "inactive"],
                 dedupe: false)
             if previewURL == nil { cleanPreview() }
             // A deferred-item read belongs to the page visit: leaving the page

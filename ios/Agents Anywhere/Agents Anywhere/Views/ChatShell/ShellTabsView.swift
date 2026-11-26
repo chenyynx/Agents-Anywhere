@@ -9,6 +9,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     let devicesRoot: DevicesRoot
     let onMenu: () -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @State private var transitionTask: Task<Void, Never>?
 
     /// The legacy detail wrapper tinted the whole page with the primary
     /// control ink. The tab shell must do the same inside each tab, or a
@@ -31,8 +32,20 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         chatSession != nil && chatSession == deviceSession
     }
 
+    /// Logs every write the tab bar makes to the selection, including the
+    /// transient ones a settled `onChange` cannot see.
+    private var selectionBinding: Binding<ShellTab> {
+        Binding(get: { panes.selectedTab }, set: { next in
+            ClientDiagnosticsLog.shared.record(
+                kind: "shell.tabs.write",
+                detail: ["to": next.rawValue],
+                dedupe: false)
+            panes.selectedTab = next
+        })
+    }
+
     var body: some View {
-        TabView(selection: $panes.selectedTab) {
+        TabView(selection: selectionBinding) {
             Tab(value: ShellTab.chat) {
                 NavigationStack { chatRoot }
                     // The session page owns its keyboard insets (composer is a
@@ -80,6 +93,27 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 kind: "shell.tabs.duplicate",
                 sessionID: session,
                 detail: ["tab": panes.selectedTab.rawValue])
+        }
+        // Brackets the bar's switch animation so page work can be deferred
+        // while the transition is in flight, and so a transient selection
+        // write can be told apart from a settled tab.
+        .onChange(of: panes.selectedTab) { old, next in
+            ClientDiagnosticsLog.shared.record(
+                kind: "shell.tabs.transition",
+                detail: ["phase": "start",
+                         "from": old.rawValue,
+                         "to": next.rawValue],
+                dedupe: false)
+            transitionTask?.cancel()
+            transitionTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "shell.tabs.transition",
+                    detail: ["phase": "settle",
+                             "to": panes.selectedTab.rawValue],
+                    dedupe: false)
+            }
         }
     }
 }

@@ -330,6 +330,7 @@ struct ChatShellView: View {
                 fallbackTitle: summary?.title,
                 fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
                 paneRole: .devices,
+                isActive: panes.selectedTab == .devices,
                 onMenu: toggleSidebar,
                 showsMenuButton: false,
                 onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
@@ -402,6 +403,7 @@ struct ChatShellView: View {
             deviceName: appState.connectors.first { $0.id == connectorID }?.name,
             fallbackTitle: summary?.title,
             fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
+            isActive: !tabShellActive || panes.selectedTab == .chat,
             onMenu: toggleSidebar,
             onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             .equatable()

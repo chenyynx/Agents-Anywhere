@@ -19,3 +19,18 @@ extension EnvironmentValues {
         set { self[ShellTabBarActiveKey.self] = newValue }
     }
 }
+
+private struct ComposerFocusEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False on a mounted tab page that is not visible. Two pages of the same
+    /// session share one draft and one `isFocused`; only the visible page may
+    /// mirror focus, or both editors fight for first responder and the
+    /// keyboard drops.
+    var composerFocusEnabled: Bool {
+        get { self[ComposerFocusEnabledKey.self] }
+        set { self[ComposerFocusEnabledKey.self] = newValue }
+    }
+}

@@ -10,6 +10,10 @@ final class ComposerEditorController {
     /// The profile's expand curve, set by the hosting composer. Only the
     /// expanding transition uses it (see `ComposerFocusTransition`).
     @ObservationIgnored var expandAnimation: Animation?
+    /// False while the hosting tab page is mounted but not visible. The page
+    /// shares the draft with the visible page, so it must not mirror (or
+    /// clear) the shared focus flag.
+    @ObservationIgnored var allowsFocus = true
 
     func finishEditing() {
         guard let textView else { return }
@@ -112,6 +116,9 @@ final class ComposerEditorController {
         let canonical = canonicalText(of: textView)
         if draft.text != canonical { draft.text = canonical }
         draft.isComposing = textView.markedTextRange != nil
+        // A hidden page's editor resignation must not clear the visible page's
+        // focus flag.
+        guard allowsFocus else { return }
         let focused = textView.isFirstResponder
         guard draft.isFocused != focused else { return }
         if ComposerFocusTransition.animates(previous: draft.isFocused, next: focused,
@@ -247,6 +254,8 @@ final class ComposerTextView: UITextView {
 struct NativeComposerEditor: UIViewRepresentable {
     @Bindable var draft: ComposerDraft
     let controller: ComposerEditorController
+    /// False on a tab page that is mounted but not visible.
+    @Environment(\.composerFocusEnabled) private var allowsFocus
     let maximumHeight: CGFloat
     let onCommandSend: () -> Void
     var expandAnimation: Animation? = nil
@@ -331,9 +340,10 @@ struct NativeComposerEditor: UIViewRepresentable {
             let location = followsTextEnd ? end : min(selection.location, end)
             view.selectedRange = NSRange(location: location, length: 0)
         }
-        if draft.isFocused, !view.isFirstResponder {
+        controller.allowsFocus = allowsFocus
+        if allowsFocus, draft.isFocused, !view.isFirstResponder {
             view.becomeFirstResponder()
-        } else if !draft.isFocused, view.isFirstResponder {
+        } else if (!draft.isFocused || !allowsFocus), view.isFirstResponder {
             view.resignFirstResponder()
         }
     }

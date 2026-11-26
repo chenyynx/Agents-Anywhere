@@ -30,11 +30,6 @@ enum SessionPageRegistry {
         }
     }
 
-    /// The panes still mounted for a session, after the current update settled.
-    static func livePanes(_ sessionID: V2SessionID) -> [ChatPaneRole] {
-        (live[sessionID] ?? []).sorted { $0.rawValue < $1.rawValue }
-    }
-
     /// Test hook; the app never resets the registry.
     static func reset() {
         live.removeAll()

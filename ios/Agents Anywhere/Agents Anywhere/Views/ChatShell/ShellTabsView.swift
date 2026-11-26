@@ -17,15 +17,6 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         AppTheme.primaryControlBackground(colorScheme)
     }
 
-    /// Official `HeldTab`/`TabPageEmptyPlacement`: when the same session is
-    /// open in both tabs, the hidden copy is parked. Two live pages share one
-    /// composer draft and one timeline model — they fight over focus and both
-    /// freeze (device report 2026-11-26). Non-duplicate pages stay held so
-    /// their scroll/state survives a tab switch.
-    private var hiddenTabPlacement: some View {
-        Color.clear
-    }
-
     private var chatSession: V2SessionID? {
         if case let .session(id) = panes.chatRoot { return id }
         return nil
@@ -40,38 +31,22 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         chatSession != nil && chatSession == deviceSession
     }
 
-    private var parksChatTab: Bool {
-        panes.selectedTab != .chat && duplicateSessionAcrossTabs
-    }
-
-    private var parksDevicesTab: Bool {
-        panes.selectedTab != .devices && duplicateSessionAcrossTabs
-    }
-
     var body: some View {
         TabView(selection: $panes.selectedTab) {
             Tab(value: ShellTab.chat) {
-                if parksChatTab {
-                    hiddenTabPlacement
-                } else {
-                    NavigationStack { chatRoot }
-                        // The session page owns its keyboard insets (composer
-                        // is a safeAreaBar); the shell must not move the page.
-                        .ignoresSafeArea(.keyboard)
-                        .tint(contentTint)
-                }
+                NavigationStack { chatRoot }
+                    // The session page owns its keyboard insets (composer is a
+                    // safeAreaBar); the shell must not move the page.
+                    .ignoresSafeArea(.keyboard)
+                    .tint(contentTint)
             } label: {
                 ShellTabLabel(title: "Chats", image: "anthropicon.chat")
             }
             Tab(value: ShellTab.devices) {
-                if parksDevicesTab {
-                    hiddenTabPlacement
-                } else {
-                    // The shell supplies the Devices NavigationStack (it owns
-                    // the path and the push destinations).
-                    devicesRoot
-                        .tint(contentTint)
-                }
+                // The shell supplies the Devices NavigationStack (it owns the
+                // path and the push destinations).
+                devicesRoot
+                    .tint(contentTint)
             } label: {
                 ShellTabLabel(title: "Devices", image: "anthropicon.laptop.tab")
             }
@@ -104,9 +79,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             ClientDiagnosticsLog.shared.record(
                 kind: "shell.tabs.duplicate",
                 sessionID: session,
-                detail: ["tab": panes.selectedTab.rawValue,
-                         "parkedChat": parksChatTab ? "1" : "0",
-                         "parkedDevices": parksDevicesTab ? "1" : "0"])
+                detail: ["tab": panes.selectedTab.rawValue])
         }
     }
 }

@@ -14,6 +14,10 @@ struct SessionChatView: View, Equatable {
     /// The tab page this page is mounted in; reader positions are kept per
     /// page so both tabs can show the same session.
     let paneRole: ChatPaneRole
+    /// False when this page's tab is not the selected one. The page stays
+    /// mounted (scroll/state), but its composer must not mirror the shared
+    /// draft's focus — the visible page owns it.
+    let isActive: Bool
     let onMenu: () -> Void
     /// A pushed session leaves the leading slot to the system back button (and
     /// its native swipe); the Chat-tab root keeps the drawer hamburger.
@@ -392,21 +396,6 @@ struct SessionChatView: View, Equatable {
                      "model": String(describing: ObjectIdentifier(model)),
                      "others": otherNames],
             dedupe: false)
-        // Check after the update settles: SwiftUI may build the incoming page
-        // before it tears the outgoing one down, which would read as a
-        // duplicate for one frame.
-        let sessionID = session.id
-        let pane = paneRole
-        DispatchQueue.main.async {
-            let live = SessionPageRegistry.livePanes(sessionID)
-            guard live.count > 1 else { return }
-            ClientDiagnosticsLog.shared.record(
-                kind: "session.page.duplicate",
-                sessionID: sessionID,
-                detail: ["pane": pane.rawValue,
-                         "others": live.filter { $0 != pane }
-                             .map(\.rawValue).joined(separator: ",")])
-        }
     }
 
     /// Focus transitions are the signal for the keyboard that dismisses
@@ -556,6 +545,7 @@ struct SessionChatView: View, Equatable {
     init(model: SessionChatModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
          paneRole: ChatPaneRole = .chat,
+         isActive: Bool = true,
          onMenu: @escaping () -> Void,
          showsMenuButton: Bool = true,
          onTogglePinned: @escaping (Bool) -> Void) {
@@ -566,6 +556,7 @@ struct SessionChatView: View, Equatable {
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
         self.paneRole = paneRole
+        self.isActive = isActive
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
@@ -607,7 +598,7 @@ struct SessionChatView: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sessionIdentity === rhs.sessionIdentity && lhs.deviceName == rhs.deviceName
             && lhs.fallbackTitle == rhs.fallbackTitle && lhs.fallbackRuntimeName == rhs.fallbackRuntimeName
-            && lhs.paneRole == rhs.paneRole
+            && lhs.paneRole == rhs.paneRole && lhs.isActive == rhs.isActive
     }
     var body: some View {
         GeometryReader { geometry in
@@ -764,6 +755,20 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
+        .environment(\.composerFocusEnabled, isActive)
+        .onChange(of: isActive) { _, active in
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.page.active",
+                sessionID: session.id,
+                detail: ["pane": paneRole.rawValue, "active": active ? "1" : "0"],
+                dedupe: false)
+            // The page keeps its view and scroll while hidden; only focus is
+            // page-owned. Leaving the tab drops the keyboard and clears the
+            // shared flag so returning does not pop it back up.
+            guard !active else { return }
+            composerEditor.finishEditing()
+            session.composer.isFocused = false
+        }
         .onAppear { recordPageAppear() }
         .onChange(of: session.composer.isFocused) { _, focused in
             recordComposerFocus(focused)

@@ -61,15 +61,8 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             // TabView's own transition (the main thread is idle in the
             // runloop, not computing), so bypass it and keep SwiftUI's state
             // in step right after.
-            let started = CACurrentMediaTime()
             let target = ShellTab.allCases.firstIndex(of: next) ?? 0
-            let direct = tabSwitch.select(index: target)
-            ClientDiagnosticsLog.shared.record(
-                kind: "shell.tabs.switch",
-                detail: ["to": next.rawValue,
-                         "direct": direct ? "1" : "0",
-                         "ms": String(Int((CACurrentMediaTime() - started) * 1000))],
-                dedupe: false)
+            tabSwitch.select(index: target, to: next.rawValue)
             UIView.performWithoutAnimation {
                 withTransaction(Transaction(animation: nil)) {
                     panes.selectedTab = next

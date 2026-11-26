@@ -16,6 +16,9 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     /// 300–570 ms (b1668 log — the big stalls all coincided with recovery or
     /// whole-window refresh bursts).
     @State private var tabTransitioning = false
+    /// Covers the page change with a picture of the outgoing page (the
+    /// official `TabPageMover` shape; see `TabPageTransition`).
+    @State private var pageTransition = TabPageTransition()
 
     /// The legacy detail wrapper tinted the whole page with the primary
     /// control ink. The tab shell must do the same inside each tab, or a
@@ -42,6 +45,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     /// transient ones a settled `onChange` cannot see.
     private var selectionBinding: Binding<ShellTab> {
         Binding(get: { panes.selectedTab }, set: { next in
+            guard next != panes.selectedTab else { return }
             ClientDiagnosticsLog.shared.record(
                 kind: "shell.tabs.write",
                 detail: ["to": next.rawValue],
@@ -50,7 +54,15 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             // update: a main thread that blocks in the bar's own handler is
             // exactly what `shell.tabs.frame` must be able to see.
             TabSwitchProbe.shared.begin(tab: next.rawValue)
-            panes.selectedTab = next
+            // The official shape: the outgoing page stays on screen as a
+            // picture, the swap itself carries no implicit animation, and the
+            // picture is animated out once the destination is in place.
+            pageTransition.beginChange()
+            UIView.performWithoutAnimation {
+                withTransaction(Transaction(animation: nil)) {
+                    panes.selectedTab = next
+                }
+            }
         })
     }
 
@@ -96,6 +108,11 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 ShellTabLabel(title: "Artifacts", image: "anthropicon.artifacts")
             }
         }
+        .background(alignment: .topLeading) {
+            TabPageTransitionHost(driver: pageTransition)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
         .environment(\.shellTabBarActive, true)
         .environment(\.shellTabTransitioning, tabTransitioning)
         .onChange(of: duplicateSessionAcrossTabs, initial: true) { _, duplicate in
@@ -109,6 +126,10 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         // while the transition is in flight, and so a transient selection
         // write can be told apart from a settled tab.
         .onChange(of: panes.selectedTab) { old, next in
+            // The selection has been committed: the destination page is
+            // mounted, so the cover can finish its fade (the official's
+            // "settle on picture, then show the page" order).
+            pageTransition.revealWhenSettled()
             ClientDiagnosticsLog.shared.record(
                 kind: "shell.tabs.transition",
                 detail: ["phase": "start",

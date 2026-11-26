@@ -7,22 +7,24 @@ import UIKit
 /// `/home/ubuntu/aa-test/claude-ios-re/CANONICAL/29-tab-shell-261123.md` §13).
 ///
 /// The official never lets the live page take part in the visible change:
-/// `PagePicture` is a group of real page views, the page swap itself runs
-/// inside `performWithoutAnimation:`, and a `PageCover` is animated out with
-/// `+[UIView animateWithDuration:delay:options:animations:completion:]` using
-/// a 0.15 s duration (double constant at 0x104d4e360). Because Core Animation
-/// runs the cover on the render server, the main thread may keep laying the
-/// destination page out underneath without dropping the cover's frames.
+/// `PagePicture` is a group of real page views, and the page swap itself runs
+/// inside `performWithoutAnimation:` (0x103b841b8). The cover exists to hold
+/// the previous picture while the destination is put in place; the result the
+/// user sees is an instant tab change, not a fade — pp 2026-11-27: 「官方没有
+/// 这种动画」.
+///
+/// (There *is* a 0.15 s `+[UIView animateWithDuration:...]` in the cover code
+/// (duration constant 0x104d4e360), but what it animates is not yet proven —
+/// the cover path moves frames/centers (`setCenter:`/`setFrame:` users
+/// 0x103af541c / 0x103aee5c8) and never calls `setAlpha:`. Do not read it as
+/// a page fade.)
 ///
 /// This is the SwiftUI-side equivalent: snapshot the outgoing page before the
 /// selection changes, cover the page area (below the system tab bar, so the
-/// bar still animates), then fade the cover once the destination has been
-/// committed and laid out. The page body itself is not asked to render the
-/// switch.
+/// bar stays live), let the swap happen underneath without animation, then
+/// remove the cover once the destination has been committed and laid out.
 @MainActor
 final class TabPageTransition {
-    /// The official's animateWithDuration duration (0x104d4e360 = 0.15).
-    static let revealSeconds: TimeInterval = 0.15
 
     private weak var host: UIView?
     private var cover: UIView?
@@ -79,8 +81,10 @@ final class TabPageTransition {
     }
 
     /// Reveal the destination once SwiftUI has committed the switch. The
-    /// layout pass is forced while the cover is still up, so the fade never
+    /// layout pass is forced while the cover is still up, so the cut never
     /// exposes a half-laid-out page (the official's `isPageInPlace` gate).
+    /// The cover is removed without animation: the official's tab change is
+    /// an instant cut, not a cross-fade.
     func revealWhenSettled() {
         guard let host, let cover else { return }
         let tabs = Self.tabController(from: host)
@@ -92,14 +96,8 @@ final class TabPageTransition {
                 detail: ["phase": "reveal",
                          "ms": String(Int((CACurrentMediaTime() - self.beganAt) * 1000))],
                 dedupe: false)
-            UIView.animate(withDuration: Self.revealSeconds,
-                           delay: 0,
-                           options: [.curveEaseInOut, .beginFromCurrentState]) {
-                cover.alpha = 0
-            } completion: { _ in
-                cover.removeFromSuperview()
-                if self.cover === cover { self.cover = nil }
-            }
+            cover.removeFromSuperview()
+            if self.cover === cover { self.cover = nil }
         }
     }
 

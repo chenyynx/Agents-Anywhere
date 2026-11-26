@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 /// The four-tab shell. The system `TabView` supplies the Liquid Glass tab bar;
@@ -16,6 +17,9 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     /// 300–570 ms (b1668 log — the big stalls all coincided with recovery or
     /// whole-window refresh bursts).
     @State private var tabTransitioning = false
+    /// Drives the system tab controller directly (the official's
+    /// `performWithoutAnimation` switch); see `TabSwitchDriver`.
+    @State private var tabSwitch = TabSwitchDriver()
 
     /// The legacy detail wrapper tinted the whole page with the primary
     /// control ink. The tab shell must do the same inside each tab, or a
@@ -51,10 +55,21 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             // update: a main thread that blocks in the bar's own handler is
             // exactly what `shell.tabs.frame` must be able to see.
             TabSwitchProbe.shared.begin(tab: next.rawValue)
-            // The official page change carries no implicit animation
-            // (`performWithoutAnimation:` in the 261123 shell). The page
-            // itself no longer re-evaluates on a tab switch, so the swap is
-            // the only work left on this path.
+            // The official shell drives the system controller itself:
+            // `selectedIndex` inside `performWithoutAnimation:`. The b1686
+            // probe showed the ~200 ms switch is spent waiting on the
+            // TabView's own transition (the main thread is idle in the
+            // runloop, not computing), so bypass it and keep SwiftUI's state
+            // in step right after.
+            let started = CACurrentMediaTime()
+            let target = ShellTab.allCases.firstIndex(of: next) ?? 0
+            let direct = tabSwitch.select(index: target)
+            ClientDiagnosticsLog.shared.record(
+                kind: "shell.tabs.switch",
+                detail: ["to": next.rawValue,
+                         "direct": direct ? "1" : "0",
+                         "ms": String(Int((CACurrentMediaTime() - started) * 1000))],
+                dedupe: false)
             UIView.performWithoutAnimation {
                 withTransaction(Transaction(animation: nil)) {
                     panes.selectedTab = next
@@ -110,6 +125,11 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             } label: {
                 ShellTabLabel(title: "Artifacts", image: "anthropicon.artifacts")
             }
+        }
+        .background(alignment: .topLeading) {
+            TabSwitchDriverHost(driver: tabSwitch)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
         }
         .environment(\.shellTabBarActive, true)
         .environment(\.shellTabTransitioning, tabTransitioning)

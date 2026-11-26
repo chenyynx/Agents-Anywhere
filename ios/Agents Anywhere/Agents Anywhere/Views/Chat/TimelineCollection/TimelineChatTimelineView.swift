@@ -32,6 +32,9 @@ struct TimelineChatTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
+    /// The tab switch window (shell). Parking applies here is what keeps a
+    /// refresh from stacking on the system transition (b1668: 300–570 ms).
+    @Environment(\.shellTabTransitioning) private var shellTabTransitioning
     // The chat type scale is stored in UserDefaults, which is not observable.
     // Reading the same keys through AppStorage makes a Settings change
     // re-evaluate this wrapper and produce a new height key/reconfigure.
@@ -74,7 +77,7 @@ struct TimelineChatTimelineView: View {
         model.session.notices.notices.contains { $0.isVisible && $0.notice.type == "interaction" }
     }
     private var navigationIsSuspended: Bool {
-        sidebarIsTransitioning || sidebarObscuresDetail
+        sidebarIsTransitioning || sidebarObscuresDetail || shellTabTransitioning
     }
     /// The official turn phase, from the same live signals the orb reads.
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a

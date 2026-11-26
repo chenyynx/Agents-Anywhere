@@ -7,6 +7,23 @@ nonisolated enum ShellTabBarMetrics {
     static let composerGap: CGFloat = 8
 }
 
+private struct ShellTabTransitioningKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// True from a tab tap until the switch settles (~350 ms). Pages park
+    /// data applies for this window: a timeline refresh landing inside the
+    /// system tab transition stacked on top of it and turned the fixed
+    /// ~150–200 ms switch into 300–570 ms (b1668 log: the big stalls all
+    /// coincided with recovery/refresh bursts). The parking mechanism is the
+    /// drawer transition's; the content lands right after the switch.
+    var shellTabTransitioning: Bool {
+        get { self[ShellTabTransitioningKey.self] }
+        set { self[ShellTabTransitioningKey.self] = newValue }
+    }
+}
+
 private struct ShellTabBarActiveKey: EnvironmentKey {
     static let defaultValue = false
 }

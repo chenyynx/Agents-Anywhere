@@ -10,6 +10,12 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     let onMenu: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var transitionTask: Task<Void, Never>?
+    /// True from a tab tap until the switch settles. Pages park data applies
+    /// for this window: a timeline refresh landing inside the system tab
+    /// transition stacked on it and turned the fixed ~150–200 ms switch into
+    /// 300–570 ms (b1668 log — the big stalls all coincided with recovery or
+    /// whole-window refresh bursts).
+    @State private var tabTransitioning = false
 
     /// The legacy detail wrapper tinted the whole page with the primary
     /// control ink. The tab shell must do the same inside each tab, or a
@@ -91,6 +97,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             }
         }
         .environment(\.shellTabBarActive, true)
+        .environment(\.shellTabTransitioning, tabTransitioning)
         .onChange(of: duplicateSessionAcrossTabs, initial: true) { _, duplicate in
             guard duplicate, let session = chatSession else { return }
             ClientDiagnosticsLog.shared.record(
@@ -108,10 +115,12 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                          "from": old.rawValue,
                          "to": next.rawValue],
                 dedupe: false)
+            tabTransitioning = true
             transitionTask?.cancel()
             transitionTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))
                 guard !Task.isCancelled else { return }
+                tabTransitioning = false
                 ClientDiagnosticsLog.shared.record(
                     kind: "shell.tabs.transition",
                     detail: ["phase": "settle",

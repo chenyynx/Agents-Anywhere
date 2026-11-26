@@ -408,6 +408,7 @@ struct SessionChatView: View, Equatable {
     /// One line per page mount, plus a warning when another pane already holds
     /// the same session: that is the two-composer focus fight.
     private func recordPageAppear() {
+        TabSwitchProbe.shared.mark("appear", extra: ["pane": paneRole.rawValue])
         let others = SessionPageRegistry.entered(session.id, pane: paneRole)
         let otherNames = others.map(\.rawValue).joined(separator: ",")
         ClientDiagnosticsLog.shared.record(
@@ -813,6 +814,7 @@ struct SessionChatView: View, Equatable {
             recordComposerFocus(focused)
         }
         .onDisappear {
+            TabSwitchProbe.shared.mark("disappear", extra: ["pane": paneRole.rawValue])
             SessionPageRegistry.left(session.id, pane: paneRole)
             // `mount` is the rebuild verdict: the next appear for this pane
             // carries the same token when the tab switch merely hid the page

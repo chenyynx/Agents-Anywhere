@@ -68,6 +68,9 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                     panes.selectedTab = next
                 }
             }
+            // SwiftUI's update pass runs after this returns; the phase marks
+            // in the page/appear paths measure from the same window start.
+            TabSwitchProbe.shared.mark("written")
         })
     }
 
@@ -137,6 +140,7 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         // while the transition is in flight, and so a transient selection
         // write can be told apart from a settled tab.
         .onChange(of: panes.selectedTab) { old, next in
+            TabSwitchProbe.shared.mark("onchange", extra: ["from": old.rawValue])
             ClientDiagnosticsLog.shared.record(
                 kind: "shell.tabs.transition",
                 detail: ["phase": "start",

@@ -618,6 +618,7 @@ final class TimelineCollectionController: UIViewController {
     }
 
     override func viewDidLayoutSubviews() {
+        let passStarted = CACurrentMediaTime()
         super.viewDidLayoutSubviews()
         // The first mounted pass installs the page inset; before the window
         // there was no scroll-view safe area to subtract (see the helper).
@@ -630,6 +631,13 @@ final class TimelineCollectionController: UIViewController {
         startAnchorDriverIfNeeded()
         scheduleVisibleCellFrameSync()
         probeFlightOverlapIfNeeded()
+        // A layout pass this long inside a tab switch is the page's own
+        // reattach cost; `mark` is a no-op outside a switch window.
+        let passMs = (CACurrentMediaTime() - passStarted) * 1000
+        if passMs >= 8 {
+            TabSwitchProbe.shared.mark("layout",
+                extra: ["ms": String(format: "%.0f", passMs)])
+        }
     }
 
     /// Arms the probe for one fly. The display link matters: a fly changes the

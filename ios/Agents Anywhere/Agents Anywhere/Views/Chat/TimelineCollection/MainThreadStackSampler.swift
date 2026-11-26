@@ -46,6 +46,14 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     private static let reportedStacks = 10
     private static let reportedApps = 12
     private static let reportedFrames = 18
+    /// Stacks ranked by the longest unbroken run instead of by frequency.
+    /// A blocked main thread repeats one stack for the whole freeze; that
+    /// stack is unique (count ≈ 1) and never reaches the top-N-by-count list,
+    /// so b1686 showed `main maxRun=270–364 ms` with no MT entry owning it.
+    private static let reportedRuns = 6
+    /// 6 samples = 12 ms at the 2 ms cadence: long enough to be a stall,
+    /// short enough to catch a 30 ms one.
+    private static let minRunSamples = 6
     /// The app image name dladdr reports; our symbols keep their names in the
     /// Release build because probe builds disable stripping.
     private static let appImagePrefix = "Agents Anywhere`"
@@ -215,6 +223,17 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             lines.append("MT #\(index + 1) \(Self.f(share))% \(stack.count)/\(aggregate.sampleCount) "
                 + "maxRun=\(Self.f(runMs))ms")
             for pc in stack.pcs.prefix(Self.reportedFrames) {
+                lines.append("  \(symbolize(pc, cache: &symbolCache))")
+            }
+        }
+        // MR = the stacks that ran longest without changing. This is the
+        // half that names a 200–400 ms freeze: the blocking stack is unique,
+        // so frequency ranking keeps it out of the MT list.
+        for (index, stack) in aggregate.longRuns.enumerated() {
+            let runMs = Double(stack.maxRun) * Double(Self.intervalMicroseconds) / 1000
+            lines.append("MR #\(index + 1) run=\(Self.f(runMs))ms "
+                + "\(stack.count)/\(aggregate.sampleCount)")
+            for pc in stack.pcs.prefix(Self.reportedFrames + 6) {
                 lines.append("  \(symbolize(pc, cache: &symbolCache))")
             }
         }
@@ -416,6 +435,8 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         let sampleLeafLabels: [String]
         let sampleHashes: [UInt64]
         let sampleTimes: [Double]
+        /// Stacks ranked by longest continuous run (see reportedRuns).
+        let longRuns: [Stack]
     }
 
     private func needsFinish() -> Bool {
@@ -528,19 +549,24 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             appMaxRun[previousApp] = max(appMaxRun[previousApp] ?? 0, appRun)
         }
 
+        func stack(for hash: UInt64, count: Int) -> Stack? {
+            guard let index = representative[hash] else { return nil }
+            let start = Int(sampleStarts[index])
+            let depth = Int(sampleDepths[index])
+            var pcs = [UInt64](repeating: 0, count: depth)
+            for offset in 0..<depth { pcs[offset] = frames[start + offset] }
+            return Stack(hash: hash, count: count,
+                         maxRun: maxRun[hash] ?? 0, pcs: pcs)
+        }
         let stacks = counts.sorted { $0.value > $1.value }
             .filter { !idleHashes.contains($0.key) }
             .prefix(Self.reportedStacks)
-            .compactMap { pair -> Stack? in
-                let hash = pair.key
-                guard let index = representative[hash] else { return nil }
-                let start = Int(sampleStarts[index])
-                let depth = Int(sampleDepths[index])
-                var pcs = [UInt64](repeating: 0, count: depth)
-                for offset in 0..<depth { pcs[offset] = frames[start + offset] }
-                return Stack(hash: hash, count: pair.value,
-                             maxRun: maxRun[hash] ?? 0, pcs: pcs)
-            }
+            .compactMap { stack(for: $0.key, count: $0.value) }
+        // Longest runs, not most frequent: see reportedRuns.
+        let longRuns = maxRun.filter { $0.value >= Self.minRunSamples }
+            .sorted { $0.value > $1.value }
+            .prefix(Self.reportedRuns)
+            .compactMap { stack(for: $0.key, count: counts[$0.key] ?? $0.value) }
 
         let appLabels = appCounts.sorted { $0.value > $1.value }
             .prefix(Self.reportedApps)
@@ -559,7 +585,8 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             sampleAppLabels: sampleApp,
             sampleLeafLabels: sampleLeaf,
             sampleHashes: hashes,
-            sampleTimes: times)
+            sampleTimes: times,
+            longRuns: longRuns)
     }
 
     /// Name the call path that owned each recorded hitch. Because system

@@ -53,9 +53,29 @@ final class TabSwitchProbe: NSObject {
     /// the window starts at the tap, not at the first SwiftUI update.
     func begin(tab: String, kind: String = "shell.tabs.frame") {
         guard ClientDiagnosticsLog.shared.isEnabled else { return }
+        // A second switch inside the 0.7 s window used to cancel the first
+        // one silently, so quick taps (and every switch to a light tab
+        // between two chat taps) left no frame data. Log the partial window;
+        // it is still the only measurement of that switch.
+        if link != nil { finish(partial: true) }
         idleWorkItem?.cancel()
         idleWorkItem = nil
         startWindow(tab: tab, kind: kind, idle: false)
+    }
+
+    /// Mark a phase inside the current switch window. No-op when no switch is
+    /// in flight, so call sites can mark unconditionally (page appear also
+    /// fires on a session open).
+    func mark(_ name: String, extra: [String: String] = [:]) {
+        guard link != nil, ClientDiagnosticsLog.shared.isEnabled else { return }
+        var detail = extra
+        detail["mark"] = name
+        detail["t"] = String(format: "%.0f", (CACurrentMediaTime() - startedAt) * 1000)
+        detail["tab"] = tab
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.phase",
+            detail: detail,
+            dedupe: false)
     }
 
     private func startWindow(tab: String, kind: String = "shell.tabs.frame", idle: Bool) {
@@ -109,24 +129,25 @@ final class TabSwitchProbe: NSObject {
         if now - startedAt >= Self.window { finish() }
     }
 
-    private func finish() {
+    private func finish(partial: Bool = false) {
         guard link != nil else { return }
         link?.invalidate()
         link = nil
         let seconds = max(0.001, CACurrentMediaTime() - startedAt)
-        ClientDiagnosticsLog.shared.record(
-            kind: kind,
-            detail: [
-                "tab": isIdleWindow ? "idle" : tab,
-                "frames": String(frames),
-                "hitches": String(hitches),
-                "worstMs": String(format: "%.0f", worstMs),
-                "worstAt": String(format: "%.0f", worstAtMs),
-                "ms": String(format: "%.0f", seconds * 1000),
-            ],
-            dedupe: false)
+        var detail = [
+            "tab": isIdleWindow ? "idle" : tab,
+            "frames": String(frames),
+            "hitches": String(hitches),
+            "worstMs": String(format: "%.0f", worstMs),
+            "worstAt": String(format: "%.0f", worstAtMs),
+            "ms": String(format: "%.0f", seconds * 1000),
+        ]
+        // The switch was followed by another tap before the window closed:
+        // the numbers describe a shorter window, not a full one.
+        if partial { detail["partial"] = "1" }
+        ClientDiagnosticsLog.shared.record(kind: kind, detail: detail, dedupe: false)
 #if AA_TIMELINE_PROBE
-        if !isIdleWindow {
+        if !isIdleWindow, !partial {
             if worstMs > 80 {
                 // `reportLines` closes the session and waits briefly for the
                 // sampling thread; the decoded report names the stacks that
@@ -146,7 +167,7 @@ final class TabSwitchProbe: NSObject {
             }
         }
 #endif
-        if !isIdleWindow, kind == "shell.tabs.frame" { scheduleIdleWindow() }
+        if !isIdleWindow, !partial, kind == "shell.tabs.frame" { scheduleIdleWindow() }
     }
 
     /// The control sample: a switch window just closed and the reader has not

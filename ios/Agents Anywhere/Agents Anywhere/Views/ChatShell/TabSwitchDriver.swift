@@ -43,6 +43,12 @@ final class TabSwitchDriver {
                    root: root, count: root.children.count)
             return false
         }
+        // Whether the destination page's view is still in the window decides
+        // the fix: a detached page must be laid out and committed again on
+        // return (self-managed container), a kept one points at the system
+        // controller or the page's own content. Read before the switch so the
+        // answer is the switch's input, not its result.
+        logHosts(to: tab, tabs: tabs)
         // SwiftUI's TabView is backed by a private `UIKitTabBarController`
         // that uses the iOS 18+ `UITab` API: its `viewControllers` is empty
         // (b1690 log: count=0), so drive `tabs`/`selectedTab` instead.
@@ -56,6 +62,7 @@ final class TabSwitchDriver {
             UIView.performWithoutAnimation {
                 tabs.selectedTab = items[index]
             }
+            TabSwitchProbe.shared.mark("driver")
             report(reason: "ok", tab: tab, started: started,
                    tabs: tabs, root: root, count: items.count)
             return true
@@ -89,6 +96,32 @@ final class TabSwitchDriver {
         }
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.switch",
+            detail: detail,
+            dedupe: false)
+    }
+
+    /// Per-tab view state at the tap: `w` = the page's view is in a window,
+    /// `h` = it is hidden. `isViewLoaded` keeps this from loading a page the
+    /// system has not built yet.
+    private func logHosts(to tab: String, tabs: UITabBarController) {
+        var detail = ["to": tab]
+        for (index, child) in tabs.children.enumerated() {
+            guard child.isViewLoaded else {
+                detail["c\(index)"] = "unloaded"
+                continue
+            }
+            let inWindow = child.view.window != nil ? "1" : "0"
+            let hidden = child.view.isHidden ? "1" : "0"
+            detail["c\(index)"] = "w\(inWindow)h\(hidden)"
+        }
+        if let bar = tabs.viewIfLoaded {
+            detail["bar"] = tabs.tabBar.window != nil
+                ? (tabs.tabBar.isHidden ? "hidden" : "shown")
+                : "off"
+            detail["host"] = bar.window != nil ? "1" : "0"
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.host",
             detail: detail,
             dedupe: false)
     }

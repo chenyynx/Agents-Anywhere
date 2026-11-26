@@ -60,13 +60,26 @@ final class TabPageTransition {
             picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             cover.addSubview(picture)
         }
-        // Below the system tab bar: the bar keeps its own selection animation
-        // while the page area is covered.
+        // The cover must never hide the tab bar (pp 2026-11-27): the bar keeps
+        // responding and animating while the page area is covered. Insert
+        // below the bar's top-level container when that container is a direct
+        // subview of the tab controller's view; if SwiftUI hosts the bar
+        // somewhere else, clip the cover to the page area above the bar
+        // instead of falling back to covering everything.
         let bar = tabs.tabBar
-        let barBelow = bar.superview === tabs.view && !bar.isHidden
-        if barBelow {
-            tabs.view.insertSubview(cover, belowSubview: bar)
+        var anchor: UIView? = bar
+        while let superview = anchor?.superview, superview !== tabs.view {
+            anchor = superview
+        }
+        let barBelow = anchor?.superview === tabs.view && !bar.isHidden
+        if barBelow, let anchor {
+            cover.frame = tabs.view.bounds
+            tabs.view.insertSubview(cover, belowSubview: anchor)
         } else {
+            let barFrame = bar.convert(bar.bounds, to: tabs.view)
+            let height = max(0, min(tabs.view.bounds.height, barFrame.minY))
+            cover.frame = CGRect(x: 0, y: 0,
+                                 width: tabs.view.bounds.width, height: height)
             tabs.view.addSubview(cover)
         }
         self.cover = cover
@@ -76,7 +89,8 @@ final class TabPageTransition {
             detail: ["phase": "begin",
                      "tabs": "1",
                      "picture": picture == nil ? "0" : "1",
-                     "barBelow": barBelow ? "1" : "0"],
+                     "barBelow": barBelow ? "1" : "0",
+                     "clipped": barBelow ? "0" : "1"],
             dedupe: false)
     }
 

@@ -18,6 +18,14 @@ struct SessionChatView: View, Equatable {
     /// mounted (scroll/state), but its composer must not mirror the shared
     /// draft's focus — the visible page owns it.
     let isActive: Bool
+    /// A per view-instance token. `session.page.appear`/`disappear` carry it:
+    /// the same token across a disappear/appear pair proves the tab switch kept
+    /// the page mounted, while a new token proves the page was rebuilt.
+    /// `isActive` cannot tell those apart — the bar's commit can land after the
+    /// hidden page's onDisappear (b1660 log: 24 switches, every disappearing
+    /// page still read active=1 at onDisappear and then received active=0,
+    /// which is only possible while the page is alive).
+    @State private var pageMountToken = SessionChatView.newMountToken()
     let onMenu: () -> Void
     /// A pushed session leaves the leading slot to the system back button (and
     /// its native swipe); the Chat-tab root keeps the drawer hamburger.
@@ -384,6 +392,10 @@ struct SessionChatView: View, Equatable {
         (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
     }
 
+    private static func newMountToken() -> String {
+        String(UUID().uuidString.prefix(6))
+    }
+
     /// One line per page mount, plus a warning when another pane already holds
     /// the same session: that is the two-composer focus fight.
     private func recordPageAppear() {
@@ -395,6 +407,7 @@ struct SessionChatView: View, Equatable {
             detail: ["pane": paneRole.rawValue,
                      "model": String(describing: ObjectIdentifier(model)),
                      "others": otherNames,
+                     "mount": pageMountToken,
                      "active": isActive ? "1" : "0"],
             dedupe: false)
     }
@@ -776,14 +789,18 @@ struct SessionChatView: View, Equatable {
         }
         .onDisappear {
             SessionPageRegistry.left(session.id, pane: paneRole)
-            // `active` separates a tab switch (the page was already told it is
-            // inactive) from a rebuild of a selected page (still active).
+            // `mount` is the rebuild verdict: the next appear for this pane
+            // carries the same token when the tab switch merely hid the page
+            // (SwiftUI keeps tab content mounted), and a new token when the
+            // page itself was torn down. `active` is just the page's last
+            // isActive — the shell's commit can land after this call.
             ClientDiagnosticsLog.shared.record(
                 kind: "session.page.disappear",
                 sessionID: session.id,
                 detail: ["pane": paneRole.rawValue,
                          "active": isActive ? "1" : "0",
-                         "reason": isActive ? "rebuilt" : "inactive"],
+                         "mount": pageMountToken,
+                         "reason": isActive ? "active" : "inactive"],
                 dedupe: false)
             if previewURL == nil { cleanPreview() }
             // A deferred-item read belongs to the page visit: leaving the page

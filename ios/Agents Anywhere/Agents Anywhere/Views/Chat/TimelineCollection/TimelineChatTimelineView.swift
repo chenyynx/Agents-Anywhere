@@ -206,6 +206,14 @@ struct TimelineChatTimelineView: View {
                     // explicit latest request: clear the post-history guard
                     // that requires a fresh bottom visit before auto-loading
                     // newer rows.
+                    // This line is what tells the reader's own tap apart from
+                    // the app pulling the page to the bottom on its own: a
+                    // `timeline.bottom.request` with forced=1 and no
+                    // `timeline.pill.tap` beside it is the app's doing.
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.pill.tap",
+                        sessionID: model.session.id,
+                        detail: ["pane": paneRole.rawValue])
                     bridge.controller?.allowLatestAfterHistoryGesture()
                     bridge.controller?.requestBottom(animated: true, forced: true)
                 }

@@ -40,6 +40,10 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 kind: "shell.tabs.write",
                 detail: ["to": next.rawValue],
                 dedupe: false)
+            // The frame window starts at the tap, not at the first SwiftUI
+            // update: a main thread that blocks in the bar's own handler is
+            // exactly what `shell.tabs.frame` must be able to see.
+            TabSwitchProbe.shared.begin(tab: next.rawValue)
             panes.selectedTab = next
         })
     }

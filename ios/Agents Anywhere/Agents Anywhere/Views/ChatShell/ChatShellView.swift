@@ -16,12 +16,6 @@ struct ChatShellView: View {
     /// Owns the chat tab's session model outside the tab page, like the
     /// official SessionRegistry keeps the store alive across tab switches.
     @State private var chatPane = ChatPaneStore()
-    /// The tab the pages treat as active. It commits only after the bar's
-    /// selection has been stable for a moment: the tab bar can write a
-    /// transient selection while it animates, and letting that through
-    /// deactivated a page (dropping its focus) and then reactivated it.
-    @State private var committedTab: ShellTab = .chat
-    @State private var tabSettleTask: Task<Void, Never>?
     @AppStorage("aa.shell.tabs") private var shellTabsEnabled = true
 
     private var selection: ChatShellSelection {
@@ -80,8 +74,16 @@ struct ChatShellView: View {
             chatPane.retain(liveChatSessionIDs(next))
             persistPanes(next)
         }
+        // The pages read `panes.selectedTab` directly — the b1660 write probe
+        // showed one write per switch, so nothing needs debouncing — and this
+        // line records the same edge the pages saw, to time it against the
+        // tap. b1660's 220 ms settle window plus the runloop's delivery put
+        // the old commit 400–530 ms after the tap.
         .onChange(of: panes.selectedTab, initial: true) { _, next in
-            scheduleCommittedTab(next)
+            ClientDiagnosticsLog.shared.record(
+                kind: "shell.tabs.active",
+                detail: ["tab": next.rawValue],
+                dedupe: false)
         }
         .task(id: NewSessionLoadKey(target: appState.nativeChatServices?.newSession.refreshKey,
             presentationID: newSessionPresentationID)) {
@@ -339,7 +341,7 @@ struct ChatShellView: View {
                 fallbackTitle: summary?.title,
                 fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
                 paneRole: .devices,
-                isActive: committedTab == .devices,
+                isActive: panes.selectedTab == .devices,
                 onMenu: toggleSidebar,
                 showsMenuButton: false,
                 onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
@@ -412,7 +414,7 @@ struct ChatShellView: View {
             deviceName: appState.connectors.first { $0.id == connectorID }?.name,
             fallbackTitle: summary?.title,
             fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
-            isActive: !tabShellActive || committedTab == .chat,
+            isActive: !tabShellActive || panes.selectedTab == .chat,
             onMenu: toggleSidebar,
             onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             .equatable()
@@ -608,22 +610,6 @@ struct ChatShellView: View {
     private func persistPanes(_ next: ShellPanesModel) {
         guard tabShellActive, let scope = panesScope else { return }
         appState.saveShellPanes(next, in: scope)
-    }
-
-    /// Commits a tab only after it stays selected for one settle window.
-    /// Transient writes during the bar's animation never reach the pages.
-    private func scheduleCommittedTab(_ next: ShellTab) {
-        tabSettleTask?.cancel()
-        guard committedTab != next else { return }
-        tabSettleTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(220))
-            guard !Task.isCancelled, panes.selectedTab == next else { return }
-            committedTab = next
-            ClientDiagnosticsLog.shared.record(
-                kind: "shell.tabs.active",
-                detail: ["tab": next.rawValue],
-                dedupe: false)
-        }
     }
 
     /// The pages that may keep a live pane: the Chat tab root and the Device

@@ -42,6 +42,13 @@ nonisolated enum ShellDevicesRoute: Codable, Equatable, Hashable, Sendable {
 nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     var selectedTab: ShellTab = .chat
     var chatRoot: ShellChatRoot = .newSession
+    /// The device whose page is the Devices tab's root. Nil means "pick the
+    /// first online connector" (a restored account may not have loaded any
+    /// connectors yet).
+    var devicesDevice: V2ConnectorID?
+    /// The session drill-down above the device page. `.device` is kept in the
+    /// route enum for old snapshots and is lifted into `devicesDevice` on
+    /// restore.
     var devicesPath: [ShellDevicesRoute] = []
 
     /// The session whose timeline is actually on screen.
@@ -64,7 +71,8 @@ nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     }
 
     /// Opens an existing session in the Chat tab. The Devices stack is left
-    /// untouched so the tab switch back still lands where the user left it.
+    /// untouched: both tabs may show the same session (each page is mounted
+    /// only while its tab is selected).
     mutating func openChatSession(_ id: V2SessionID) {
         selectedTab = .chat
         chatRoot = .session(id)
@@ -76,15 +84,34 @@ nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
         chatRoot = .newSession
     }
 
-    /// Roots the Devices tab on a connector. A different device gets a fresh
-    /// one-level stack rather than reusing the previous device's drill-down.
+    /// Roots the Devices tab on a connector. The device page itself is the
+    /// tab root now; a different device gets a fresh session drill-down rather
+    /// than reusing the previous device's stack.
     mutating func openDevice(_ id: V2ConnectorID) {
         selectedTab = .devices
-        devicesPath = [.device(id)]
+        devicesDevice = id
+        devicesPath = []
     }
 
-    /// Drills from the device into one of its sessions.
+    /// Snapshots written before the device page became the tab root stored
+    /// the device as the first path element. Lift it into `devicesDevice` and
+    /// keep the session drill-down above it.
+    mutating func normalizeRestoredDeviceRoot() {
+        if case let .device(id)? = devicesPath.first {
+            if devicesDevice == nil { devicesDevice = id }
+            devicesPath.removeFirst()
+        }
+        devicesPath.removeAll { route in
+            if case .device = route { return true }
+            return false
+        }
+    }
+
+    /// Drills from the device into one of its sessions. The Chat tab keeps
+    /// whatever it was showing; page mounting, not this value, enforces the
+    /// one-live-page-at-a-time rule.
     mutating func pushDeviceSession(_ id: V2SessionID) {
+        guard devicesPath.last != .session(id) else { return }
         devicesPath.append(.session(id))
     }
 

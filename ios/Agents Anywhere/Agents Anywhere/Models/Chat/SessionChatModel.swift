@@ -94,9 +94,18 @@ final class SessionChatModel {
     /// The opening read (network latest page) and queue repair run once per
     /// page model. Re-appearing from another tab only re-attaches the UI.
     @ObservationIgnored private(set) var hasCompletedOpening = false
-    /// Where the reader was when the tab left the screen. A rebuilt page
-    /// restores this point instead of landing at the bottom.
-    @ObservationIgnored var scrollAnchor: ChatScrollAnchor?
+    /// Where each page's reader was when its tab left the screen. The same
+    /// session can be open in both tabs, and each page restores its own
+    /// point instead of the other page's.
+    @ObservationIgnored private var scrollAnchors: [ChatPaneRole: ChatScrollAnchor] = [:]
+
+    func scrollAnchor(for pane: ChatPaneRole) -> ChatScrollAnchor? {
+        scrollAnchors[pane]
+    }
+
+    func setScrollAnchor(_ anchor: ChatScrollAnchor?, for pane: ChatPaneRole) {
+        scrollAnchors[pane] = anchor
+    }
     @ObservationIgnored private let attachments: V2AttachmentService
     @ObservationIgnored private let files: V2WorkspaceFilesService?
     /// The next session's default, updated when this session's options sheet
@@ -408,7 +417,13 @@ final class SessionChatModel {
         // A failed open stays uncompleted so the next appearance can retry,
         // exactly like the old view-owned model did on every visit. The error
         // is already surfaced through `openingError`.
-        guard openingError == nil else { return }
+        if let openingError {
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.open.retry_pending",
+                sessionID: session.id,
+                detail: ["error": openingError])
+            return
+        }
         hasCompletedOpening = true
     }
 
@@ -417,6 +432,8 @@ final class SessionChatModel {
     /// alive; releasing the model ends the run.
     func startLiveRun(sessionID: V2SessionID) {
         guard !liveRun.isRunning else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.live.start", sessionID: sessionID)
         let timeline = timeline
         let repository = repository
         liveRun.start {
@@ -469,6 +486,10 @@ final class SessionChatModel {
         } catch {
             guard !Task.isCancelled else { return }
             openingError = error.localizedDescription
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.open.failed",
+                sessionID: session.id,
+                detail: ["error": error.localizedDescription])
         }
         guard session.isValid, !Task.isCancelled else { return }
         if let data = repository.cached(sessionId: session.id) {

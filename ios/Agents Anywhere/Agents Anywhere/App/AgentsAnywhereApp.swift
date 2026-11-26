@@ -14,6 +14,8 @@ struct AgentsAnywhereApp: App {
 
     init() {
         AppFontRegistry.registerBundledFonts()
+        // The official caret instead of the system's thin back chevron.
+        NavigationBackIndicator.install()
         // One-time migration of the retired collection-timeline Bool into the
         // render-mode enum, before any view reads the mode.
         TimelineRenderModeSwitch.migrateIfNeeded()

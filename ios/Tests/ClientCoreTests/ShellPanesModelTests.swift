@@ -46,24 +46,41 @@ import Testing
         panes.openChatSession("chat-session")
         panes.openDevice("connector-a")
         #expect(panes.selectedTab == .devices)
-        #expect(panes.devicesPath == [.device("connector-a")])
+        #expect(panes.devicesDevice == "connector-a")
+        #expect(panes.devicesPath.isEmpty)
         #expect(panes.chatRoot == .session("chat-session"))
         panes.pushDeviceSession("device-session")
-        #expect(panes.devicesPath == [.device("connector-a"), .session("device-session")])
+        #expect(panes.devicesPath == [.session("device-session")])
         #expect(panes.chatRoot == .session("chat-session"))
         panes.popDevice()
-        #expect(panes.devicesPath == [.device("connector-a")])
+        #expect(panes.devicesPath.isEmpty)
+        #expect(panes.devicesDevice == "connector-a")
         #expect(panes.chatRoot == .session("chat-session"))
         // Picking another device restarts its drill-down instead of stacking
         // on the previous device's path.
         panes.pushDeviceSession("device-session")
         panes.openDevice("connector-b")
-        #expect(panes.devicesPath == [.device("connector-b")])
+        #expect(panes.devicesDevice == "connector-b")
+        #expect(panes.devicesPath.isEmpty)
         #expect(panes.chatRoot == .session("chat-session"))
-        panes.popDevice()
         panes.popDevice()
         #expect(panes.devicesPath.isEmpty)
         #expect(panes.chatRoot == .session("chat-session"))
+    }
+
+    @Test func sameSessionMayLiveInBothPanes() {
+        var panes = ShellPanesModel()
+        panes.openChatSession("shared")
+        panes.openDevice("connector-a")
+        panes.pushDeviceSession("shared")
+        // Both tabs may name the same session: only the selected tab's page
+        // is mounted, so the store is shared but the live views are not.
+        #expect(panes.chatRoot == .session("shared"))
+        #expect(panes.devicesDevice == "connector-a")
+        #expect(panes.devicesPath == [.session("shared")])
+        // Pushing the top again is a no-op.
+        panes.pushDeviceSession("shared")
+        #expect(panes.devicesPath == [.session("shared")])
     }
 
     @Test func onlyTheActiveUnobscuredTabNamesAVisibleSession() {
@@ -112,6 +129,21 @@ import Testing
         #expect(relaunched.panes(in: scope).visibleSessionId(obscured: false) == "device-session")
     }
 
+    @Test func legacyDeviceRootSnapshotMovesTheDeviceOutOfThePath() {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
+        let store = V2RestorationStore(defaults: defaults)
+        // The pre-2026-11-26 shape: the device was the first path element.
+        var old = ShellPanesModel()
+        old.selectedTab = .devices
+        old.devicesPath = [.device("connector"), .session("session")]
+        store.save(panes: old, in: scope)
+        let restored = store.panes(in: scope)
+        #expect(restored.devicesDevice == "connector")
+        #expect(restored.devicesPath == [.session("session")])
+    }
+
     @Test func brokenOrUnknownPanesFallBackToTheDefaultWithoutTrapping() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
@@ -155,7 +187,8 @@ import Testing
         store.save(selection: .device("legacy-connector"), in: scope)
         let devices = store.panes(in: scope)
         #expect(devices.selectedTab == .devices)
-        #expect(devices.devicesPath == [.device("legacy-connector")])
+        #expect(devices.devicesDevice == "legacy-connector")
+        #expect(devices.devicesPath.isEmpty)
         #expect(devices.chatRoot == .newSession)
 
         store.save(selection: .newSession, in: scope)
@@ -188,13 +221,14 @@ import Testing
 
         // Migration is scoped too: another account's legacy route cannot leak in.
         store.save(selection: .device("legacy-connector"), in: otherAccount)
-        #expect(store.panes(in: otherAccount).devicesPath == [.device("legacy-connector")])
+        #expect(store.panes(in: otherAccount).devicesDevice == "legacy-connector")
+        #expect(store.panes(in: otherAccount).devicesPath.isEmpty)
         #expect(store.panes(in: one) == panes)
 
         store.clear(scope: one)
         #expect(defaults.data(forKey: panesKey(one)) == nil)
         #expect(store.panes(in: one) == ShellPanesModel())
         // Clearing one scope leaves the others alone.
-        #expect(store.panes(in: otherAccount).devicesPath == [.device("legacy-connector")])
+        #expect(store.panes(in: otherAccount).devicesDevice == "legacy-connector")
     }
 }

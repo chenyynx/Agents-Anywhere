@@ -11,6 +11,9 @@ struct SessionChatView: View, Equatable {
     let deviceName: String?
     let fallbackTitle: String?
     let fallbackRuntimeName: String?
+    /// The tab page this page is mounted in; reader positions are kept per
+    /// page so both tabs can show the same session.
+    let paneRole: ChatPaneRole
     let onMenu: () -> Void
     /// A pushed session leaves the leading slot to the system back button (and
     /// its native swipe); the Chat-tab root keeps the drawer hamburger.
@@ -144,7 +147,8 @@ struct SessionChatView: View, Equatable {
                 onSubAgent: { sheet = .subagents($0, fromCapsule: false) },
                 jumpRequest: outlineJump,
                 safeAreaInsets: timelineSafeAreaInsets(proxy),
-                renderMode: renderMode)
+                renderMode: renderMode,
+                paneRole: paneRole)
                 // The command card floats over the page, not inside the
                 // composer's overlay: an overlay drawn outside its base frame
                 // renders but cannot be tapped. The timeline fills the screen,
@@ -376,6 +380,48 @@ struct SessionChatView: View, Equatable {
         (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
     }
 
+    /// One line per page mount, plus a warning when another pane already holds
+    /// the same session: that is the two-composer focus fight.
+    private func recordPageAppear() {
+        let others = SessionPageRegistry.entered(session.id, pane: paneRole)
+        let otherNames = others.map(\.rawValue).joined(separator: ",")
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.page.appear",
+            sessionID: session.id,
+            detail: ["pane": paneRole.rawValue,
+                     "model": String(describing: ObjectIdentifier(model)),
+                     "others": otherNames],
+            dedupe: false)
+        // Check after the update settles: SwiftUI may build the incoming page
+        // before it tears the outgoing one down, which would read as a
+        // duplicate for one frame.
+        let sessionID = session.id
+        let pane = paneRole
+        DispatchQueue.main.async {
+            let live = SessionPageRegistry.livePanes(sessionID)
+            guard live.count > 1 else { return }
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.page.duplicate",
+                sessionID: sessionID,
+                detail: ["pane": pane.rawValue,
+                         "others": live.filter { $0 != pane }
+                             .map(\.rawValue).joined(separator: ",")])
+        }
+    }
+
+    /// Focus transitions are the signal for the keyboard that dismisses
+    /// itself; the keyboard flags say whether the page believed it was up.
+    private func recordComposerFocus(_ focused: Bool) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "composer.focus",
+            sessionID: session.id,
+            detail: ["pane": paneRole.rawValue,
+                     "focused": focused ? "1" : "0",
+                     "keyboardOnScreen": keyboardOnScreen ? "1" : "0",
+                     "windowKeyboard": windowKeyboardVisible ? "1" : "0"],
+            dedupe: false)
+    }
+
     /// The bottom dock stack, in its own method: the composer's initializer and
     /// this chain's other closures together exceed the type checker's budget
     /// (the chain has timed it out more than once).
@@ -490,7 +536,9 @@ struct SessionChatView: View, Equatable {
         ChatNotification.pending(in: session.notices.notices, acknowledged: session.acknowledgedNotifications)
     }
     @State private var pendingTakeover: Bool?
-    @State private var hasStartedLoading = false
+    /// Seeded from the model: a page rebuilt after its tab parked must render
+    /// at once instead of replaying the drawer's 120 ms settle delay.
+    @State private var hasStartedLoading: Bool
     @State private var composerEditor = ComposerEditorController()
     @State private var showsCommandMenu = false
     /// The timeline's measured frame: its top is the navigation bar and its
@@ -507,14 +555,17 @@ struct SessionChatView: View, Equatable {
 
     init(model: SessionChatModel, services: V2ClientServices, deviceName: String?,
          fallbackTitle: String? = nil, fallbackRuntimeName: String? = nil,
+         paneRole: ChatPaneRole = .chat,
          onMenu: @escaping () -> Void,
          showsMenuButton: Bool = true,
          onTogglePinned: @escaping (Bool) -> Void) {
         self.model = model
         sessionIdentity = model.session
+        _hasStartedLoading = State(initialValue: model.hasCompletedOpening)
         self.deviceName = deviceName
         self.fallbackTitle = fallbackTitle
         self.fallbackRuntimeName = fallbackRuntimeName
+        self.paneRole = paneRole
         fileService = services.workspaceFiles; detailService = services.sessionDetail
         imageLoader = services.attachmentImageLoader
         self.onMenu = onMenu
@@ -556,6 +607,7 @@ struct SessionChatView: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.sessionIdentity === rhs.sessionIdentity && lhs.deviceName == rhs.deviceName
             && lhs.fallbackTitle == rhs.fallbackTitle && lhs.fallbackRuntimeName == rhs.fallbackRuntimeName
+            && lhs.paneRole == rhs.paneRole
     }
     var body: some View {
         GeometryReader { geometry in
@@ -667,6 +719,15 @@ struct SessionChatView: View, Equatable {
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardWillHideNotification)) { note in
+            // A hide while the composer still owns focus is the keyboard
+            // dismissing itself; record the pane that saw it.
+            if session.composer.isFocused {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "composer.keyboard.hide_focused",
+                    sessionID: session.id,
+                    detail: ["pane": paneRole.rawValue],
+                    dedupe: false)
+            }
             withAnimation(.easeOut(duration: Self.keyboardAnimationDuration(note))) {
                 keyboardOnScreen = false
             }
@@ -703,7 +764,17 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
+        .onAppear { recordPageAppear() }
+        .onChange(of: session.composer.isFocused) { _, focused in
+            recordComposerFocus(focused)
+        }
         .onDisappear {
+            SessionPageRegistry.left(session.id, pane: paneRole)
+            ClientDiagnosticsLog.shared.record(
+                kind: "session.page.disappear",
+                sessionID: session.id,
+                detail: ["pane": paneRole.rawValue],
+                dedupe: false)
             if previewURL == nil { cleanPreview() }
             // A deferred-item read belongs to the page visit: leaving the page
             // abandons an in-flight read instead of running it out behind the

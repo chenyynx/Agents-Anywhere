@@ -1,5 +1,13 @@
 import Foundation
 
+/// Which tab page owns a transcript view. The same session can be open in
+/// the Chat tab and in the Devices stack; each page keeps its own reader
+/// position, like the official held tab pages.
+nonisolated enum ChatPaneRole: String, Codable, Hashable, Sendable {
+    case chat
+    case devices
+}
+
 /// A reader position inside the transcript, kept by the page model so a
 /// rebuilt view can return to the same place instead of the bottom.
 nonisolated struct ChatScrollAnchor: Equatable, Sendable {

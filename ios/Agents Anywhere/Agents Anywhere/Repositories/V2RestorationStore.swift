@@ -42,7 +42,9 @@ final class V2RestorationStore {
         if let data = defaults.data(forKey: panesKey(scope)) {
             guard let envelope = try? JSONDecoder().decode(PanesEnvelope.self, from: data),
                   envelope.version == Self.panesVersion else { return ShellPanesModel() }
-            return envelope.panes
+            var panes = envelope.panes
+            panes.normalizeRestoredDeviceRoot()
+            return panes
         }
         // No panes written yet: seed from the legacy single-route cache so a
         // user who last stood in a chat or on a device keeps that place.
@@ -72,8 +74,7 @@ final class V2RestorationStore {
             return panes
         case .device(let id):
             var panes = ShellPanesModel()
-            panes.selectedTab = .devices
-            panes.devicesPath = [.device(id)]
+            panes.openDevice(id)
             return panes
         }
     }

@@ -12,6 +12,9 @@ import UIKit
 /// actions are inert until that wiring lands.
 struct TimelineChatTimelineView: View {
     let model: SessionChatModel
+    /// The tab page this bridge belongs to; its reader position is stored per
+    /// page so two tabs showing one session restore independently.
+    private let paneRole: ChatPaneRole
     /// The renderer this bridge built, in the model's raw-value terms.
     private let renderModeName: String
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
@@ -54,15 +57,17 @@ struct TimelineChatTimelineView: View {
          onSubAgent: @escaping (String) -> Void,
          jumpRequest: ConversationOutlineJumpRequest,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
-         renderMode: TimelineRenderMode = .merged) {
+         renderMode: TimelineRenderMode = .merged,
+         paneRole: ChatPaneRole = .chat) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         self.renderModeName = renderMode.rawValue
+        self.paneRole = paneRole
         _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onOpenLink: onOpenLink,
             onSubAgent: onSubAgent,
-            renderMode: renderMode))
+            renderMode: renderMode, paneRole: paneRole))
     }
 
     private var hasInteractions: Bool {
@@ -224,7 +229,7 @@ struct TimelineChatTimelineView: View {
                 let rendererChanged = model.takeOpeningRenderModeChange(renderModeName)
                 if firstOpen || rendererChanged {
                     bridge.beginOpening()
-                } else if let anchor = model.scrollAnchor {
+                } else if let anchor = model.scrollAnchor(for: paneRole) {
                     bridge.restoreScrollAnchor(anchor)
                 } else {
                     bridge.beginOpening()
@@ -451,6 +456,8 @@ struct TimelineChatTimelineView: View {
 final class TimelineChatBridge: ObservableObject {
     let model: SessionChatModel
     let adapter: TimelineChatContentAdapter
+    /// The tab page this bridge belongs to (reader position is per page).
+    let paneRole: ChatPaneRole
     /// The page's body-link router; the thinking detail renders File
     /// references too and must resolve them the same way the rows do.
     let onOpenLink: (URL) -> Bool
@@ -489,8 +496,10 @@ final class TimelineChatBridge: ObservableObject {
          onFile: @escaping (String) -> Void,
          onOpenLink: @escaping (URL) -> Bool,
          onSubAgent: @escaping (String) -> Void,
-         renderMode: TimelineRenderMode = .merged) {
+         renderMode: TimelineRenderMode = .merged,
+         paneRole: ChatPaneRole = .chat) {
         self.model = model
+        self.paneRole = paneRole
         self.onOpenLink = onOpenLink
         let adapter = TimelineChatContentAdapter(model: model, onAttachment: onAttachment,
                                                  onFile: onFile, onOpenLink: onOpenLink,
@@ -588,9 +597,26 @@ final class TimelineChatBridge: ObservableObject {
     func captureScrollAnchor() {
         // `viewport` dereferences the implicitly-unwrapped collection view;
         // onDisappear can run before (or after) the controller's view exists.
-        guard let controller, controller.isViewLoaded,
-              let anchor = controller.anchor(at: controller.viewport.offsetY) else { return }
-        model.scrollAnchor = ChatScrollAnchor(itemID: anchor.id, offsetIntoRow: anchor.offsetIntoRow)
+        guard let controller else { return recordAnchorSkip("no_controller") }
+        guard controller.isViewLoaded else { return recordAnchorSkip("not_loaded") }
+        guard let anchor = controller.anchor(at: controller.viewport.offsetY) else {
+            return recordAnchorSkip("no_anchor")
+        }
+        model.setScrollAnchor(
+            ChatScrollAnchor(itemID: anchor.id, offsetIntoRow: anchor.offsetIntoRow),
+            for: paneRole)
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.anchor.capture",
+            sessionID: model.session.id,
+            detail: ["pane": paneRole.rawValue, "item": anchor.id,
+                     "offset": String(Int(anchor.offsetIntoRow.rounded()))])
+    }
+
+    private func recordAnchorSkip(_ reason: String) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.anchor.capture.skip",
+            sessionID: model.session.id,
+            detail: ["pane": paneRole.rawValue, "reason": reason])
     }
 
     /// Restores a saved reader position after the page is rebuilt. The row
@@ -599,17 +625,47 @@ final class TimelineChatBridge: ObservableObject {
     func restoreScrollAnchor(_ anchor: ChatScrollAnchor) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            for _ in 0..<20 {
-                if self.restoreLoadedAnchor(anchor) { return }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.anchor.restore.start",
+                sessionID: self.model.session.id,
+                detail: ["pane": self.paneRole.rawValue, "item": anchor.itemID,
+                         "offset": String(Int(anchor.offsetIntoRow.rounded()))])
+            for attempt in 1...20 {
+                if self.restoreLoadedAnchor(anchor) {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.anchor.restore",
+                        sessionID: self.model.session.id,
+                        detail: ["pane": self.paneRole.rawValue,
+                                 "item": anchor.itemID,
+                                 "attempts": String(attempt)])
+                    return
+                }
                 // The anchor cannot land (row gone with the window, or the
                 // page never loaded). A fresh page defaults to the bottom;
                 // leaving it at the oldest loaded row is the bug this restore
                 // exists to prevent. A reader who already scrolled owns the
                 // page and is left alone.
-                if self.readerTookOver { return }
+                if self.readerTookOver {
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "timeline.anchor.restore.abandoned",
+                        sessionID: self.model.session.id,
+                        detail: ["pane": self.paneRole.rawValue, "reason": "reader"])
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            guard !self.readerTookOver else { return }
+            guard !self.readerTookOver else {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.anchor.restore.abandoned",
+                    sessionID: self.model.session.id,
+                    detail: ["pane": self.paneRole.rawValue, "reason": "reader"])
+                return
+            }
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.anchor.fallback",
+                sessionID: self.model.session.id,
+                detail: ["pane": self.paneRole.rawValue, "item": anchor.itemID,
+                         "controller": self.controller == nil ? "nil" : "loaded"])
             self.beginOpening()
         }
     }

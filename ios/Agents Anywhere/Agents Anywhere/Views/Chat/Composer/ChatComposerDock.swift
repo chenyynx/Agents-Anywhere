@@ -257,10 +257,27 @@ struct ChatComposerDock: View {
     /// straddling the boundary — whichever turn state the commit settled into
     /// decides the action.
     private func send() {
-        guard !isSending, !isBusy, importCount == 0 else { return }
+        let sessionID = sessionChat?.session.id
+        guard !isSending, !isBusy, importCount == 0 else {
+            ClientDiagnosticsLog.shared.record(
+                kind: "composer.send.blocked",
+                sessionID: sessionID,
+                detail: ["reason": isSending ? "sending" : (isBusy ? "busy" : "importing"),
+                         "streaming": isStreaming ? "1" : "0"])
+            return
+        }
         // Commit follows the affordance the bar is showing: the textless stop
         // form has nothing to commit, and each live form carries its own gate.
-        guard affordance.shape != .stop, affordance.isActionEnabled else { return }
+        guard affordance.shape != .stop, affordance.isActionEnabled else {
+            ClientDiagnosticsLog.shared.record(
+                kind: "composer.send.blocked",
+                sessionID: sessionID,
+                detail: ["reason": "affordance",
+                         "shape": String(describing: affordance.shape),
+                         "enabled": affordance.isActionEnabled ? "1" : "0",
+                         "streaming": isStreaming ? "1" : "0"])
+            return
+        }
         isSending = true
         // A send ends the editing session (the keyboard drops so the reply is
         // visible); an enqueue keeps it, because the queue is fed in a row.

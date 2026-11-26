@@ -18,7 +18,12 @@ struct DeviceManagementView: View {
     /// its native swipe); the root page keeps the drawer hamburger.
     var showsMenuButton = true
     let onOpenDevice: (V2ConnectorID) -> Void
+    /// Long-press on a device card copies that device's ID.
+    var onCopyDeviceId: (V2ConnectorID) -> Void = { _ in }
     let onOpenSession: (V2SessionID) -> Void
+    /// The account-level pairing entry (the sidebar no longer lists devices
+    /// in the tab shell).
+    var onPair: () -> Void = {}
     let onNewSession: (String?) -> Void
     let onNewProjectSession: (String) -> Void
     let onConnectorUpdated: (V2Connector) -> Void
@@ -117,6 +122,8 @@ struct DeviceManagementView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button(String(localized: "添加设备"), systemImage: "plus") { onPair() }
+                    Divider()
                     Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = connector.id }
                     Divider()
                     Button(String(localized: "Rename device"), systemImage: "pencil") { proposedName = connector.name; isRenaming = true }.disabled(!canManage)
@@ -231,6 +238,17 @@ struct DeviceManagementView: View {
                         DeviceIdentityCard(connector: item, isCurrent: item.id == connector.id) {
                             guard item.id != connector.id else { return }
                             onOpenDevice(item.id)
+                        }
+                        .contextMenu {
+                            if item.id != connector.id {
+                                Button { onOpenDevice(item.id) } label: {
+                                    Label(String(localized: "Open"), menuSymbol: "anthropicon.folderOpen")
+                                }
+                                Divider()
+                            }
+                            Button { onCopyDeviceId(item.id) } label: {
+                                Label(String(localized: "Copy device ID"), menuSymbol: "anthropicon.copy")
+                            }
                         }
                     }
                 }

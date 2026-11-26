@@ -54,10 +54,10 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             // update: a main thread that blocks in the bar's own handler is
             // exactly what `shell.tabs.frame` must be able to see.
             TabSwitchProbe.shared.begin(tab: next.rawValue)
-            // The official shape: the outgoing page stays on screen as a
-            // picture, the swap itself carries no implicit animation, and the
-            // picture is animated out once the destination is in place.
-            pageTransition.beginChange()
+            // The official shape: hold the destination's kept picture over
+            // the page area, swap the selection without an implicit
+            // animation, and cut the cover once the destination is in place.
+            pageTransition.beginChange(to: ShellTab.allCases.firstIndex(of: next) ?? 0)
             UIView.performWithoutAnimation {
                 withTransaction(Transaction(animation: nil)) {
                     panes.selectedTab = next

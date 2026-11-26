@@ -6,37 +6,36 @@ import UIKit
 /// (`ClaudeMinimalTabBar.TabPageMover`, 1.261123.51; see
 /// `/home/ubuntu/aa-test/claude-ios-re/CANONICAL/29-tab-shell-261123.md` §13).
 ///
-/// The official never lets the live page take part in the visible change:
-/// `PagePicture` is a group of real page views, and the page swap itself runs
-/// inside `performWithoutAnimation:` (0x103b841b8). The cover exists to hold
-/// the previous picture while the destination is put in place; the result the
-/// user sees is an instant tab change, not a fade — pp 2026-11-27: 「官方没有
-/// 这种动画」.
+/// What the official does that matters here:
+/// * pages are kept alive by the system `UITabBarController`;
+/// * the page swap itself runs inside `performWithoutAnimation:`;
+/// * `TabPageMover` keeps one `PagePicture` per tab (`kept: [Int: PagePicture]`)
+///   and `PageChangeCover(old:showsNew:ground:)` decides which picture the
+///   user sees during the change. `showsNew` is why a rapid switch does not
+///   leave the outgoing page on screen (pp 2026-11-27: 「快速切页能看到残留」).
 ///
-/// (There *is* a 0.15 s `+[UIView animateWithDuration:...]` in the cover code
-/// (duration constant 0x104d4e360), but what it animates is not yet proven —
-/// the cover path moves frames/centers (`setCenter:`/`setFrame:` users
-/// 0x103af541c / 0x103aee5c8) and never calls `setAlpha:`. Do not read it as
-/// a page fade.)
-///
-/// This is the SwiftUI-side equivalent: snapshot the outgoing page before the
-/// selection changes, cover the page area (below the system tab bar, so the
-/// bar stays live), let the swap happen underneath without animation, then
-/// remove the cover once the destination has been committed and laid out.
+/// This is the SwiftUI-side equivalent: capture the page being left, hold the
+/// **destination's** picture over the page area (below the tab bar) when one
+/// is known, swap the selection without animation, and remove the cover as an
+/// instant cut once the destination is the selected page and has laid out.
 @MainActor
 final class TabPageTransition {
-
     private weak var host: UIView?
     private var cover: UIView?
+    private var coverTarget = 0
     private var beganAt: CFTimeInterval = 0
+    /// One picture per tab, captured when leaving it. The official keeps the
+    /// same table (`TabPageMover.kept`); it is what lets the cover show the
+    /// destination immediately instead of the page being left.
+    private var pictures: [Int: UIView] = [:]
 
     func attach(host: UIView) {
         self.host = host
     }
 
-    /// Install the outgoing page's picture. Called before the selection write,
-    /// so the cover shows the page the reader is leaving.
-    func beginChange() {
+    /// Install the cover before the selection write: the destination's kept
+    /// picture when available, otherwise the outgoing page's picture.
+    func beginChange(to index: Int) {
         guard let host else { return }
         guard let tabs = Self.tabController(from: host) else {
             ClientDiagnosticsLog.shared.record(
@@ -45,27 +44,38 @@ final class TabPageTransition {
                 dedupe: false)
             return
         }
-        // A second tap before the first reveal finished: drop the old cover.
         cover?.removeFromSuperview()
         cover = nil
+        let from = tabs.selectedIndex
+        if let pageView = tabs.selectedViewController?.view,
+           let kept = pageView.snapshotView(afterScreenUpdates: false) {
+            pictures[from] = kept
+        }
 
-        guard let pageView = tabs.selectedViewController?.view else { return }
+        var source = "none"
+        var content: UIView?
+        if index != from, let kept = pictures.removeValue(forKey: index) {
+            content = kept
+            source = "kept"
+        } else if let pageView = tabs.selectedViewController?.view,
+                  let snap = pageView.snapshotView(afterScreenUpdates: false) {
+            content = snap
+            source = "outgoing"
+        }
+
         let cover = UIView(frame: tabs.view.bounds)
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         cover.isUserInteractionEnabled = false
-        cover.backgroundColor = pageView.backgroundColor ?? .systemBackground
-        let picture = pageView.snapshotView(afterScreenUpdates: false)
-        if let picture {
-            picture.frame = cover.bounds
-            picture.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            cover.addSubview(picture)
+        cover.backgroundColor = (tabs.selectedViewController?.view.backgroundColor) ?? .systemBackground
+        if let content {
+            content.frame = cover.bounds
+            content.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            cover.addSubview(content)
         }
-        // The cover must never hide the tab bar (pp 2026-11-27): the bar keeps
-        // responding and animating while the page area is covered. Insert
-        // below the bar's top-level container when that container is a direct
-        // subview of the tab controller's view; if SwiftUI hosts the bar
-        // somewhere else, clip the cover to the page area above the bar
-        // instead of falling back to covering everything.
+
+        // Never hide the tab bar: insert below its top-level container, or
+        // clip to the page area above it when the bar is not a direct
+        // subview of the tab controller's view.
         let bar = tabs.tabBar
         var anchor: UIView? = bar
         while let superview = anchor?.superview, superview !== tabs.view {
@@ -83,31 +93,45 @@ final class TabPageTransition {
             tabs.view.addSubview(cover)
         }
         self.cover = cover
+        coverTarget = index
         beganAt = CACurrentMediaTime()
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.cover",
             detail: ["phase": "begin",
                      "tabs": "1",
-                     "picture": picture == nil ? "0" : "1",
+                     "from": String(from),
+                     "to": String(index),
+                     "picture": content == nil ? "0" : "1",
+                     "source": source,
                      "barBelow": barBelow ? "1" : "0",
                      "clipped": barBelow ? "0" : "1"],
             dedupe: false)
     }
 
-    /// Reveal the destination once SwiftUI has committed the switch. The
-    /// layout pass is forced while the cover is still up, so the cut never
-    /// exposes a half-laid-out page (the official's `isPageInPlace` gate).
-    /// The cover is removed without animation: the official's tab change is
-    /// an instant cut, not a cross-fade.
+    /// Reveal the destination once the selection has committed to it and its
+    /// page has laid out. Bounded retry stands in for the official's
+    /// `awaitedIndex`/`longWait`: a rapid switch keeps the newer cover.
     func revealWhenSettled() {
         guard let host, let cover else { return }
         let tabs = Self.tabController(from: host)
-        DispatchQueue.main.async { [weak self, weak cover] in
+        scheduleReveal(cover: cover, target: coverTarget, tabs: tabs, attempt: 0)
+    }
+
+    private func scheduleReveal(cover: UIView, target: Int,
+                                tabs: UITabBarController?, attempt: Int) {
+        let delay: TimeInterval = attempt == 0 ? 0 : 0.016
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak cover, weak tabs] in
             guard let self, let cover, self.cover === cover else { return }
+            if let selected = tabs?.selectedIndex, selected != target, attempt < 20 {
+                self.scheduleReveal(cover: cover, target: target, tabs: tabs, attempt: attempt + 1)
+                return
+            }
             tabs?.view.layoutIfNeeded()
             ClientDiagnosticsLog.shared.record(
                 kind: "shell.tabs.cover",
                 detail: ["phase": "reveal",
+                         "to": String(target),
+                         "attempts": String(attempt),
                          "ms": String(Int((CACurrentMediaTime() - self.beganAt) * 1000))],
                 dedupe: false)
             cover.removeFromSuperview()

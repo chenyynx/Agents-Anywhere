@@ -15,6 +15,12 @@ struct TimelineChatTimelineView: View {
     /// The tab page this bridge belongs to; its reader position is stored per
     /// page so two tabs showing one session restore independently.
     private let paneRole: ChatPaneRole
+    /// Whether this page is the selected tab. A hidden page keeps its stream
+    /// data (the model stays live) but parks every apply: streaming flushes
+    /// otherwise re-group and re-lay the whole off-screen window on the main
+    /// thread — the frames the Devices page dropped while scrolling during a
+    /// stream (pp 2026-11-26). The parked content lands when the tab returns.
+    private let isPageActive: Bool
     /// The renderer this bridge built, in the model's raw-value terms.
     private let renderModeName: String
     /// The page's SwiftUI safe area, read inside the composer `safeAreaBar`
@@ -61,11 +67,13 @@ struct TimelineChatTimelineView: View {
          jumpRequest: ConversationOutlineJumpRequest,
          safeAreaInsets: EdgeInsets = EdgeInsets(),
          renderMode: TimelineRenderMode = .merged,
-         paneRole: ChatPaneRole = .chat) {
+         paneRole: ChatPaneRole = .chat,
+         isPageActive: Bool = true) {
         self.model = model
         self.safeAreaInsets = safeAreaInsets
         self.renderModeName = renderMode.rawValue
         self.paneRole = paneRole
+        self.isPageActive = isPageActive
         _jumpRequest = ObservedObject(wrappedValue: jumpRequest)
         _bridge = StateObject(wrappedValue: TimelineChatBridge(model: model,
             onAttachment: onAttachment, onFile: onFile, onOpenLink: onOpenLink,
@@ -78,6 +86,7 @@ struct TimelineChatTimelineView: View {
     }
     private var navigationIsSuspended: Bool {
         sidebarIsTransitioning || sidebarObscuresDetail || shellTabTransitioning
+            || !isPageActive
     }
     /// The official turn phase, from the same live signals the orb reads.
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a

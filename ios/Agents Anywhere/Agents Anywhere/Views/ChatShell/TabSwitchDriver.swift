@@ -43,6 +43,23 @@ final class TabSwitchDriver {
                    root: root, count: root.children.count)
             return false
         }
+        // SwiftUI's TabView is backed by a private `UIKitTabBarController`
+        // that uses the iOS 18+ `UITab` API: its `viewControllers` is empty
+        // (b1690 log: count=0), so drive `tabs`/`selectedTab` instead.
+        let items = tabs.tabs
+        if !items.isEmpty {
+            guard index >= 0, index < items.count else {
+                report(reason: "index", tab: tab, started: started,
+                       tabs: tabs, root: root, count: items.count)
+                return false
+            }
+            UIView.performWithoutAnimation {
+                tabs.selectedTab = items[index]
+            }
+            report(reason: "ok", tab: tab, started: started,
+                   tabs: tabs, root: root, count: items.count)
+            return true
+        }
         let count = tabs.viewControllers?.count ?? 0
         guard index >= 0, index < count else {
             report(reason: "index", tab: tab, started: started, tabs: tabs, root: root, count: count)
@@ -65,7 +82,8 @@ final class TabSwitchDriver {
         if let root { detail["root"] = String(describing: type(of: root)) }
         if let tabs {
             detail["tabs"] = String(describing: type(of: tabs))
-            detail["count"] = String(tabs.viewControllers?.count ?? 0)
+            detail["count"] = String(tabs.tabs.count)
+            detail["vcs"] = String(tabs.viewControllers?.count ?? 0)
         } else if let count {
             detail["children"] = String(count)
         }

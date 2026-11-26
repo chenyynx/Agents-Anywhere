@@ -105,6 +105,12 @@ final class ComposerEditorController {
             return canonicalText(of: textView)
         }
         textView.resignFirstResponder()
+        // Mirror the resignation synchronously, before the yield below hands
+        // the main actor to SwiftUI: a send-driven update in that window runs
+        // `updateUIView`, which re-focuses whenever `draft.isFocused` is still
+        // true — the keyboard dropped and then popped straight back up
+        // (pp 2026-11-26, intermittent depending on the update's timing).
+        draft?.isFocused = false
         await Task.yield()
         guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }
         synchronize()

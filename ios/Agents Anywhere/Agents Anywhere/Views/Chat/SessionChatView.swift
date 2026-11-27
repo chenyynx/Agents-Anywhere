@@ -34,6 +34,13 @@ struct SessionChatView: View, Equatable {
     /// the Liquid Glass tab bar; the legacy drawer shell sits on the home
     /// indicator and needs none.
     @Environment(\.shellTabBarActive) private var shellTabBarActive
+    /// The tab shell keeps visited pages mounted and flips this instead of
+    /// removing them (b1695: a removed page is re-rasterised on return, which
+    /// froze the screen for 200–575 ms). The legacy drawer leaves it true and
+    /// keeps using onAppear/onDisappear.
+    @Environment(\.shellTabVisible) private var shellTabVisible
+    /// The last visibility this page acted on; nil until the first onAppear.
+    @State private var pageVisibility: Bool?
     @State private var sheet: SessionSheet?
     @State private var expandedNoticeID: String?
     /// Whether the transcript must ignore keyboard-driven bottom insets. The
@@ -420,6 +427,43 @@ struct SessionChatView: View, Equatable {
                      "mount": pageMountToken,
                      "active": "1"],
             dedupe: false)
+    }
+
+    /// One place owns "the reader can see this page" so the two hosting
+    /// shapes agree: the legacy drawer removes the page (onAppear/onDisappear)
+    /// and the tab shell keeps it mounted and flips `shellTabVisible`. The
+    /// guard makes either path deliver each edge exactly once — a switch that
+    /// hides the page runs the leave work, a re-appear logs the mount again.
+    private func setPageVisible(_ visible: Bool) {
+        guard pageVisibility != visible else { return }
+        pageVisibility = visible
+        if visible {
+            recordPageAppear()
+        } else {
+            recordPageHidden()
+        }
+    }
+
+    /// The leave work: drop the keyboard and focus (the page keeps its view
+    /// and scroll while hidden; only focus is page-owned), close a stale
+    /// preview, abandon this visit's deferred reads, and take the page out of
+    /// the shared-page registry so the two-composer fight stays visible in
+    /// the log instead of surfacing as a dead keyboard.
+    private func recordPageHidden() {
+        TabSwitchProbe.shared.mark("disappear", extra: ["pane": paneRole.rawValue])
+        SessionPageRegistry.left(session.id, pane: paneRole)
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.page.disappear",
+            sessionID: session.id,
+            detail: ["pane": paneRole.rawValue,
+                     "active": "0",
+                     "mount": pageMountToken,
+                     "reason": "inactive"],
+            dedupe: false)
+        composerEditor.finishEditing()
+        session.composer.isFocused = false
+        if previewURL == nil { cleanPreview() }
+        model.deferredItems.cancelAll()
     }
 
     /// Focus transitions are the signal for the keyboard that dismisses
@@ -809,39 +853,12 @@ struct SessionChatView: View, Equatable {
         })
         .quickLookPreview($previewURL)
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
-        .onAppear { recordPageAppear() }
+        .onAppear { setPageVisible(shellTabVisible) }
+        .onChange(of: shellTabVisible) { _, visible in setPageVisible(visible) }
         .onChange(of: session.composer.isFocused) { _, focused in
             recordComposerFocus(focused)
         }
-        .onDisappear {
-            TabSwitchProbe.shared.mark("disappear", extra: ["pane": paneRole.rawValue])
-            SessionPageRegistry.left(session.id, pane: paneRole)
-            // `mount` is the rebuild verdict: the next appear for this pane
-            // carries the same token when the tab switch merely hid the page
-            // (SwiftUI keeps tab content mounted), and a new token when the
-            // page itself was torn down.
-            ClientDiagnosticsLog.shared.record(
-                kind: "session.page.disappear",
-                sessionID: session.id,
-                detail: ["pane": paneRole.rawValue,
-                         "active": "0",
-                         "mount": pageMountToken,
-                         "reason": "inactive"],
-                dedupe: false)
-            // The page keeps its view and scroll while hidden; only focus is
-            // page-owned. Leaving the tab drops the keyboard and clears the
-            // shared flag so returning does not pop it back up. This used to
-            // hang off the isActive input; the page no longer takes that input
-            // (a tab switch must not re-evaluate this body — the official page
-            // never does), so the visibility transition itself carries it.
-            composerEditor.finishEditing()
-            session.composer.isFocused = false
-            if previewURL == nil { cleanPreview() }
-            // A deferred-item read belongs to the page visit: leaving the page
-            // abandons an in-flight read instead of running it out behind the
-            // reader's back.
-            model.deferredItems.cancelAll()
-        }
+        .onDisappear { setPageVisible(false) }
         .onChange(of: session.failure, initial: true) { _, failure in
             toasts.update(source: "session", failure: failure, canRetry: failure?.kind != .authentication)
         }

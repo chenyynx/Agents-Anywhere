@@ -28,6 +28,23 @@ private struct ShellTabBarActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct ShellTabVisibleKey: EnvironmentKey {
+    /// True outside the tab shell (the legacy drawer never hides a mounted
+    /// page), so a page's lifecycle falls back to onAppear/onDisappear.
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether this tab page is the visible one. The tab shell keeps every
+    /// visited page mounted and only flips visibility, so a page's "left the
+    /// screen" work (drop the keyboard, leave the page registry) arrives here
+    /// instead of through `onDisappear`, which no longer fires on a switch.
+    var shellTabVisible: Bool {
+        get { self[ShellTabVisibleKey.self] }
+        set { self[ShellTabVisibleKey.self] = newValue }
+    }
+}
+
 extension EnvironmentValues {
     /// True inside the bottom-tab shell. Pages use it for the extra composer
     /// gap; the legacy drawer shell leaves it false.

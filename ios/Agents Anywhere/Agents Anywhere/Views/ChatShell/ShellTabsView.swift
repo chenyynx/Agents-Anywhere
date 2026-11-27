@@ -1,9 +1,19 @@
 import QuartzCore
 import SwiftUI
 
-/// The four-tab shell. The system `TabView` supplies the Liquid Glass tab bar;
-/// every tab owns its navigation stack so switching tabs keeps that tab's path.
-/// Composer and timeline stay inside their pages — no global bottom accessory.
+/// The four-tab shell.
+///
+/// The pages are **persistent**: every tab that has been opened stays mounted
+/// in one stack, and a switch only changes which page is visible. The previous
+/// shape hosted them in a SwiftUI `TabView`, whose `UITabBarController`
+/// detaches the hidden page; the destination then had to be laid out, drawn
+/// and rasterised again on every switch. b1695 measured that cost where it
+/// does not live: the main thread idles in the runloop for the whole
+/// 200–575 ms freeze while frames stop arriving, and the cost scales with the
+/// page's content (chat 575 ms, placeholder tabs 80 ms).
+///
+/// The bar is a plain `UITabBar` (see `ShellTabBar`), so the Liquid Glass look
+/// stays the system's; only page hosting moved out of the controller.
 struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     @Binding var panes: ShellPanesModel
     let chatRoot: ChatRoot
@@ -12,14 +22,14 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var transitionTask: Task<Void, Never>?
     /// True from a tab tap until the switch settles. Pages park data applies
-    /// for this window: a timeline refresh landing inside the system tab
-    /// transition stacked on it and turned the fixed ~150–200 ms switch into
-    /// 300–570 ms (b1668 log — the big stalls all coincided with recovery or
-    /// whole-window refresh bursts).
+    /// for this window: a timeline refresh landing inside a switch stacked on
+    /// it and turned a clean switch into 300–570 ms (b1668 log).
     @State private var tabTransitioning = false
-    /// Drives the system tab controller directly (the official's
-    /// `performWithoutAnimation` switch); see `TabSwitchDriver`.
-    @State private var tabSwitch = TabSwitchDriver()
+    /// Tabs opened at least once. A page is built on its first visit and never
+    /// removed afterwards — unmounting is exactly what forces the system to
+    /// rasterise it again (see the type comment). This keeps the launch path
+    /// lazy: only the restored tab builds at startup.
+    @State private var visited: Set<ShellTab> = [.chat]
 
     /// The legacy detail wrapper tinted the whole page with the primary
     /// control ink. The tab shell must do the same inside each tab, or a
@@ -42,90 +52,19 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         chatSession != nil && chatSession == deviceSession
     }
 
-    /// Logs every write the tab bar makes to the selection, including the
-    /// transient ones a settled `onChange` cannot see.
-    private var selectionBinding: Binding<ShellTab> {
-        Binding(get: { panes.selectedTab }, set: { next in
-            guard next != panes.selectedTab else { return }
-            ClientDiagnosticsLog.shared.record(
-                kind: "shell.tabs.write",
-                detail: ["to": next.rawValue],
-                dedupe: false)
-            // The frame window starts at the tap, not at the first SwiftUI
-            // update: a main thread that blocks in the bar's own handler is
-            // exactly what `shell.tabs.frame` must be able to see.
-            TabSwitchProbe.shared.begin(tab: next.rawValue)
-            // The official shell drives the system controller itself:
-            // `selectedIndex` inside `performWithoutAnimation:`. The b1686
-            // probe showed the ~200 ms switch is spent waiting on the
-            // TabView's own transition (the main thread is idle in the
-            // runloop, not computing), so bypass it and keep SwiftUI's state
-            // in step right after.
-            let target = ShellTab.allCases.firstIndex(of: next) ?? 0
-            tabSwitch.select(index: target, to: next.rawValue)
-            UIView.performWithoutAnimation {
-                withTransaction(Transaction(animation: nil)) {
-                    panes.selectedTab = next
-                }
-            }
-            // SwiftUI's update pass runs after this returns; the phase marks
-            // in the page/appear paths measure from the same window start.
-            TabSwitchProbe.shared.mark("written")
-        })
-    }
-
     var body: some View {
-        TabView(selection: selectionBinding) {
-            Tab(value: ShellTab.chat) {
-                NavigationStack { chatRoot }
-                    // The session page owns its keyboard insets (composer is a
-                    // safeAreaBar); the shell must not move the page.
-                    .ignoresSafeArea(.keyboard)
-                    .tint(contentTint)
-                    // Focus is page-owned and comes from the shell, not from
-                    // an input on the page: changing it must not re-evaluate
-                    // the page body (the official page never re-renders on a
-                    // tab switch).
-                    .environment(\.composerFocusEnabled, panes.selectedTab == .chat)
-            } label: {
-                ShellTabLabel(title: "Chats", image: "anthropicon.chat")
-            }
-            Tab(value: ShellTab.devices) {
-                // The shell supplies the Devices NavigationStack (it owns the
-                // path and the push destinations).
-                devicesRoot
-                    .tint(contentTint)
-                    .environment(\.composerFocusEnabled, panes.selectedTab == .devices)
-            } label: {
-                ShellTabLabel(title: "Devices", image: "anthropicon.laptop.tab")
-            }
-            Tab(value: ShellTab.wiki) {
-                NavigationStack {
-                    PlaceholderTabPage(
-                        title: String(localized: "Wiki"),
-                        icon: "anthropicon.library",
-                        onMenu: onMenu
-                    )
+        ZStack {
+            ForEach(ShellTab.allCases, id: \.self) { tab in
+                if visited.contains(tab) {
+                    page(tab)
                 }
-            } label: {
-                ShellTabLabel(title: "Wiki", image: "anthropicon.library")
-            }
-            Tab(value: ShellTab.artifacts) {
-                NavigationStack {
-                    PlaceholderTabPage(
-                        title: String(localized: "Artifacts"),
-                        icon: "anthropicon.artifacts",
-                        onMenu: onMenu
-                    )
-                }
-            } label: {
-                ShellTabLabel(title: "Artifacts", image: "anthropicon.artifacts")
             }
         }
-        .background(alignment: .topLeading) {
-            TabSwitchDriverHost(driver: tabSwitch)
-                .frame(width: 1, height: 1)
-                .allowsHitTesting(false)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ShellTabBar(selection: panes.selectedTab, onSelect: select)
+                // The system tab bar stays put when the keyboard rises; the
+                // pages own their keyboard insets.
+                .ignoresSafeArea(.keyboard)
         }
         .environment(\.shellTabBarActive, true)
         .environment(\.shellTabTransitioning, tabTransitioning)
@@ -136,9 +75,13 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
                 sessionID: session,
                 detail: ["tab": panes.selectedTab.rawValue])
         }
-        // Brackets the bar's switch animation so page work can be deferred
-        // while the transition is in flight, and so a transient selection
-        // write can be told apart from a settled tab.
+        .onChange(of: panes.selectedTab, initial: true) { _, next in
+            // A restored (or programmatic) selection mounts its page too.
+            if !visited.contains(next) { visited.insert(next) }
+        }
+        // Brackets the switch so page work can be deferred while it is in
+        // flight, and so a transient selection write can be told apart from a
+        // settled tab.
         .onChange(of: panes.selectedTab) { old, next in
             TabSwitchProbe.shared.mark("onchange", extra: ["from": old.rawValue])
             ClientDiagnosticsLog.shared.record(
@@ -161,23 +104,68 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             }
         }
     }
-}
 
-/// Official tab labels draw the artwork at 20 pt (the sidebar session row's
-/// size); the system tab item otherwise renders the asset at its intrinsic
-/// size, which made the icons visibly smaller than the official bar.
-private struct ShellTabLabel: View {
-    let title: LocalizedStringKey
-    let image: String
+    /// One persistent page. Only the selected one is visible; the others stay
+    /// mounted at zero opacity (never removed, which is the whole point).
+    @ViewBuilder private func page(_ tab: ShellTab) -> some View {
+        let visible = panes.selectedTab == tab
+        pageContent(tab)
+            .environment(\.composerFocusEnabled, visible)
+            .environment(\.shellTabVisible, visible)
+            .opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+            .zIndex(visible ? 1 : 0)
+    }
 
-    var body: some View {
-        Label {
-            Text(title)
-        } icon: {
-            Image(image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 20, height: 20)
+    @ViewBuilder private func pageContent(_ tab: ShellTab) -> some View {
+        switch tab {
+        case .chat:
+            NavigationStack { chatRoot }
+                // The session page owns its keyboard insets (composer is a
+                // safeAreaBar); the shell must not move the page.
+                .ignoresSafeArea(.keyboard)
+                .tint(contentTint)
+        case .devices:
+            // The shell supplies the Devices NavigationStack (it owns the
+            // path and the push destinations).
+            devicesRoot
+                .tint(contentTint)
+        case .wiki:
+            NavigationStack {
+                PlaceholderTabPage(
+                    title: String(localized: "Wiki"),
+                    icon: "anthropicon.library",
+                    onMenu: onMenu
+                )
+            }
+        case .artifacts:
+            NavigationStack {
+                PlaceholderTabPage(
+                    title: String(localized: "Artifacts"),
+                    icon: "anthropicon.artifacts",
+                    onMenu: onMenu
+                )
+            }
         }
+    }
+
+    /// The bar's selection. No system transition runs — the controller that
+    /// owned one is gone — so the write is a plain state change; the probe
+    /// still brackets it so `shell.tabs.frame` keeps measuring the switch.
+    private func select(_ next: ShellTab) {
+        guard next != panes.selectedTab else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.write",
+            detail: ["to": next.rawValue],
+            dedupe: false)
+        TabSwitchProbe.shared.begin(tab: next.rawValue)
+        if !visited.contains(next) { visited.insert(next) }
+        UIView.performWithoutAnimation {
+            withTransaction(Transaction(animation: nil)) {
+                panes.selectedTab = next
+            }
+        }
+        TabSwitchProbe.shared.mark("written")
     }
 }

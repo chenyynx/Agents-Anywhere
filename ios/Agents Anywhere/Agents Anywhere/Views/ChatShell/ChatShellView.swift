@@ -368,28 +368,11 @@ struct ChatShellView: View {
         panes.pushDeviceSession(id)
     }
 
-    /// The device page is the Devices tab's root (pp 2026-11-26); the session
-    /// drill-down pushes above it.
-
+    /// Fallback device for the tab root: first online, else first.
     private var defaultDeviceID: V2ConnectorID? {
         appState.connectors.first { $0.status == .online }?.id
             ?? appState.connectors.first?.id
     }
-
-    /// Nothing to root the tab on: the pairing entry is the only useful action.
-
-    /// Devices tab: the device page is the root (no back button); the session
-    /// drill-down pushes inside this tab's stack and must not switch to the
-    /// Chat tab.
-
-    /// The Devices tab's own compose-a-new-session page (pp 2026-11-27).
-    ///
-    /// It reuses the account's one new-session draft — the Chat tab's compose
-    /// page observes the same model, so the draft follows the reader across
-    /// tabs — but creating from here lands in the device stack instead of
-    /// switching to the Chat tab. The device and workspace were focused when
-    /// the page was pushed (`onNewSession` above); a restored route opens on
-    /// whatever target the draft still holds.
 
     @ViewBuilder private var mainContent: some View {
         if case let .device(connectorId) = selection {

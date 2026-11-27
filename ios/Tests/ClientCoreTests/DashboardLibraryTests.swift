@@ -45,10 +45,11 @@ import Testing
         }
         library.start()
         defer { library.stop() }
-        _ = await library.ingest(try input())
+        let value = try input()
+        _ = await library.ingest(value)
         await waitUntil { !library.sessions.isEmpty }
-        let expected = try input().sessions.first?.lastReadSeq ?? 0
-        #expect(library.sessions.first { $0.id == input().sessions.first?.id }?
+        let expected = value.sessions.first?.lastReadSeq ?? 0
+        #expect(library.sessions.first { $0.id == value.sessions.first?.id }?
             .lastReadSeq == expected + 7)
     }
 

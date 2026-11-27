@@ -46,7 +46,7 @@ import Testing
                       latestTurnEndSeq: Int = 0,
                       unread: Bool = false,
                       title: String = "t") throws -> V2SessionMeta {
-        var object = try fixtureObject("snapshot")
+        let object = try fixtureObject("snapshot")
         var session = object["session"] as! [String: Any]
         session["id"] = id
         session["connectorId"] = connectorId

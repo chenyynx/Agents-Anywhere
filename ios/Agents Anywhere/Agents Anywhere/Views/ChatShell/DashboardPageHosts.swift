@@ -54,7 +54,7 @@ struct NewSessionPageHost: View {
 
     var body: some View {
         NewSessionView(model: services.newSession, connectors: connectors, sessions: sessions,
-            repository: services.dashboardRepository,
+            repository: services.dashboardRepository, library: library,
             dashboardLoading: appState.isDashboardLoading,
             dashboardError: appState.connectorsError,
             onMenu: onMenu,
@@ -120,7 +120,8 @@ struct DevicePageHost: View {
                 onConnectorUpdated: onConnectorUpdated,
                 onConnectorDeleted: onConnectorDeleted,
                 onSessionsUpdated: onSessionsUpdated,
-                onSetSessionsArchived: onSetSessionsArchived)
+                onSetSessionsArchived: onSetSessionsArchived,
+                library: library)
                 .id(id)
         } else if targetConnectorID != nil
                     || !appState.hasLoadedConnectors

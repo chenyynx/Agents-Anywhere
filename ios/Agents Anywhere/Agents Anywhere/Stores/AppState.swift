@@ -1034,11 +1034,9 @@ final class AppState {
         if connectors != rows.connectors { connectors = rows.connectors }
         if projects != rows.projects { projects = rows.projects }
         if sessions != rows.sessions { sessions = rows.sessions }
-        // Views that still read the in-memory repository (project sidebar,
-        // project editor, agent online state) must not go stale.
-        services.dashboardRepository.noteLibraryRows(
-            connectors: rows.connectors, projects: rows.projects,
-            sessions: rows.sessions)
+        // Only connectors stay mirrored: services' online checks read them.
+        // Project/session lists are read from the library by their views.
+        services.dashboardRepository.noteLibraryConnectors(rows.connectors)
         services.sessionRepository.applyMetadata(sessions)
         services.updateAgentConnections()
         if services.dashboardRepository.hasLoaded {

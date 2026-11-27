@@ -94,18 +94,13 @@ final class V2DashboardRepository {
         apply(connectors: snapshot.connectors, projects: snapshot.projects, sessions: snapshot.sessions)
     }
 
-    /// Library path: keep the in-memory projection current for the views and
-    /// services that still read it (project sidebar, project editor, agent
-    /// online state). The local library remains the source of truth.
-    func noteLibraryRows(connectors: [V2Connector], projects: [V2Project],
-                         sessions: [V2SessionMeta]) {
+    /// Library path: connectors stay mirrored (small, low-frequency) because
+    /// the services' online checks and the project editor's guard read them.
+    /// Sessions/projects are not mirrored — views read the library.
+    func noteLibraryConnectors(_ connectors: [V2Connector]) {
         guard isValid else { return }
         if self.connectors != connectors { self.connectors = connectors }
-        if self.projects != projects { self.projects = projects }
-        if self.sessions != sessions { self.sessions = sessions }
-        if !hasLoaded { hasLoaded = true }
         if !isFresh { isFresh = true }
-        if error != nil { error = nil }
     }
 
     /// Library path: the snapshot went to the local database, not the

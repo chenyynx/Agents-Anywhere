@@ -4,6 +4,9 @@ struct ChatSidebarProjects: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Bindable var repository: V2DashboardRepository
+    /// Reads the local dashboard library when the switch is on; the legacy
+    /// repository is the fallback.
+    var library: DashboardLibrary? = nil
     @Binding var showsSessionList: Bool
     let selectedSessionID: String?
     let onShowArchives: () -> Void
@@ -23,14 +26,18 @@ struct ChatSidebarProjects: View {
     /// Sessions shown per expanded project before "show more", matching Web.
     private static let sessionPreview = 8
 
+    private var projectsList: [V2Project] { library?.projects ?? repository.projects }
+    private var sessionsList: [V2SessionMeta] { library?.sessions ?? repository.sessions }
+    private var connectorsList: [V2Connector] { library?.connectors ?? repository.connectors }
+
     private struct ProjectAction: Identifiable {
         let project: V2Project
         let deletes: Bool
         var id: String { project.id }
     }
     var body: some View {
-        let projects = ProjectSidebarPresentation.projects(repository.projects, filter: filter, sessions: repository.sessions)
-        let unassigned = ProjectSidebarPresentation.unassignedSessions(repository.sessions, projects: repository.projects, filter: filter)
+        let projects = ProjectSidebarPresentation.projects(projectsList, filter: filter, sessions: sessionsList)
+        let unassigned = ProjectSidebarPresentation.unassignedSessions(sessionsList, projects: projectsList, filter: filter)
         // Capture the value in this body, then pass it through the lazy builders.
         // Pinning moves a row between sections before the request clears busy;
         // cached row content must receive that final state change explicitly.
@@ -88,8 +95,8 @@ struct ChatSidebarProjects: View {
             .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -6)
             if repository.sidebarPreferences.projectsExpanded {
                 projectList(projects.filter { !$0.pinned }, busyProjects: busyProjects)
-                if repository.isLoading && repository.projects.isEmpty { ProgressView().padding(12) }
-                if repository.hasLoaded && repository.projects.isEmpty {
+                if repository.isLoading && projectsList.isEmpty { ProgressView().padding(12) }
+                if repository.hasLoaded && projectsList.isEmpty {
                     Text(String(localized: "创建一个项目，开始新的任务。"))
                         .font(.footnote).foregroundStyle(.secondary).padding(10)
                 }
@@ -103,12 +110,12 @@ struct ChatSidebarProjects: View {
             }
         }
         .sheet(isPresented: $createsProject) {
-            ProjectEditorSheet(repository: repository) {
+            ProjectEditorSheet(repository: repository, library: library) {
                 repository.sidebarPreferences.expandedProjects.insert($0.id)
                 repository.sidebarPreferences.projectsExpanded = true
             }
         }
-        .sheet(item: $editing) { ProjectEditorSheet(repository: repository, project: $0) }
+        .sheet(item: $editing) { ProjectEditorSheet(repository: repository, library: library, project: $0) }
         .alert(action?.deletes == true ? String(localized: "删除项目？") : String(localized: "归档这个项目的会话？"), isPresented: Binding(
             get: { action != nil }, set: { if !$0 { action = nil } })) {
             Button(String(localized: "取消"), role: .cancel) { action = nil }
@@ -169,7 +176,7 @@ struct ChatSidebarProjects: View {
 
     @ViewBuilder
     private func projectMenu(_ project: V2Project, isBusy: Bool) -> some View {
-        let deviceName = repository.connectors.first { $0.id == project.connectorId }?.name ?? String(localized: "设备不可用")
+        let deviceName = connectorsList.first { $0.id == project.connectorId }?.name ?? String(localized: "设备不可用")
         Section(deviceName) {
             Button { onNewSession(project.id) } label: {
                 Label(String(localized: "新建会话"), menuSymbol: "anthropicon.add")
@@ -200,7 +207,7 @@ struct ChatSidebarProjects: View {
 
     @ViewBuilder
     private func projectSessions(_ project: V2Project) -> some View {
-        let sessions = ProjectSidebarPresentation.sessions(repository.sessions, projectID: project.id, filter: filter)
+        let sessions = ProjectSidebarPresentation.sessions(sessionsList, projectID: project.id, filter: filter)
         let showsAll = expandedSessionLists.contains(project.id)
         // Keep the open session visible even when it sorts past the preview.
         let visible = showsAll || sessions.count <= Self.sessionPreview ? sessions
@@ -253,12 +260,12 @@ struct ArchivedSessionsSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(ProjectSidebarPresentation.sessions(repository.sessions, projectID: nil, filter: .archived)) { session in
+                ForEach(ProjectSidebarPresentation.sessions(sessionsList, projectID: nil, filter: .archived)) { session in
                     HStack {
                         Button { dismiss(); onOpen(session.id) } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(session.title ?? String(localized: "未命名会话")).foregroundStyle(.primary).lineLimit(2)
-                                Text(repository.projects.first { $0.id == session.projectId }?.name ?? session.cwd ?? "")
+                                Text(projectsList.first { $0.id == session.projectId }?.name ?? session.cwd ?? "")
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }.buttonStyle(.plain)

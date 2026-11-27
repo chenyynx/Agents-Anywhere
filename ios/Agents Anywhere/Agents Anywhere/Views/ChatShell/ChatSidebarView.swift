@@ -156,7 +156,7 @@ struct ChatSidebarView: View {
                             onCopyId: onCopySessionId
                         )
                     } else {
-                        ChatSidebarProjects(repository: repository, showsSessionList: $showsSessionList,
+                        ChatSidebarProjects(repository: repository, library: library, showsSessionList: $showsSessionList,
                             selectedSessionID: selectedSessionId, onShowArchives: { showsArchives = true },
                             onNewSession: onNewProjectSession, onOpenSession: onOpenSession,
                             onRenameSession: onRenameSession, onPinSession: onToggleSessionPinned,

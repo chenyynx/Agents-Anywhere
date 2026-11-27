@@ -6,6 +6,8 @@ struct NewSessionView: View, Equatable {
     let connectors: [V2Connector]
     let sessions: [V2SessionMeta]
     let repository: V2DashboardRepository
+    /// Reads the local dashboard library when the switch is on (project sheet).
+    var library: DashboardLibrary? = nil
     var dashboardLoading = false
     var dashboardError: String?
     let onMenu: () -> Void
@@ -128,7 +130,7 @@ struct NewSessionView: View, Equatable {
             SessionTargetSheet(model: model)
         }
         .sheet(isPresented: $showsWorkspace) {
-            ProjectSelectionSheet(model: model, repository: repository)
+            ProjectSelectionSheet(model: model, repository: repository, library: library)
         }
         .sheet(isPresented: $showsFiles) {
             if let device = model.connector, let service = appState.workspaceFilesService {

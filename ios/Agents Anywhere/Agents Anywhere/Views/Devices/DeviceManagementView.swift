@@ -30,6 +30,9 @@ struct DeviceManagementView: View {
     let onConnectorDeleted: (V2ConnectorID) -> Void
     let onSessionsUpdated: ([V2SessionMeta]) -> Void
     let onSetSessionsArchived: ([V2SessionID], Bool) async -> Bool
+    /// Reads the local dashboard library when the switch is on; the project
+    /// sheet needs the same source as the list.
+    var library: DashboardLibrary? = nil
 
     @State private var model = DeviceManagementModel()
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
@@ -198,8 +201,8 @@ struct DeviceManagementView: View {
             }
             .appSheetPresentation(.compact)
         }
-        .sheet(isPresented: $createsProject) { ProjectEditorSheet(repository: dashboard, connectorID: connector.id) }
-        .sheet(item: $editingProject) { ProjectEditorSheet(repository: dashboard, project: $0) }
+        .sheet(isPresented: $createsProject) { ProjectEditorSheet(repository: dashboard, library: library, connectorID: connector.id) }
+        .sheet(item: $editingProject) { ProjectEditorSheet(repository: dashboard, library: library, project: $0) }
         .sheet(item: $selectedWorkspace) {
             WorkspaceFilesSheet(connectorId: connector.id, deviceName: connector.name, workspace: $0,
                 service: workspaceFilesService, permitsReading: canReadFiles)

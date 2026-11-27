@@ -2,6 +2,9 @@ import SwiftUI
 
 struct ProjectEditorSheet: View {
     @Bindable var repository: V2DashboardRepository
+    /// Reads the local dashboard library when the switch is on; the legacy
+    /// repository is the fallback.
+    var library: DashboardLibrary? = nil
     var onSaved: (V2Project) -> Void
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -12,13 +15,19 @@ struct ProjectEditorSheet: View {
     @State private var showsFiles = false
     @State private var confirmsDiscard = false
 
-    init(repository: V2DashboardRepository, project: V2Project? = nil, connectorID: String = "", onSaved: @escaping (V2Project) -> Void = { _ in }) {
-        self.repository = repository; self.onSaved = onSaved
-        let online = repository.connectors.filter { $0.status == .online }
+    init(repository: V2DashboardRepository, library: DashboardLibrary? = nil,
+         project: V2Project? = nil, connectorID: String = "",
+         onSaved: @escaping (V2Project) -> Void = { _ in }) {
+        self.repository = repository; self.library = library; self.onSaved = onSaved
+        let online = (library?.connectors ?? repository.connectors).filter { $0.status == .online }
         let initialDevice = online.first { $0.id == connectorID }?.id ?? online.first?.id ?? ""
         _draft = State(initialValue: ProjectEditorDraft(project: project, connectorID: initialDevice))
     }
-    private var device: V2Connector? { repository.connectors.first { $0.id == draft.connectorID } }
+    private var device: V2Connector? {
+        connectorsList.first { $0.id == draft.connectorID }
+    }
+    private var connectorsList: [V2Connector] { library?.connectors ?? repository.connectors }
+    private var projectsList: [V2Project] { library?.projects ?? repository.projects }
     private var valid: Bool {
         repository.canWrite && device != nil && !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (draft.original != nil || (device?.status == .online && validPath))
@@ -36,7 +45,7 @@ struct ProjectEditorSheet: View {
                     } else {
                         Picker(String(localized: "设备"), selection: Binding(get: { draft.connectorID }, set: { draft.selectDevice($0) })) {
                             Text(String(localized: "选择设备")).tag("")
-                            ForEach(repository.connectors.filter { $0.status == .online || $0.id == draft.connectorID }) { device in
+                            ForEach(connectorsList.filter { $0.status == .online || $0.id == draft.connectorID }) { device in
                                 Text(device.name).tag(device.id).disabled(device.status != .online)
                             }
                         }.pickerStyle(.navigationLink)
@@ -86,7 +95,7 @@ struct ProjectEditorSheet: View {
                         Task { await Task.yield(); await save() }
                     })
             }
-            .onChange(of: repository.projects) { _, projects in draft.suggestName(projects: projects, deviceOS: device?.deviceOs) }
+            .onChange(of: projectsList) { _, projects in draft.suggestName(projects: projects, deviceOS: device?.deviceOs) }
         }
         .appSheetPresentation(.compact).interactiveDismissDisabled(saving || draft.hasChanges)
         .confirmDiscardChanges($confirmsDiscard) { dismiss() }
@@ -107,7 +116,7 @@ struct ProjectEditorSheet: View {
         }
     }
 
-    private func updatePath(_ value: String) { draft.editPath(value, projects: repository.projects, deviceOS: device?.deviceOs) }
+    private func updatePath(_ value: String) { draft.editPath(value, projects: projectsList, deviceOS: device?.deviceOs) }
 
     private func save(reusing id: String? = nil) async {
         guard valid, !saving else { return }
@@ -123,11 +132,11 @@ struct ProjectEditorSheet: View {
                 updatePath(result.path)
             }
             guard valid, !Task.isCancelled else { return }
-            draft.normalizeName(projects: repository.projects, deviceOS: device?.deviceOs)
+            draft.normalizeName(projects: projectsList, deviceOS: device?.deviceOs)
             let value: V2Project
             if let project = draft.original {
                 try await repository.updateProject(project.id, name: draft.name)
-                value = repository.projects.first { $0.id == project.id } ?? project
+                value = projectsList.first { $0.id == project.id } ?? project
             } else {
                 value = try await repository.createProject(name: draft.name, connectorID: draft.connectorID, path: draft.path, reusing: id)
             }

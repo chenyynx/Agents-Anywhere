@@ -3,6 +3,9 @@ import SwiftUI
 struct ProjectSelectionSheet: View {
     @Bindable var model: NewSessionModel
     @Bindable var repository: V2DashboardRepository
+    /// Reads the local dashboard library when the switch is on; the legacy
+    /// repository is the fallback.
+    var library: DashboardLibrary? = nil
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @State private var createsProject = false
     @State private var showsFiles = false
@@ -13,13 +16,15 @@ struct ProjectSelectionSheet: View {
     private var canBrowse: Bool {
         model.connector?.status == .online && model.network.availability != .offline && model.isValid && !model.isCreating
     }
+    private var projectsList: [V2Project] { library?.projects ?? repository.projects }
+    private var sessionsList: [V2SessionMeta] { library?.sessions ?? repository.sessions }
     private var homeProject: V2Project? {
         model.homePath.flatMap { ProjectWorkspacePath.project(in: model.projects, connectorID: model.connectorID,
             path: $0, deviceOS: model.connector?.deviceOs) }
     }
     private var directories: [WorkspaceDirectoryChoice] {
         WorkspaceDirectoryChoice.recent(connectorID: model.connectorID, deviceOS: model.connector?.deviceOs,
-            home: model.homePath, projects: repository.projects, sessions: repository.sessions)
+            home: model.homePath, projects: projectsList, sessions: sessionsList)
     }
 
     var body: some View {
@@ -79,8 +84,8 @@ struct ProjectSelectionSheet: View {
         }
         .appSheetPresentation(.compact)
         .sheet(isPresented: $createsProject, onDismiss: finishSelection) {
-            ProjectEditorSheet(repository: repository, connectorID: model.connectorID) { project in
-                model.updateProjects(repository.projects)
+            ProjectEditorSheet(repository: repository, library: library, connectorID: model.connectorID) { project in
+                model.updateProjects(projectsList)
                 selectionCompleted = model.selectProject(project.id)
             }
         }

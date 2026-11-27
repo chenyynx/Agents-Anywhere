@@ -35,6 +35,69 @@ actor V2LocalStore {
     }
     func dashboard() -> V2DashboardArchive? { read("dashboard", as: V2DashboardArchive.self) }
 
+    // MARK: - Dashboard library (local database as the data source)
+
+    /// Merges one dashboard snapshot into the local library. Runs on this
+    /// actor, never on the main actor.
+    func ingestDashboard(_ input: DashboardIngestInput) -> DashboardIngestOutcome? {
+        guard valid, let database = timelineStore() else { return nil }
+        do { return try database.ingestDashboard(input) }
+        catch {
+            Self.log.error("dashboard ingest failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    func dashboardRows() -> DashboardRows? {
+        guard valid, let database = timelineStore() else { return nil }
+        return try? database.dashboardRows()
+    }
+
+    func observeDashboard() -> AsyncStream<DashboardRows>? {
+        guard valid, let database = timelineStore() else { return nil }
+        return database.observeDashboard()
+    }
+
+    func importDashboardArchive(_ archive: V2DashboardArchive) -> Bool {
+        guard valid, let database = timelineStore() else { return false }
+        return (try? database.importDashboardArchive(archive)) ?? false
+    }
+
+    func upsertDashboardSessions(_ sessions: [V2SessionMeta]) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.upsertDashboardSessions(sessions)
+    }
+
+    func removeDashboardSession(id: String) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.removeDashboardSession(id: id)
+    }
+
+    func upsertDashboardConnector(_ connector: V2Connector) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.upsertDashboardConnector(connector)
+    }
+
+    func removeDashboardConnector(id: String) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.removeDashboardConnector(id: id)
+    }
+
+    func upsertDashboardProject(_ project: V2Project) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.upsertDashboardProject(project)
+    }
+
+    func deleteDashboardProject(id: String) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.deleteDashboardProject(id: id)
+    }
+
+    func clearDashboardLibrary() {
+        guard valid, let database = timelineStore() else { return }
+        try? database.clearDashboard()
+    }
+
     /// What a local archive can tell an open about the footer's runtime state
     /// before its rows are read.
     func savedOpenState(_ id: String) -> V2SavedOpenState {

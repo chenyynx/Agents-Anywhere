@@ -39,7 +39,9 @@ nonisolated struct TimelineMeta: Sendable {
 /// GRDB-backed row store. Owned by `V2LocalStore` and only ever called from its
 /// actor, so no database work runs on the main actor.
 nonisolated final class TimelineDatabase {
-    private let pool: DatabasePool
+    /// Internal so the dashboard-library extension (same module, separate
+    /// file) can run its own reads/writes through the same pool.
+    let pool: DatabasePool
 
     init(path: String) throws {
         let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
@@ -87,6 +89,32 @@ nonisolated final class TimelineDatabase {
             try db.create(table: "schema_state") { table in
                 table.column("key", .text).primaryKey()
                 table.column("value", .blob)
+            }
+        }
+        migrator.registerMigration("v2_dashboard_library") { db in
+            try db.create(table: "dashboard_sessions") { table in
+                table.column("session_id", .text).primaryKey()
+                table.column("connector_id", .text).notNull()
+                table.column("archived", .boolean).notNull().defaults(to: false)
+                table.column("updated_seq", .integer).notNull().defaults(to: 0)
+                table.column("payload", .blob).notNull()
+            }
+            try db.create(index: "dashboard_sessions_connector",
+                          on: "dashboard_sessions", columns: ["connector_id"])
+            try db.create(table: "dashboard_connectors") { table in
+                table.column("id", .text).primaryKey()
+                table.column("payload", .blob).notNull()
+            }
+            try db.create(table: "dashboard_projects") { table in
+                table.column("id", .text).primaryKey()
+                table.column("connector_id", .text).notNull()
+                table.column("payload", .blob).notNull()
+            }
+            try db.create(index: "dashboard_projects_connector",
+                          on: "dashboard_projects", columns: ["connector_id"])
+            try db.create(table: "dashboard_meta") { table in
+                table.column("key", .text).primaryKey()
+                table.column("value", .text).notNull()
             }
         }
         return migrator

@@ -21,6 +21,16 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     let devicesRoot: DevicesRoot
     let onMenu: () -> Void
     @Environment(\.colorScheme) private var colorScheme
+    // The pages live in their own hosting controller (see `ShellTabsHost`),
+    // which does not inherit the SwiftUI ancestry's environment. Everything
+    // the pages read from above this point is re-applied on `pages` below —
+    // without it `@Environment(AppState.self)` traps at runtime and the
+    // drawer's suspension keys silently fall back to false.
+    @Environment(AppState.self) private var appState
+    @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
+    @Environment(\.sidebarDrawerPresentation) private var drawerPresentation
+    @Environment(\.sidebarDrawerObscuresDetail) private var drawerObscuresDetail
+    @Environment(\.sidebarDrawerIsTransitioning) private var drawerIsTransitioning
     @State private var transitionTask: Task<Void, Never>?
     /// True from a tab tap until the switch settles. Pages park data applies
     /// for this window: a timeline refresh landing inside a switch stacked on
@@ -39,14 +49,24 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         AppTheme.primaryControlBackground(colorScheme)
     }
 
-    /// The window's home-indicator inset. The shell sits inside the drawer,
-    /// whose `.ignoresSafeArea()` hides this from SwiftUI's environment.
-    private var homeIndicatorInset: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: { $0.isKeyWindow })?
-            .safeAreaInsets.bottom ?? 0
+    /// The four persistent pages. Environment the shell owns is applied here
+    /// (inside the value handed to the hosting controller — the hosting root
+    /// does not inherit the SwiftUI ancestry's environment).
+    private var pages: some View {
+        ZStack {
+            ForEach(ShellTab.allCases, id: \.self) { tab in
+                if visited.contains(tab) {
+                    page(tab)
+                }
+            }
+        }
+        .environment(appState)
+        .environment(recentPhotos)
+        .environment(\.sidebarDrawerPresentation, drawerPresentation)
+        .environment(\.sidebarDrawerObscuresDetail, drawerObscuresDetail)
+        .environment(\.sidebarDrawerIsTransitioning, drawerIsTransitioning)
+        .environment(\.shellTabBarActive, true)
+        .environment(\.shellTabTransitioning, tabTransitioning)
     }
 
     private var chatSession: V2SessionID? {
@@ -64,34 +84,11 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     }
 
     var body: some View {
-        ZStack {
-            ForEach(ShellTab.allCases, id: \.self) { tab in
-                if visited.contains(tab) {
-                    page(tab)
-                }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            // The drawer this shell lives in ignores the system safe area, so
-            // the home-indicator inset no longer reaches the pages by itself
-            // (the old system tab bar delivered it through its controller).
-            // Rebuild it explicitly: bar items on top, a transparent
-            // home-indicator strip below — the pages then see
-            // 49 + home-indicator, exactly what the system bar provided, and
-            // the composer sits above the bar instead of underneath it
-            // (b1696 device report: the composer was hidden behind the bar).
-            VStack(spacing: 0) {
-                ShellTabBar(selection: panes.selectedTab, onSelect: select)
-                    .frame(height: ShellTabBarMetrics.contentHeight)
-                Color.clear
-                    .frame(height: homeIndicatorInset)
-            }
-            // The bar stays put when the keyboard rises; the pages own their
-            // keyboard insets.
-            .ignoresSafeArea(.keyboard)
-        }
-        .environment(\.shellTabBarActive, true)
-        .environment(\.shellTabTransitioning, tabTransitioning)
+        ShellTabsHost(
+            content: pages,
+            selection: panes.selectedTab,
+            onSelect: select
+        )
         .onChange(of: duplicateSessionAcrossTabs, initial: true) { _, duplicate in
             guard duplicate, let session = chatSession else { return }
             ClientDiagnosticsLog.shared.record(

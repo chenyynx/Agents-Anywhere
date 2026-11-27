@@ -692,6 +692,7 @@ struct ChatShellView: View {
             switch route {
             case let .device(id): return "d:\(id)"
             case let .session(id): return "s:\(id)"
+            case .newSession: return "new"
             }
         }.joined(separator: ">")
         ClientDiagnosticsLog.shared.record(

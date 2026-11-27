@@ -35,7 +35,7 @@ struct ShellTabsHost<Content: View>: UIViewControllerRepresentable {
 final class ShellTabsHostController<Content: View>: UIViewController, UITabBarDelegate {
     private let hosting: UIHostingController<Content>
     private let bar = UITabBar(frame: .zero)
-    private var barBottom: NSLayoutConstraint?
+    private var barHeight: NSLayoutConstraint?
     var onSelect: ((ShellTab) -> Void)?
 
     init(content: Content) {
@@ -78,23 +78,27 @@ final class ShellTabsHostController<Content: View>: UIViewController, UITabBarDe
                 tag: ShellTab.allCases.firstIndex(of: tab) ?? 0)
         }
         view.addSubview(bar)
-        // Pin to the home-indicator inset, not `safeAreaLayoutGuide`: that
-        // guide follows the keyboard, and the bar must stay behind the
-        // keyboard like the system one did.
-        let bottom = bar.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        barBottom = bottom
+        // The bar spans the screen bottom like the system one: its items
+        // occupy the top 49 pt and its own safe area covers the home
+        // indicator. Pinning it above the home indicator instead clipped the
+        // items — a bare `UITabBar` lays its content out against its own
+        // safe area (b1698 device screenshot: icons and labels cut in half).
+        let height = bar.heightAnchor.constraint(
+            equalToConstant: ShellTabBarMetrics.contentHeight)
+        barHeight = height
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            bottom,
-            bar.heightAnchor.constraint(equalToConstant: ShellTabBarMetrics.contentHeight),
+            bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            height,
         ])
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // The window's inset (not the view's, which the keyboard can change).
-        barBottom?.constant = -(view.window?.safeAreaInsets.bottom ?? 0)
+        let bottomInset = view.window?.safeAreaInsets.bottom ?? 0
+        barHeight?.constant = ShellTabBarMetrics.contentHeight + bottomInset
     }
 
     func setContent(_ content: Content) {

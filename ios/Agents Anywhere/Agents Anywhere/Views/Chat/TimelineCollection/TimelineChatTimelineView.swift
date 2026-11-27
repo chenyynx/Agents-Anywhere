@@ -30,6 +30,10 @@ struct TimelineChatTimelineView: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.legibilityWeight) private var legibilityWeight
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Freezes the reveal while the app is not frontmost (the official frame
+    /// source stops with the app), so a background return resumes instead of
+    /// jumping to the end.
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
     /// The tab switch window (shell). Parking applies here is what keeps a
@@ -86,10 +90,11 @@ struct TimelineChatTimelineView: View {
     private var navigationIsSuspended: Bool {
         sidebarIsTransitioning || sidebarObscuresDetail || shellTabTransitioning
     }
-    /// The reveal advances only while the page is on screen and the switch has
-    /// settled; a hidden page freezes it and resumes from the same point.
+    /// The reveal advances only while the page is on screen and the app is
+    /// frontmost; a hidden page or a backgrounded app freezes it and resumes
+    /// from the same point (official: the display link stops with the app).
     private var revealActive: Bool {
-        shellTabVisible && !shellTabTransitioning
+        shellTabVisible && !shellTabTransitioning && scenePhase == .active
     }
     /// Hidden tab pages park their snapshot applies (the first presented
     /// snapshot must land regardless — the controller enforces that). The

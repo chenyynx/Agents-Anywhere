@@ -284,8 +284,9 @@ struct CodeMessageRowView: View {
             // the TextKit document (`EVIDENCE/UPSTREAM/part-aa-markdown-ui.md:149`).
             // The leaf draws and measures with the same engine as
             // `CodeMessageHeightMeasurer`, so the first fit already carries
-            // the real body and no settled row corrects itself. The Code page
-            // has no reveal; the text is always the settled full snapshot.
+            // the real body and no settled row corrects itself. A live text
+            // block draws the adapter's revealed prefix of the streaming
+            // snapshot; a settled block draws the full persisted text.
             CodeMarkdownTextLeaf(text: displayedText(id: id, fallback: text),
                                  typography: typography,
                                  columnWidth: columnWidth,

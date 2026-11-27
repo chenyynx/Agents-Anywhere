@@ -1743,7 +1743,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// page's batching (a 0.24 s reveal that withholds the last glyph) belongs
     /// to the reveal renderer, which the Code page does not use. With the row
     /// publishing its full received text, W6's 0.1 s leading-edge throttle is
-    /// the single pacing layer (official streaming has no character reveal).
+    /// the data pacing layer; the per-row `StreamingRevealCursor` is the
+    /// drawing layer on top (official progress paced, frozen off screen).
     /// The switch is deferred one runloop turn because `row` is observable and
     /// this refresh runs inside a SwiftUI update (same rule as the retired
     /// `streamingRow` path); the next flush then feeds the full text.

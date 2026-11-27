@@ -252,6 +252,9 @@ struct ChatSidebarProjects: View {
 
 struct ArchivedSessionsSheet: View {
     let repository: V2DashboardRepository
+    var library: DashboardLibrary? = nil
+    private var projectsList: [V2Project] { library?.projects ?? repository.projects }
+    private var sessionsList: [V2SessionMeta] { library?.sessions ?? repository.sessions }
     let onOpen: (String) -> Void
     let onRestore: (String) async -> Bool
     @Environment(\.dismiss) private var dismiss

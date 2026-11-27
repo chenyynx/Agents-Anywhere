@@ -186,7 +186,7 @@ struct ChatSidebarView: View {
             }
         }
         .sheet(isPresented: $showsArchives) {
-            if let repository { ArchivedSessionsSheet(repository: repository, onOpen: onOpenSession, onRestore: onRestoreSession) }
+            if let repository { ArchivedSessionsSheet(repository: repository, library: library, onOpen: onOpenSession, onRestore: onRestoreSession) }
         }
         .sheet(isPresented: $isShowingPairing, onDismiss: {
             agentSetup?.pairingFormPresented = false

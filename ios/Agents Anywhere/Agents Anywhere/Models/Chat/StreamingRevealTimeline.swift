@@ -78,7 +78,7 @@ nonisolated struct StreamingRevealTimeline: Equatable {
     mutating func reanchor(total: Int, at now: TimeInterval,
                            maxBacklog: Int? = nil) {
         let clampedTotal = max(total, 0)
-        var head = min(max(shownThrough(at: now), 0), Double(clampedTotal))
+        var head = min(max(Double(shownThrough(at: now)), 0), Double(clampedTotal))
         if let maxBacklog, maxBacklog >= 0 {
             head = max(head, Double(max(clampedTotal - maxBacklog, 0)))
         }

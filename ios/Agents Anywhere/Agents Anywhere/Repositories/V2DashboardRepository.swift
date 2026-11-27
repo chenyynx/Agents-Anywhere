@@ -88,10 +88,11 @@ final class V2DashboardRepository {
 #if AA_TIMELINE_PROBE
         let probePre = CFAbsoluteTimeGetCurrent()
 #endif
-        let current = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        let validDevices = Set(connectors.map(\.id))
-        let pending = sessions.filter { $0.id.hasPrefix("local:") && validDevices.contains($0.connectorId) }
-        let merged = unique(pending + incoming.map { merge(current[$0.id], $0) })
+        let merged = DashboardMerge.apply(
+            held: sessions,
+            incoming: incoming,
+            validConnectorIDs: Set(connectors.map(\.id)),
+            reconcile: reconcile)
 #if AA_TIMELINE_PROBE
         let probeMerge = CFAbsoluteTimeGetCurrent()
 #endif
@@ -250,20 +251,7 @@ final class V2DashboardRepository {
         projects.removeAll { $0.id == project.id }; projects.append(project); changed()
     }
     private func mergeSessions(_ incoming: [V2SessionMeta]) {
-        var values = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        for value in incoming { values[value.id] = merge(values[value.id], value) }
-        sessions = Array(values.values).sorted { $0.id < $1.id }
-    }
-    private func merge(_ current: V2SessionMeta?, _ incoming: V2SessionMeta) -> V2SessionMeta {
-        var value = current.map { $0.updatedSeq > incoming.updatedSeq ? $0 : incoming } ?? incoming
-        value.lastReadSeq = max(current?.lastReadSeq ?? 0, incoming.lastReadSeq)
-        if value.lastReadSeq >= value.latestTurnEndSeq { value.unread = false }
-        return reconcile(value)
-    }
-    private func unique(_ values: [V2SessionMeta]) -> [V2SessionMeta] {
-        var result: [String: V2SessionMeta] = [:]
-        for value in values { result[value.id] = value }
-        return Array(result.values).sorted { $0.id < $1.id }
+        sessions = DashboardMerge.upsert(held: sessions, incoming: incoming, reconcile: reconcile)
     }
     private func requireValid() throws { if !isValid || Task.isCancelled { throw CancellationError() } }
     private func requireWritable() throws {

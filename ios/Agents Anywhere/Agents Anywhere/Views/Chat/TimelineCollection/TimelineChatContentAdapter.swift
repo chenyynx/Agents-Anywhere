@@ -94,6 +94,27 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private var needsRefresh = true
     private var lastUpdateFingerprint: Int?
 
+    /// Freeze or resume the Code page's streaming reveal. Hidden pages keep
+    /// receiving (and feeding their publishers) but the cursor stops where it
+    /// stood; the switch back resumes from that point, which is what makes a
+    /// returning tab replay the backlog instead of flashing it all at once.
+    func setPageRevealVisible(_ visible: Bool) {
+        guard pageRevealVisible != visible else { return }
+        pageRevealVisible = visible
+        let now = ProcessInfo.processInfo.systemUptime
+        for rowID in Array(codeRevealCursors.keys) {
+            guard var cursor = codeRevealCursors[rowID] else { continue }
+            cursor.setVisible(visible, at: now)
+            codeRevealCursors[rowID] = cursor
+        }
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.reveal",
+            sessionID: model.session.id,
+            detail: ["visible": visible ? "1" : "0",
+                     "rows": String(codeRevealBehindRowIDs.count),
+                     "backlog": String(codeRevealBacklog)])
+    }
+
     /// Every observable input `refresh()` reads. The chat page's body reads
     /// the same set, so a re-evaluation caused by one of them changes this
     /// fingerprint; a re-evaluation caused by the drawer does not.
@@ -1092,15 +1113,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     private func streamingSeedHeight(for item: TimelineListItem,
                                      groupID: String,
                                      width: CGFloat) -> CGFloat? {
-        // Estimate the text the row draws right now: a live row's published
-        // snapshot, or the completion snapshot still on screen. A row with no
-        // publisher text falls back to its persisted block text.
+        // Estimate the text the row draws right now. The revealed prefix, not
+        // the publisher's full text: a seed from characters the cursor has not
+        // painted yet would make the first fit too tall and the cell correct
+        // downward, which is visible. A row with no sampled text falls back to
+        // its persisted block text.
         var drawnTexts: [String: String] = [:]
         for row in groupsByID[groupID]?.rows ?? [] {
-            if let publisher = codeStreamingPublishers[row.id] {
-                if !publisher.publishedText.isEmpty {
-                    drawnTexts[row.id] = publisher.publishedText
-                }
+            if let revealed = codeRevealedTexts[row.id], !revealed.isEmpty {
+                drawnTexts[row.id] = revealed
             } else if let completed = codeCompletedStreamingTexts[row.id] {
                 drawnTexts[row.id] = completed
             }
@@ -1261,6 +1282,34 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// Per-row reveal timelines. They live here, not in the cell, so scrolling
     /// a cell away and back does not restart the cursor.
     private var revealTimelines: [String: StreamingRevealTimeline] = [:]
+    /// Per-row progress for the Code page's streaming text snapshots. The
+    /// official Chat page's `RevealDriver` is owned by the content model and
+    /// only advances while the page is on screen; this is its AA counterpart
+    /// (CANONICAL/29 §18). Keyed by the wire row id, so a message with several
+    /// live text rows keeps one cursor per block.
+    private var codeRevealCursors: [String: StreamingRevealCursor] = [:]
+    /// Revealed text per row for the current refresh. `codeStreamingTexts` is
+    /// read several times in one pass (height key, signature, cell configure);
+    /// sampling once per refresh keeps every read of the pass identical.
+    private var codeRevealedTexts: [String: String] = [:]
+    /// Rows whose cursor is still behind its text in this refresh.
+    private var codeRevealBehindRowIDs: Set<String> = []
+    /// Characters still owed across those rows (diagnostics + pump bound).
+    private var codeRevealBacklog = 0
+    /// Bumped whenever a row's revealed prefix changes. The streaming row's
+    /// content signature uses it: a cursor advancing between publisher
+    /// snapshots changes what is drawn even though `publishRevision` stands
+    /// still, and without this the collection would skip the apply.
+    private var codeRevealRevisions: [String: Int] = [:]
+    /// A hidden tab page freezes the reveal; a visible one advances it.
+    private var pageRevealVisible = true
+    /// Called once per refresh while the reveal is still behind: nothing else
+    /// re-renders the page once the wire goes quiet, so the page pumps
+    /// refreshes until the cursor catches up.
+    var onRevealPending: (() -> Void)?
+
+    var hasPendingReveal: Bool { !codeRevealBehindRowIDs.isEmpty }
+    var revealBacklogCharacters: Int { codeRevealBacklog }
     /// First moment the renderer-owned cursor caught up. Kept briefly so the
     /// cell's final run and fade can finish before the static body takes over.
     private var revealCaughtUpAt: [String: TimeInterval] = [:]
@@ -1670,14 +1719,11 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard case .group(let id) = item, let group = groupsByID[id] else { return nil }
         var texts: [String: String] = [:]
         for row in group.rows {
-            if let publisher = codeStreamingPublishers[row.id] {
-                if !publisher.publishedText.isEmpty {
-                    texts[row.id] = publisher.publishedText
-                }
-            } else if let completed = codeCompletedStreamingTexts[row.id] {
-                // Keep the completion snapshot on screen until the persisted
-                // text can replace it (`updateCodeStreaming` prunes it).
-                texts[row.id] = completed
+            // The revealed prefix was sampled once in `updateCodeStreaming`;
+            // this pass must reuse it so the height key, the signature and
+            // the cell all draw the same characters.
+            if let revealed = codeRevealedTexts[row.id], !revealed.isEmpty {
+                texts[row.id] = revealed
             }
         }
         return texts.isEmpty ? nil : CodeStreamingText(textsByRowID: texts)
@@ -1765,7 +1811,54 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // A row that left the timeline (history page swap, recovery) stops
         // being fed immediately.
         codeStreamingPublishers = codeStreamingPublishers.filter { rowsByID[$0.key] != nil }
+        codeRevealCursors = codeRevealCursors.filter { rowsByID[$0.key] != nil }
+        codeRevealRevisions = codeRevealRevisions.filter { rowsByID[$0.key] != nil }
+        sampleCodeReveal(rowsByID: rowsByID, now: ProcessInfo.processInfo.systemUptime)
         resolveCompletedStreamingTexts(rowsByID: rowsByID)
+    }
+
+    /// Sample every live text row's reveal cursor once per refresh and cache
+    /// the revealed prefix `codeStreamingTexts` returns for the rest of the
+    /// pass. While the page is hidden the clock is frozen, so the prefix does
+    /// not move; on return it continues from the frozen count at the official
+    /// 320/640 characters-per-second pacing.
+    private func sampleCodeReveal(rowsByID: [String: ChatTimelineRowModel],
+                                  now: TimeInterval) {
+        var revealed: [String: String] = [:]
+        revealed.reserveCapacity(rowsByID.count)
+        var behind: Set<String> = []
+        var backlog = 0
+        for (rowID, _) in rowsByID {
+            let source: String
+            if let publisher = codeStreamingPublishers[rowID],
+               !publisher.publishedText.isEmpty {
+                source = publisher.publishedText
+            } else if let completed = codeCompletedStreamingTexts[rowID] {
+                source = completed
+            } else {
+                continue
+            }
+            var cursor = codeRevealCursors[rowID] ?? StreamingRevealCursor()
+            if cursor.isVisible != pageRevealVisible {
+                cursor.setVisible(pageRevealVisible, at: now)
+            }
+            let count = cursor.revealedCount(total: source.count, at: now)
+            codeRevealCursors[rowID] = cursor
+            let revealedText = count >= source.count
+                ? source : String(source.prefix(count))
+            if codeRevealedTexts[rowID] != revealedText {
+                codeRevealRevisions[rowID, default: 0] &+= 1
+            }
+            revealed[rowID] = revealedText
+            if count < source.count {
+                behind.insert(rowID)
+                backlog += source.count - count
+            }
+        }
+        codeRevealedTexts = revealed
+        codeRevealBehindRowIDs = behind
+        codeRevealBacklog = backlog
+        if !behind.isEmpty { onRevealPending?() }
     }
 
     /// Drops a completion snapshot once the persisted text can replace it.
@@ -1779,14 +1872,24 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         rowsByID: [String: ChatTimelineRowModel]
     ) {
         let cutoff = CACurrentMediaTime() - Self.codeCompletedStreamingLifetime
-        codeCompletedStreamingAt = codeCompletedStreamingAt.filter { _, at in at > cutoff }
+        // A snapshot whose reveal is still replaying outlives the normal
+        // two-second bridge: dropping it here would jump the row to the full
+        // persisted text mid-replay (a return from a hidden tab can replay for
+        // several seconds).
+        codeCompletedStreamingAt = codeCompletedStreamingAt.filter { rowID, at in
+            at > cutoff || codeRevealBehindRowIDs.contains(rowID)
+        }
         codeCompletedStreamingTexts = codeCompletedStreamingTexts.filter { rowID, text in
             guard codeCompletedStreamingAt[rowID] != nil,
                   let row = rowsByID[rowID] else { return false }
             let persisted = row.value.displayText
             if persisted.isEmpty { return true }
-            if text.hasPrefix(persisted) { return text.count > persisted.count }
-            if persisted.hasPrefix(text) { return persisted.count < text.count }
+            // A row whose reveal is still replaying keeps its snapshot even
+            // when the persisted text already covers it: swapping to the full
+            // text now would jump over the characters the cursor owes.
+            let revealing = codeRevealBehindRowIDs.contains(rowID)
+            if text.hasPrefix(persisted) { return text.count > persisted.count || revealing }
+            if persisted.hasPrefix(text) { return persisted.count < text.count || revealing }
             return false
         }
         // Keep the timestamp table in step with the text table.
@@ -3382,9 +3485,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         // The publisher's own counter changes exactly when a
                         // new snapshot is produced; hashing the full text here
                         // repeated that O(n) work on every refresh (R6 P1-1).
+                        // The reveal revision moves when the drawn prefix
+                        // advances between snapshots (the replay after a tab
+                        // returns would otherwise never repaint).
                         return TimelineRowContentSignature(
                             id: row.id,
-                            revision: publisher.publishRevision,
+                            revision: publisher.publishRevision
+                                &* 1_000_003 &+ (codeRevealRevisions[row.id] ?? 0),
                             updatedSeq: 0)
                     }
                     if let completed = codeCompletedStreamingTexts[row.id] {
@@ -3392,10 +3499,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                         // until the persisted text covers it (P1-2), so that
                         // snapshot is its drawn content. `-1` marks the state
                         // as "completed snapshot" so it can never collide with
-                        // the row's wire signature.
+                        // the row's wire signature. The reveal revision is
+                        // folded in for the same reason as the live branch.
                         return TimelineRowContentSignature(
                             id: row.id,
-                            revision: Self.publishedTextRevision(completed),
+                            revision: Self.publishedTextRevision(completed)
+                                &* 1_000_003 &+ (codeRevealRevisions[row.id] ?? 0),
                             updatedSeq: -1)
                     }
                     return TimelineRowContentSignature(id: row.id,

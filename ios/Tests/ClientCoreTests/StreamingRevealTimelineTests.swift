@@ -99,4 +99,72 @@ import Testing
         #expect(policy.decision(released: 10, target: 10, nextRun: 24,
                                 waitingSince: 0, now: 1) == .wait)
     }
+
+    // MARK: - Hidden-page freeze (official RevealDriver, CANONICAL/29 §18)
+
+    @Test func revealClockStopsWhileHiddenAndResumesFromTheSameInstant() {
+        var clock = StreamingRevealClock()
+        #expect(clock.now(at: 10) == 10)
+        clock.setVisible(false, at: 10)
+        #expect(clock.now(at: 12) == 10)
+        #expect(clock.now(at: 30) == 10)
+        clock.setVisible(true, at: 12)
+        #expect(clock.now(at: 12) == 10)
+        #expect(clock.now(at: 13) == 11)
+        // A second hidden span accumulates on top of the first.
+        clock.setVisible(false, at: 20)
+        #expect(clock.now(at: 21) == 18)
+        clock.setVisible(true, at: 21)
+        #expect(clock.now(at: 22) == 19)
+    }
+
+    @Test func cursorShowsEverythingOnFirstSight() {
+        // Opening a page mid-stream must not replay the answer from its start.
+        var cursor = StreamingRevealCursor()
+        let text = String(repeating: "a", count: 500)
+        #expect(cursor.reveal(text, at: 0) == text)
+        #expect(cursor.revealedCount(total: 500, at: 0) == 500)
+    }
+
+    @Test func visibleGrowthRevealsAtTheOfficialCharacterRate() {
+        var cursor = StreamingRevealCursor()
+        #expect(cursor.revealedCount(total: 100, at: 0) == 100)
+        // 320 characters arrive at t = 1; the cursor reveals them at 320/s.
+        #expect(cursor.revealedCount(total: 420, at: 1) == 100)
+        #expect(cursor.revealedCount(total: 420, at: 1.5) == 260)
+        #expect(cursor.revealedCount(total: 420, at: 2.0) == 420)
+    }
+
+    @Test func hiddenBacklogFreezesAndReplaysFromTheOldCount() {
+        var cursor = StreamingRevealCursor()
+        #expect(cursor.revealedCount(total: 100, at: 0) == 100)
+        cursor.setVisible(false, at: 1)
+        // Text grows to 500 while hidden; sampling keeps the frozen count.
+        #expect(cursor.revealedCount(total: 500, at: 1.5) == 100)
+        #expect(cursor.revealedCount(total: 500, at: 3) == 100)
+        cursor.setVisible(true, at: 3)
+        #expect(cursor.revealedCount(total: 500, at: 3) == 100)
+        // Half a second after returning: 160 more characters, not all 400.
+        #expect(cursor.revealedCount(total: 500, at: 3.5) == 260)
+        #expect(cursor.revealedCount(total: 500, at: 4.25) == 500)
+    }
+
+    @Test func longestLagCapSkipsStaleBacklogButKeepsTheTail() {
+        var cursor = StreamingRevealCursor(longestLagSeconds: 1) // 320 characters
+        #expect(cursor.revealedCount(total: 0, at: 0) == 0)
+        cursor.setVisible(false, at: 0)
+        #expect(cursor.revealedCount(total: 2000, at: 5) == 1680)
+        cursor.setVisible(true, at: 5)
+        #expect(cursor.revealedCount(total: 2000, at: 5.5) == 1840)
+        #expect(cursor.revealedCount(total: 2000, at: 6) == 2000)
+    }
+
+    @Test func cursorNeverOverrunsAShorterCorrection() {
+        var cursor = StreamingRevealCursor()
+        #expect(cursor.revealedCount(total: 100, at: 0) == 100)
+        #expect(cursor.revealedCount(total: 50, at: 0.5) == 50)
+        // New text after the correction reveals from the clamped position.
+        #expect(cursor.revealedCount(total: 80, at: 1) == 50)
+        #expect(cursor.revealedCount(total: 80, at: 1.1) == 80)
+    }
 }

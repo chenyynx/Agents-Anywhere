@@ -35,6 +35,10 @@ struct TimelineChatTimelineView: View {
     /// The tab switch window (shell). Parking applies here is what keeps a
     /// refresh from stacking on the system transition (b1668: 300–570 ms).
     @Environment(\.shellTabTransitioning) private var shellTabTransitioning
+    /// Whether this tab page is the visible one (the shell keeps every page
+    /// mounted and flips this). It freezes the streaming reveal while off
+    /// screen.
+    @Environment(\.shellTabVisible) private var shellTabVisible
     // The chat type scale is stored in UserDefaults, which is not observable.
     // Reading the same keys through AppStorage makes a Settings change
     // re-evaluate this wrapper and produce a new height key/reconfigure.
@@ -78,6 +82,11 @@ struct TimelineChatTimelineView: View {
     }
     private var navigationIsSuspended: Bool {
         sidebarIsTransitioning || sidebarObscuresDetail || shellTabTransitioning
+    }
+    /// The reveal advances only while the page is on screen and the switch has
+    /// settled; a hidden page freezes it and resumes from the same point.
+    private var revealActive: Bool {
+        shellTabVisible && !shellTabTransitioning
     }
     /// The official turn phase, from the same live signals the orb reads.
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a
@@ -257,6 +266,12 @@ struct TimelineChatTimelineView: View {
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 bridge.setNavigationSuspended(suspended)
+            }
+            // Reveal progress (official `RevealDriver`): advance only while
+            // this page is on screen, freeze while hidden or switching, and
+            // resume from the frozen character count when the reader returns.
+            .onChange(of: revealActive, initial: true) { _, active in
+                bridge.setPageRevealVisible(active)
             }
             .onChange(of: reduceMotion, initial: true) { _, value in
                 bridge.setReduceMotion(value)
@@ -492,6 +507,14 @@ final class TimelineChatBridge: ObservableObject {
     @Published private(set) var sendConfirmedTick = 0
     private(set) var readerTookOver = false
     private var navigationSuspended = false
+    /// The page is visible and the switch has settled; the reveal advances.
+    private var pageRevealVisible = true
+    /// Pumps refreshes while the streaming reveal is still behind: once the
+    /// wire goes quiet nothing else would re-render the owed characters.
+    private var revealPump: Task<Void, Never>?
+    /// Identifies the current pump; a cancelled pump's `defer` must not clear
+    /// the handle of a newer one.
+    private var revealPumpGeneration = 0
     private var reduceMotion = false
     private var openingPending = false
     private var openingSettled = false
@@ -518,6 +541,7 @@ final class TimelineChatBridge: ObservableObject {
                                                  renderMode: renderMode)
         self.adapter = adapter
         // The adapter owns the row views; the page owns the presentation.
+        adapter.onRevealPending = { [weak self] in self?.pumpRevealIfNeeded() }
         adapter.onCodeToolDetail = { [weak self] request in
             self?.codeDetailRequest = .tool(request)
         }
@@ -566,6 +590,7 @@ final class TimelineChatBridge: ObservableObject {
         controller.setReduceMotion(reduceMotion)
         controller.setInteractionPresented(hasInteractions)
         updateHistoryAvailability()
+        pumpRevealIfNeeded()
         if openingPending, !controller.items.isEmpty { applyCompleted() }
     }
 
@@ -975,6 +1000,56 @@ final class TimelineChatBridge: ObservableObject {
         controller?.setNavigationSuspended(suspended)
     }
 
+    /// Reveal progress follows the page's visibility. Hiding freezes every
+    /// row's cursor; showing resumes them from the same character count and
+    /// starts the pump that repaints the backlog at the official pacing.
+    func setPageRevealVisible(_ visible: Bool) {
+        guard pageRevealVisible != visible else { return }
+        pageRevealVisible = visible
+        adapter.setPageRevealVisible(visible)
+        if visible {
+            pumpRevealIfNeeded()
+        } else {
+            stopRevealPump()
+        }
+    }
+
+    private func stopRevealPump() {
+        revealPumpGeneration &+= 1
+        revealPump?.cancel()
+        revealPump = nil
+    }
+
+    /// Re-renders the page at the reveal cadence while characters are still
+    /// owed. 10 Hz matches the Code streaming publisher's own update rate
+    /// (0.1 s leading edge); at 320/640 cps that paints 32–64 characters per
+    /// step, the same granularity as the official 24…64-character runs.
+    private func pumpRevealIfNeeded() {
+        guard revealPump == nil, pageRevealVisible,
+              adapter.hasPendingReveal, controller != nil else { return }
+        let backlog = adapter.revealBacklogCharacters
+        ClientDiagnosticsLog.shared.record(
+            kind: "shell.tabs.reveal.pump",
+            sessionID: model.session.id,
+            detail: ["backlog": String(backlog)])
+        revealPumpGeneration &+= 1
+        let generation = revealPumpGeneration
+        revealPump = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.revealPumpGeneration == generation {
+                    self.revealPump = nil
+                }
+            }
+            while !Task.isCancelled {
+                guard let self, self.pageRevealVisible else { return }
+                guard self.adapter.hasPendingReveal else { return }
+                self.adapter.forceRefresh()
+                self.controller?.reloadFromContent()
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
+    }
+
     func setReduceMotion(_ value: Bool) {
         reduceMotion = value
         controller?.setReduceMotion(value)
@@ -982,6 +1057,7 @@ final class TimelineChatBridge: ObservableObject {
 
     func cancel() {
         openingPending = false
+        stopRevealPump()
     }
 
     private var hasInteractions: Bool {

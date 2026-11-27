@@ -59,6 +59,32 @@ nonisolated struct StreamingRevealTimeline: Equatable {
         segment = Segment(time: now, total: clampedTotal, head: head)
     }
 
+    /// Start a cursor at an explicit position. Used when a text first appears:
+    /// everything already received is shown at once, because opening a page
+    /// mid-stream must not replay the answer from its first character.
+    mutating func anchor(total: Int, at now: TimeInterval, head: Int) {
+        let clampedTotal = max(total, 0)
+        segment = Segment(time: now, total: clampedTotal,
+                          head: Double(min(max(head, 0), clampedTotal)))
+    }
+
+    /// Re-anchor a cursor at its **own** current position. Unlike `retarget`,
+    /// the head follows `shownThrough(now)` rather than the previous total, so
+    /// a paused cursor (see `StreamingRevealClock`) freezes where it stood and
+    /// later anchors on a larger total resume from that point instead of
+    /// jumping over the backlog. `maxBacklog` drops stale backlog beyond the
+    /// official `longestLagSeconds` budget: the oldest characters are skipped,
+    /// the tail is still revealed at the usual pace.
+    mutating func reanchor(total: Int, at now: TimeInterval,
+                           maxBacklog: Int? = nil) {
+        let clampedTotal = max(total, 0)
+        var head = min(max(shownThrough(at: now), 0), Double(clampedTotal))
+        if let maxBacklog, maxBacklog >= 0 {
+            head = max(head, Double(max(clampedTotal - maxBacklog, 0)))
+        }
+        segment = Segment(time: now, total: clampedTotal, head: head)
+    }
+
     /// Integer characters to display at `now`, using the official formula and
     /// `floor(position + 1e-9)`.
     func shownThrough(at now: TimeInterval) -> Int {
@@ -111,6 +137,97 @@ nonisolated struct StreamingRevealTimeline: Equatable {
             tailRemaining = cps * (drain * (1 + ln) - delta)
         }
         return total - min(max(tailRemaining, 0), remaining)
+    }
+}
+
+/// Wall-clock mapping for a reveal cursor.
+///
+/// The official `RevealDriver` keeps its progress in the content model and
+/// only advances it while the page's frame source runs; a hidden page freezes
+/// where it stood and continues from there when it returns (CANONICAL/29
+/// §18). AA's text pipeline publishes whole snapshots on applies, so the same
+/// effect comes from sampling the cursor with a clock that stops while the
+/// page is off screen: hidden time is accumulated and subtracted, and the
+/// timeline never sees it.
+nonisolated struct StreamingRevealClock: Equatable {
+    private(set) var isVisible = true
+    private var hiddenSince: TimeInterval?
+    private var hiddenTotal: TimeInterval = 0
+
+    init() {}
+
+    mutating func setVisible(_ visible: Bool, at wall: TimeInterval) {
+        guard visible != isVisible else { return }
+        if visible {
+            if let hiddenSince { hiddenTotal += max(0, wall - hiddenSince) }
+            hiddenSince = nil
+        } else {
+            hiddenSince = wall
+        }
+        isVisible = visible
+    }
+
+    /// The reveal clock at `wall`. While hidden it reads the instant the page
+    /// left; afterwards it continues from that instant.
+    func now(at wall: TimeInterval) -> TimeInterval {
+        if let hiddenSince { return hiddenSince - hiddenTotal }
+        return wall - hiddenTotal
+    }
+}
+
+/// One streaming text's reveal progress, in characters.
+///
+/// This is the AA counterpart of the official `Progress.released`: the count
+/// only grows, it survives batches because the owner keeps it, and a hidden
+/// page freezes it. The cursor is **sampled**, not ticked: the Code page
+/// draws whole-text snapshots per apply, so a display link would recompute a
+/// prefix nothing re-renders. Sampling at the refresh cadence paints exactly
+/// what that update can show.
+nonisolated struct StreamingRevealCursor: Equatable {
+    var config: StreamingRevealTimeline.Config
+    /// Hidden time replays at most this many seconds of backlog; older
+    /// characters are skipped like the official `longestLagSeconds` cap.
+    var longestLagSeconds: Double
+    private(set) var timeline: StreamingRevealTimeline
+    private(set) var clock = StreamingRevealClock()
+    /// The first sample shows everything already received (see
+    /// `StreamingRevealTimeline.anchor`).
+    private var hasAnchored = false
+
+    init(config: StreamingRevealTimeline.Config = StreamingRevealTimeline.Config(),
+         longestLagSeconds: Double = 3) {
+        self.config = config
+        self.longestLagSeconds = longestLagSeconds
+        timeline = StreamingRevealTimeline(config: config)
+    }
+
+    var isVisible: Bool { clock.isVisible }
+
+    var maxBacklogCharacters: Int {
+        max(0, Int((config.charactersPerSecond * longestLagSeconds).rounded()))
+    }
+
+    mutating func setVisible(_ visible: Bool, at wall: TimeInterval) {
+        clock.setVisible(visible, at: wall)
+    }
+
+    /// Characters of `total` that may be drawn now.
+    mutating func revealedCount(total: Int, at wall: TimeInterval) -> Int {
+        let now = clock.now(at: wall)
+        if !hasAnchored {
+            hasAnchored = true
+            timeline.anchor(total: total, at: now, head: total)
+        } else if timeline.total != total {
+            timeline.reanchor(total: total, at: now,
+                              maxBacklog: maxBacklogCharacters)
+        }
+        return min(timeline.shownThrough(at: now), max(total, 0))
+    }
+
+    /// The visible prefix of `text`.
+    mutating func reveal(_ text: String, at wall: TimeInterval) -> String {
+        let count = revealedCount(total: text.count, at: wall)
+        return count >= text.count ? text : String(text.prefix(count))
     }
 }
 

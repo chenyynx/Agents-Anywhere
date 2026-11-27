@@ -173,12 +173,24 @@ final class SessionTimelinePresentation {
         outlineCadence = enabled
     }
 
-    /// No page of this session is visible. Keep receiving every delta, publish
-    /// at most once a second, and flush once when a page comes back.
+    /// No page of this session is visible. Keep receiving every delta but do
+    /// not publish rows while the reader is on another tab: a 2,461-row window
+    /// still spent the 1 Hz flush on the main thread and was felt as periodic
+    /// scroll hitches. The first visible page flushes here.
+    ///
+    /// The user's "Pause timeline updates on hidden tabs" switch keeps the old
+    /// 1 Hz cadence when it is off, so the behavior can be compared on device.
+    private var pausesHiddenPresentation: Bool {
+        UserDefaults.standard.object(forKey: ShellTabPreferences.hiddenPauseKey) as? Bool ?? true
+    }
+
     func setHiddenCadence(_ hidden: Bool) {
         guard hiddenCadence != hidden else { return }
         hiddenCadence = hidden
-        if !hidden { flush() }
+        if !hidden {
+            flush()
+            wake?.yield(())
+        }
     }
 
     func presentOpening(_ items: [V2TimelineItem], pendingMessages: [V2PendingMessage]) {
@@ -288,6 +300,13 @@ final class SessionTimelinePresentation {
                         }
                         let current = ProcessInfo.processInfo.systemUptime
                         guard self.pending == nil || current >= self.nextBatchAt else { continue }
+                        if self.hiddenCadence && self.pausesHiddenPresentation {
+                            // Keep only the newest staged snapshot. Publishing
+                            // rows while every page is off screen is work no
+                            // one can see; the visible edge flushes it.
+                            self.nextBatchAt = current + 60
+                            continue
+                        }
                         self.flush(now: current)
                         self.synchronizePending(session.pendingMessages)
                     } while !Task.isCancelled && (self.pending != nil || self.rows.contains { $0.isRevealing })

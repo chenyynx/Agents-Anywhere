@@ -30,6 +30,10 @@ nonisolated enum ShellChatRoot: Codable, Equatable, Sendable {
 nonisolated enum ShellDevicesRoute: Codable, Equatable, Hashable, Sendable {
     case device(V2ConnectorID)
     case session(V2SessionID)
+    /// The Devices tab's own compose-a-new-session page. It keeps the reader
+    /// on the device instead of switching to the Chat tab (pp 2026-11-27);
+    /// `workspace` is the folder the entry point was opened from.
+    case newSession(workspace: String?)
 }
 
 /// Pure navigation state for the tab shell: which tab is selected, what the
@@ -113,6 +117,18 @@ nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     mutating func pushDeviceSession(_ id: V2SessionID) {
         guard devicesPath.last != .session(id) else { return }
         devicesPath.append(.session(id))
+    }
+
+    /// Opens the Devices tab's own compose-a-new-session page above the
+    /// device page. A compose page already in the stack is replaced: two
+    /// stacked drafts would share the one new-session model and neither back
+    /// tap would mean anything.
+    mutating func pushDeviceNewSession(workspace: String?) {
+        devicesPath.removeAll { route in
+            if case .newSession = route { return true }
+            return false
+        }
+        devicesPath.append(.newSession(workspace: workspace))
     }
 
     /// Pops the top of the Devices stack. A pop on an empty stack is a no-op:

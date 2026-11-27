@@ -231,4 +231,42 @@ import Testing
         // Clearing one scope leaves the others alone.
         #expect(store.panes(in: otherAccount).devicesDevice == "legacy-connector")
     }
+
+    @Test func devicesComposePageLivesInTheDeviceStack() {
+        var panes = ShellPanesModel()
+        panes.openChatSession("chat-session")
+        panes.openDevice("connector-a")
+        panes.pushDeviceSession("old-session")
+        // Creating from the device page composes inside the Devices tab: the
+        // chat root must not move, and the compose page sits above whatever
+        // session was open.
+        panes.pushDeviceNewSession(workspace: "/tmp/work")
+        #expect(panes.devicesPath == [.session("old-session"), .newSession(workspace: "/tmp/work")])
+        #expect(panes.chatRoot == .session("chat-session"))
+        #expect(panes.selectedTab == .devices)
+        // A compose page names no visible session (background/live identity
+        // must not attach to the previous session under it).
+        #expect(panes.visibleSessionId(obscured: false) == nil)
+        // Re-opening compose replaces the page instead of stacking two drafts
+        // on the one shared new-session model.
+        panes.pushDeviceNewSession(workspace: nil)
+        #expect(panes.devicesPath == [.session("old-session"), .newSession(workspace: nil)])
+        // A created session lands on top of the compose page's device stack.
+        panes.pushDeviceSession("new-session")
+        #expect(panes.devicesPath.last == .session("new-session"))
+        #expect(panes.visibleSessionId(obscured: false) == "new-session")
+    }
+
+    @Test func composeRouteRoundTripsThroughTheRestorationStore() {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
+        let store = V2RestorationStore(defaults: defaults)
+        var panes = ShellPanesModel()
+        panes.openDevice("connector")
+        panes.pushDeviceNewSession(workspace: "/tmp/work")
+        store.save(panes: panes, in: scope)
+        #expect(store.panes(in: scope) == panes)
+        #expect(store.panes(in: scope).devicesPath == [.newSession(workspace: "/tmp/work")])
+    }
 }

@@ -247,6 +247,7 @@ struct ChatShellView: View {
                     switch route {
                     case let .device(id): deviceStackPage(id)   // old snapshots only
                     case let .session(id): deviceSessionPage(id)
+                    case let .newSession(workspace): deviceNewSessionPage(workspace: workspace)
                     }
                 }
         }
@@ -333,10 +334,15 @@ struct ChatShellView: View {
                 },
                 onPair: startPairing,
                 onNewSession: { path in
+                    // Compose inside the Devices tab: the shared draft is
+                    // pointed at this device and the page is pushed here, so
+                    // the reader never loses the stack they were in (pp
+                    // 2026-11-27). Creating from that page lands back in the
+                    // device stack, not the Chat tab.
                     if let model = appState.nativeChatServices?.newSession {
                         model.focusDevice(connectorId, workspace: path)
                     }
-                    startNewSession()
+                    panes.pushDeviceNewSession(workspace: path)
                 },
                 onNewProjectSession: startProjectSession,
                 onConnectorUpdated: appState.updateConnector,
@@ -365,6 +371,48 @@ struct ChatShellView: View {
                 onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
                 .equatable()
                 .id(session.presentationKey)
+        } else {
+            shellPlaceholderPage(showsMenuButton: false)
+        }
+    }
+
+    /// The Devices tab's own compose-a-new-session page (pp 2026-11-27).
+    ///
+    /// It reuses the account's one new-session draft — the Chat tab's compose
+    /// page observes the same model, so the draft follows the reader across
+    /// tabs — but creating from here lands in the device stack instead of
+    /// switching to the Chat tab. The device and workspace were focused when
+    /// the page was pushed (`onNewSession` above); a restored route opens on
+    /// whatever target the draft still holds.
+    @ViewBuilder private func deviceNewSessionPage(workspace: String?) -> some View {
+        if let services = appState.nativeChatServices {
+            NewSessionView(
+                model: services.newSession,
+                connectors: appState.connectors,
+                sessions: appState.sessions,
+                repository: services.dashboardRepository,
+                dashboardLoading: appState.isDashboardLoading,
+                dashboardError: appState.connectorsError,
+                onMenu: toggleSidebar,
+                onOpenDevice: { id in
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "device.tab.open",
+                        detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
+                    panes.openDevice(id)
+                },
+                onCreated: { session in
+                    appState.updateSession(session)
+                    // The reader may have left the compose page while the
+                    // request was in flight; only navigate if it still owns
+                    // the top of the Devices stack.
+                    var stillWanted = false
+                    if let last = panes.devicesPath.last, case .newSession = last {
+                        stillWanted = true
+                    }
+                    if stillWanted { panes.pushDeviceSession(session.id) }
+                },
+                onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+                .equatable()
         } else {
             shellPlaceholderPage(showsMenuButton: false)
         }

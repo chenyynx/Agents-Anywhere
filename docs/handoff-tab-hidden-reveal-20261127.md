@@ -80,11 +80,11 @@
 
 §3 把 `ChatMarkdownView.revealDeadlines` 当成生产揭示时钟，**这是过时的**：W7 之后 Chat/Code 两页的正文都由 `CodeMessageRowView` → `CodeMarkdownTextLeaf`（TextKit）渲染，`ChatMarkdownView` 只用于公告/子代理摘要/自动门；`assistantMarkdown(for:)` 与 `assistantStreamingDocument(for:)` 在生产路径返回 nil。**生产可见的流式文本来自 `CodeStreamingPublisher` 的整段快照（0.1s 前缘节流）**，在 `TimelineChatContentAdapter.codeStreamingTexts(for:)` 汇聚。因此同一机制落在 **adapter 的文本投影层**，而不是 SwiftUI 字形层：
 
-- `StreamingRevealCursor`（`Models/Chat/StreamingRevealTimeline.swift`）= 官方 `Progress.released` 的 AA 对应物：字符计数、持久、只增；时钟 `StreamingRevealClock` 在隐藏期间冻结，`now(at:)` 把隐藏时长扣掉，回到页面从冻结计数续放。
-- 官方常量沿用 `StreamingRevealTimeline` 已有的 320 cps / 640 cps catch-up / 2 s drain；新增 `longestLagSeconds`（默认 3 s = 960 字符）在锚定时跳过更老的积压。
+- `StreamingRevealCursor`（`Models/Chat/StreamingRevealTimeline.swift`）= 官方 `Progress.released` 的 AA 对应物：字符计数、持久、只增；时钟 `StreamingRevealClock` 在隐藏或**切后台**期间冻结（`revealActive = shellTabVisible && !shellTabTransitioning && scenePhase == .active`），`now(at:)` 把隐藏时长扣掉，回到页面从冻结计数续放。
+- 官方常量沿用 `StreamingRevealTimeline` 已有的 320 cps / 640 cps catch-up / 2 s drain。**2026-11-28 复核（CANONICAL/29 §20）**：`longestLagSeconds` 是**滞后上限**（261109 的 `maxCharactersPerSecond` 在 261123 被它取代）——超过预算的积压**成片一次画出**（不逐字慢放、也不丢弃），只有预算内的尾部按节奏重播；默认值 U，AA 先用 3 s（≈960 字符）。
 - 采样发生在每次 adapter refresh（Code 文本本来就只在 apply 时重绘），不用 CADisplayLink：per-frame 光标没有 per-frame 渲染器可画，只会空转；节奏由 `codeStreamingTexts` 的前缀 + `codeRevealRevisions` 进 content signature 保证。
 - 首次见到一段文本时**全显**（官方驱动挂载时也不回放已有内容）；只有光标已经存在、文本在隐藏期间增长的部分才重播。
-- **隐藏期间才第一次出现**的助手消息（包括在隐藏期间就结束、回来时已 settled 的）走 `startFromTail`：从最近 `longestLagSeconds` 的尾巴开始按节奏补播，不会整段直出；这类 settled 消息没有 publisher，由 `codePendingReplays` 提供临时揭示源，追平后交回持久文本。
+- **隐藏期间才第一次出现**的助手消息（包括在隐藏期间就结束、回来时已 settled 的）走 `startFromTail`：更老的正文一次成片出现，只有最近 `longestLagSeconds` 预算内的尾部按节奏补播；这类 settled 消息没有 publisher，由 `codePendingReplays` 提供临时揭示源，追平后交回持久文本。
 - VoiceOver / Reduce Motion 下不建光标（官方同样不建 reveal driver），直接画完整快照。
 - 隐藏页的回合阶段/完成**震动**也必须过 `shellTabVisible` 门（`TimelineChatTimelineView` 两条 phase haptic + send-confirmed；`CompletionFeedback` 两段 pulse），否则隐藏页会在别的 tab 响。
 
@@ -117,7 +117,7 @@
 ### 8.5 真机验收清单（待 pp）
 
 1. 对流式中的会话：切到别的 tab 停 2–3 s 再切回 → 积压文本按节奏续播再追平（不是一次全出）。
-2. **在回复出现前切走、回复在隐藏期间出现并结束**，再切回 → 同样从尾巴补播（b1706 的 `codePendingReplays` 路径）。
+2. **在回复出现前切走、回复在隐藏期间出现并结束**，再切回 → 更老的正文成片出现，最后约 960 字符按节奏补播（b1706 的 `codePendingReplays` 路径）。
 3. 可见页流式手感不变（正常速度下光标始终追平，文本仍按 0.1 s 快照节奏出现）。
 4. `shell.tabs.frame`：中位 ≤120ms、无 >200ms 常态（b1699 基线 89/108）。
 5. 切回时列表不跳、键盘/滚动/锚点无回归；**隐藏期间不应有 phase/completion 震动**，可见页正常。

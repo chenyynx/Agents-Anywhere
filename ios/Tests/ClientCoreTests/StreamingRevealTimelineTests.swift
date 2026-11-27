@@ -149,10 +149,16 @@ import Testing
         #expect(cursor.revealedCount(total: 500, at: 4.25) == 500)
     }
 
-    @Test func longestLagCapSkipsStaleBacklogButKeepsTheTail() {
+    @Test func longestLagCapPaintsOldBacklogAtOnceAndKeepsTheTail() {
+        // Official `longestLagSeconds` bounds the lag (CANONICAL/29 §20): the
+        // hidden page freezes `released`; on return the backlog beyond the
+        // budget is painted at once (a block), and only the budget window
+        // replays at the usual pace.
         var cursor = StreamingRevealCursor(longestLagSeconds: 1) // 320 characters
         #expect(cursor.revealedCount(total: 0, at: 0) == 0)
         cursor.setVisible(false, at: 0)
+        // 2 000 characters arrived while hidden: all but the last 320 show
+        // as a block on the first sample.
         #expect(cursor.revealedCount(total: 2000, at: 5) == 1680)
         cursor.setVisible(true, at: 5)
         #expect(cursor.revealedCount(total: 2000, at: 5.5) == 1840)
@@ -168,11 +174,11 @@ import Testing
         #expect(cursor.revealedCount(total: 80, at: 1.1) == 80)
     }
 
-    @Test func tailStartShowsOnlyTheLongestLagWindowThenDrains() {
+    @Test func tailStartPaintsOldTextAtOnceAndReplaysTheBudgetWindow() {
         var cursor = StreamingRevealCursor(longestLagSeconds: 1) // 320 chars
         cursor.setVisible(false, at: 0)
-        // The message first appeared while the page was hidden: skip all but
-        // the last 320 characters, then reveal those at the usual pace.
+        // The message first appeared while the page was hidden: the older
+        // 680 characters paint at once, then the last 320 replay.
         cursor.startFromTail(total: 1000, at: 1)
         #expect(cursor.revealedCount(total: 1000, at: 1) == 680)
         cursor.setVisible(true, at: 1)
@@ -181,6 +187,8 @@ import Testing
     }
 
     @Test func shortMessageThatArrivedWhileHiddenStartsEmpty() {
+        // Under the lag budget there is nothing to paint at once: the whole
+        // message replays.
         var cursor = StreamingRevealCursor(longestLagSeconds: 1)
         cursor.startFromTail(total: 100, at: 0)
         #expect(cursor.revealedCount(total: 100, at: 0) == 0)

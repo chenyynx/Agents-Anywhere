@@ -71,10 +71,10 @@ nonisolated struct StreamingRevealTimeline: Equatable {
     /// Re-anchor a cursor at its **own** current position. Unlike `retarget`,
     /// the head follows `shownThrough(now)` rather than the previous total, so
     /// a paused cursor (see `StreamingRevealClock`) freezes where it stood and
-    /// later anchors on a larger total resume from that point instead of
-    /// jumping over the backlog. `maxBacklog` drops stale backlog beyond the
-    /// official `longestLagSeconds` budget: the oldest characters are skipped,
-    /// the tail is still revealed at the usual pace.
+    /// later anchors on a larger total resume from that point. `maxBacklog`
+    /// bounds the lag: backlog beyond the official `longestLagSeconds` budget
+    /// is painted at once (a block), and only the budget window replays at the
+    /// usual pace (CANONICAL/29 §20).
     mutating func reanchor(total: Int, at now: TimeInterval,
                            maxBacklog: Int? = nil) {
         let clampedTotal = max(total, 0)
@@ -185,8 +185,10 @@ nonisolated struct StreamingRevealClock: Equatable {
 /// what that update can show.
 nonisolated struct StreamingRevealCursor: Equatable {
     var config: StreamingRevealTimeline.Config
-    /// Hidden time replays at most this many seconds of backlog; older
-    /// characters are skipped like the official `longestLagSeconds` cap.
+    /// The lag budget: hidden time replays at most this many seconds of
+    /// backlog. Older characters are painted at once (a block) and only the
+    /// budget window replays (official `longestLagSeconds`, CANONICAL/29 §20;
+    /// default U, AA keeps the 3 s hand-tuned value).
     var longestLagSeconds: Double
     private(set) var timeline: StreamingRevealTimeline
     private(set) var clock = StreamingRevealClock()
@@ -214,10 +216,9 @@ nonisolated struct StreamingRevealCursor: Equatable {
     /// Begin with only the last `maxBacklogCharacters` owed.
     ///
     /// Used when a text first appears while its page is off screen: the whole
-    /// answer arrived behind the reader's back, so the return replays its tail
-    /// at the usual pace (official `longestLagSeconds`) instead of either
-    /// flashing everything or replaying a very long answer from its first
-    /// character.
+    /// answer arrived behind the reader's back, so the return paints the older
+    /// text at once (a block) and replays only the lag-budget tail at the usual
+    /// pace — the official `longestLagSeconds` bound (CANONICAL/29 §20).
     mutating func startFromTail(total: Int, at wall: TimeInterval) {
         let now = clock.now(at: wall)
         let clamped = max(total, 0)

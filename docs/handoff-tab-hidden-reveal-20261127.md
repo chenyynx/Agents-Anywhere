@@ -84,6 +84,7 @@
 - 官方常量沿用 `StreamingRevealTimeline` 已有的 320 cps / 640 cps catch-up / 2 s drain；新增 `longestLagSeconds`（默认 3 s = 960 字符）在锚定时跳过更老的积压。
 - 采样发生在每次 adapter refresh（Code 文本本来就只在 apply 时重绘），不用 CADisplayLink：per-frame 光标没有 per-frame 渲染器可画，只会空转；节奏由 `codeStreamingTexts` 的前缀 + `codeRevealRevisions` 进 content signature 保证。
 - 首次见到一段文本时**全显**（官方驱动挂载时也不回放已有内容）；只有光标已经存在、文本在隐藏期间增长的部分才重播。
+- VoiceOver / Reduce Motion 下不建光标（官方同样不建 reveal driver），直接画完整快照。
 - 已知边界：**隐藏期间才开始并结束的回合**没有 publisher/光标，回来仍是一次全出；验收场景（离开时正在流式）不受影响。
 
 ### 8.2 两步实现（各自 commit）
@@ -95,8 +96,8 @@
 
 ### 8.3 诊断（真机对照）
 
-- `shell.tabs.reveal`：`visible` / `rows` / `backlog`（页面可见性边沿，冻结时记下欠的字符数）。
-- `shell.tabs.reveal.pump`：续播泵启动时的 `backlog`。
+- `shell.tabs.reveal`：`visible` / `cursors` / `behind` / `backlog`（页面可见性边沿；计数来自最近一次采样，resume 时真正欠的字符数看下一条）。
+- `shell.tabs.reveal.pump`：续播泵启动时的 `backlog` / `rows`（真正开始续播时的欠账）。
 - `timeline.page.hidden`：`hidden` / `parked` / `pending` / `deferredReload`。
 - `timeline.page.flush`：`waitedMs` / `flushMs` / `parked` / `items`（watchdog 兜底 flush 的耗时，用于看切回落地帧成本）。
 - `shell.tabs.frame`：每包必看——worstMs 中位 ≤120ms、无 >200ms 常态窗口。

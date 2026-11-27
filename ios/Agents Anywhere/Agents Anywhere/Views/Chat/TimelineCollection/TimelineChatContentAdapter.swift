@@ -1091,7 +1091,13 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // seed (P1-5). A row that only finished its TextKit reveal keeps the
         // old contract and answers nil.
         if group.rows.contains(where: { $0.value.isStreamingText })
-            || group.rows.contains(where: { codeCompletedStreamingTexts[$0.id] != nil }) {
+            || group.rows.contains(where: { codeCompletedStreamingTexts[$0.id] != nil })
+            || group.rows.contains(where: { codePendingReplays[$0.id] != nil }) {
+            // A settled message replaying after a return draws the revealed
+            // prefix, not its persisted full text. Measuring the full text
+            // here made the layout reserve 934 pt for a row the cell was about
+            // to draw 40 pt tall, and the correction collapsed the list by
+            // 894 pt on the way back (b1735 `timeline.row.height` 05:39:04).
             return streamingSeedHeight(for: item, groupID: id, width: width)
         }
         guard !group.rows.contains(where: { $0.isRevealing }) else {
@@ -1143,7 +1149,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         // downward, which is visible. A row with no sampled text falls back to
         // its persisted block text.
         var drawnTexts: [String: String] = [:]
+        var hasPendingReplay = false
         for row in groupsByID[groupID]?.rows ?? [] {
+            if codePendingReplays[row.id] != nil { hasPendingReplay = true }
             if let revealed = codeRevealedTexts[row.id] {
                 // An empty prefix is a real drawn state for a pending replay;
                 // keeping it stops the seed from sizing the row for the full
@@ -1158,9 +1166,20 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         guard let estimate = officialEstimateHeight(
             for: item, width: width,
             drawnTexts: drawnTexts.isEmpty ? nil : drawnTexts) else {
-            // No text yet: the official `.streamingText` row does not exist
-            // before the first non-empty block (CANONICAL/03-streaming.md §8.1).
-            return nil
+            // A pending replay can legitimately draw an empty prefix (the
+            // message arrived while away and the lag window starts at 0). The
+            // row exists but draws nothing yet: seed the official floor here.
+            // Returning nil made the layout fall back to `estimateKind`, which
+            // sizes the persisted full text — the 934 pt row that collapsed to
+            // 40 pt on return (b1735 `timeline.row.height` 05:39:04).
+            guard hasPendingReplay else {
+                // No text yet: the official `.streamingText` row does not
+                // exist before the first non-empty block
+                // (CANONICAL/03-streaming.md §8.1).
+                return nil
+            }
+            return TimelineHeightEstimate.officialMinimum
+                + interruptedNoticeExtraHeight(for: groupID)
         }
         // A row that was measured before (reconnect/recovery re-streams the
         // same message) never seeds below the height the reader last saw.
@@ -1331,8 +1350,9 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// still, and without this the collection would skip the apply.
     private var codeRevealRevisions: [String: Int] = [:]
     /// True from the moment the page hides until a sample runs after it is
-    /// visible again: rows first seen in this window replay their tail even
-    /// when they are already settled (a message that arrived while away).
+    /// visible again: rows first seen in this window replay their lag-budget
+    /// tail even when they are already settled (a message that arrived while
+    /// away; CANONICAL/29 §20).
     private var codeRevealResuming = false
     /// Row ids present at the last sample. A settled row that was already in
     /// the window before the page hid is **seen** text: it must not become a
@@ -1892,7 +1912,8 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         var backlog = 0
         let revealEnabled = isRevealEnabled
         // A row first seen in this window arrived while the page was off
-        // screen; it replays from its tail instead of appearing whole. The
+        // screen; its older text paints at once and only the lag-budget tail
+        // replays (official `longestLagSeconds` bound; CANONICAL/29 §20). The
         // flag survives hidden samples and is cleared by the first sample
         // taken with the page visible again.
         let resuming = codeRevealResuming || !pageRevealVisible

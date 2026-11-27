@@ -360,15 +360,6 @@ struct ChatShellView: View {
 
     /// The device page is the Devices tab's root (pp 2026-11-26); the session
     /// drill-down pushes above it.
-    @ViewBuilder private var deviceTabRootPage: some View {
-        if let id = panes.devicesDevice ?? defaultDeviceID {
-            deviceStackPage(id, showsMenuButton: true)
-        } else if appState.isDashboardLoading && !appState.hasLoadedConnectors {
-            shellPlaceholderPage()
-        } else {
-            noDevicePage
-        }
-    }
 
     private var defaultDeviceID: V2ConnectorID? {
         appState.connectors.first { $0.status == .online }?.id
@@ -376,107 +367,10 @@ struct ChatShellView: View {
     }
 
     /// Nothing to root the tab on: the pairing entry is the only useful action.
-    private var noDevicePage: some View {
-        VStack(spacing: 12) {
-            Text(appState.connectorsError ?? String(localized: "No devices"))
-                .font(.footnote)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            if appState.connectorsError != nil {
-                Button(String(localized: "重试")) {
-                    Task { await appState.refreshDashboard() }
-                }
-                .font(.footnote.weight(.medium))
-            }
-            Button(String(localized: "添加设备")) { startPairing() }
-                .font(.footnote.weight(.medium))
-        }
-        .padding(.horizontal, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor).ignoresSafeArea())
-        .modifier(ChatPageToolbar(title: String(localized: "Devices"), onMenu: toggleSidebar))
-    }
 
     /// Devices tab: the device page is the root (no back button); the session
     /// drill-down pushes inside this tab's stack and must not switch to the
     /// Chat tab.
-    @ViewBuilder private func deviceStackPage(_ connectorId: V2ConnectorID,
-                                              showsMenuButton: Bool = false) -> some View {
-        if let connector = appState.connectors.first(where: { $0.id == connectorId }),
-           let clients = appState.nativeChatServices,
-           let service = appState.deviceManagementService,
-           let workspaceFilesService = appState.workspaceFilesService,
-           let serverURL = appState.serverURL
-        {
-            DeviceManagementView(
-                connector: connector,
-                connectors: appState.connectors,
-                allSessions: appState.sessions,
-                projects: appState.projects,
-                agents: clients.agents(on: connectorId),
-                dashboard: clients.dashboardRepository,
-                service: service,
-                workspaceFilesService: workspaceFilesService,
-                serverURL: serverURL,
-                onMenu: toggleSidebar,
-                showsMenuButton: showsMenuButton,
-                onOpenDevice: { id in
-                    ClientDiagnosticsLog.shared.record(
-                        kind: "device.tab.open",
-                        detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
-                    panes.openDevice(id)
-                },
-                onCopyDeviceId: copyDeviceId,
-                onOpenSession: { id in
-                    ClientDiagnosticsLog.shared.record(
-                        kind: "device.tab.session",
-                        sessionID: id,
-                        detail: ["device": panes.devicesDevice ?? "auto"])
-                    panes.pushDeviceSession(id)
-                },
-                onPair: startPairing,
-                onNewSession: { path in
-                    // Compose inside the Devices tab: the shared draft is
-                    // pointed at this device and the page is pushed here, so
-                    // the reader never loses the stack they were in (pp
-                    // 2026-11-27). Creating from that page lands back in the
-                    // device stack, not the Chat tab.
-                    if let model = appState.nativeChatServices?.newSession {
-                        model.focusDevice(connectorId, workspace: path)
-                    }
-                    panes.pushDeviceNewSession(workspace: path)
-                },
-                onNewProjectSession: startProjectSession,
-                onConnectorUpdated: appState.updateConnector,
-                onConnectorDeleted: removeConnector,
-                onSessionsUpdated: appState.updateSessions,
-                onSetSessionsArchived: appState.setSessionsArchived
-            )
-            .id(connectorId)
-        } else {
-            shellPlaceholderPage(showsMenuButton: showsMenuButton)
-        }
-    }
-
-    @ViewBuilder private func deviceSessionPage(_ id: V2SessionID) -> some View {
-        if let services = appState.nativeChatServices {
-            let session = services.sessionRepository.session(id: id)
-            let summary = appState.sessions.first { $0.id == id }
-            let connectorID = session.metadata?.connectorId ?? summary?.connectorId
-            SessionChatView(model: chatPane.pane(for: session, services: services), services: services,
-                deviceName: appState.connectors.first { $0.id == connectorID }?.name,
-                fallbackTitle: summary?.title,
-                fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
-                paneRole: .devices,
-                onMenu: toggleSidebar,
-                showsMenuButton: false,
-                onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
-                .equatable()
-                .id(session.presentationKey)
-        } else {
-            shellPlaceholderPage(showsMenuButton: false)
-        }
-    }
 
     /// The Devices tab's own compose-a-new-session page (pp 2026-11-27).
     ///
@@ -486,39 +380,6 @@ struct ChatShellView: View {
     /// switching to the Chat tab. The device and workspace were focused when
     /// the page was pushed (`onNewSession` above); a restored route opens on
     /// whatever target the draft still holds.
-    @ViewBuilder private func deviceNewSessionPage(workspace: String?) -> some View {
-        if let services = appState.nativeChatServices {
-            NewSessionView(
-                model: services.newSession,
-                connectors: appState.connectors,
-                sessions: appState.sessions,
-                repository: services.dashboardRepository,
-                dashboardLoading: appState.isDashboardLoading,
-                dashboardError: appState.connectorsError,
-                onMenu: toggleSidebar,
-                onOpenDevice: { id in
-                    ClientDiagnosticsLog.shared.record(
-                        kind: "device.tab.open",
-                        detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
-                    panes.openDevice(id)
-                },
-                onCreated: { session in
-                    appState.updateSession(session)
-                    // The reader may have left the compose page while the
-                    // request was in flight; only navigate if it still owns
-                    // the top of the Devices stack.
-                    var stillWanted = false
-                    if let last = panes.devicesPath.last, case .newSession = last {
-                        stillWanted = true
-                    }
-                    if stillWanted { panes.pushDeviceSession(session.id) }
-                },
-                onRefresh: { await appState.refreshDashboard(); return appState.connectors })
-                .equatable()
-        } else {
-            shellPlaceholderPage(showsMenuButton: false)
-        }
-    }
 
     @ViewBuilder private var mainContent: some View {
         if case let .device(connectorId) = selection {
@@ -562,83 +423,6 @@ struct ChatShellView: View {
         } else {
             shellPlaceholderPage()
         }
-    }
-
-    @ViewBuilder private func devicePage(connectorId: V2ConnectorID) -> some View {
-        if let connector = appState.connectors.first(where: { $0.id == connectorId }),
-           let clients = appState.nativeChatServices,
-           let service = appState.deviceManagementService,
-           let workspaceFilesService = appState.workspaceFilesService,
-           let serverURL = appState.serverURL
-        {
-            DeviceManagementView(
-                connector: connector,
-                connectors: appState.connectors,
-                allSessions: appState.sessions,
-                projects: appState.projects,
-                agents: clients.agents(on: connectorId),
-                dashboard: clients.dashboardRepository,
-                service: service,
-                workspaceFilesService: workspaceFilesService,
-                serverURL: serverURL,
-                onMenu: toggleSidebar,
-                onOpenDevice: openDevice,
-                onCopyDeviceId: copyDeviceId,
-                onOpenSession: openSession,
-                onPair: startPairing,
-                onNewSession: { path in
-                    if let model = appState.nativeChatServices?.newSession {
-                        model.focusDevice(connectorId, workspace: path)
-                    }
-                    startNewSession()
-                },
-                onNewProjectSession: startProjectSession,
-                onConnectorUpdated: appState.updateConnector,
-                onConnectorDeleted: removeConnector,
-                onSessionsUpdated: appState.updateSessions,
-                onSetSessionsArchived: appState.setSessionsArchived
-            )
-            .id(connectorId)
-        } else {
-            shellPlaceholderPage()
-        }
-    }
-
-    @ViewBuilder private func sessionPage(id: V2SessionID, services: V2ClientServices) -> some View {
-        let session = services.sessionRepository.session(id: id)
-        let summary = appState.sessions.first { $0.id == id }
-        let connectorID = session.metadata?.connectorId ?? summary?.connectorId
-        SessionChatView(model: chatPane.pane(for: session, services: services), services: services,
-            deviceName: appState.connectors.first { $0.id == connectorID }?.name,
-            fallbackTitle: summary?.title,
-            fallbackRuntimeName: summary?.runtimeName ?? summary?.runtime,
-            onMenu: toggleSidebar,
-            onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
-            .equatable()
-            // The model's identity, not the selection's: binding a
-            // local creation renames the session in place, and re-keying
-            // here remounted the page — replaying the send's entrance
-            // (pp 2026-11-15).
-            .id(session.presentationKey)
-    }
-
-    @ViewBuilder private func newSessionPage(services: V2ClientServices) -> some View {
-        NewSessionView(model: services.newSession, connectors: appState.connectors, sessions: appState.sessions, repository: services.dashboardRepository,
-            dashboardLoading: appState.isDashboardLoading,
-            dashboardError: appState.connectorsError,
-            onMenu: toggleSidebar,
-            onOpenDevice: openDevice,
-            onCreated: { session in
-                appState.updateSession(session)
-                // The page the creation started from may have been left while
-                // the request was in flight; only navigate if it still owns
-                // the Chat tab (or the legacy selection).
-                let stillWanted = tabShellActive ? chatRootSessionID == nil : selection == .newSession
-                if stillWanted { openSession(session.id) }
-            },
-            onRefresh: { await appState.refreshDashboard(); return appState.connectors })
-            .equatable()
-            .id(newSessionPresentationID)
     }
 
     /// Pushed pages leave the leading bar slot to the system back button; the

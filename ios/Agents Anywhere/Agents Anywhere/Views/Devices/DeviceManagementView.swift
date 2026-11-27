@@ -111,6 +111,13 @@ struct DeviceManagementView: View {
                 .modifier(ChatPageContentColumn(horizontalInset: 16))
                 .background { ChatPageScrollEdge() }
             }
+#if AA_TIMELINE_PROBE
+            .onScrollPhaseChange { _, phase, _ in
+                if phase == .interacting || phase == .decelerating {
+                    TabSwitchProbe.shared.beginScroll(tab: "devices")
+                }
+            }
+#endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The settings cards are white; without the paper page colour the

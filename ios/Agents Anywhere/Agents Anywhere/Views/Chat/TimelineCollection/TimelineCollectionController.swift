@@ -3953,6 +3953,9 @@ extension TimelineCollectionController: UICollectionViewDelegate {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !navigationSuspended else { return }
+#if AA_TIMELINE_PROBE
+        TabSwitchProbe.shared.beginScroll(tab: "timeline")
+#endif
         // The reader's finger owns the position, even mid-opening. Each new
         // gesture restores one shot of the near-top trigger and counts as a
         // reader-intent change; the policy owns both so deleting either guard

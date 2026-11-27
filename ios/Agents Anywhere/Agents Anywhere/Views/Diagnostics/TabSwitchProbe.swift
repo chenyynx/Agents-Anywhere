@@ -22,6 +22,10 @@ final class TabSwitchProbe: NSObject {
     /// Long enough to cover the bar's transition plus the page commit that
     /// used to land at ~0.5 s (b1660). Shorter windows hid the tail.
     private static let window: CFTimeInterval = 0.7
+    /// A scroll window is longer than a tab tap: the reader keeps dragging
+    /// after the switch-settling tail would have ended.
+    private static let scrollWindow: CFTimeInterval = 2.0
+    private var windowLength: CFTimeInterval = TabSwitchProbe.window
     /// Two 60 Hz frames: one dropped frame at 120 Hz reads as ~16.7 ms and
     /// ordinary scheduling noise must not count.
     private static let hitchMs: Double = 33.4
@@ -63,6 +67,18 @@ final class TabSwitchProbe: NSObject {
         startWindow(tab: tab, kind: kind, idle: false)
     }
 
+    /// A scroll gesture on a page that is already visible. Probe builds use
+    /// this to catch scroll hitches that `shell.tabs.frame` cannot see: its
+    /// windows only bracket tab taps.
+    func beginScroll(tab: String) {
+        guard ClientDiagnosticsLog.shared.isEnabled else { return }
+        if link != nil { finish(partial: true) }
+        idleWorkItem?.cancel()
+        idleWorkItem = nil
+        startWindow(tab: tab, kind: "scroll.frame", idle: false,
+                    duration: Self.scrollWindow)
+    }
+
     /// Mark a phase inside the current switch window. No-op when no switch is
     /// in flight, so call sites can mark unconditionally (page appear also
     /// fires on a session open).
@@ -78,11 +94,13 @@ final class TabSwitchProbe: NSObject {
             dedupe: false)
     }
 
-    private func startWindow(tab: String, kind: String = "shell.tabs.frame", idle: Bool) {
+    private func startWindow(tab: String, kind: String = "shell.tabs.frame", idle: Bool,
+                             duration: CFTimeInterval = TabSwitchProbe.window) {
         link?.invalidate()
         self.tab = tab
         self.kind = kind
         isIdleWindow = idle
+        windowLength = duration
         startedAt = CACurrentMediaTime()
 #if AA_TIMELINE_PROBE
         // Probe builds sample the main thread's stack through the same
@@ -93,7 +111,7 @@ final class TabSwitchProbe: NSObject {
         // missing ticks): record a fixed-length burst instead.
         if !idle {
             MainThreadStackSampler.shared.beginBurst(
-                seconds: Self.window + 0.2)
+                seconds: duration + 0.2)
         }
 #endif
         // Measure from the window start: a main thread that blocks inside the
@@ -128,7 +146,7 @@ final class TabSwitchProbe: NSObject {
             MainThreadStackSampler.shared.noteActivity(scrolling: true)
         }
 #endif
-        if now - startedAt >= Self.window { finish() }
+        if now - startedAt >= windowLength { finish() }
     }
 
     private func finish(partial: Bool = false) {

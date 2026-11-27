@@ -8,7 +8,6 @@ struct ChatSidebarView: View {
     let appState: AppState
     let agentSetup: AgentSetupCoordinator?
     let safeAreaInsets: EdgeInsets
-    let devices: [ChatSidebarDevice]
     /// The local-database dashboard source; nil falls back to the legacy
     /// AppState projection.
     let library: DashboardLibrary?
@@ -19,7 +18,13 @@ struct ChatSidebarView: View {
     let onNewProjectSession: (String) -> Void
     let onRestoreSession: (String) async -> Bool
     let account: ChatSidebarAccount?
-    let selectedDeviceId: V2ConnectorID?
+    /// The tab shell's device tab, if that is the active shell. The default
+    /// device is resolved here, from the library/AppState connectors, so the
+    /// shell root does not read the connector list.
+    let devicesTabActive: Bool
+    let devicesTabDeviceId: V2ConnectorID?
+    /// The legacy (drawer) shell's selected device.
+    let legacyDeviceId: V2ConnectorID?
     let selectedSessionId: V2SessionID?
     let isLoadingDevices: Bool
     let isLoadingSessions: Bool
@@ -52,6 +57,15 @@ struct ChatSidebarView: View {
             .map { ChatSidebarSession(session: $0) }
             .sorted { $0.presentation.precedes($1.presentation, id: $0.id, otherID: $1.id) }
     }
+    private var devicesList: [ChatSidebarDevice] {
+        (library?.connectors ?? appState.connectors).map { ChatSidebarDevice(connector: $0) }
+    }
+    private var selectedDeviceId: V2ConnectorID? {
+        guard devicesTabActive else { return legacyDeviceId }
+        return devicesTabDeviceId
+            ?? devicesList.first { $0.presence == .online }?.id
+            ?? devicesList.first?.id
+    }
     private var pinnedSessions: [ChatSidebarSession] { visibleSessions.filter(\.pinned) }
     private var recentSessions: [ChatSidebarSession] { visibleSessions.filter { !$0.pinned } }
 
@@ -60,7 +74,7 @@ struct ChatSidebarView: View {
             LazyVStack(alignment: .leading, spacing: 6) {
                 if showsDevicesSection {
                     ChatSidebarDeviceSection(
-                        devices: devices,
+                        devices: devicesList,
                         selectedDeviceId: selectedDeviceId,
                         isLoading: isLoadingDevices,
                         onOpen: onOpenDevice,

@@ -191,7 +191,6 @@ struct ChatShellView: View {
             appState: appState,
             agentSetup: services?.agentSetup,
             safeAreaInsets: safeAreaInsets,
-            devices: sidebarDevices,
             library: appState.dashboardLibrary,
             // The phone tab shell owns devices; the drawer keeps them only
             // for iPad/the legacy shell, which has no Devices tab.
@@ -200,7 +199,12 @@ struct ChatShellView: View {
             onNewProjectSession: startProjectSession,
             onRestoreSession: { await appState.setSessionArchived(sessionId: $0, archived: false) },
             account: sidebarAccount,
-            selectedDeviceId: selectedDeviceId,
+            devicesTabActive: tabShellActive,
+            devicesTabDeviceId: tabShellActive ? panes.devicesDevice : nil,
+            legacyDeviceId: {
+                if case let .device(id) = selection { return id }
+                return nil
+            }(),
             selectedSessionId: selectedSessionId,
             isLoadingDevices: appState.isDashboardLoading && !appState.hasLoadedConnectors,
             isLoadingSessions: appState.isDashboardLoading && !appState.hasLoadedSessions,
@@ -657,15 +661,6 @@ struct ChatShellView: View {
         })
     }
 
-    private var selectedDeviceId: V2ConnectorID? {
-        if tabShellActive {
-            guard panes.selectedTab == .devices else { return nil }
-            return panes.devicesDevice ?? defaultDeviceID
-        }
-        guard case let .device(id) = selection else { return nil }
-        return id
-    }
-
     private var selectedSessionId: V2SessionID? {
         if tabShellActive {
             switch panes.selectedTab {
@@ -713,33 +708,9 @@ struct ChatShellView: View {
         })
     }
 
-    private var sidebarDevices: [ChatSidebarDevice] {
-        appState.connectors.map { connector in
-            ChatSidebarDevice(connector: connector)
-        }
-    }
-
     private var sidebarAccount: ChatSidebarAccount? {
         guard let me = appState.me else { return nil }
         return ChatSidebarAccount(me: me, avatarSource: appState.accountAvatarSource)
-    }
-
-    private var sidebarSessions: [ChatSidebarSession] {
-        #if AA_TIMELINE_PROBE
-        // Timed because the drawer's deferred `isOpen` write invalidates this
-        // body right after its animation; this map/sort is the part of the
-        // rebuild that grows with the session count.
-        let started = CACurrentMediaTime()
-        defer {
-            TimelineProbeStore.shared.noteShellSessions(seconds: CACurrentMediaTime() - started)
-        }
-        #endif
-        return appState.sessions
-            .filter { !$0.archived }
-            .map { session in
-                ChatSidebarSession(session: session)
-            }
-            .sorted { $0.presentation.precedes($1.presentation, id: $0.id, otherID: $1.id) }
     }
 
     private var visibleSessionID: V2SessionID? {

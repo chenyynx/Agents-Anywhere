@@ -1800,6 +1800,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 // throttled text to the persisted full text (P1-2).
                 // `complete()` is exempt from the 0.1 s throttle (§5.1).
                 var completed = publisher
+                // A hidden page's refreshes are parked, so the publisher may
+                // never have received the text that arrived while it was off
+                // screen. Feed the final text before completing: otherwise the
+                // completion snapshot is a stale prefix, and the replay would
+                // start from text that never reached the screen.
+                _ = completed.receive(fullText: row.value.displayText, at: now)
                 if let snapshot = completed.complete(at: now), !snapshot.text.isEmpty {
                     codeCompletedStreamingTexts[rowID] = snapshot.text
                     codeCompletedStreamingAt[rowID] = now

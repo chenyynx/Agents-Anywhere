@@ -17,7 +17,25 @@ final class V2RestorationStore {
         let version: Int
         let panes: ShellPanesModel
     }
-    private static let panesVersion = 1
+    /// The pre-merge shape: a Chat root beside a separate Devices stack. Kept
+    /// only to migrate snapshots written before 2026-11-28.
+    private struct LegacyPanesEnvelope: Codable {
+        let version: Int
+        let panes: LegacyPanes
+    }
+    private struct LegacyPanes: Codable {
+        var selectedTab: String = "chat"
+        var chatRoot: LegacyChatRoot = .newSession
+        var devicesDevice: V2ConnectorID?
+        var devicesPath: [ChatTabRoute] = []
+    }
+    /// `ShellChatRoot` before the merge. `ChatTabRoute` cannot decode it
+    /// because `.newSession` gained an associated workspace in the merge.
+    private enum LegacyChatRoot: Codable {
+        case newSession
+        case session(V2SessionID)
+    }
+    private static let panesVersion = 2
     private let defaults: UserDefaults
     private let loginKey = "aa.native.restoration.login.v1"
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
@@ -40,11 +58,15 @@ final class V2RestorationStore {
     }
     func panes(in scope: V2ClientScope) -> ShellPanesModel {
         if let data = defaults.data(forKey: panesKey(scope)) {
-            guard let envelope = try? JSONDecoder().decode(PanesEnvelope.self, from: data),
-                  envelope.version == Self.panesVersion else { return ShellPanesModel() }
-            var panes = envelope.panes
-            panes.normalizeRestoredDeviceRoot()
-            return panes
+            if let envelope = try? JSONDecoder().decode(PanesEnvelope.self, from: data),
+               envelope.version == Self.panesVersion {
+                return envelope.panes
+            }
+            if let legacy = try? JSONDecoder().decode(LegacyPanesEnvelope.self, from: data),
+               legacy.version == 1, let migrated = Self.migrate(legacy.panes) {
+                return migrated
+            }
+            return ShellPanesModel()
         }
         // No panes written yet: seed from the legacy single-route cache so a
         // user who last stood in a chat or on a device keeps that place.
@@ -62,15 +84,17 @@ final class V2RestorationStore {
         }
     }
     private func key(_ scope: V2ClientScope) -> String { "aa.native.restoration.route." + Self.scopeKey(scope) }
+    // The key keeps its old name so the v1 payload underneath is still found
+    // and migrated; only the envelope version changed.
     private func panesKey(_ scope: V2ClientScope) -> String { "aa.native.restoration.panes.v1." + Self.scopeKey(scope) }
     private static func panes(migratedFrom selection: ChatShellSelection) -> ShellPanesModel {
         switch selection {
         case .newSession:
+            // The merged tab's empty state is the list, not a compose page.
             return ShellPanesModel()
         case .session(let id):
             var panes = ShellPanesModel()
-            panes.selectedTab = .chat
-            panes.chatRoot = .session(id)
+            panes.openChatSession(id)
             return panes
         case .device(let id):
             var panes = ShellPanesModel()
@@ -78,6 +102,54 @@ final class V2RestorationStore {
             return panes
         }
     }
+
+    /// Old snapshots had two independent surfaces: the Chat root and the
+    /// Devices stack. The merged tab keeps the surface the user was actually
+    /// looking at, then lifts the device out of the path and records the
+    /// last session for the `chat` start page.
+    private static func migrate(_ legacy: LegacyPanes) -> ShellPanesModel? {
+        // An unknown tab used to fail the whole decode (the store then started
+        // clean); keep that contract instead of silently landing on Chat.
+        guard legacy.selectedTab == "devices" || ShellTab(rawValue: legacy.selectedTab) != nil else {
+            return nil
+        }
+        var panes = ShellPanesModel()
+        let wasDevices = legacy.selectedTab == "devices"
+        var session: V2SessionID?
+        var composeWorkspace: String?
+        if wasDevices {
+            switch legacy.devicesPath.last {
+            case let .session(id)?:
+                session = id
+            case let .newSession(workspace)?:
+                composeWorkspace = workspace
+            default:
+                break
+            }
+        } else if case let .session(id) = legacy.chatRoot {
+            session = id
+        }
+        if let session {
+            panes.openChatSession(session)
+        } else if let composeWorkspace {
+            panes.startNewChat(workspace: composeWorkspace)
+        } else {
+            panes.chatPath = []
+        }
+        if case let .device(id)? = legacy.devicesPath.first {
+            panes.chatDevice = legacy.devicesDevice ?? id
+        } else {
+            panes.chatDevice = legacy.devicesDevice
+        }
+        panes.lastSessionID = session
+        if wasDevices {
+            panes.selectedTab = .chat
+        } else {
+            panes.selectedTab = ShellTab(rawValue: legacy.selectedTab) ?? .chat
+        }
+        return panes
+    }
+
     static func scopeKey(_ scope: V2ClientScope) -> String { digest(scope.serverURL.absoluteString + "\u{1f}" + scope.accountID) }
     nonisolated static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
 }

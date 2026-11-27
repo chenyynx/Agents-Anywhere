@@ -126,7 +126,6 @@ extension ShellTab {
     var barImage: String {
         switch self {
         case .chat: return "anthropicon.chat"
-        case .devices: return "anthropicon.laptop.tab"
         case .wiki: return "anthropicon.library"
         case .artifacts: return "anthropicon.artifacts"
         }
@@ -135,7 +134,6 @@ extension ShellTab {
     var barTitle: String {
         switch self {
         case .chat: return String(localized: "Chats")
-        case .devices: return String(localized: "Devices")
         case .wiki: return String(localized: "Wiki")
         case .artifacts: return String(localized: "Artifacts")
         }

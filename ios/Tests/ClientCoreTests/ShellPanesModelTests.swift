@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import ClientCore
 
-/// The tab shell is a pure value: these tests pin its defaults, the device
-/// stack staying independent of the chat root, the one-visible-session rule,
-/// and the versioned per-scope persistence (including the one-time migration
-/// from the legacy `ChatShellSelection` route cache).
+/// The tab shell is a pure value: these tests pin its defaults, the
+/// list/session stack, the one-visible-session rule, the versioned per-scope
+/// persistence, the v1 migration from the old Chat/Devices shape, and the
+/// launch-page preference.
 @Suite @MainActor struct ShellPanesModelTests {
     private func sandbox() -> (defaults: UserDefaults, name: String) {
         let name = "aa-shell-panes-tests-" + UUID().uuidString
@@ -19,68 +19,78 @@ import Testing
         "aa.native.restoration.panes.v1." + V2RestorationStore.scopeKey(scope)
     }
 
-    @Test func aFreshShellStartsOnAnEmptyChatTab() {
-        let panes = ShellPanesModel()
-        #expect(panes.selectedTab == .chat)
-        #expect(panes.chatRoot == .newSession)
-        #expect(panes.devicesPath.isEmpty)
-        #expect(panes.visibleSessionId(obscured: false) == nil)
-        #expect(panes.visibleSessionId(obscured: true) == nil)
-        #expect(ShellTab.allCases == [.chat, .devices, .wiki, .artifacts])
+    // The pre-merge enums, encoded with the same synthesized Codable shape
+    // the shipped snapshots used.
+    private enum OldChatRoot: Codable {
+        case newSession
+        case session(V2SessionID)
+    }
+    private enum OldRoute: Codable {
+        case device(V2ConnectorID)
+        case session(V2SessionID)
+        case newSession(workspace: String?)
+    }
+    private struct OldPanes: Codable {
+        var selectedTab: String
+        var chatRoot: OldChatRoot = .newSession
+        var devicesDevice: V2ConnectorID? = nil
+        var devicesPath: [OldRoute] = []
+    }
+    private struct OldEnvelope: Codable {
+        let version: Int
+        let panes: OldPanes
+    }
+    private func saveLegacy(_ panes: OldPanes, defaults: UserDefaults,
+                            scope: V2ClientScope) throws {
+        let data = try JSONEncoder().encode(OldEnvelope(version: 1, panes: panes))
+        defaults.set(data, forKey: panesKey(scope))
     }
 
-    @Test func openingAChatSelectsTheChatTabAndStartingOverReturnsToCompose() {
+    @Test func aFreshShellStartsOnAnEmptyList() {
+        let panes = ShellPanesModel()
+        #expect(panes.selectedTab == .chat)
+        #expect(panes.chatPath.isEmpty)
+        #expect(panes.chatDevice == nil)
+        #expect(panes.lastSessionID == nil)
+        #expect(panes.isListMode)
+        #expect(panes.visibleSessionId(obscured: false) == nil)
+        #expect(panes.visibleSessionId(obscured: true) == nil)
+        #expect(ShellTab.allCases == [.chat, .wiki, .artifacts])
+    }
+
+    @Test func openingASessionPushesItAboveTheListAndRemembersIt() {
         var panes = ShellPanesModel()
         panes.selectedTab = .artifacts
         panes.openChatSession("session-a")
         #expect(panes.selectedTab == .chat)
-        #expect(panes.chatRoot == .session("session-a"))
-        panes.startNewChat()
-        #expect(panes.selectedTab == .chat)
-        #expect(panes.chatRoot == .newSession)
+        #expect(panes.chatPath == [.session("session-a")])
+        #expect(panes.lastSessionID == "session-a")
+        #expect(panes.visibleSessionId(obscured: false) == "session-a")
+        panes.startNewChat(workspace: "/tmp/work")
+        #expect(panes.chatPath == [.newSession(workspace: "/tmp/work")])
+        #expect(panes.visibleSessionId(obscured: false) == nil)
+        // The list root is still under the compose page.
+        panes.popChat()
+        #expect(panes.chatPath.isEmpty)
         #expect(panes.visibleSessionId(obscured: false) == nil)
     }
 
-    @Test func devicesPushAndPopWithoutTouchingTheChatRoot() {
+    @Test func deviceSelectionResetsTheStackAndKeepsTheLastSession() {
         var panes = ShellPanesModel()
-        panes.openChatSession("chat-session")
+        panes.openChatSession("session-a")
         panes.openDevice("connector-a")
-        #expect(panes.selectedTab == .devices)
-        #expect(panes.devicesDevice == "connector-a")
-        #expect(panes.devicesPath.isEmpty)
-        #expect(panes.chatRoot == .session("chat-session"))
-        panes.pushDeviceSession("device-session")
-        #expect(panes.devicesPath == [.session("device-session")])
-        #expect(panes.chatRoot == .session("chat-session"))
-        panes.popDevice()
-        #expect(panes.devicesPath.isEmpty)
-        #expect(panes.devicesDevice == "connector-a")
-        #expect(panes.chatRoot == .session("chat-session"))
-        // Picking another device restarts its drill-down instead of stacking
-        // on the previous device's path.
-        panes.pushDeviceSession("device-session")
+        #expect(panes.selectedTab == .chat)
+        #expect(panes.chatDevice == "connector-a")
+        #expect(panes.chatPath.isEmpty)
+        #expect(panes.isListMode)
+        // The start-page `chat` preference still has a target.
+        #expect(panes.lastSessionID == "session-a")
+        // Picking another device restarts the root instead of stacking.
+        panes.pushChatRoute(.session("session-b"))
+        #expect(panes.chatPath == [.session("session-b")])
         panes.openDevice("connector-b")
-        #expect(panes.devicesDevice == "connector-b")
-        #expect(panes.devicesPath.isEmpty)
-        #expect(panes.chatRoot == .session("chat-session"))
-        panes.popDevice()
-        #expect(panes.devicesPath.isEmpty)
-        #expect(panes.chatRoot == .session("chat-session"))
-    }
-
-    @Test func sameSessionMayLiveInBothPanes() {
-        var panes = ShellPanesModel()
-        panes.openChatSession("shared")
-        panes.openDevice("connector-a")
-        panes.pushDeviceSession("shared")
-        // Both tabs may name the same session: only the selected tab's page
-        // is mounted, so the store is shared but the live views are not.
-        #expect(panes.chatRoot == .session("shared"))
-        #expect(panes.devicesDevice == "connector-a")
-        #expect(panes.devicesPath == [.session("shared")])
-        // Pushing the top again is a no-op.
-        panes.pushDeviceSession("shared")
-        #expect(panes.devicesPath == [.session("shared")])
+        #expect(panes.chatDevice == "connector-b")
+        #expect(panes.chatPath.isEmpty)
     }
 
     @Test func onlyTheActiveUnobscuredTabNamesAVisibleSession() {
@@ -88,24 +98,11 @@ import Testing
         panes.openChatSession("chat-session")
         #expect(panes.visibleSessionId(obscured: false) == "chat-session")
         #expect(panes.visibleSessionId(obscured: true) == nil)
-
-        panes.startNewChat()
-        #expect(panes.visibleSessionId(obscured: false) == nil)
-
         panes.openDevice("connector")
         #expect(panes.visibleSessionId(obscured: false) == nil)
-        panes.pushDeviceSession("device-session")
+        panes.pushChatRoute(.session("device-session"))
         #expect(panes.visibleSessionId(obscured: false) == "device-session")
         #expect(panes.visibleSessionId(obscured: true) == nil)
-
-        // The chat tab ignores the device stack entirely.
-        panes.openChatSession("chat-session")
-        #expect(panes.visibleSessionId(obscured: false) == "chat-session")
-        panes.startNewChat()
-        #expect(panes.visibleSessionId(obscured: false) == nil)
-
-        // A tab with no session of its own never reports the chat root.
-        panes.openChatSession("chat-session")
         panes.selectedTab = .wiki
         #expect(panes.visibleSessionId(obscured: false) == nil)
         panes.selectedTab = .artifacts
@@ -120,7 +117,7 @@ import Testing
         var panes = ShellPanesModel()
         panes.openChatSession("chat-session")
         panes.openDevice("connector")
-        panes.pushDeviceSession("device-session")
+        panes.pushChatRoute(.session("device-session"))
         store.save(panes: panes, in: scope)
         #expect(store.panes(in: scope) == panes)
         // A second store over the same defaults is what a relaunch sees.
@@ -129,19 +126,71 @@ import Testing
         #expect(relaunched.panes(in: scope).visibleSessionId(obscured: false) == "device-session")
     }
 
-    @Test func legacyDeviceRootSnapshotMovesTheDeviceOutOfThePath() {
+    @Test func legacyChatSessionMigratesToThePushedSession() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
-        let store = V2RestorationStore(defaults: defaults)
+        try saveLegacy(OldPanes(selectedTab: "chat", chatRoot: .session("old-session")),
+                       defaults: defaults, scope: scope)
+        let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
+        #expect(restored.selectedTab == .chat)
+        #expect(restored.chatPath == [.session("old-session")])
+        #expect(restored.lastSessionID == "old-session")
+        #expect(restored.chatDevice == nil)
+    }
+
+    @Test func legacyDevicesSessionMigratesAndLiftsTheDevice() throws {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
         // The pre-2026-11-26 shape: the device was the first path element.
-        var old = ShellPanesModel()
-        old.selectedTab = .devices
-        old.devicesPath = [.device("connector"), .session("session")]
-        store.save(panes: old, in: scope)
-        let restored = store.panes(in: scope)
-        #expect(restored.devicesDevice == "connector")
-        #expect(restored.devicesPath == [.session("session")])
+        try saveLegacy(OldPanes(selectedTab: "devices",
+                                devicesDevice: nil,
+                                devicesPath: [.device("connector"), .session("session")]),
+                       defaults: defaults, scope: scope)
+        let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
+        #expect(restored.selectedTab == .chat)
+        #expect(restored.chatDevice == "connector")
+        #expect(restored.chatPath == [.session("session")])
+        #expect(restored.lastSessionID == "session")
+    }
+
+    @Test func legacyDevicesComposeMigratesToTheComposeRoute() throws {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
+        try saveLegacy(OldPanes(selectedTab: "devices",
+                                devicesDevice: "connector",
+                                devicesPath: [.newSession(workspace: "/tmp/work")]),
+                       defaults: defaults, scope: scope)
+        let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
+        #expect(restored.selectedTab == .chat)
+        #expect(restored.chatDevice == "connector")
+        #expect(restored.chatPath == [.newSession(workspace: "/tmp/work")])
+        #expect(restored.lastSessionID == nil)
+    }
+
+    @Test func legacyChatComposeBecomesTheList() throws {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
+        try saveLegacy(OldPanes(selectedTab: "chat", chatRoot: .newSession),
+                       defaults: defaults, scope: scope)
+        let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
+        #expect(restored.selectedTab == .chat)
+        #expect(restored.chatPath.isEmpty)
+        #expect(restored.isListMode)
+    }
+
+    @Test func legacyWikiTabSurvivesTheMerge() throws {
+        let (defaults, name) = sandbox()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let scope = serverScope()
+        try saveLegacy(OldPanes(selectedTab: "wiki", chatRoot: .session("s")),
+                       defaults: defaults, scope: scope)
+        let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
+        #expect(restored.selectedTab == .wiki)
+        #expect(restored.chatPath == [.session("s")])
     }
 
     @Test func brokenOrUnknownPanesFallBackToTheDefaultWithoutTrapping() throws {
@@ -181,15 +230,14 @@ import Testing
         store.save(selection: .session("legacy-session"), in: scope)
         let chat = store.panes(in: scope)
         #expect(chat.selectedTab == .chat)
-        #expect(chat.chatRoot == .session("legacy-session"))
-        #expect(chat.devicesPath.isEmpty)
+        #expect(chat.chatPath == [.session("legacy-session")])
+        #expect(chat.lastSessionID == "legacy-session")
 
         store.save(selection: .device("legacy-connector"), in: scope)
         let devices = store.panes(in: scope)
-        #expect(devices.selectedTab == .devices)
-        #expect(devices.devicesDevice == "legacy-connector")
-        #expect(devices.devicesPath.isEmpty)
-        #expect(devices.chatRoot == .newSession)
+        #expect(devices.selectedTab == .chat)
+        #expect(devices.chatDevice == "legacy-connector")
+        #expect(devices.chatPath.isEmpty)
 
         store.save(selection: .newSession, in: scope)
         #expect(store.panes(in: scope) == ShellPanesModel())
@@ -221,52 +269,49 @@ import Testing
 
         // Migration is scoped too: another account's legacy route cannot leak in.
         store.save(selection: .device("legacy-connector"), in: otherAccount)
-        #expect(store.panes(in: otherAccount).devicesDevice == "legacy-connector")
-        #expect(store.panes(in: otherAccount).devicesPath.isEmpty)
+        #expect(store.panes(in: otherAccount).chatDevice == "legacy-connector")
         #expect(store.panes(in: one) == panes)
 
         store.clear(scope: one)
         #expect(defaults.data(forKey: panesKey(one)) == nil)
         #expect(store.panes(in: one) == ShellPanesModel())
         // Clearing one scope leaves the others alone.
-        #expect(store.panes(in: otherAccount).devicesDevice == "legacy-connector")
+        #expect(store.panes(in: otherAccount).chatDevice == "legacy-connector")
     }
 
-    @Test func devicesComposePageLivesInTheDeviceStack() {
+    @Test func startPagePreferenceAppliesOnlyAtLaunch() {
         var panes = ShellPanesModel()
-        panes.openChatSession("chat-session")
-        panes.openDevice("connector-a")
-        panes.pushDeviceSession("old-session")
-        // Creating from the device page composes inside the Devices tab: the
-        // chat root must not move, and the compose page sits above whatever
-        // session was open.
-        panes.pushDeviceNewSession(workspace: "/tmp/work")
-        #expect(panes.devicesPath == [.session("old-session"), .newSession(workspace: "/tmp/work")])
-        #expect(panes.chatRoot == .session("chat-session"))
-        #expect(panes.selectedTab == .devices)
-        // A compose page names no visible session (background/live identity
-        // must not attach to the previous session under it).
-        #expect(panes.visibleSessionId(obscured: false) == nil)
-        // Re-opening compose replaces the page instead of stacking two drafts
-        // on the one shared new-session model.
-        panes.pushDeviceNewSession(workspace: nil)
-        #expect(panes.devicesPath == [.session("old-session"), .newSession(workspace: nil)])
-        // A created session lands on top of the compose page's device stack.
-        panes.pushDeviceSession("new-session")
-        #expect(panes.devicesPath.last == .session("new-session"))
-        #expect(panes.visibleSessionId(obscured: false) == "new-session")
+        panes.openChatSession("last-session")
+        panes.openDevice("connector")
+        #expect(panes.chatPath.isEmpty)
+
+        panes.applyStartPage(.auto)
+        #expect(panes.chatPath.isEmpty)
+
+        panes.applyStartPage(.chat)
+        #expect(panes.chatPath == [.session("last-session")])
+        #expect(panes.visibleSessionId(obscured: false) == "last-session")
+
+        panes.applyStartPage(.list)
+        #expect(panes.chatPath.isEmpty)
+        #expect(panes.selectedTab == .chat)
+
+        // No remembered session: `chat` falls back to the list.
+        var empty = ShellPanesModel()
+        empty.selectedTab = .wiki
+        empty.applyStartPage(.chat)
+        #expect(empty.selectedTab == .chat)
+        #expect(empty.chatPath.isEmpty)
     }
 
-    @Test func composeRouteRoundTripsThroughTheRestorationStore() {
+    @Test func savedEnvelopeUsesVersionTwo() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
         let store = V2RestorationStore(defaults: defaults)
-        var panes = ShellPanesModel()
-        panes.openDevice("connector")
-        panes.pushDeviceNewSession(workspace: "/tmp/work")
-        store.save(panes: panes, in: scope)
-        #expect(store.panes(in: scope) == panes)
-        #expect(store.panes(in: scope).devicesPath == [.newSession(workspace: "/tmp/work")])
+        store.save(panes: ShellPanesModel(), in: scope)
+        let data = try #require(defaults.data(forKey: panesKey(scope)))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["version"] as? Int == 2)
     }
 }

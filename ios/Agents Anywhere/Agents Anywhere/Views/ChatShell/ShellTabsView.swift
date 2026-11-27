@@ -2,7 +2,11 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// The four-tab shell.
+/// The tab shell.
+///
+/// The old Devices tab was merged into the Chat tab on 2026-11-28: the device
+/// page is the Chat tab's list root and a session is pushed above it, so only
+/// one session page can ever exist for the Chat tab.
 ///
 /// The pages are **persistent**: every tab that has been opened stays mounted
 /// in one stack, and a switch only changes which page is visible. The previous
@@ -15,10 +19,9 @@ import UIKit
 ///
 /// The bar is a plain `UITabBar` (see `ShellTabBar`), so the Liquid Glass look
 /// stays the system's; only page hosting moved out of the controller.
-struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
+struct ShellTabsView<ChatRoot: View>: View {
     @Binding var panes: ShellPanesModel
     let chatRoot: ChatRoot
-    let devicesRoot: DevicesRoot
     let onMenu: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     // The pages live in their own hosting controller (see `ShellTabsHost`),
@@ -69,33 +72,12 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         .environment(\.shellTabTransitioning, tabTransitioning)
     }
 
-    private var chatSession: V2SessionID? {
-        if case let .session(id) = panes.chatRoot { return id }
-        return nil
-    }
-
-    private var deviceSession: V2SessionID? {
-        if case let .session(id)? = panes.devicesPath.last { return id }
-        return nil
-    }
-
-    private var duplicateSessionAcrossTabs: Bool {
-        chatSession != nil && chatSession == deviceSession
-    }
-
     var body: some View {
         ShellTabsHost(
             content: pages,
             selection: panes.selectedTab,
             onSelect: select
         )
-        .onChange(of: duplicateSessionAcrossTabs, initial: true) { _, duplicate in
-            guard duplicate, let session = chatSession else { return }
-            ClientDiagnosticsLog.shared.record(
-                kind: "shell.tabs.duplicate",
-                sessionID: session,
-                detail: ["tab": panes.selectedTab.rawValue])
-        }
         .onChange(of: panes.selectedTab, initial: true) { _, next in
             // A restored (or programmatic) selection mounts its page too.
             if !visited.contains(next) { visited.insert(next) }
@@ -142,15 +124,9 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
     @ViewBuilder private func pageContent(_ tab: ShellTab) -> some View {
         switch tab {
         case .chat:
-            NavigationStack { chatRoot }
-                // The session page owns its keyboard insets (composer is a
-                // safeAreaBar); the shell must not move the page.
-                .ignoresSafeArea(.keyboard)
-                .tint(contentTint)
-        case .devices:
-            // The shell supplies the Devices NavigationStack (it owns the
-            // path and the push destinations).
-            devicesRoot
+            // The shell supplies the whole stack: the device page is the
+            // root and a session is pushed above it.
+            chatRoot
                 .tint(contentTint)
         case .wiki:
             NavigationStack {

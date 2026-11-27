@@ -12,8 +12,8 @@ struct ChatSidebarView: View {
     /// The local-database dashboard source; nil falls back to the legacy
     /// AppState projection.
     let library: DashboardLibrary?
-    /// The phone tab shell has a Devices tab; the sidebar duplicates it only
-    /// where that tab does not exist (iPad / the legacy shell).
+    /// The merged Chat tab keeps the device list at its root; these rows are
+    /// the drawer's fast device switcher in both shells.
     var showsDevicesSection = true
     let repository: V2DashboardRepository?
     let onNewProjectSession: (String) -> Void
@@ -24,6 +24,10 @@ struct ChatSidebarView: View {
     /// shell root does not read the connector list.
     let devicesTabActive: Bool
     let devicesTabDeviceId: V2ConnectorID?
+    /// The merged Chat tab is showing a conversation; offer the fast path
+    /// back to its list root.
+    var showsViewAll = false
+    var onShowAll: () -> Void = {}
     /// The legacy (drawer) shell's selected device.
     let legacyDeviceId: V2ConnectorID?
     let selectedSessionId: V2SessionID?
@@ -136,6 +140,19 @@ struct ChatSidebarView: View {
                             Spacer()
                             ChatSidebarListMenu(showsSessionList: $showsSessionList,
                                 onShowArchives: { showsArchives = true }) {}
+                            if showsViewAll {
+                                Button(action: onShowAll) {
+                                    HStack(spacing: 3) {
+                                        Text(String(localized: "查看全部"))
+                                        AppSymbol("anthropicon.caretRight", size: 10)
+                                    }
+                                    .font(.system(size: 13, weight: .regular))
+                                    .foregroundStyle(AppTheme.sidebarTextPrimary(colorScheme))
+                                    .contentShape(.rect)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(String(localized: "查看全部"))
+                            }
                         }
                         // Matched to the official drawer's ink gaps around
                         // this header (3x screenshot: 39.7pt above, 32.3pt

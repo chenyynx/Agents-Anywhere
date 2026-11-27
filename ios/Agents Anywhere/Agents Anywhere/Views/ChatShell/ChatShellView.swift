@@ -10,8 +10,10 @@ struct ChatShellView: View {
     @State private var newSessionPresentationID = UUID()
     @State private var panes = ShellPanesModel()
     @State private var panesScope: V2ClientScope?
-    /// The Devices tab owns the pairing entry now that the phone drawer no
-    /// longer lists devices.
+    /// The scope whose launch preference was already applied; a size-class
+    /// re-entry with the same scope must not re-apply it.
+    @State private var startPageScope: V2ClientScope?
+    /// Pairing entry shared by the drawer and the list root.
     @State private var showsPairing = false
     /// Owns the chat tab's session model outside the tab page, like the
     /// official SessionRegistry keeps the store alive across tab switches.
@@ -164,7 +166,6 @@ struct ChatShellView: View {
             ShellTabsView(
                 panes: $panes,
                 chatRoot: chatTabRoot,
-                devicesRoot: devicesTabRoot,
                 onMenu: toggleSidebar
             )
         }
@@ -192,15 +193,17 @@ struct ChatShellView: View {
             agentSetup: services?.agentSetup,
             safeAreaInsets: safeAreaInsets,
             library: appState.activeDashboardLibrary,
-            // The phone tab shell owns devices; the drawer keeps them only
-            // for iPad/the legacy shell, which has no Devices tab.
-            showsDevicesSection: !tabShellActive,
+            // The merged Chat tab keeps the device list at its root; the
+            // drawer's device rows are the fast device switcher.
+            showsDevicesSection: true,
             repository: services?.dashboardRepository,
             onNewProjectSession: startProjectSession,
             onRestoreSession: { await appState.setSessionArchived(sessionId: $0, archived: false) },
             account: sidebarAccount,
             devicesTabActive: tabShellActive,
-            devicesTabDeviceId: tabShellActive ? panes.devicesDevice : nil,
+            devicesTabDeviceId: tabShellActive ? panes.chatDevice : nil,
+            showsViewAll: tabShellActive && !panes.isListMode,
+            onShowAll: showList,
             legacyDeviceId: {
                 if case let .device(id) = selection { return id }
                 return nil
@@ -221,61 +224,28 @@ struct ChatShellView: View {
 
     // MARK: - Tab roots
 
-    @ViewBuilder private var chatTabRoot: some View {
-        if let services = appState.nativeChatServices {
-            if let id = chatRootSessionID {
-                SessionPageHost(
-                    appState: appState, services: services, chatPane: chatPane,
-                    library: appState.activeDashboardLibrary, sessionID: id,
-                    paneRole: .chat, showsMenuButton: true,
-                    onMenu: toggleSidebar,
-                    onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
-            } else {
-                NewSessionPageHost(
-                    appState: appState, services: services,
-                    library: appState.activeDashboardLibrary,
-                    onMenu: toggleSidebar, onOpenDevice: openDevice,
-                    onCreated: { session in
-                        appState.updateSession(session)
-                        if chatRootSessionID == nil { openSession(session.id) }
-                    },
-                    onRefresh: { await appState.refreshDashboard(); return appState.connectors })
-                    .id(newSessionPresentationID)
-            }
-        } else {
-            ChatShellPlaceholderPage(
-                isConnecting: appState.isRetryingServerConnection, title: "",
-                onOpenSidebar: toggleSidebar, showsMenuButton: true)
-        }
-    }
-
-    /// What the Chat tab renders. `panes` owns the tab shell's navigation;
-    /// `selection` is the cross-shell input and only seeds the first frame
-    /// before `loadPanes` has run (no restore flash).
-    private var chatRootSessionID: V2SessionID? {
-        if panesScope == nil, case let .session(id) = selection { return id }
-        if case let .session(id) = panes.chatRoot { return id }
-        return nil
-    }
-
-    private var devicesTabRoot: some View {
-        NavigationStack(path: $panes.devicesPath) {
+    /// The Chat tab is the old Devices tab's interaction: the device page is
+    /// the list root, a session is pushed above it, the system back button
+    /// returns to the list. The list/chat mode is derived from `chatPath`.
+    private var chatTabRoot: some View {
+        NavigationStack(path: $panes.chatPath) {
             Group {
                 if let services = appState.nativeChatServices {
                     DevicePageHost(
                         appState: appState, library: appState.activeDashboardLibrary,
-                        connectorId: panes.devicesDevice, showsMenuButton: true,
+                        connectorId: panes.chatDevice ?? defaultDeviceID,
+                        showsMenuButton: true,
                         onMenu: toggleSidebar,
-                        onOpenDevice: openDeviceFromDeviceTab,
+                        onOpenDevice: openDevice,
                         onCopyDeviceId: copyDeviceId,
-                        onOpenSession: openSessionFromDeviceTab,
+                        onOpenSession: openSession,
                         onPair: startPairing,
                         onNewSession: { path in
-                            if let id = panes.devicesDevice ?? defaultDeviceID,
-                               let model = appState.nativeChatServices?.newSession {
+                            if let id = panes.chatDevice ?? defaultDeviceID,
+                               let model = services.newSession {
                                 model.focusDevice(id, workspace: path)
                             }
-                            panes.pushDeviceNewSession(workspace: path)
+                            panes.startNewChat(workspace: path)
                         },
                         onNewProjectSession: startProjectSession,
                         onConnectorUpdated: appState.updateConnector,
@@ -283,14 +253,12 @@ struct ChatShellView: View {
                         onSessionsUpdated: appState.updateSessions,
                         onSetSessionsArchived: appState.setSessionsArchived)
                 } else {
-                    ChatShellPlaceholderPage(
-                        isConnecting: appState.isRetryingServerConnection, title: "",
-                        onOpenSidebar: toggleSidebar, showsMenuButton: true)
+                    shellPlaceholderPage()
                 }
             }
-            // Registered outside the services branch: a restored
-            // `devicesPath` must always find its destinations.
-            .navigationDestination(for: ShellDevicesRoute.self) { route in
+            // Registered outside the services branch: a restored `chatPath`
+            // must always find its destinations.
+            .navigationDestination(for: ChatTabRoute.self) { route in
                 if let services = appState.nativeChatServices {
                     switch route {
                     case let .device(id):
@@ -298,15 +266,15 @@ struct ChatShellView: View {
                             appState: appState, library: appState.activeDashboardLibrary,
                             connectorId: id, showsMenuButton: false,
                             onMenu: toggleSidebar,
-                            onOpenDevice: openDeviceFromDeviceTab,
+                            onOpenDevice: openDevice,
                             onCopyDeviceId: copyDeviceId,
-                            onOpenSession: openSessionFromDeviceTab,
+                            onOpenSession: openSession,
                             onPair: startPairing,
                             onNewSession: { path in
-                                if let model = appState.nativeChatServices?.newSession {
+                                if let model = services.newSession {
                                     model.focusDevice(id, workspace: path)
                                 }
-                                panes.pushDeviceNewSession(workspace: path)
+                                panes.startNewChat(workspace: path)
                             },
                             onNewProjectSession: startProjectSession,
                             onConnectorUpdated: appState.updateConnector,
@@ -317,7 +285,7 @@ struct ChatShellView: View {
                         SessionPageHost(
                             appState: appState, services: services, chatPane: chatPane,
                             library: appState.activeDashboardLibrary, sessionID: id,
-                            paneRole: .devices, showsMenuButton: false,
+                            paneRole: .chat, showsMenuButton: false,
                             onMenu: toggleSidebar,
                             onTogglePinned: { pinned in
                                 setSessionPinned(id, pinned: pinned)
@@ -326,46 +294,28 @@ struct ChatShellView: View {
                         NewSessionPageHost(
                             appState: appState, services: services,
                             library: appState.activeDashboardLibrary,
-                            onMenu: toggleSidebar,
-                            onOpenDevice: openDeviceFromDeviceTab,
+                            onMenu: toggleSidebar, onOpenDevice: openDevice,
                             onCreated: { session in
                                 appState.updateSession(session)
                                 // The reader may have left the compose page
                                 // while the request was in flight; only
                                 // navigate if it still owns the top.
-                                var stillWanted = false
-                                if let last = panes.devicesPath.last, case .newSession = last {
-                                    stillWanted = true
+                                if case .newSession? = panes.chatPath.last {
+                                    panes.openChatSession(session.id)
+                                    selection = .session(session.id)
                                 }
-                                if stillWanted { panes.pushDeviceSession(session.id) }
                             },
                             onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+                            .id(newSessionPresentationID)
                     }
                 } else {
-                    ChatShellPlaceholderPage(
-                        isConnecting: appState.isRetryingServerConnection, title: "",
-                        onOpenSidebar: toggleSidebar, showsMenuButton: true)
+                    shellPlaceholderPage()
                 }
             }
         }
         // The session page owns its keyboard insets (composer safeAreaBar),
-        // exactly like the Chat tab's stack.
+        // exactly like the old Devices stack.
         .ignoresSafeArea(.keyboard)
-    }
-
-    private func openDeviceFromDeviceTab(_ id: V2ConnectorID) {
-        ClientDiagnosticsLog.shared.record(
-            kind: "device.tab.open",
-            detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
-        panes.openDevice(id)
-    }
-
-    private func openSessionFromDeviceTab(_ id: V2SessionID) {
-        ClientDiagnosticsLog.shared.record(
-            kind: "device.tab.session",
-            sessionID: id,
-            detail: ["device": panes.devicesDevice ?? "auto"])
-        panes.pushDeviceSession(id)
     }
 
     /// Fallback device for the tab root: first online, else first.
@@ -440,16 +390,8 @@ struct ChatShellView: View {
 
     private var selectedSessionId: V2SessionID? {
         if tabShellActive {
-            switch panes.selectedTab {
-            case .chat:
-                guard case let .session(id) = panes.chatRoot else { return nil }
-                return id
-            case .devices:
-                guard case let .session(id)? = panes.devicesPath.last else { return nil }
-                return id
-            case .wiki, .artifacts:
-                return nil
-            }
+            guard case let .session(id)? = panes.chatPath.last else { return nil }
+            return id
         }
         guard case let .session(id) = selection else { return nil }
         return id
@@ -500,7 +442,7 @@ struct ChatShellView: View {
 
     /// Same page as `visibleSessionID`, but independent of the scene phase:
     /// the background keep-alive must still know which session the reader
-    /// left open (including a Devices-tab session).
+    /// left open (including a session above the list root).
     private var watchedSessionID: V2SessionID? {
         tabShellActive ? panes.visibleSessionId(obscured: false) : selectedSessionId
     }
@@ -509,19 +451,13 @@ struct ChatShellView: View {
 
     private func loadPanes(_ scope: V2ClientScope?) {
         guard tabShellActive, let scope, panesScope != scope else { return }
+        // The pane snapshot is the tab shell's truth; the legacy selection is
+        // only a fallback when no snapshot exists (the store seeds from it).
+        // Re-adopting it here would turn a restored list into the last session.
         var loaded = appState.shellPanes(in: scope)
-        // The saved ChatShellSelection is the cross-shell truth: the legacy
-        // shell and notifications both write it. Adopt it over a stale panes
-        // snapshot, then keep the snapshot in sync.
-        switch appState.chatSelection {
-        case .newSession:
-            loaded.chatRoot = .newSession
-        case let .session(id):
-            loaded.chatRoot = .session(id)
-        case let .device(id):
-            // Keep the saved session drill-down only when it belongs to the
-            // same device; the cross-shell selection wins over a stale one.
-            if loaded.devicesDevice != id { loaded.openDevice(id) }
+        if startPageScope != scope {
+            loaded.applyStartPage(ShellStartPage.current())
+            startPageScope = scope
         }
         panes = loaded
         panesScope = scope
@@ -531,18 +467,18 @@ struct ChatShellView: View {
         guard tabShellActive else { return }
         switch next {
         case .newSession:
-            // Only the Chat root resets. Deleting a device or archiving a
-            // session also writes `.newSession`; those flows must not drag the
-            // user out of the Devices tab.
-            if panes.chatRoot != .newSession { panes.chatRoot = .newSession }
+            // Deleting a device/archiving a session writes `.newSession`; it
+            // pops a visible session back to the list instead of dragging a
+            // reader who is already on the list into a compose page.
+            if case .session? = panes.chatPath.last { panes.chatPath = [] }
         case let .session(id):
-            if panes.chatRoot != .session(id) {
+            if panes.chatPath.last != .session(id) {
                 panes.openChatSession(id)
             } else if panes.selectedTab != .chat {
                 panes.selectedTab = .chat
             }
         case let .device(id):
-            if panes.selectedTab != .devices || panes.devicesDevice != id {
+            if panes.chatDevice != id || !panes.chatPath.isEmpty {
                 panes.openDevice(id)
             }
         }
@@ -559,12 +495,7 @@ struct ChatShellView: View {
     /// session drill-down. Enough to reconstruct a navigation bug without a
     /// verbal description.
     private func recordPanes(_ next: ShellPanesModel, reason: String) {
-        let chat: String
-        switch next.chatRoot {
-        case .newSession: chat = "new"
-        case let .session(id): chat = id
-        }
-        let path = next.devicesPath.map { route -> String in
+        let path = next.chatPath.map { route -> String in
             switch route {
             case let .device(id): return "d:\(id)"
             case let .session(id): return "s:\(id)"
@@ -575,17 +506,16 @@ struct ChatShellView: View {
             kind: "shell.tabs.state",
             detail: ["reason": reason,
                      "tab": next.selectedTab.rawValue,
-                     "chat": chat,
-                     "device": next.devicesDevice ?? "auto",
+                     "device": next.chatDevice ?? "auto",
                      "path": path,
+                     "last": next.lastSessionID ?? "",
                      "visible": next.visibleSessionId(obscured: false) ?? ""],
             dedupe: true)
     }
 
     private func liveChatSessionIDs(_ panes: ShellPanesModel) -> Set<V2SessionID> {
         var ids: Set<V2SessionID> = []
-        if case let .session(id) = panes.chatRoot { ids.insert(id) }
-        for route in panes.devicesPath {
+        for route in panes.chatPath {
             if case let .session(id) = route { ids.insert(id) }
         }
         return ids
@@ -622,7 +552,7 @@ struct ChatShellView: View {
         if tabShellActive {
             ClientDiagnosticsLog.shared.record(
                 kind: "device.tab.open",
-                detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
+                detail: ["device": id, "previous": panes.chatDevice ?? "auto"])
             panes.openDevice(id)
         } else {
             selection = .device(id)
@@ -638,29 +568,44 @@ struct ChatShellView: View {
         sidebar.selectDestination()
     }
 
+    /// The sidebar's "查看全部" entry: pop the Chat tab to its list root.
+    private func showList() {
+        if tabShellActive {
+            panes.showList()
+        } else if let id = panes.chatDevice ?? defaultDeviceID {
+            selection = .device(id)
+        }
+        sidebar.selectDestination()
+    }
+
     private func removeConnector(_ id: V2ConnectorID) {
         // Resolve before the removal drops the connector's sessions from
         // `appState.sessions`.
-        var clearsChatRoot = false
-        if case let .session(rootID) = panes.chatRoot {
-            clearsChatRoot = appState.sessions.first { $0.id == rootID }?.connectorId == id
+        var clearsVisible = false
+        if case let .session(visibleID)? = panes.chatPath.last {
+            clearsVisible = appState.sessions.first { $0.id == visibleID }?.connectorId == id
         }
+        let clearsLast: Bool = {
+            guard let last = panes.lastSessionID else { return false }
+            return appState.sessions.first { $0.id == last }?.connectorId == id
+        }()
         ClientDiagnosticsLog.shared.record(
             kind: "device.tab.delete",
             detail: ["device": id,
-                     "root": panes.devicesDevice == id ? "1" : "0",
-                     "chatRoot": clearsChatRoot ? "1" : "0"])
+                     "root": panes.chatDevice == id ? "1" : "0",
+                     "visible": clearsVisible ? "1" : "0"])
         appState.removeConnector(connectorId: id)
         if tabShellActive {
-            if panes.devicesDevice == id {
-                panes.devicesDevice = nil
-                panes.devicesPath.removeAll()
+            if panes.chatDevice == id {
+                panes.chatDevice = nil
+                panes.chatPath = []
             }
-            if clearsChatRoot {
-                panes.chatRoot = .newSession
-                // The Chat root is the one the Chat tab renders; reset the
-                // cross-shell pointer with it. Unrelated roots (and a stale
-                // device pointer) are left alone so the Devices tab stays put.
+            if clearsLast { panes.lastSessionID = nil }
+            if clearsVisible {
+                panes.chatPath = []
+                panes.lastSessionID = nil
+                // The Chat tab's visible page is gone; reset the cross-shell
+                // pointer with it. Unrelated state is left alone.
                 selection = .newSession
             }
         } else {
@@ -686,18 +631,12 @@ struct ChatShellView: View {
             let changed = await appState.setSessionArchived(sessionId: id, archived: shouldArchive)
             guard changed, shouldArchive else { return }
             if tabShellActive {
-                // The archived session may be the Chat root, the top of the
-                // Devices stack, or both. Remove exactly those references and
-                // stay on the tab the user is already on.
-                var resetsChatRoot = false
-                if case let .session(rootID) = panes.chatRoot, rootID == id {
-                    panes.chatRoot = .newSession
-                    resetsChatRoot = true
-                }
-                if case let .session(topID)? = panes.devicesPath.last, topID == id {
-                    panes.devicesPath.removeLast()
-                }
-                if resetsChatRoot {
+                // The archived session may be the visible page (the top of
+                // the Chat stack). Pop it back to the list and stay on the
+                // tab the user is already on.
+                if panes.lastSessionID == id { panes.lastSessionID = nil }
+                if case let .session(topID)? = panes.chatPath.last, topID == id {
+                    panes.chatPath = []
                     selection = .newSession
                 }
             } else if selectedSessionId == id {

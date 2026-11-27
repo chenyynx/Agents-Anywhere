@@ -88,10 +88,12 @@ final class TabSwitchProbe: NSObject {
         // Probe builds sample the main thread's stack through the same
         // window. b1663 proved the stall starts at the tap (worstAt ≈ 0)
         // while every piece we timed stayed under its threshold, so only a
-        // stack can name the code that owns the 200–500 ms.
+        // stack can name the code that owns the 200–500 ms. b1694 showed the
+        // tick-driven window stops before the stall (the freeze *is* the
+        // missing ticks): record a fixed-length burst instead.
         if !idle {
-            MainThreadStackSampler.shared.clear()
-            MainThreadStackSampler.shared.noteActivity(scrolling: true)
+            MainThreadStackSampler.shared.beginBurst(
+                seconds: Self.window + 0.2)
         }
 #endif
         // Measure from the window start: a main thread that blocks inside the

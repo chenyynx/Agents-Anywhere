@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import QuartzCore
 
 @MainActor @Observable
 final class SessionChatModel {
@@ -656,10 +657,27 @@ final class SessionChatModel {
     /// time (not snapshotted), so it follows rows as they land — the page's
     /// first frame has none.
     var estimatedContextUsage: V2ContextUsage? {
-        ContextUsageEstimate.resolve(
-            items: timeline.rows.map(\.value),
+        let started = CACurrentMediaTime()
+        let rows = timeline.rows
+        let usage = ContextUsageEstimate.resolve(
+            items: rows.map(\.value),
             catalogWindow: catalogWindowForEstimate
         )
+        // The page body reads this on every re-evaluation (ring + menu
+        // label), and it maps every loaded row per read. b1694's switch
+        // windows caught it on the main thread inside a freeze; log the
+        // reads that cost real time so the next log says whether it owns
+        // the stall or only rides along.
+        let ms = (CACurrentMediaTime() - started) * 1000
+        if ms >= 2 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "context.estimate",
+                sessionID: session.id,
+                detail: ["ms": String(format: "%.1f", ms),
+                         "rows": String(rows.count)],
+                dedupe: false)
+        }
+        return usage
     }
     /// What the ring and sheet render: live (or cached) first, estimate second.
     var displayedContextUsage: V2ContextUsage? {

@@ -79,6 +79,16 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
     private var windowStart: TimeInterval = 0
     private var finishedAt: TimeInterval = 0
     private var lastActiveAt: TimeInterval = 0
+    /// Non-zero while a fixed-length burst is recording (see `beginBurst`).
+    /// A tick-driven window pauses `pauseAfter` the last display tick, and a
+    /// tab-switch freeze is exactly the absence of ticks: b1694 captured 45
+    /// samples (90 ms) of a 575 ms stall and missed the blocking stack.
+    private var burstUntil: TimeInterval = 0
+    /// A burst requested while the worker still owns the buffers; the worker
+    /// re-anchors the session at its next safe point. Same hand-off pattern
+    /// as `clear` — resetting the buffers from the main thread while the
+    /// worker is mid-sample would race.
+    private var pendingBurst: TimeInterval = 0
     private var sampleCount = 0
     private var frameCount = 0
     private var bufferFull = false
@@ -162,6 +172,29 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             lastActiveAt = now
         default:
             break
+        }
+        os_unfair_lock_unlock(lockPointer)
+    }
+
+    /// A fixed-length sampling burst that does not depend on main-thread
+    /// ticks: record for `seconds` after this call, whatever the display
+    /// link does. The tab-switch freeze is exactly the absence of ticks, so
+    /// the tick-driven window in `noteActivity` stops right before the part
+    /// worth seeing.
+    func beginBurst(seconds: TimeInterval) {
+        let now = CACurrentMediaTime()
+        os_unfair_lock_lock(lockPointer)
+        startWorkerLocked()
+        switch phase {
+        case Phase.recording, Phase.stopping, Phase.clearing:
+            // The worker owns the buffers; it re-anchors at its safe point.
+            pendingBurst = seconds
+        default:
+            resetLocked()
+            windowStart = now
+            lastActiveAt = now
+            burstUntil = now + seconds
+            phase = Phase.recording
         }
         os_unfair_lock_unlock(lockPointer)
     }
@@ -279,12 +312,34 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
             let current = phase
             let lastActive = lastActiveAt
             let start = windowStart
+            let burst = burstUntil
+            let pending = pendingBurst
             os_unfair_lock_unlock(lockPointer)
+
+            if pending > 0,
+               current == Phase.recording || current == Phase.stopping
+                || current == Phase.finished || current == Phase.idle {
+                // A new switch window arrived: zero and re-anchor from the
+                // worker so the session that reports belongs to this window.
+                let now = CACurrentMediaTime()
+                os_unfair_lock_lock(lockPointer)
+                resetLocked()
+                windowStart = now
+                lastActiveAt = now
+                burstUntil = now + pending
+                phase = Phase.recording
+                os_unfair_lock_unlock(lockPointer)
+                continue
+            }
 
             switch current {
             case Phase.clearing:
                 os_unfair_lock_lock(lockPointer)
+                // A burst requested while clearing survives the wipe; the
+                // next loop re-anchors on it.
+                let keepBurst = pendingBurst
                 resetLocked()
+                pendingBurst = keepBurst
                 phase = Phase.idle
                 os_unfair_lock_unlock(lockPointer)
                 usleep(5_000)
@@ -308,16 +363,28 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
                     os_unfair_lock_unlock(lockPointer)
                     continue
                 }
-                if now - lastActive > Self.finishAfter {
-                    os_unfair_lock_lock(lockPointer)
-                    finishedAt = now
-                    phase = Phase.finished
-                    os_unfair_lock_unlock(lockPointer)
-                    continue
-                }
-                if now - lastActive > Self.pauseAfter {
-                    usleep(4_000)
-                    continue
+                if burst > 0 {
+                    // Burst mode: record to the wall-clock deadline no matter
+                    // what the main thread (and its display link) is doing.
+                    if now >= burst {
+                        os_unfair_lock_lock(lockPointer)
+                        finishedAt = now
+                        phase = Phase.finished
+                        os_unfair_lock_unlock(lockPointer)
+                        continue
+                    }
+                } else {
+                    if now - lastActive > Self.finishAfter {
+                        os_unfair_lock_lock(lockPointer)
+                        finishedAt = now
+                        phase = Phase.finished
+                        os_unfair_lock_unlock(lockPointer)
+                        continue
+                    }
+                    if now - lastActive > Self.pauseAfter {
+                        usleep(4_000)
+                        continue
+                    }
                 }
                 sampleOnce(now)
                 usleep(Self.intervalMicroseconds)
@@ -741,6 +808,8 @@ nonisolated final class MainThreadStackSampler: @unchecked Sendable {
         windowStart = 0
         finishedAt = 0
         lastActiveAt = 0
+        burstUntil = 0
+        pendingBurst = 0
     }
 
     private static func f(_ value: Double) -> String {

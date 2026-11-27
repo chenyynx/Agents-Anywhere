@@ -434,11 +434,21 @@ final class AppState {
 
     private func syncDashboard(_ services: V2ClientServices) {
         guard cachedServices === services else { return }
+#if AA_TIMELINE_PROBE
+        let probeStart = CFAbsoluteTimeGetCurrent()
+#endif
         let repository = services.dashboardRepository
         // Each tracked write invalidates every view reading that property; only publish real changes.
         if connectors != repository.connectors { connectors = repository.connectors }
         if projects != repository.projects { projects = repository.projects }
-        if sessions != repository.sessions { sessions = repository.sessions }
+#if AA_TIMELINE_PROBE
+        let probeFromSessions = CFAbsoluteTimeGetCurrent()
+#endif
+        let sessionsChanged = sessions != repository.sessions
+        if sessionsChanged { sessions = repository.sessions }
+#if AA_TIMELINE_PROBE
+        let probeCompared = CFAbsoluteTimeGetCurrent()
+#endif
         if isDashboardLoading != repository.isLoading { isDashboardLoading = repository.isLoading }
         if hasLoadedConnectors != repository.hasLoaded { hasLoadedConnectors = repository.hasLoaded }
         if hasLoadedSessions != repository.hasLoaded { hasLoadedSessions = repository.hasLoaded }
@@ -453,6 +463,23 @@ final class AppState {
             services.newSession.updateProjects(projects)
             services.newSession.updateConnectors(connectors)
         }
+#if AA_TIMELINE_PROBE
+        // The same landing that produces the Devices scroll hitch (b1718:
+        // 31–48 ms, one per snapshot). Split compare vs everything else.
+        let probeTotal = (CFAbsoluteTimeGetCurrent() - probeStart) * 1000
+        if probeTotal >= 3 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "dashboard.sync.slow",
+                detail: [
+                    "ms": String(format: "%.1f", probeTotal),
+                    "compare": String(format: "%.1f", (probeCompared - probeFromSessions) * 1000),
+                    "tail": String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - probeCompared) * 1000),
+                    "sessionsChanged": sessionsChanged ? "1" : "0",
+                    "sessions": String(sessions.count),
+                ],
+                dedupe: false)
+        }
+#endif
     }
 
     /// Opens the dashboard WebSocket and continuously replaces the global Connector and Session projections.
@@ -913,8 +940,28 @@ final class AppState {
     }
 
     private func applyDashboardSnapshot(_ snapshot: V2DashboardSnapshot) {
+#if AA_TIMELINE_PROBE
+        let probeStart = CFAbsoluteTimeGetCurrent()
+#endif
         cachedServices?.dashboardRepository.apply(snapshot)
+#if AA_TIMELINE_PROBE
+        let probeApply = CFAbsoluteTimeGetCurrent()
+#endif
         NotificationService.shared.handle(snapshot: snapshot)
+#if AA_TIMELINE_PROBE
+        let probeTotal = (CFAbsoluteTimeGetCurrent() - probeStart) * 1000
+        if probeTotal >= 3 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "dashboard.snapshot.slow",
+                detail: [
+                    "ms": String(format: "%.1f", probeTotal),
+                    "apply": String(format: "%.1f", (probeApply - probeStart) * 1000),
+                    "notify": String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - probeApply) * 1000),
+                    "sessions": String(snapshot.sessions.count),
+                ],
+                dedupe: false)
+        }
+#endif
     }
 
     private func startNotificationLongPolling(services: V2ClientServices) {

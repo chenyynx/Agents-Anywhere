@@ -78,19 +78,48 @@ final class V2DashboardRepository {
     }
 
     private func apply(connectors: [V2Connector], projects: [V2Project], sessions incoming: [V2SessionMeta]) {
+#if AA_TIMELINE_PROBE
+        let probeStart = CFAbsoluteTimeGetCurrent()
+#endif
         generation += 1; projectGeneration += 1
         var mutated = !hasLoaded
         if self.connectors != connectors { self.connectors = connectors; mutated = true }
         if self.projects != projects { self.projects = projects; mutated = true }
+#if AA_TIMELINE_PROBE
+        let probePre = CFAbsoluteTimeGetCurrent()
+#endif
         let current = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         let validDevices = Set(connectors.map(\.id))
         let pending = sessions.filter { $0.id.hasPrefix("local:") && validDevices.contains($0.connectorId) }
         let merged = unique(pending + incoming.map { merge(current[$0.id], $0) })
+#if AA_TIMELINE_PROBE
+        let probeMerge = CFAbsoluteTimeGetCurrent()
+#endif
         if sessions != merged { sessions = merged; mutated = true }
         if !hasLoaded { hasLoaded = true }
         if !isFresh { isFresh = true }
         if error != nil { error = nil }
         changed(persist: mutated); refreshMissingProjects()
+#if AA_TIMELINE_PROBE
+        // One dashboard snapshot lands about once a second; the Devices scroll
+        // hitches (b1717/b1718) sat exactly on those landings. Break the cost
+        // down so the next round can name the segment instead of the stack.
+        let probeTotal = (CFAbsoluteTimeGetCurrent() - probeStart) * 1000
+        if probeTotal >= 3 {
+            ClientDiagnosticsLog.shared.record(
+                kind: "dashboard.apply.slow",
+                detail: [
+                    "ms": String(format: "%.1f", probeTotal),
+                    "pre": String(format: "%.1f", (probePre - probeStart) * 1000),
+                    "merge": String(format: "%.1f", (probeMerge - probePre) * 1000),
+                    "tail": String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - probeMerge) * 1000),
+                    "changed": mutated ? "1" : "0",
+                    "sessions": String(incoming.count),
+                    "held": String(sessions.count),
+                ],
+                dedupe: false)
+        }
+#endif
     }
 
     /// The project list is shared by all expanded groups and refreshed independently

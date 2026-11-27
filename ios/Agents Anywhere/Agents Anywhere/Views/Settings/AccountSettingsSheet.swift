@@ -16,6 +16,8 @@ struct AccountSettingsSheet: View {
     private var deliveryRaw = ComposerDeliverySetting.defaultValue.rawValue
     @AppStorage(ComposerCommandsSetting.storageKey)
     private var commandsHidden = false
+    @AppStorage(ShellStartPage.storageKey)
+    private var startPageRaw = ShellStartPage.auto.rawValue
     private var renderMode: TimelineRenderMode {
         TimelineRenderMode(rawValue: renderModeRaw) ?? .steps
     }
@@ -40,6 +42,7 @@ struct AccountSettingsSheet: View {
                     accountSection(me)
                 }
                 connectionSection
+                generalSection
                 displaySection
                 composerSection
                 notificationsSection
@@ -131,6 +134,29 @@ struct AccountSettingsSheet: View {
             SettingsNavigationRow(icon: "anthropicon.key",
                                   title: String(localized: "Password"),
                                   destination: PasswordSettingsView(draft: $drafts.password))
+        }
+    }
+
+    private var generalSection: some View {
+        SettingsSection(String(localized: "通用")) {
+            SettingsMenuRow(
+                icon: "anthropicon.sidebar",
+                title: String(localized: "起始页面"),
+                subtitle: String(localized: "启动时打开列表还是上一次的会话"),
+                value: (ShellStartPage(rawValue: startPageRaw) ?? .auto).title,
+                options: ShellStartPage.allCases.map { page in
+                    SettingsMenuOption(id: page.rawValue, title: page.title,
+                                       symbol: symbol(for: page))
+                },
+                selection: $startPageRaw)
+        }
+    }
+
+    private func symbol(for page: ShellStartPage) -> String {
+        switch page {
+        case .auto: return "anthropicon.sidebar"
+        case .chat: return "anthropicon.chat"
+        case .list: return "anthropicon.listBullet"
         }
     }
 

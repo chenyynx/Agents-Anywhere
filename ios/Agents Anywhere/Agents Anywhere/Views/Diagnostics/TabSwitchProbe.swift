@@ -42,6 +42,10 @@ final class TabSwitchProbe: NSObject {
     private var worstMs: Double = 0
     /// Milliseconds from the window start to the beginning of the worst gap.
     private var worstAtMs: Double = 0
+    /// Every gap above `hitchMs` inside this window, at its absolute start
+    /// time (the display link's `timestamp` base). The sampler's `MH` lines
+    /// use them to name what the main thread was doing *inside* each gap.
+    private var hitchSamples: [(at: TimeInterval, ms: Double)] = []
     private var tab = ""
     /// The kind this window reports under: `shell.tabs.frame` for tab
     /// switches, `keyboard.frame` for the keyboard's show/hide windows.
@@ -121,6 +125,7 @@ final class TabSwitchProbe: NSObject {
         hitches = 0
         worstMs = 0
         worstAtMs = 0
+        hitchSamples.removeAll(keepingCapacity: true)
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.preferredFrameRateRange = CAFrameRateRange(
             minimum: 60, maximum: 120, preferred: 120
@@ -133,7 +138,14 @@ final class TabSwitchProbe: NSObject {
         let now = link.timestamp
         let ms = (now - lastTick) * 1000
         frames += 1
-        if ms > Self.hitchMs { hitches += 1 }
+        if ms > Self.hitchMs {
+            hitches += 1
+            // Keep the gap's start: the sampler scans its samples inside
+            // [start, start + gap] to name the owning stack.
+            if hitchSamples.count < 8 {
+                hitchSamples.append((at: lastTick, ms: ms))
+            }
+        }
         if ms > worstMs {
             worstMs = ms
             worstAtMs = (lastTick - startedAt) * 1000
@@ -167,24 +179,36 @@ final class TabSwitchProbe: NSObject {
         if partial { detail["partial"] = "1" }
         ClientDiagnosticsLog.shared.record(kind: kind, detail: detail, dedupe: false)
 #if AA_TIMELINE_PROBE
-        if !isIdleWindow, !partial {
-            if worstMs > 80 {
-                // `reportLines` closes the session and waits briefly for the
-                // sampling thread; the decoded report names the stacks that
-                // owned the stall (our frames keep their symbols because a
-                // probe build disables stripping).
-                let report = MainThreadStackSampler.shared
-                    .reportLines(hitches: [])
-                    .joined(separator: "\n")
-                ClientDiagnosticsLog.shared.record(
-                    kind: "tab.stack",
-                    detail: ["tab": tab,
-                             "worstMs": String(format: "%.0f", worstMs),
-                             "report": report],
-                    dedupe: false)
-            } else {
-                MainThreadStackSampler.shared.clear()
+        // A tab switch has to own a 200–500 ms freeze before its stack is
+        // worth the export. A Devices scroll is a different budget: the
+        // reader feels 40–60 ms hitches, and those never cross the switch's
+        // 80 ms line, so that window would export no stack at all.
+        let stackThreshold: Double = kind == "scroll.frame" ? 35 : 80
+        // A scroll window is cut short by the next phase change
+        // (interacting → decelerating re-arms it). The partial window still
+        // covers the stretch that hitched, so keep its stack too.
+        let keepsPartial = kind == "scroll.frame"
+        if !isIdleWindow, worstMs >= stackThreshold, !partial || keepsPartial {
+            // `reportLines` closes the session and waits briefly for the
+            // sampling thread; the decoded report names the stacks that
+            // owned the stall (our frames keep their symbols because a
+            // probe build disables stripping). The hitch timestamps let its
+            // MH lines name the app/leaf inside each gap.
+            let hitches: [(at: TimeInterval, ms: Int)] = hitchSamples.map {
+                (at: $0.at, ms: Int($0.ms))
             }
+            let report = MainThreadStackSampler.shared
+                .reportLines(hitches: hitches)
+                .joined(separator: "\n")
+            ClientDiagnosticsLog.shared.record(
+                kind: "tab.stack",
+                detail: ["tab": tab,
+                         "kind": kind,
+                         "worstMs": String(format: "%.0f", worstMs),
+                         "report": report],
+                dedupe: false)
+        } else if !isIdleWindow, !partial {
+            MainThreadStackSampler.shared.clear()
         }
 #endif
         if !isIdleWindow, !partial, kind == "shell.tabs.frame" { scheduleIdleWindow() }

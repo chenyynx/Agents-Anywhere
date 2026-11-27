@@ -386,7 +386,12 @@ extension TimelineDatabase {
     }
 
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {
-        try JSONEncoder().encode(value)
+        // Deterministic key order: the payload bytes are compared to decide
+        // which rows changed, and the signature uses the same stable form.
+        // (JSONEncoder's default order is not guaranteed.)
+        var encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
     }
 
     /// Stable content signature: sorted-key JSON of every input row, folded

@@ -1206,6 +1206,10 @@ final class AppState {
             self.applyLibraryRows(rows, services: services)
         }
         dashboardLibrary = library
+        services.dashboardRepository.onMutation = { [weak library] mutation in
+            guard DashboardLibraryPreferences.isEnabled, let library else { return }
+            Task { await library.apply(mutation) }
+        }
         if DashboardLibraryPreferences.isEnabled {
             library.start()
             Task { [weak library, weak services] in

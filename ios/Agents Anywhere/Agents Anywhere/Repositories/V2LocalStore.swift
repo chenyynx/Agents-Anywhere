@@ -93,6 +93,11 @@ actor V2LocalStore {
         _ = try? database.deleteDashboardProject(id: id)
     }
 
+    func replaceDashboardProjects(_ projects: [V2Project]) {
+        guard valid, let database = timelineStore() else { return }
+        _ = try? database.replaceDashboardProjects(projects)
+    }
+
     func clearDashboardLibrary() {
         guard valid, let database = timelineStore() else { return }
         try? database.clearDashboard()

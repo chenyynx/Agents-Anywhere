@@ -1,6 +1,19 @@
 import Foundation
 import Observation
 
+/// A local mutation the library path mirrors into the local database. The
+/// in-memory lists stay authoritative for the legacy path; `AppState` sets
+/// `onMutation` only while the library is enabled.
+nonisolated enum V2DashboardMutation: Sendable {
+    case upsertSessions([V2SessionMeta])
+    case removeSession(String)
+    case upsertConnector(V2Connector)
+    case removeConnector(String)
+    case upsertProject(V2Project)
+    case replaceProjects([V2Project])
+    case deleteProject(String)
+}
+
 /// Account-scoped list cache. HTTP, push and explicit mutations share a revision
 /// fence, so a late read cannot replace a newer snapshot or user action.
 @MainActor @Observable
@@ -15,6 +28,7 @@ final class V2DashboardRepository {
     private(set) var error: String?
     private(set) var network = V2NetworkStatus()
     @ObservationIgnored var onChange: (() -> Void)?
+    @ObservationIgnored var onMutation: ((V2DashboardMutation) -> Void)?
     @ObservationIgnored var reconcile: (V2SessionMeta) -> V2SessionMeta = { $0 }
     @ObservationIgnored private let localStore: V2LocalStore?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
@@ -147,6 +161,7 @@ final class V2DashboardRepository {
                 guard isValid, projectGeneration == revision, !Task.isCancelled else { return false }
                 generation += 1
                 projects = response.projects; error = nil; changed()
+                onMutation?(.replaceProjects(response.projects))
                 return true
             } catch {
                 if isValid, projectGeneration == revision, !Task.isCancelled { self.error = error.localizedDescription }
@@ -180,10 +195,12 @@ final class V2DashboardRepository {
     func upsert(_ values: [V2SessionMeta]) {
         guard isValid else { return }
         generation += 1; mergeSessions(values); changed(); refreshMissingProjects()
+        onMutation?(.upsertSessions(values))
     }
     func removeLocalSession(_ id: String) {
         guard id.hasPrefix("local:") else { return }
         sessions.removeAll { $0.id == id }; changed()
+        onMutation?(.removeSession(id))
     }
 
     func upsertConnector(_ connector: V2Connector) {
@@ -191,12 +208,14 @@ final class V2DashboardRepository {
         generation += 1
         connectors.removeAll { $0.id == connector.id }; connectors.append(connector)
         changed()
+        onMutation?(.upsertConnector(connector))
     }
     func removeConnector(_ id: String) {
         guard isValid else { return }
         generation += 1; projectGeneration += 1
         connectors.removeAll { $0.id == id }; projects.removeAll { $0.connectorId == id }
         sessions.removeAll { $0.connectorId == id }; changed()
+        onMutation?(.removeConnector(id))
     }
 
     func createProject(name: String, connectorID: String, path: String, reusing projectID: String? = nil) async throws -> V2Project {
@@ -206,6 +225,7 @@ final class V2DashboardRepository {
         try requireWritable()
         guard connectors.contains(where: { $0.id == connectorID && $0.status == .online }) else { throw URLError(.notConnectedToInternet) }
         projects = latest.projects; changed()
+        onMutation?(.replaceProjects(latest.projects))
         let os = connectors.first { $0.id == connectorID }?.deviceOs
         guard let key = ProjectWorkspacePath.key(path, deviceOS: os) else {
             throw V2BusinessError.workspaceFilesUnavailable(message: String(localized: "请输入设备上的完整绝对路径。"))
@@ -238,6 +258,7 @@ final class V2DashboardRepository {
         generation += 1; projectGeneration += 1; projects.removeAll { $0.id == id }
         for index in sessions.indices where sessions[index].projectId == id { sessions[index].projectId = nil }
         changed(); await refreshProjects()
+        onMutation?(.deleteProject(id))
     }
     func archiveProject(_ id: String, archived: Bool) async throws {
         try requireWritable()
@@ -259,6 +280,7 @@ final class V2DashboardRepository {
         if let old = projects.first(where: { $0.id == project.id }), old.updatedAt > project.updatedAt { return }
         generation += 1; projectGeneration += 1
         projects.removeAll { $0.id == project.id }; projects.append(project); changed()
+        onMutation?(.upsertProject(project))
     }
     private func mergeSessions(_ incoming: [V2SessionMeta]) {
         sessions = DashboardMerge.upsert(held: sessions, incoming: incoming, reconcile: reconcile)

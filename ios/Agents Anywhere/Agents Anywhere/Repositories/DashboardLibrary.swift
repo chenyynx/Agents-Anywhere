@@ -93,6 +93,27 @@ final class DashboardLibrary {
         await store.deleteDashboardProject(id: id)
     }
 
+    /// Mirrors one mutation from the in-memory repository (the services write
+    /// through it even while the library is on).
+    func apply(_ mutation: V2DashboardMutation) async {
+        switch mutation {
+        case let .upsertSessions(values):
+            await store.upsertDashboardSessions(values)
+        case let .removeSession(id):
+            await store.removeDashboardSession(id: id)
+        case let .upsertConnector(value):
+            await store.upsertDashboardConnector(value)
+        case let .removeConnector(id):
+            await store.removeDashboardConnector(id: id)
+        case let .upsertProject(value):
+            await store.upsertDashboardProject(value)
+        case let .replaceProjects(values):
+            await store.replaceDashboardProjects(values)
+        case let .deleteProject(id):
+            await store.deleteDashboardProject(id: id)
+        }
+    }
+
     func clear() async {
         await store.clearDashboardLibrary()
     }

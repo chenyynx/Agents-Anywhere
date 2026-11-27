@@ -186,6 +186,15 @@ extension TimelineDatabase {
         }
     }
 
+    func replaceDashboardProjects(_ values: [V2Project]) throws -> Int {
+        try pool.write { db in
+            _ = try Self.replaceProjects(db, values)
+            let next = try Self.currentRevision(db) + 1
+            try Self.setMeta(db, key: "revision", value: String(next))
+            return next
+        }
+    }
+
     func deleteDashboardProject(id: String) throws -> Int {
         try pool.write { db in
             try db.execute(sql: "DELETE FROM dashboard_projects WHERE id = ?", arguments: [id])

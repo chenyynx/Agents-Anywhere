@@ -264,6 +264,16 @@ nonisolated enum StreamingRevealReplayPolicy {
         isAssistantText && hasSampledVisible && !isKnownRow
             && !hasCursor && isResuming && !textEmpty
     }
+
+    /// Whether a row carries assistant text the reader could already have
+    /// seen. Row *presence* is not enough: the turn's assistant row can exist
+    /// with no text yet (or only tool calls) while the reply is still being
+    /// generated. Marking that empty row as seen is what swallowed the replay
+    /// for a reply that arrived while the reader was on another tab
+    /// (pp 2026-11-27, after b1709).
+    static func hasSeenText(isAssistantText: Bool, textEmpty: Bool) -> Bool {
+        isAssistantText && !textEmpty
+    }
 }
 
 /// Visual run granularity: official draws in runs of 24...64 characters and

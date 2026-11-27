@@ -215,4 +215,17 @@ import Testing
             isAssistantText: true, hasSampledVisible: true, isKnownRow: false,
             hasCursor: false, isResuming: true, textEmpty: true))
     }
+
+    @Test func emptyAssistantRowIsNotSeenText() {
+        // A turn can have an assistant row before any text exists (or while
+        // only tool calls are running). That row must not be remembered as
+        // seen: the reply that fills it may arrive while the reader is on
+        // another tab and has to replay on return.
+        #expect(!StreamingRevealReplayPolicy.hasSeenText(
+            isAssistantText: true, textEmpty: true))
+        #expect(StreamingRevealReplayPolicy.hasSeenText(
+            isAssistantText: true, textEmpty: false))
+        #expect(!StreamingRevealReplayPolicy.hasSeenText(
+            isAssistantText: false, textEmpty: false))
+    }
 }

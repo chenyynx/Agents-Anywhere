@@ -105,11 +105,17 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         if !visible {
             codeRevealResuming = true
             // The model's window is authoritative at the hide edge. Rows that
-            // were already presented — even ones this adapter has not sampled
-            // yet — are seen text; capturing them here keeps an 18-message
-            // backlog from replaying on the next return (pp 2026-11-27,
-            // 9698 chars).
-            codeKnownRowIDs.formUnion(model.timeline.rows.map(\.id))
+            // already carry assistant text — even ones this adapter has not
+            // sampled yet — are seen text; capturing them here keeps an
+            // 18-message backlog from replaying on the next return
+            // (pp 2026-11-27, 9698 chars). Rows that exist but are still empty
+            // (turn just started, tool-only so far) are NOT seen text: the
+            // reply that fills them arrives while away and must replay.
+            for row in model.timeline.rows where StreamingRevealReplayPolicy.hasSeenText(
+                isAssistantText: row.value.isAssistantText,
+                textEmpty: row.value.displayText.isEmpty) {
+                codeKnownRowIDs.insert(row.id)
+            }
             // A page that was on screen has been "seen" even if its first
             // refresh has not run yet; a reply that appears while it is away
             // should still replay.
@@ -1961,8 +1967,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         codeRevealBacklog = backlog
         // Union, not replace: a row seen once stays "seen" even after it
         // leaves and re-enters the window, so a history scroll cannot make an
-        // old message look new on the next tab return.
-        codeKnownRowIDs.formUnion(rowsByID.keys)
+        // old message look new on the next tab return. Only rows with actual
+        // assistant text count — an empty turn placeholder must stay
+        // replay-eligible when its reply lands later.
+        for row in rowsByID.values where StreamingRevealReplayPolicy.hasSeenText(
+            isAssistantText: row.value.isAssistantText,
+            textEmpty: row.value.displayText.isEmpty) {
+            codeKnownRowIDs.insert(row.id)
+        }
         if pageRevealVisible {
             hasSampledCodeRevealWhileVisible = true
             codeRevealResuming = false

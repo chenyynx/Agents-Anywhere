@@ -187,4 +187,32 @@ import Testing
         #expect(cursor.revealedCount(total: 100, at: 0.1) == 32)
         #expect(cursor.revealedCount(total: 100, at: 1) == 100)
     }
+
+    @Test func replayPolicyOnlyReplaysMessagesThatArrivedWhileAway() {
+        // The 18 old rows already in the window before a hide: seen text,
+        // never a replay (pp 2026-11-27, backlog 9698 on one return).
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: true, isKnownRow: true,
+            hasCursor: false, isResuming: true, textEmpty: false))
+        // A row first seen after the hide: replay.
+        #expect(StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: true, isKnownRow: false,
+            hasCursor: false, isResuming: true, textEmpty: false))
+        // A page never sampled while visible cannot tell new from existing.
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: false, isKnownRow: false,
+            hasCursor: false, isResuming: true, textEmpty: false))
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: false, hasSampledVisible: true, isKnownRow: false,
+            hasCursor: false, isResuming: true, textEmpty: false))
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: true, isKnownRow: false,
+            hasCursor: true, isResuming: true, textEmpty: false))
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: true, isKnownRow: false,
+            hasCursor: false, isResuming: false, textEmpty: false))
+        #expect(!StreamingRevealReplayPolicy.shouldReplay(
+            isAssistantText: true, hasSampledVisible: true, isKnownRow: false,
+            hasCursor: false, isResuming: true, textEmpty: true))
+    }
 }

@@ -247,7 +247,27 @@ nonisolated struct StreamingRevealCursor: Equatable {
     }
 }
 
+/// Which settled assistant messages may enter a tail replay on return.
+///
+/// Only a row that **first appeared while the page was off screen** may do
+/// so. A row that was already in the window before the hide is text the
+/// reader has seen; replaying it made 18 old messages animate on one return
+/// (pp 2026-11-27, backlog 9698). A page that was never sampled while visible
+/// cannot tell "new while away" from "existing", so it shows everything whole.
+nonisolated enum StreamingRevealReplayPolicy {
+    static func shouldReplay(isAssistantText: Bool,
+                             hasSampledVisible: Bool,
+                             isKnownRow: Bool,
+                             hasCursor: Bool,
+                             isResuming: Bool,
+                             textEmpty: Bool) -> Bool {
+        isAssistantText && hasSampledVisible && !isKnownRow
+            && !hasCursor && isResuming && !textEmpty
+    }
+}
+
 /// Visual run granularity: official draws in runs of 24...64 characters and
+
 /// waits at most 0.35 s for a run to fill. The generator mirrors the official
 /// xorshift64 + splitmix sequence; the policy is pure so the gate can test it.
 nonisolated struct StreamingRevealRunGenerator: Equatable {

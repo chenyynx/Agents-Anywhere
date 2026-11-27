@@ -111,6 +111,7 @@
 - **切 tab 红线**：16 个切换窗口 `shell.tabs.frame` worstMs 中位 **92.5ms**、max **110ms**、idle ≤42ms；`timeline.page.flush` 12 条 80ms。红线未破。
 - **官方也先显示旧状态**（pp 2026-11-27 真机）：切回官方不是即时最新，而是先看到离开前那帧再更新——和我们 settle 后 flush 的观感一致。§16.3“官方隐藏页继续 apply”只是推断，不等于切回没有旧帧。
 - **新问题（pp 2026-11-27）**：隐藏的会话页在流式时，设备页上下滑掉帧。原因不是 collection apply（已停），而是 **presentation 仍按每个 token flush**，`SessionChatView`/`TimelineChatTimelineView` 的 body（context estimate、onChange 值）在隐藏页每秒被求值 10–30 次；同时隐藏页的 **orb（60fps Canvas）/ working mark（30fps flipbook）/ shimmer（repeatForever）** 仍在画。b1707 加 `hiddenCadence`（无可见 pane 时数据照收、发布 1Hz；首个可见页立即 flush；隐藏页 context ring 不读 estimate）；b1708 给 `ThinkingOrbView`/`OrbStatusText`/`WorkingMarkView`/`CodeWorkingMarkSkeleton`/`StatusShimmer` 加 `shellTabVisible` 暂停门。诊断 `session.page.cadence`。
+- **b1708 新 bug（pp 2026-11-27 22:26 日志）**：切回后 18 条早就看过的助手消息一起补播（`shell.tabs.reveal.pump backlog=9698 rows=18`）。根因：`codePendingReplays` 只看“无光标”，没排除“离开前已在窗口里的行”；且适配器可能还没 sample 过这些行。b1709 加 `codeKnownRowIDs`（hide 时并入 `model.timeline.rows`，sample 时 union）+ `hasSampledCodeRevealWhileVisible`，只让隐藏期间**真正新出现**的行补播；`StreamingRevealReplayPolicy` 单测覆盖。
 
 ### 8.5 真机验收清单（待 pp）
 

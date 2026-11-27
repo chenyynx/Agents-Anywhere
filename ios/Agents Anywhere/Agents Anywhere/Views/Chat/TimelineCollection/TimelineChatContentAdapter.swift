@@ -100,8 +100,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// returning tab replay the backlog instead of flashing it all at once.
     func setPageRevealVisible(_ visible: Bool) {
         guard pageRevealVisible != visible else { return }
+        let wasVisible = pageRevealVisible
         pageRevealVisible = visible
-        if !visible { codeRevealResuming = true }
+        if !visible {
+            codeRevealResuming = true
+            // The model's window is authoritative at the hide edge. Rows that
+            // were already presented — even ones this adapter has not sampled
+            // yet — are seen text; capturing them here keeps an 18-message
+            // backlog from replaying on the next return (pp 2026-11-27,
+            // 9698 chars).
+            codeKnownRowIDs.formUnion(model.timeline.rows.map(\.id))
+            // A page that was on screen has been "seen" even if its first
+            // refresh has not run yet; a reply that appears while it is away
+            // should still replay.
+            if wasVisible { hasSampledCodeRevealWhileVisible = true }
+        }
         let now = ProcessInfo.processInfo.systemUptime
         for rowID in Array(codeRevealCursors.keys) {
             guard var cursor = codeRevealCursors[rowID] else { continue }
@@ -1315,6 +1328,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     /// visible again: rows first seen in this window replay their tail even
     /// when they are already settled (a message that arrived while away).
     private var codeRevealResuming = false
+    /// Row ids present at the last sample. A settled row that was already in
+    /// the window before the page hid is **seen** text: it must not become a
+    /// pending replay on return (pp 2026-11-27: 18 old messages replayed,
+    /// backlog 9698).
+    private var codeKnownRowIDs: Set<String> = []
+    /// False until the adapter has sampled at least once with the page on
+    /// screen. A page built while hidden shows its existing rows whole; only
+    /// a page the reader actually saw can distinguish "new while away".
+    private var hasSampledCodeRevealWhileVisible = false
     /// Settled assistant texts that first appeared while the page was off
     /// screen. They keep a reveal source until the cursor catches up; without
     /// this a message that finished during the switch has no publisher and
@@ -1883,12 +1905,19 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
                 let text = latest.isEmpty ? pending : latest
                 if text != pending { codePendingReplays[rowID] = text }
                 source = text
-            } else if resuming, codeRevealCursors[rowID] == nil,
-                      row.value.isAssistantText, !row.value.displayText.isEmpty {
+            } else if StreamingRevealReplayPolicy.shouldReplay(
+                          isAssistantText: row.value.isAssistantText,
+                          hasSampledVisible: hasSampledCodeRevealWhileVisible,
+                          isKnownRow: codeKnownRowIDs.contains(rowID),
+                          hasCursor: codeRevealCursors[rowID] != nil,
+                          isResuming: resuming,
+                          textEmpty: row.value.displayText.isEmpty) {
                 // This message first appeared while the page was off screen
                 // and is already settled (the turn finished during the
                 // switch). It has no publisher, so the full text becomes the
                 // replay source; without this it would flash whole on return.
+                // A row that was already in the window before the hide is
+                // seen text and must never enter this branch.
                 source = row.value.displayText
                 codePendingReplays[rowID] = source
             } else {
@@ -1930,7 +1959,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         codeRevealedTexts = revealed
         codeRevealBehindRowIDs = behind
         codeRevealBacklog = backlog
-        if pageRevealVisible { codeRevealResuming = false }
+        // Union, not replace: a row seen once stays "seen" even after it
+        // leaves and re-enters the window, so a history scroll cannot make an
+        // old message look new on the next tab return.
+        codeKnownRowIDs.formUnion(rowsByID.keys)
+        if pageRevealVisible {
+            hasSampledCodeRevealWhileVisible = true
+            codeRevealResuming = false
+        }
         if !behind.isEmpty { onRevealPending?() }
     }
 

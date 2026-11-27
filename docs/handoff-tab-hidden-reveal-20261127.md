@@ -104,7 +104,14 @@
 - `timeline.page.flush`：`waitedMs` / `flushMs` / `parked` / `items`（watchdog 兜底 flush 的耗时，用于看切回落地帧成本）。
 - `shell.tabs.frame`：每包必看——worstMs 中位 ≤120ms、无 >200ms 常态窗口。
 
-### 8.4 真机验收清单（待 pp）
+### 8.4 真机日志复盘（b1705，2026-11-27 21:21–21:22）
+
+- **重播没触发**：`shell.tabs.reveal` 在流式期间 `cursors:0`，回来 `cursors:1 behind:0 backlog:0`，无 `shell.tabs.reveal.pump`；回复的消息行 21:21:56.98 才首次出现（chat 页已隐藏）、回合 21:21:58.2 结束、21:22:00.7 才切回 → b1706 的 `codePendingReplays`/`startFromTail` 覆盖。
+- **隐藏页震动**：`timeline.haptic` 21:21:57.155 / 21:21:58.064 phase、21:21:58.276/58.400 completion 在 chat 页隐藏时仍 `allowed:1` → b1706 加 `shellTabVisible` 门。
+- **切 tab 红线**：16 个切换窗口 `shell.tabs.frame` worstMs 中位 **92.5ms**、max **110ms**、idle ≤42ms；`timeline.page.flush` 12 条 80ms。红线未破。
+- **新问题（pp 2026-11-27）**：隐藏的会话页在流式时，设备页上下滑掉帧。原因不是 collection apply（已停），而是 **presentation 仍按每个 token flush**，`SessionChatView`/`TimelineChatTimelineView` 的 body（context estimate、onChange 值）在隐藏页每秒被求值 10–30 次。b1707 加 `hiddenCadence`：没有任何可见 pane 时会话数据照收、发布 1Hz；首个可见页立即 flush；隐藏页的 context ring 不再读 `estimatedContextUsage`。诊断 `session.page.cadence`。
+
+### 8.5 真机验收清单（待 pp）
 
 1. 对流式中的会话：切到别的 tab 停 2–3 s 再切回 → 积压文本按节奏续播再追平（不是一次全出）。
 2. **在回复出现前切走、回复在隐藏期间出现并结束**，再切回 → 同样从尾巴补播（b1706 的 `codePendingReplays` 路径）。

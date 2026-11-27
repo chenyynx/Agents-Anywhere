@@ -150,7 +150,17 @@ final class SessionTimelinePresentation {
     /// 20–30 ms per refresh on a 354-row window) and the panel still hitched
     /// 5–6 times a second while the agent was thinking (pp 2026-11-21, b1409).
     /// Closing flushes once, so the chat is current in that same turn.
-    @ObservationIgnored private(set) var backgroundCadence = false
+    ///
+    /// The same cadence covers a session whose tab pages are all hidden: the
+    /// mounted page still observes every `rows`/`flushRevision` change, and
+    /// its SwiftUI body (context estimate included) was enough to drop frames
+    /// while the reader scrolled another tab (pp 2026-11-27). Data is still
+    /// ingested on every delta; only publication is throttled, and the first
+    /// visible page flushes once.
+    @ObservationIgnored private var outlineCadence = false
+    @ObservationIgnored private var hiddenCadence = false
+
+    var backgroundCadence: Bool { outlineCadence || hiddenCadence }
 
     /// Covered publishes: one per second. The chat behind the panel still
     /// updates; it just does so in visible steps while it is covered.
@@ -160,7 +170,15 @@ final class SessionTimelinePresentation {
     /// clears it and flushes once on close, so the transcript is current in
     /// that same turn instead of catching up over the following frames.
     func setBackgroundCadence(_ enabled: Bool) {
-        backgroundCadence = enabled
+        outlineCadence = enabled
+    }
+
+    /// No page of this session is visible. Keep receiving every delta, publish
+    /// at most once a second, and flush once when a page comes back.
+    func setHiddenCadence(_ hidden: Bool) {
+        guard hiddenCadence != hidden else { return }
+        hiddenCadence = hidden
+        if !hidden { flush() }
     }
 
     func presentOpening(_ items: [V2TimelineItem], pendingMessages: [V2PendingMessage]) {

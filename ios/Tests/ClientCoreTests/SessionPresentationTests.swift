@@ -109,6 +109,30 @@ import Testing
         #expect(presentation.nextBatchAt <= 40)
     }
 
+    /// A session whose tab pages are all hidden still receives every delta but
+    /// publishes at the covered cadence; the first visible page flushes once.
+    /// This is what keeps a mounted hidden chat page from re-evaluating its
+    /// body on every token while the reader scrolls another tab.
+    @Test @MainActor func hiddenPagesPublishOnceASecondAndFlushOnReturn() throws {
+        let presentation = SessionTimelinePresentation()
+        let first = try item("message", status: "running", content: ["text": "a"])
+        presentation.stage([first], animate: false)
+        presentation.flush(now: 10)
+        presentation.setHiddenCadence(true)
+        #expect(presentation.backgroundCadence)
+
+        let second = try item("message", status: "running", content: ["text": "ab"])
+        presentation.stage([second], animate: false)
+        presentation.flush(now: 20)
+        #expect(presentation.nextBatchAt >= 20.9)
+
+        presentation.setHiddenCadence(false)
+        #expect(!presentation.backgroundCadence)
+        // The return flush is immediate; no queued publication is left.
+        presentation.flush(now: 21)
+        #expect(presentation.nextBatchAt <= 21)
+    }
+
     @Test func fileArtifactsUseRealChangePayloadAndRelativePaths() throws {
         let value = try item("artifact", content: ["kind": "file_change", "changes": [
             ["filePath": "/work/src/app.swift", "kind": ["type": "add"], "diff": "let value = 1\n"]

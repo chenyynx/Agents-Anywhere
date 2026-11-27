@@ -107,8 +107,12 @@ struct SessionChatView: View, Equatable {
     @State private var isDownloading = false
     /// The trailing slot shows the context ring once any reading exists
     /// (live, connector cache, or timeline estimate); until then the folder
-    /// occupies it and opens the file manager.
-    private var showsContextRing: Bool { model.displayedContextUsage != nil }
+    /// occupies it and opens the file manager. A hidden page skips the
+    /// estimate: it maps every held row and the toolbar is not on screen.
+    private var showsContextRing: Bool {
+        guard pageVisibility != false else { return false }
+        return model.displayedContextUsage != nil
+    }
 
     private func trailingSlotAction() {
         sheet = showsContextRing ? .contextUsage : .files
@@ -437,6 +441,9 @@ struct SessionChatView: View, Equatable {
     private func setPageVisible(_ visible: Bool) {
         guard pageVisibility != visible else { return }
         pageVisibility = visible
+        // A session shared by Chat and Devices stays on the full cadence while
+        // either pane is visible; the last pane to leave throttles it.
+        model.setPageVisible(visible, pane: paneRole)
         if visible {
             recordPageAppear()
         } else {

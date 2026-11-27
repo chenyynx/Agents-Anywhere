@@ -428,6 +428,33 @@ final class SessionChatModel {
         hasCompletedOpening = true
     }
 
+    /// The panes of this session that are on screen. The session model is
+    /// shared by the Chat and Devices tabs; no visible pane means the
+    /// presentation keeps data live but publishes at the covered cadence, so
+    /// the mounted hidden page stops re-evaluating its body on every token
+    /// while the reader scrolls another tab.
+    @ObservationIgnored private var visiblePanes: Set<ChatPaneRole> = []
+
+    func setPageVisible(_ visible: Bool, pane: ChatPaneRole) {
+        let wasHidden = visiblePanes.isEmpty
+        let changed: Bool
+        if visible {
+            changed = visiblePanes.insert(pane).inserted
+        } else {
+            changed = visiblePanes.remove(pane) != nil
+        }
+        let nowHidden = visiblePanes.isEmpty
+        // Idempotent inside; a false call on an already-empty set still
+        // installs the hidden cadence for a page built while off screen.
+        timeline.setHiddenCadence(nowHidden)
+        guard changed || wasHidden != nowHidden else { return }
+        ClientDiagnosticsLog.shared.record(
+            kind: "session.page.cadence",
+            sessionID: session.id,
+            detail: ["hidden": nowHidden ? "1" : "0",
+                     "panes": visiblePanes.map(\.rawValue).sorted().joined(separator: ",")])
+    }
+
     /// Starts the long-lived observer once. It outlives the view's task so a
     /// tab switch keeps the repository observer (and the session socket)
     /// alive; releasing the model ends the run.

@@ -90,7 +90,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "cache.clear",
         "session.open", "session.open.ready", "session.open.state_wait",
         "session.live.start",
-        "session.page.appear", "session.page.disappear", "session.page.active",
+        "session.page.appear", "session.page.disappear", "session.page.active", "session.page.cadence",
         "shell.tabs.state", "shell.tabs.duplicate", "shell.tabs.transition", "shell.tabs.active",
         "shell.tabs.write", "shell.tabs.frame", "shell.tabs.switch", "shell.tabs.cover", "shell.tabs.phase", "shell.tabs.host", "shell.body.build", "shell.tabs.reveal", "shell.tabs.reveal.pump", "keyboard.notify", "keyboard.frame", "keyboard.dismiss", "tab.stack",
         "device.tab.open", "device.tab.session", "device.pair.open", "device.tab.delete",

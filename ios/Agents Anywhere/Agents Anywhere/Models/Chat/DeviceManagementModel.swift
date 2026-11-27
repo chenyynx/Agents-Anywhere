@@ -12,6 +12,13 @@ final class DeviceManagementModel {
     var selectedSessionIds: Set<V2SessionID> = []
     var isSelectingSessions = false
     var errorMessage: String?
+    /// While the reader drags the session list, applying a dashboard snapshot
+    /// rebuilt every visible card; each rebuild began a 40–50 ms frame gap
+    /// (b1717 probe: every Devices scroll hitch started on a snapshot's
+    /// main-thread landing). The data keeps arriving — only the visible apply
+    /// waits for the finger to stop, then catches up once.
+    private var readerIsScrolling = false
+    private var deferredSessions: (connectorId: V2ConnectorID, allSessions: [V2SessionMeta])?
 
     var filteredSessions: [V2SessionMeta] {
         sessions.filter { session in
@@ -27,7 +34,23 @@ final class DeviceManagementModel {
         }
     }
 
+    /// Drives the scroll gate from the list's scroll phase. Only the newest
+    /// snapshot is kept; ending the scroll applies it exactly once. Also call
+    /// with `false` when the page hides: a tab switch can end the drag without
+    /// a final phase change.
+    func setReaderScrolling(_ scrolling: Bool) {
+        guard readerIsScrolling != scrolling else { return }
+        readerIsScrolling = scrolling
+        guard !scrolling, let deferred = deferredSessions else { return }
+        deferredSessions = nil
+        updateSessions(connectorId: deferred.connectorId, allSessions: deferred.allSessions)
+    }
+
     func updateSessions(connectorId: V2ConnectorID, allSessions: [V2SessionMeta]) {
+        guard !readerIsScrolling else {
+            deferredSessions = (connectorId, allSessions)
+            return
+        }
         sessions = SessionSidebarPresentation.sorted(V2DeviceProjection.sessions(
             connectorId: connectorId,
             allSessions: allSessions

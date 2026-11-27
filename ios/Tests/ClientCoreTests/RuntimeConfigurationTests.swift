@@ -101,6 +101,22 @@ import Testing
         #expect(model.sessions.isEmpty && model.selectedSessionIds.isEmpty)
     }
 
+    @Test func deviceSessionUpdatesWaitForTheReaderToStopScrolling() throws {
+        let first = try snapshot().session
+        let second = try snapshot(id: "second").session
+        let model = DeviceManagementModel()
+        model.updateSessions(connectorId: first.connectorId, allSessions: [first])
+        #expect(Set(model.sessions.map(\.id)) == [first.id])
+
+        model.setReaderScrolling(true)
+        model.updateSessions(connectorId: first.connectorId, allSessions: [first, second])
+        model.updateSessions(connectorId: first.connectorId, allSessions: [second])
+        #expect(Set(model.sessions.map(\.id)) == [first.id])
+
+        model.setReaderScrolling(false)
+        #expect(Set(model.sessions.map(\.id)) == [second.id])
+    }
+
     @Test func unsavedDraftTracksIncompleteFieldsAndIgnoresRowIdentity() throws {
         let config: JSONValue = .object(["environment": .object(["TOKEN": .string("value")])])
         let draft = RuntimeConfigurationModel(schema: try schema(), config: config)

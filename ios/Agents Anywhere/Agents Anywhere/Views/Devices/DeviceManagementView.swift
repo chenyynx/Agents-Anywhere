@@ -35,6 +35,7 @@ struct DeviceManagementView: View {
     @AppStorage(ProjectSidebarPreferences.sessionListKey) private var showsSessionList = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.shellTabBarActive) private var shellTabBarActive
+    @Environment(\.shellTabVisible) private var shellTabVisible
     @State private var toasts = ChatToastStore()
     @State private var isRenaming = false
     @State private var proposedName = ""
@@ -111,13 +112,20 @@ struct DeviceManagementView: View {
                 .modifier(ChatPageContentColumn(horizontalInset: 16))
                 .background { ChatPageScrollEdge() }
             }
-#if AA_TIMELINE_PROBE
+            // The dashboard pushes a full snapshot about once a second while a
+            // turn runs. Rebuilding the visible cards inside that landing cost
+            // the reader a 40–50 ms frame each time they dragged (b1717
+            // probe: every Devices scroll hitch started on a snapshot).
+            // Defer only the visual apply; the data itself keeps arriving.
             .onScrollPhaseChange { _, phase, _ in
+                model.setReaderScrolling(phase == .tracking || phase == .interacting
+                    || phase == .decelerating || phase == .animating)
+#if AA_TIMELINE_PROBE
                 if phase == .interacting || phase == .decelerating {
                     TabSwitchProbe.shared.beginScroll(tab: "devices")
                 }
-            }
 #endif
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The settings cards are white; without the paper page colour the
@@ -166,6 +174,9 @@ struct DeviceManagementView: View {
             }
         }
         .onChange(of: allSessions, initial: true) { _, values in model.updateSessions(connectorId: connector.id, allSessions: values) }
+        // A tab switch can end a drag without a final phase change; never let
+        // the gate outlive the page (the tab shell keeps this page mounted).
+        .onChange(of: shellTabVisible) { _, _ in model.setReaderScrolling(false) }
         .onChange(of: model.errorMessage, initial: true) { _, error in report(error, source: "device") }
         .onChange(of: dashboard.error, initial: true) { _, error in report(error, source: "sync") }
         .onChange(of: agents.error, initial: true) { _, error in report(error, source: "agents") }

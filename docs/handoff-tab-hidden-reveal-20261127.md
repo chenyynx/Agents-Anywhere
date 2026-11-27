@@ -93,7 +93,8 @@
 1. `e6d6c1b82` **揭示 progress 化**：`StreamingRevealClock/Cursor` + adapter 投影 + 续播泵（refresh 发现落后 → 10 Hz 泵到追平，wire 静默也能放完）+ 单测（时钟冻结/续放、首帧全显、cps 节奏、longestLag、缩短修正）。
 2. `f06c554f2` **隐藏页停 apply**：`TimelineCollectionController.pageHidden` 闸（`apply`/`reloadFromContent`/`applyPendingIfNeeded` 停靠）；硬前提 `hasAppliedSnapshot`（首个快照照常落地，防 `f5da4f032` 白屏）；返回后 0.5 s watchdog flush（shell 转场先由 `navigationSuspended` 的 settle 边 flush）；开关 `ShellTabPreferences.hiddenPauseKey = "aa.native.tabs.hidden-pause"`（默认开，设置→诊断日志可关）。
 3. `1f11f5664` **返回时先补最终文本再 complete**：隐藏页 refresh 停靠期间 publisher 的 receivedText 会落后；先 `receive(fullText:)` 再 `complete()`，完成快照才是整段答案（否则完成于隐藏期间的回复只会显示离屏前的前缀）。
-4. 其余小修：`3e0bd6a00` 修 CI 的 Int/Double 混算；`b8317dea3`/`14532f7e2` 诊断 kind 归 info + 字段；`f1654cb36` 过时注释。
+4. `cdaadf88d` **隐藏期间首次出现的消息补播尾巴**：b1705 真机日志里回复的消息行在隐藏期间才首次出现、回来前已结束（`shell.tabs.reveal cursors 0→1`、无 pump）；新增 `codePendingReplays` + `startFromTail`，仍流式的同型消息也从尾巴起播；同时给隐藏页 phase/completion haptic 加 `shellTabVisible` 门（日志 21:21:57/58 在 wiki/artifacts 仍响）。
+5. 其余小修：`3e0bd6a00` 修 CI 的 Int/Double 混算；`b8317dea3`/`14532f7e2` 诊断 kind 归 info + 字段；`f1654cb36` 过时注释。
 
 ### 8.3 诊断（真机对照）
 

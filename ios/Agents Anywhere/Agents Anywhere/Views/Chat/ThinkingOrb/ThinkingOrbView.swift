@@ -42,6 +42,10 @@ struct ThinkingOrbView: View {
     @Environment(\.colorScheme) private var envScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    /// A hidden tab page keeps its views mounted; the orb is a 60 fps canvas
+    /// and must not keep rendering off screen (it stole scroll frames from
+    /// the Devices tab while a Chat session was thinking, pp 2026-11-27).
+    @Environment(\.shellTabVisible) private var shellTabVisible
     @State private var engine = OrbEngine()
     @State private var fade = 1.0
 
@@ -68,7 +72,8 @@ struct ThinkingOrbView: View {
     var body: some View {
         let side = size * 1.45   // 画布比占位大一圈，留给光晕，不裁切
         let interval: Double? = reduceMotion ? 1.0 / 10 : (lowPower ? 1.0 / 30 : nil)
-        TimelineView(.animation(minimumInterval: interval, paused: scenePhase != .active)) { tl in
+        TimelineView(.animation(minimumInterval: interval,
+                                paused: scenePhase != .active || !shellTabVisible)) { tl in
             Canvas { ctx, sz in
                 engine.render(&ctx, size: sz, radius: Double(size) * 0.36,
                               now: tl.date.timeIntervalSinceReferenceDate, config: config)
@@ -101,9 +106,11 @@ struct OrbStatusText: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.shellTabVisible) private var shellTabVisible
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: !active || reduceMotion || scenePhase != .active)) { tl in
+        TimelineView(.animation(minimumInterval: nil,
+                                paused: !active || reduceMotion || scenePhase != .active || !shellTabVisible)) { tl in
             let e = OrbMath.wave(tl.date.timeIntervalSinceReferenceDate)
             Text(text)
                 .foregroundStyle(.secondary)

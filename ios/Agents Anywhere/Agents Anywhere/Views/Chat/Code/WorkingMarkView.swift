@@ -42,6 +42,10 @@ struct WorkingMarkView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var scheme
     @Environment(\.displayScale) private var displayScale
+    /// A hidden tab page is still mounted; its 30 fps flipbook must not keep
+    /// stepping behind another tab (pp 2026-11-27 scroll jank). It shows the
+    /// still frame instead and resumes when the page is visible again.
+    @Environment(\.shellTabVisible) private var shellTabVisible
 
     /// Anchors the flipbook so the first rendered frame is opening frame 0.
     /// Only a restart resets it: the exit must keep the same anchor, or the
@@ -65,7 +69,7 @@ struct WorkingMarkView: View {
     }
 
     private var isStill: Bool {
-        reduceMotion || accessibilityReduceMotion
+        reduceMotion || accessibilityReduceMotion || !shellTabVisible
     }
 
     var body: some View {

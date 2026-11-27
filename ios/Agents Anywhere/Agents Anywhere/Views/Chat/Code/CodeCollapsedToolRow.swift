@@ -316,10 +316,12 @@ private struct CodeWorkingMarkSkeleton: View {
     /// The pose is reserved for the future sheet lookup; it must not be named
     /// `body` because that collides with the `View.body` requirement.
     let mark: WorkingMarkBody
+    @Environment(\.shellTabVisible) private var shellTabVisible
 
     var body: some View {
         TimelineView(.animation(
-            minimumInterval: 1.0 / CodePageTheme.workingMarkFrameRate)) { _ in
+            minimumInterval: 1.0 / CodePageTheme.workingMarkFrameRate,
+            paused: !shellTabVisible)) { _ in
             Color.clear
                 .frame(width: CodePageTheme.workingMarkSize,
                        height: CodePageTheme.workingMarkSize)

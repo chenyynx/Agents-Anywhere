@@ -3,10 +3,13 @@ import SwiftUI
 struct StatusShimmer: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// A hidden tab page keeps its header mounted; a `repeatForever` sweep
+    /// must not keep animating off screen.
+    @Environment(\.shellTabVisible) private var shellTabVisible
 
     func body(content: Content) -> some View {
         Group {
-            if active && !reduceMotion {
+            if active && !reduceMotion && shellTabVisible {
                 // [E] The official shimmer enters/leaves with an opacity
                 // transition under `Animation.default`
                 // (EVIDENCE/round19/motion.md §P2-7).

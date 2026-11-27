@@ -1,6 +1,6 @@
 # 交接：切 tab 回来"重播流式动画"——对齐官方（2026-11-27）
 
-> 状态：**已实现，待真机验收**（2026-11-27 晚，分支 `feat/tab-hidden-reveal`；CI run 46019524972 / b1710 test+build 双绿，head `8dd2dedd0`）。实现记录与和 §3 的偏差见文末 §8。
+> 状态：**回归中**（2026-11-28 凌晨，分支 `feat/tab-hidden-reveal`；CI run 46046070486 / b1716 test+build 双绿，head `d3559a94d`；b1713 的“隐藏页停 presentation”已回退）。实现记录、真机回归与探针见文末 §8。
 > 关联红线：`AGENTS.md`「iOS tab 切换性能红线」——**切 tab 已不卡，任何改动不得回退**（b1699 基线：`shell.tabs.frame` worstMs 中位 ≈89ms、p90 ≈108ms、常态无 >200ms）。
 
 ## 0. 一句话
@@ -122,3 +122,10 @@
 4. `shell.tabs.frame`：中位 ≤120ms、无 >200ms 常态（b1699 基线 89/108）。
 5. 切回时列表不跳、键盘/滚动/锚点无回归；**隐藏期间不应有 phase/completion 震动**，可见页正常。
 6. 设置里关掉「隐藏标签页暂停时间线刷新」后：隐藏页恢复原来的实时 apply（用于回退定位）。
+
+### 8.6 2026-11-28 真机回归与探针（b1713→b1716）
+
+- **b1713 停 presentation 是错误方向，已回退**：隐藏期间只保留 pending、不发布，导致回复行压到下一次切 tab 才 apply。b1714 日志：回合 01:57:31–01:57:46 已结束，回复 `g:msg_840bfb8f` 直到 01:58:02 才出现；中间 UI 只有 working/thinking。b1716（`d3559a94d`）回退，恢复 1Hz。**b1715 probe 包含 b1713，不可用。**
+- **b1714 `scroll.frame` 探针**：Devices 列表滚动多窗 40–60ms（hitches 1–2）；会话 timeline 一次 222ms，发生在 `session.open` / 97 行首次分组；stack 顶层是 `RecentPhotosLoader → PhotoLibraryServices/CoreData`，不是隐藏 Chat。已去掉 composer 挂载时的相册 `preload()`（b1715），sheet 打开仍 `load()`。
+- **切 Devices 首屏**：`shell.tabs.phase appear pane=devices t=562ms`、`layout 115ms t=938`；旧 Chat 仍留在屏幕上。AA 没有官方式 snapshot cover，目标页首次挂载被同步构建挡住——这是独立的 P0，不是滚动。
+- **下一步**：b1716 先验回复正常落地；再按官方加 cover + 目标页预热修 562ms；再修 Devices 卡片 40–60ms；222ms 相册预取和 warning 噪声最后。

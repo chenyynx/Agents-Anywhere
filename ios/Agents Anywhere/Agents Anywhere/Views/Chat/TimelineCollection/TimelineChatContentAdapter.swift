@@ -1840,6 +1840,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         revealed.reserveCapacity(rowsByID.count)
         var behind: Set<String> = []
         var backlog = 0
+        let revealEnabled = isRevealEnabled
         for (rowID, _) in rowsByID {
             let source: String
             if let publisher = codeStreamingPublishers[rowID],
@@ -1848,6 +1849,14 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             } else if let completed = codeCompletedStreamingTexts[rowID] {
                 source = completed
             } else {
+                continue
+            }
+            // VoiceOver and Reduce Motion bypass the reveal entirely
+            // (official: the pacing provider returns nil / no driver), so
+            // those readers always draw the full received snapshot.
+            guard revealEnabled else {
+                codeRevealCursors.removeValue(forKey: rowID)
+                revealed[rowID] = source
                 continue
             }
             var cursor = codeRevealCursors[rowID] ?? StreamingRevealCursor()

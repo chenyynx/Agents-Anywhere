@@ -186,18 +186,16 @@ struct ChatShellView: View {
     }
 
     private func sidebarContent(safeAreaInsets: EdgeInsets) -> some View {
-        let sessions = sidebarSessions
         let services = appState.nativeChatServices
         return ChatSidebarView(
             appState: appState,
             agentSetup: services?.agentSetup,
             safeAreaInsets: safeAreaInsets,
             devices: sidebarDevices,
+            library: appState.dashboardLibrary,
             // The phone tab shell owns devices; the drawer keeps them only
             // for iPad/the legacy shell, which has no Devices tab.
             showsDevicesSection: !tabShellActive,
-            pinnedSessions: sessions.filter(\.pinned),
-            recentSessions: sessions.filter { !$0.pinned },
             repository: services?.dashboardRepository,
             onNewProjectSession: startProjectSession,
             onRestoreSession: { await appState.setSessionArchived(sessionId: $0, archived: false) },
@@ -222,12 +220,28 @@ struct ChatShellView: View {
     @ViewBuilder private var chatTabRoot: some View {
         if let services = appState.nativeChatServices {
             if let id = chatRootSessionID {
-                sessionPage(id: id, services: services)
+                SessionPageHost(
+                    appState: appState, services: services, chatPane: chatPane,
+                    library: appState.dashboardLibrary, sessionID: id,
+                    paneRole: .chat, showsMenuButton: true,
+                    onMenu: toggleSidebar,
+                    onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             } else {
-                newSessionPage(services: services)
+                NewSessionPageHost(
+                    appState: appState, services: services,
+                    library: appState.dashboardLibrary,
+                    onMenu: toggleSidebar, onOpenDevice: openDevice,
+                    onCreated: { session in
+                        appState.updateSession(session)
+                        if chatRootSessionID == nil { openSession(session.id) }
+                    },
+                    onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+                    .id(newSessionPresentationID)
             }
         } else {
-            shellPlaceholderPage()
+            ChatShellPlaceholderPage(
+                isConnecting: appState.isRetryingServerConnection, title: "",
+                onOpenSidebar: toggleSidebar, showsMenuButton: true)
         }
     }
 
@@ -242,18 +256,102 @@ struct ChatShellView: View {
 
     private var devicesTabRoot: some View {
         NavigationStack(path: $panes.devicesPath) {
-            deviceTabRootPage
-                .navigationDestination(for: ShellDevicesRoute.self) { route in
-                    switch route {
-                    case let .device(id): deviceStackPage(id)   // old snapshots only
-                    case let .session(id): deviceSessionPage(id)
-                    case let .newSession(workspace): deviceNewSessionPage(workspace: workspace)
+            if let services = appState.nativeChatServices {
+                DevicePageHost(
+                    appState: appState, library: appState.dashboardLibrary,
+                    connectorId: panes.devicesDevice, showsMenuButton: true,
+                    onMenu: toggleSidebar,
+                    onOpenDevice: openDeviceFromDeviceTab,
+                    onCopyDeviceId: copyDeviceId,
+                    onOpenSession: openSessionFromDeviceTab,
+                    onPair: startPairing,
+                    onNewSession: { path in
+                        if let id = panes.devicesDevice ?? defaultDeviceID,
+                           let model = appState.nativeChatServices?.newSession {
+                            model.focusDevice(id, workspace: path)
+                        }
+                        panes.pushDeviceNewSession(workspace: path)
+                    },
+                    onNewProjectSession: startProjectSession,
+                    onConnectorUpdated: appState.updateConnector,
+                    onConnectorDeleted: removeConnector,
+                    onSessionsUpdated: appState.updateSessions,
+                    onSetSessionsArchived: appState.setSessionsArchived)
+                    .navigationDestination(for: ShellDevicesRoute.self) { route in
+                        switch route {
+                        case let .device(id):
+                            DevicePageHost(
+                                appState: appState, library: appState.dashboardLibrary,
+                                connectorId: id, showsMenuButton: false,
+                                onMenu: toggleSidebar,
+                                onOpenDevice: openDeviceFromDeviceTab,
+                                onCopyDeviceId: copyDeviceId,
+                                onOpenSession: openSessionFromDeviceTab,
+                                onPair: startPairing,
+                                onNewSession: { path in
+                                    if let model = appState.nativeChatServices?.newSession {
+                                        model.focusDevice(id, workspace: path)
+                                    }
+                                    panes.pushDeviceNewSession(workspace: path)
+                                },
+                                onNewProjectSession: startProjectSession,
+                                onConnectorUpdated: appState.updateConnector,
+                                onConnectorDeleted: removeConnector,
+                                onSessionsUpdated: appState.updateSessions,
+                                onSetSessionsArchived: appState.setSessionsArchived)
+                        case let .session(id):
+                            SessionPageHost(
+                                appState: appState, services: services, chatPane: chatPane,
+                                library: appState.dashboardLibrary, sessionID: id,
+                                paneRole: .devices, showsMenuButton: false,
+                                onMenu: toggleSidebar,
+                                onTogglePinned: { pinned in
+                                    setSessionPinned(id, pinned: pinned)
+                                })
+                        case .newSession:
+                            NewSessionPageHost(
+                                appState: appState, services: services,
+                                library: appState.dashboardLibrary,
+                                onMenu: toggleSidebar,
+                                onOpenDevice: openDeviceFromDeviceTab,
+                                onCreated: { session in
+                                    appState.updateSession(session)
+                                    // The reader may have left the compose page
+                                    // while the request was in flight; only
+                                    // navigate if it still owns the top.
+                                    var stillWanted = false
+                                    if let last = panes.devicesPath.last, case .newSession = last {
+                                        stillWanted = true
+                                    }
+                                    if stillWanted { panes.pushDeviceSession(session.id) }
+                                },
+                                onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+                        }
                     }
-                }
+            } else {
+                ChatShellPlaceholderPage(
+                    isConnecting: appState.isRetryingServerConnection, title: "",
+                    onOpenSidebar: toggleSidebar, showsMenuButton: true)
+            }
         }
         // The session page owns its keyboard insets (composer safeAreaBar),
         // exactly like the Chat tab's stack.
         .ignoresSafeArea(.keyboard)
+    }
+
+    private func openDeviceFromDeviceTab(_ id: V2ConnectorID) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "device.tab.open",
+            detail: ["device": id, "previous": panes.devicesDevice ?? "auto"])
+        panes.openDevice(id)
+    }
+
+    private func openSessionFromDeviceTab(_ id: V2SessionID) {
+        ClientDiagnosticsLog.shared.record(
+            kind: "device.tab.session",
+            sessionID: id,
+            detail: ["device": panes.devicesDevice ?? "auto"])
+        panes.pushDeviceSession(id)
     }
 
     /// The device page is the Devices tab's root (pp 2026-11-26); the session
@@ -420,12 +518,42 @@ struct ChatShellView: View {
 
     @ViewBuilder private var mainContent: some View {
         if case let .device(connectorId) = selection {
-            devicePage(connectorId: connectorId)
+            DevicePageHost(
+                appState: appState, library: appState.dashboardLibrary,
+                connectorId: connectorId, showsMenuButton: true,
+                onMenu: toggleSidebar, onOpenDevice: openDevice,
+                onCopyDeviceId: copyDeviceId, onOpenSession: openSession,
+                onPair: startPairing,
+                onNewSession: { path in
+                    if let model = appState.nativeChatServices?.newSession {
+                        model.focusDevice(connectorId, workspace: path)
+                    }
+                    startNewSession()
+                },
+                onNewProjectSession: startProjectSession,
+                onConnectorUpdated: appState.updateConnector,
+                onConnectorDeleted: removeConnector,
+                onSessionsUpdated: appState.updateSessions,
+                onSetSessionsArchived: appState.setSessionsArchived)
         } else if let services = appState.nativeChatServices {
             if case let .session(id) = selection {
-                sessionPage(id: id, services: services)
+                SessionPageHost(
+                    appState: appState, services: services, chatPane: chatPane,
+                    library: appState.dashboardLibrary, sessionID: id,
+                    paneRole: .chat, showsMenuButton: true,
+                    onMenu: toggleSidebar,
+                    onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             } else {
-                newSessionPage(services: services)
+                NewSessionPageHost(
+                    appState: appState, services: services,
+                    library: appState.dashboardLibrary,
+                    onMenu: toggleSidebar, onOpenDevice: openDevice,
+                    onCreated: { session in
+                        appState.updateSession(session)
+                        if selection == .newSession { openSession(session.id) }
+                    },
+                    onRefresh: { await appState.refreshDashboard(); return appState.connectors })
+                    .id(newSessionPresentationID)
             }
         } else {
             shellPlaceholderPage()

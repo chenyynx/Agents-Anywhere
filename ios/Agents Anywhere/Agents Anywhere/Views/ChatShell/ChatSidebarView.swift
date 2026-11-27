@@ -2,16 +2,19 @@ import SwiftUI
 
 struct ChatSidebarView: View {
     /// Passed as plain values: the sidebar must not re-evaluate for every
-    /// published AppState change, only for the inputs it actually renders.
+    /// published AppState change. The session lists are read here instead of
+    /// being passed down, so a dashboard snapshot re-evaluates the sidebar —
+    /// not the shell root that owns this view.
     let appState: AppState
     let agentSetup: AgentSetupCoordinator?
     let safeAreaInsets: EdgeInsets
     let devices: [ChatSidebarDevice]
+    /// The local-database dashboard source; nil falls back to the legacy
+    /// AppState projection.
+    let library: DashboardLibrary?
     /// The phone tab shell has a Devices tab; the sidebar duplicates it only
     /// where that tab does not exist (iPad / the legacy shell).
     var showsDevicesSection = true
-    let pinnedSessions: [ChatSidebarSession]
-    let recentSessions: [ChatSidebarSession]
     let repository: V2DashboardRepository?
     let onNewProjectSession: (String) -> Void
     let onRestoreSession: (String) async -> Bool
@@ -42,6 +45,15 @@ struct ChatSidebarView: View {
     private static let contentInset: CGFloat = 16
 
     @Environment(\.colorScheme) private var colorScheme
+
+    private var visibleSessions: [ChatSidebarSession] {
+        let sessions = library?.sessions ?? appState.sessions
+        return sessions.filter { !$0.archived }
+            .map { ChatSidebarSession(session: $0) }
+            .sorted { $0.presentation.precedes($1.presentation, id: $0.id, otherID: $1.id) }
+    }
+    private var pinnedSessions: [ChatSidebarSession] { visibleSessions.filter(\.pinned) }
+    private var recentSessions: [ChatSidebarSession] { visibleSessions.filter { !$0.pinned } }
 
     var body: some View {
         ScrollView {

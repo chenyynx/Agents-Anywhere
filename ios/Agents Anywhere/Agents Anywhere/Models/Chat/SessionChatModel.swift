@@ -111,6 +111,15 @@ final class SessionChatModel {
     func setScrollAnchor(_ anchor: ChatScrollAnchor?, for pane: ChatPaneRole) {
         scrollAnchors[pane] = anchor
     }
+
+    /// The reveal cursors live in the timeline adapter; it reports whether any
+    /// row is still draining so the completion cue can wait for the last
+    /// replayed characters instead of buzzing mid-replay (b1731 log: pump
+    /// backlog 297, cue 1.2 s later).
+    func setRevealPending(_ pending: Bool) {
+        guard revealPending != pending else { return }
+        revealPending = pending
+    }
     @ObservationIgnored private let attachments: V2AttachmentService
     @ObservationIgnored private let files: V2WorkspaceFilesService?
     /// The next session's default, updated when this session's options sheet

@@ -117,7 +117,7 @@ nonisolated final class ClientDiagnosticsLog: @unchecked Sendable {
         "outline.keyboard", "outline.scroll", "outline.jump",
         // The 2026-11-25 performance diagnostics: actions, not anomalies.
         "timeline.update.path", "timeline.update.summary",
-        "timeline.height.estimate", "timeline.leaf.partial",
+        "timeline.height.estimate", "timeline.row.height", "timeline.leaf.partial",
         "timeline.turnfacts.reset", "timeline.layout.prepare",
     ]
 

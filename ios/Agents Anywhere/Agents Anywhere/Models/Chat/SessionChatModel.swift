@@ -15,6 +15,10 @@ final class SessionChatModel {
     let deferredItems: DeferredItemStore
     var takeoverError: String?
     private(set) var takeoverUncertain = false
+    /// True while Code rows are still revealing text (a replay draining after
+    /// a tab return). The completion cue waits for this to clear so the buzz
+    /// cannot land before the last replayed characters.
+    private(set) var revealPending = false
     private(set) var isWorking: Bool {
         get { session.isPerformingAction }
         set { session.isPerformingAction = newValue }

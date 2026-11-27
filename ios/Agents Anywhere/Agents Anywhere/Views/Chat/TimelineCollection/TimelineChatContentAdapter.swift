@@ -1965,6 +1965,12 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
         codeRevealedTexts = revealed
         codeRevealBehindRowIDs = behind
         codeRevealBacklog = backlog
+        // The completion cue waits on this: a replay still draining must finish
+        // on screen before the haptic can announce the turn (b1731 log: pump
+        // backlog 297 → completion pulses 1.2 s later).
+        if model.revealPending != !behind.isEmpty {
+            model.revealPending = !behind.isEmpty
+        }
         // Union, not replace: a row seen once stays "seen" even after it
         // leaves and re-enters the window, so a history scroll cannot make an
         // old message look new on the next tab return. Only rows with actual

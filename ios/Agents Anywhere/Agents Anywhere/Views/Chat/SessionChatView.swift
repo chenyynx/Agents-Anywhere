@@ -733,6 +733,7 @@ struct SessionChatView: View, Equatable {
         // announce a completion the user never saw.
         .completionFeedback(trigger: session.runtime.authoritativeTurnEnds,
             sessionID: session.id,
+            revealPending: { model.revealPending },
             diagnostic: {
                 // `fresh`/`status`/`openingReady` separate a late model update
                 // from a delayed view render: the cue only fires when the

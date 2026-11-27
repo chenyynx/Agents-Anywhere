@@ -4,9 +4,11 @@ extension View {
     /// Shared finish cue for a reply and the New Session welcome presentation.
     func completionFeedback<Value: Equatable>(trigger: Value,
         sessionID: String? = nil,
+        revealPending: @escaping @MainActor () -> Bool = { false },
         diagnostic: @escaping () -> [String: String] = { [:] },
         condition: @escaping (Value, Value) -> Bool = { _, _ in true }) -> some View {
         modifier(CompletionFeedback(trigger: trigger, sessionID: sessionID,
+                                    revealPending: revealPending,
                                     diagnostic: diagnostic, condition: condition))
     }
 }
@@ -14,6 +16,8 @@ extension View {
 private struct CompletionFeedback<Value: Equatable>: ViewModifier {
     let trigger: Value
     let sessionID: String?
+    /// True while the page is still replaying streamed text; the cue waits.
+    let revealPending: @MainActor () -> Bool
     let diagnostic: () -> [String: String]
     let condition: (Value, Value) -> Bool
     @Environment(\.scenePhase) private var scenePhase
@@ -39,6 +43,19 @@ private struct CompletionFeedback<Value: Equatable>: ViewModifier {
                       HapticGate.statusAllowed(),
                       condition(previous, current) else { return }
                 playback = Task { @MainActor in
+                    // A tab-return reveal still draining: let the text catch
+                    // up before the cue (b1731: pump backlog 297, completion
+                    // pulses 1.2 s later). A long replay is capped at 3 s so
+                    // the cue is never lost entirely.
+                    var waited = 0
+                    while revealPending(), waited < 30 {
+                        if Task.isCancelled { return }
+                        try? await Task.sleep(for: .milliseconds(100))
+                        guard !Task.isCancelled, scenePhase == .active,
+                              shellTabVisible, !shellTabTransitioning,
+                              HapticGate.statusAllowed() else { return }
+                        waited += 1
+                    }
                     note(1)
                     pulse += 1
                     do { try await Task.sleep(for: .milliseconds(120)) }

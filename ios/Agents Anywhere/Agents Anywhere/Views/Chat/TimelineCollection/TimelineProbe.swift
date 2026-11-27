@@ -265,6 +265,8 @@ final class TimelineProbeStore: NSObject, ObservableObject {
     /// The controller records a fit before handing it to the layout, and the
     /// layout records the applied height again. Keep one line for the pair.
     private var lastRecorded: [String: (at: TimeInterval, new: CGFloat)] = [:]
+    /// Per-row throttle for the line-based height trail (0.5 s).
+    private var heightLogAt: [String: TimeInterval] = [:]
     /// Last probe hook that wrote this item's height, scoped to the key
     /// revision it wrote against. A hook from a retired revision must not be
     /// reported as the writer of the current one.
@@ -988,6 +990,25 @@ final class TimelineProbeStore: NSObject, ObservableObject {
                                   tracking: view.isTracking, decelerating: view.isDecelerating,
                                   offset: view.contentOffset.y, visible: visible,
                                   repeatCount: 1)
+        // The report buffer is in-app only; this line puts the same event in
+        // the exported diagnostics so a "正文/步骤组跳动" log can name the row
+        // that changed height. Visible rows only, ≥3 pt, one line per 0.5 s.
+        if change.visible, abs(change.new - change.old) >= 3 {
+            let lastLog = heightLogAt[itemID] ?? 0
+            if now - lastLog >= 0.5 {
+                heightLogAt[itemID] = now
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.row.height",
+                    detail: ["item": itemID,
+                             "from": f(change.old), "to": f(change.new),
+                             "delta": f(change.new - change.old),
+                             "source": source,
+                             "tier": change.tier,
+                             "tracking": change.tracking ? "1" : "0",
+                             "offset": f(change.offset)],
+                    dedupe: false)
+            }
+        }
         appendChange(change)
     }
 

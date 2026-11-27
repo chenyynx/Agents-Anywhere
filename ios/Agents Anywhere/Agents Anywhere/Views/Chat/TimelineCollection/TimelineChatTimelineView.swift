@@ -1060,7 +1060,8 @@ final class TimelineChatBridge: ObservableObject {
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.reveal.pump",
             sessionID: model.session.id,
-            detail: ["backlog": String(backlog)])
+            detail: ["backlog": String(backlog),
+                     "rows": String(adapter.revealBehindRowCount)])
         revealPumpGeneration &+= 1
         let generation = revealPumpGeneration
         revealPump = Task { @MainActor [weak self] in

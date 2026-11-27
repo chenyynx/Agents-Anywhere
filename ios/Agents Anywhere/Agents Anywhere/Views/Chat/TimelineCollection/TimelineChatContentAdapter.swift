@@ -107,11 +107,15 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             cursor.setVisible(visible, at: now)
             codeRevealCursors[rowID] = cursor
         }
+        // The counts are from the last sample, not a new one: a resume's
+        // backlog only becomes known when the first refresh samples it (the
+        // `shell.tabs.reveal.pump` line carries that number).
         ClientDiagnosticsLog.shared.record(
             kind: "shell.tabs.reveal",
             sessionID: model.session.id,
             detail: ["visible": visible ? "1" : "0",
-                     "rows": String(codeRevealBehindRowIDs.count),
+                     "cursors": String(codeRevealCursors.count),
+                     "behind": String(codeRevealBehindRowIDs.count),
                      "backlog": String(codeRevealBacklog)])
     }
 
@@ -1309,6 +1313,7 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
     var onRevealPending: (() -> Void)?
 
     var hasPendingReveal: Bool { !codeRevealBehindRowIDs.isEmpty }
+    var revealBehindRowCount: Int { codeRevealBehindRowIDs.count }
     var revealBacklogCharacters: Int { codeRevealBacklog }
     /// First moment the renderer-owned cursor caught up. Kept briefly so the
     /// cell's final run and fade can finish before the static body takes over.

@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// User-facing switches of the tab shell.
+nonisolated enum ShellTabPreferences {
+    /// UserDefaults key (Bool, default true): a hidden tab page parks its
+    /// timeline's snapshot applies. The backlog lands in one apply after the
+    /// switch settles; turning this off restores live background updates.
+    static let hiddenPauseKey = "aa.native.tabs.hidden-pause"
+}
+
 /// Metrics the tab shell imposes on the pages it hosts.
 nonisolated enum ShellTabBarMetrics {
     /// The official app leaves 8.3 pt between a page's composer capsule and

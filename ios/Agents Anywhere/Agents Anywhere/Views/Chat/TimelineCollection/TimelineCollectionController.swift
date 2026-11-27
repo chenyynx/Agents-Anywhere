@@ -201,6 +201,22 @@ final class TimelineCollectionController: UIViewController {
 
     private(set) var interactionPresented = false
     private var navigationSuspended = false
+    /// The tab page is off screen (the shell keeps every visited page
+    /// mounted). Snapshot applies park here so a hidden page does not churn
+    /// its collection; the return flushes one coalesced generation.
+    private var pageHidden = false
+    /// Hard precondition for parking: a page that has never applied a
+    /// snapshot must land its first one even while hidden, or the switch back
+    /// shows a blank page (the `f5da4f032` → `60165f5ed` regression).
+    private var hasAppliedSnapshot = false
+    private var hiddenFlushWatchdog: DispatchWorkItem?
+
+    /// Applies park for the drawer/tab transition and for a hidden page that
+    /// has content on screen. History pages are exempt: their anchor
+    /// compensation must land on the frame it was computed for.
+    private var appliesParked: Bool {
+        navigationSuspended || (pageHidden && hasAppliedSnapshot)
+    }
 #if DEBUG
     /// Set by `TimelineAutoRun` only. Never reachable from the product UI.
     private(set) var testGestureState: (tracking: Bool, decelerating: Bool)?
@@ -807,7 +823,7 @@ final class TimelineCollectionController: UIViewController {
     }
 
     private func applyPendingIfNeeded() {
-        guard !navigationSuspended, columnWidth > 0 else { return }
+        guard !appliesParked, columnWidth > 0 else { return }
         if isScrollMoving { return }
         if reloadDeferred {
             // A deferred reload re-reads the adapter generation, so it also
@@ -871,7 +887,7 @@ final class TimelineCollectionController: UIViewController {
         // produced the stream-only hitches (the parked apply left the refresh
         // untouched). Defer the whole reload; `applyPendingIfNeeded` performs
         // it once the list settles.
-        if isScrollMoving || (navigationSuspended && !historyPaging) {
+        if isScrollMoving || (appliesParked && !historyPaging) {
             reloadDeferred = true
             return
         }
@@ -904,9 +920,14 @@ final class TimelineCollectionController: UIViewController {
         // reliable discriminator — a streamed tail changes the row set too
         // (a new step group appears, the message group splits), and those
         // applies are exactly the ones that dropped frames mid-drag.
-        if navigationSuspended, !historyPaging {
+        // A hidden page parks its applies; one coalesced generation is enough,
+        // because `reloadFromContent` re-reads the adapter's latest content
+        // instead of replaying each intermediate flush. The return flushes it
+        // (`setPageHidden(false)`), and the 0.1 s check is pointless while
+        // hidden, so it is only scheduled for the transition case.
+        if appliesParked, !historyPaging {
             pendingApply = (items: items, animating: animating)
-            schedulePendingApplyCheck()
+            if !pageHidden { schedulePendingApplyCheck() }
             return
         }
         // Same rule for the reader's own gesture: dragging or coasting is the
@@ -923,6 +944,7 @@ final class TimelineCollectionController: UIViewController {
             return
         }
         pendingApply = nil
+        hasAppliedSnapshot = true
         isPerformingSnapshot = true
 #if AA_TIMELINE_PROBE
         let probeApplyStart = CACurrentMediaTime()
@@ -3625,6 +3647,50 @@ final class TimelineCollectionController: UIViewController {
     }
 
     // MARK: - Navigation suspension
+
+    /// The tab page went off screen (or came back). While hidden, snapshot
+    /// applies and reloads park; the view keeps ingesting data and the adapter
+    /// keeps its latest generation, so the return only needs one apply.
+    ///
+    /// Only a page that has already applied a snapshot may park: an opening
+    /// page must land its first content even if the reader leaves immediately
+    /// (a parked first apply is the white-page regression `f5da4f032`).
+    func setPageHidden(_ hidden: Bool) {
+        guard pageHidden != hidden else { return }
+        pageHidden = hidden
+        hiddenFlushWatchdog?.cancel()
+        hiddenFlushWatchdog = nil
+        ClientDiagnosticsLog.shared.record(
+            kind: "timeline.page.hidden",
+            sessionID: diagnosticSessionID,
+            detail: ["hidden": hidden ? "1" : "0",
+                     "parked": (pageHidden && hasAppliedSnapshot) ? "1" : "0",
+                     "pending": pendingApply == nil ? "0" : "1",
+                     "deferredReload": reloadDeferred ? "1" : "0"])
+        guard !hidden else { return }
+        // Returning: `shellTabTransitioning` still parks through
+        // `navigationSuspended` and its settle edge flushes. This watchdog
+        // bounds a missed edge at 0.5 s. The parked work is one coalesced
+        // generation (the adapter refreshes to its latest content), so there
+        // is no per-frame stream to split by budget.
+        let requestedAt = CACurrentMediaTime()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.pageHidden else { return }
+            self.hiddenFlushWatchdog = nil
+            guard self.pendingApply != nil || self.reloadDeferred else { return }
+            let began = CACurrentMediaTime()
+            self.applyPendingIfNeeded()
+            ClientDiagnosticsLog.shared.record(
+                kind: "timeline.page.flush",
+                sessionID: self.diagnosticSessionID,
+                detail: ["waitedMs": String(Int(((began - requestedAt) * 1000).rounded())),
+                         "flushMs": String(Int(((CACurrentMediaTime() - began) * 1000).rounded())),
+                         "parked": self.appliesParked ? "1" : "0",
+                         "items": String(self.currentItems.count)])
+        }
+        hiddenFlushWatchdog = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
 
     func setNavigationSuspended(_ suspended: Bool) {
         guard navigationSuspended != suspended else { return }

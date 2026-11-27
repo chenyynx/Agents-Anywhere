@@ -23,6 +23,9 @@ struct DiagnosticsStatusDot: View {
 /// diagnostics panel.
 struct DiagnosticsLogSettingsView: View {
     @AppStorage(ClientDiagnosticsLog.enabledKey) private var enabled = true
+    /// Kill switch for the hidden-tab timeline pause (default on). Off
+    /// restores the pre-pause behaviour: hidden pages keep applying live.
+    @AppStorage(ShellTabPreferences.hiddenPauseKey) private var hiddenPause = true
     @Environment(\.colorScheme) private var colorScheme
     @State private var days: [DiagnosticsDay] = []
     @State private var didLoad = false
@@ -37,6 +40,12 @@ struct DiagnosticsLogSettingsView: View {
                 SettingsToggleRow(icon: "anthropicon.research",
                                   title: String(localized: "Record diagnostics"),
                                   isOn: $enabled)
+            }
+
+            SettingsSection(footer: String(localized: "Experimental. A tab that is off screen stops applying streamed updates; returning replays the backlog at the streaming pace. Turn off to keep hidden tabs updating live.")) {
+                SettingsToggleRow(icon: "anthropicon.chat",
+                                  title: String(localized: "Pause timeline updates on hidden tabs"),
+                                  isOn: $hiddenPause)
             }
 
             SettingsSection(footer: String(localized: "P0 probe: the keep-alive ladder runs continued processing → silent audio → coarse location. Start it, send the app to the background, then read the keepalive.* lines in today's log. Test only.")) {

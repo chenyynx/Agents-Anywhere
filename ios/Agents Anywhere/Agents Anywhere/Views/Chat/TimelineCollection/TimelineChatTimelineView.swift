@@ -36,9 +36,12 @@ struct TimelineChatTimelineView: View {
     /// refresh from stacking on the system transition (b1668: 300–570 ms).
     @Environment(\.shellTabTransitioning) private var shellTabTransitioning
     /// Whether this tab page is the visible one (the shell keeps every page
-    /// mounted and flips this). It freezes the streaming reveal while off
-    /// screen.
+    /// mounted and flips this). It freezes the streaming reveal and, with the
+    /// setting on, parks the timeline's snapshot applies while off screen.
     @Environment(\.shellTabVisible) private var shellTabVisible
+    /// The hidden-page apply pause is a switch (default on): a regression can
+    /// be turned off on device without a build.
+    @AppStorage(ShellTabPreferences.hiddenPauseKey) private var hiddenPause = true
     // The chat type scale is stored in UserDefaults, which is not observable.
     // Reading the same keys through AppStorage makes a Settings change
     // re-evaluate this wrapper and produce a new height key/reconfigure.
@@ -87,6 +90,12 @@ struct TimelineChatTimelineView: View {
     /// settled; a hidden page freezes it and resumes from the same point.
     private var revealActive: Bool {
         shellTabVisible && !shellTabTransitioning
+    }
+    /// Hidden tab pages park their snapshot applies (the first presented
+    /// snapshot must land regardless — the controller enforces that). The
+    /// setting is a kill switch for the whole mechanism.
+    private var appliesParked: Bool {
+        hiddenPause && !shellTabVisible
     }
     /// The official turn phase, from the same live signals the orb reads.
     /// Drives the `TurnStatusView` haptic transfer: entry into writing is a
@@ -272,6 +281,12 @@ struct TimelineChatTimelineView: View {
             // resume from the frozen character count when the reader returns.
             .onChange(of: revealActive, initial: true) { _, active in
                 bridge.setPageRevealVisible(active)
+            }
+            // Hidden pages park their snapshot applies so the backlog lands
+            // in one coalesced apply after the switch settles, not inside the
+            // transition or into an invisible collection.
+            .onChange(of: appliesParked, initial: true) { _, parked in
+                bridge.setPageHidden(parked)
             }
             .onChange(of: reduceMotion, initial: true) { _, value in
                 bridge.setReduceMotion(value)
@@ -507,6 +522,9 @@ final class TimelineChatBridge: ObservableObject {
     @Published private(set) var sendConfirmedTick = 0
     private(set) var readerTookOver = false
     private var navigationSuspended = false
+    /// This tab page is off screen (the shell keeps it mounted). The timeline
+    /// controller parks its applies while this is true.
+    private var pageHidden = false
     /// The page is visible and the switch has settled; the reveal advances.
     private var pageRevealVisible = true
     /// Pumps refreshes while the streaming reveal is still behind: once the
@@ -587,6 +605,7 @@ final class TimelineChatBridge: ObservableObject {
         adapter.onLoadOlder = { [weak self] in self?.loadOlder() }
         adapter.onLoadLatest = { [weak self] in self?.loadLatest() }
         controller.setNavigationSuspended(navigationSuspended)
+        controller.setPageHidden(pageHidden)
         controller.setReduceMotion(reduceMotion)
         controller.setInteractionPresented(hasInteractions)
         updateHistoryAvailability()
@@ -998,6 +1017,16 @@ final class TimelineChatBridge: ObservableObject {
     func setNavigationSuspended(_ suspended: Bool) {
         navigationSuspended = suspended
         controller?.setNavigationSuspended(suspended)
+    }
+
+    /// Off-screen tab page: stop applying snapshots into the invisible
+    /// collection. The controller keeps one coalesced generation and lands it
+    /// after the switch settles (`setPageHidden(false)`), with its own 0.5 s
+    /// watchdog in case a resume edge is missed.
+    func setPageHidden(_ hidden: Bool) {
+        guard pageHidden != hidden else { return }
+        pageHidden = hidden
+        controller?.setPageHidden(hidden)
     }
 
     /// Reveal progress follows the page's visibility. Hiding freezes every

@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Pause timeline updates on hidden tabs": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause timeline updates on hidden tabs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏标签页暂停时间线刷新"
+          }
+        }
+      }
+    },
+    "Experimental. A tab that is off screen stops applying streamed updates; returning replays the backlog at the streaming pace. Turn off to keep hidden tabs updating live.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Experimental. A tab that is off screen stops applying streamed updates; returning replays the backlog at the streaming pace. Turn off to keep hidden tabs updating live."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实验性功能。标签页离开屏幕后暂停应用流式更新，返回时按流式节奏补播积压内容；关闭后隐藏页继续实时刷新。"
+          }
+        }
+      }
+    },
     "隐藏指令图标": {
       "extractionState": "manual",
       "localizations": {

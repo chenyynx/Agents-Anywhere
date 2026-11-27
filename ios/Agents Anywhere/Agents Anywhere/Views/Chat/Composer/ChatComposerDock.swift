@@ -73,7 +73,6 @@ struct ChatComposerDock: View {
     @State private var dictationBase = ""
     @State private var pendingDictationSend = false
     @Environment(\.displayScale) private var displayScale
-    @Environment(RecentPhotosLoader.self) private var recentPhotos: RecentPhotosLoader?
 
     private enum AttachmentPicker { case photos, files }
 
@@ -158,10 +157,12 @@ struct ChatComposerDock: View {
         // The add-to-chat rows (permission/model) read from `settings`, which
         // only the catalog load fills; load once when the composer appears.
         .task(id: "\(canSelectModel):\(canSelectPermission)") { await onLoadSettings() }
-        // Warm the photo strip as soon as a chat screen appears, so the first
-        // add-to-chat sheet opens on already-resolved assets. `preload` never
-        // asks for permission, so this cannot prompt outside the sheet.
-        .task { await recentPhotos?.preload() }
+        // Do NOT fetch PHAssets from the composer's mount. The b1714 scroll
+        // probe put a 222 ms main-thread stall exactly on a session open; its
+        // stack showed RecentPhotosLoader -> PhotoLibraryServices/CoreData.
+        // The add-to-chat sheet already runs `recent.load()` on presentation,
+        // so the strip still fills there (with its loading state) without
+        // paying PhotoKit's synchronous XPC on every chat open.
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
         .background {

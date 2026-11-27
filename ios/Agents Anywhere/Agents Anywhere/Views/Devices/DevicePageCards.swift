@@ -182,19 +182,35 @@ struct DeviceWorkingGlyph: View {
     let color: Color
     let isAnimating: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.shellTabVisible) private var shellTabVisible
+    @State private var angle: Double = 0
 
-    private var animates: Bool { isAnimating && !reduceMotion }
+    private var animates: Bool { isAnimating && !reduceMotion && shellTabVisible }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animates)) { context in
-            let seconds = context.date.timeIntervalSinceReferenceDate
-            AnthropiconView(name: "anthropicon.spinner", size: .medium)
-                .foregroundStyle(color)
-                .rotationEffect(.degrees(animates
-                    ? seconds.truncatingRemainder(dividingBy: 1) * 360
-                    : 0))
+        // Core Animation, not a 30 fps SwiftUI TimelineView: a running row in
+        // the Devices list used to rebuild its body every frame while the
+        // reader scrolled, and the same tick kept running under a pushed
+        // session. Rotation is a compositor property; leave the main thread
+        // free for the scroll.
+        AnthropiconView(name: "anthropicon.spinner", size: .medium)
+            .foregroundStyle(color)
+            .rotationEffect(.degrees(angle))
+            .frame(width: 20, height: 20)
+            .onAppear { updateAnimation() }
+            .onChange(of: animates) { _, _ in updateAnimation() }
+            .onDisappear { angle = 0 }
+    }
+
+    private func updateAnimation() {
+        if animates {
+            angle = 0
+            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                angle = 360
+            }
+        } else {
+            withAnimation(nil) { angle = 0 }
         }
-        .frame(width: 20, height: 20)
     }
 }
 

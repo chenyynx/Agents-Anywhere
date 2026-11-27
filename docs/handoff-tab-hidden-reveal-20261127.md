@@ -86,10 +86,12 @@
 - 首次见到一段文本时**全显**（官方驱动挂载时也不回放已有内容）；只有光标已经存在、文本在隐藏期间增长的部分才重播。
 - 已知边界：**隐藏期间才开始并结束的回合**没有 publisher/光标，回来仍是一次全出；验收场景（离开时正在流式）不受影响。
 
-### 8.2 两步实现（各一个 commit）
+### 8.2 两步实现（各自 commit）
 
 1. `e6d6c1b82` **揭示 progress 化**：`StreamingRevealClock/Cursor` + adapter 投影 + 续播泵（refresh 发现落后 → 10 Hz 泵到追平，wire 静默也能放完）+ 单测（时钟冻结/续放、首帧全显、cps 节奏、longestLag、缩短修正）。
 2. `f06c554f2` **隐藏页停 apply**：`TimelineCollectionController.pageHidden` 闸（`apply`/`reloadFromContent`/`applyPendingIfNeeded` 停靠）；硬前提 `hasAppliedSnapshot`（首个快照照常落地，防 `f5da4f032` 白屏）；返回后 0.5 s watchdog flush（shell 转场先由 `navigationSuspended` 的 settle 边 flush）；开关 `ShellTabPreferences.hiddenPauseKey = "aa.native.tabs.hidden-pause"`（默认开，设置→诊断日志可关）。
+3. `1f11f5664` **返回时先补最终文本再 complete**：隐藏页 refresh 停靠期间 publisher 的 receivedText 会落后；先 `receive(fullText:)` 再 `complete()`，完成快照才是整段答案（否则完成于隐藏期间的回复只会显示离屏前的前缀）。
+4. 其余小修：`3e0bd6a00` 修 CI 的 Int/Double 混算；`b8317dea3`/`14532f7e2` 诊断 kind 归 info + 字段；`f1654cb36` 过时注释。
 
 ### 8.3 诊断（真机对照）
 

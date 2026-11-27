@@ -414,6 +414,10 @@ actor V2LocalStore {
                     path: directory.appendingPathComponent("timeline.sqlite").path)
             } catch {
                 timelineDatabase = nil
+                // Do not latch a failed open: a full disk or a transient lock
+                // must not leave the library (and its dashboard tables) dead
+                // for the whole process.
+                didOpenTimelineDatabase = false
                 Self.log.error("timeline database open failed: \(String(describing: error), privacy: .public)")
             }
         }

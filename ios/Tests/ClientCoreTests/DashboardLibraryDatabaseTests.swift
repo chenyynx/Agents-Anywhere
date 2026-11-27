@@ -13,11 +13,25 @@ import Testing
         try TimelineDatabase(path: temporaryPath().path)
     }
 
+    private func session(id: String, connectorId: String) throws -> V2SessionMeta {
+        let object = try fixtureObject("snapshot")
+        var session = object["session"] as! [String: Any]
+        session["id"] = id
+        session["connectorId"] = connectorId
+        return try decode(session)
+    }
+
+    /// The fixture dashboard carries a single session; the delete/local tests
+    /// need a second remote row, so build it from the same fixture.
     private func input() throws -> DashboardIngestInput {
         let snapshot: V2DashboardSnapshot = try decode(fixtureObject("dashboard"))
+        var sessions = snapshot.sessions
+        if let connector = snapshot.connectors.first {
+            sessions.append(try session(id: "second", connectorId: connector.id))
+        }
         return DashboardIngestInput(connectors: snapshot.connectors,
                                     projects: snapshot.projects,
-                                    sessions: snapshot.sessions)
+                                    sessions: sessions)
     }
 
     private func mutated(_ session: V2SessionMeta, updatedSeq: Int,
@@ -67,11 +81,12 @@ import Testing
     @Test func changedSessionUpdatesOnlyThatRow() throws {
         let database = try database()
         let value = try input()
-        guard let target = value.sessions.first else { return }
+        let target = try #require(value.sessions.first)
         _ = try database.ingestDashboard(value)
 
         var sessions = value.sessions
-        sessions[0] = try mutated(target, updatedSeq: target.updatedSeq + 1, title: "changed")
+        sessions[sessions.firstIndex { $0.id == target.id }!] =
+            try mutated(target, updatedSeq: target.updatedSeq + 1, title: "changed")
         let outcome = try database.ingestDashboard(DashboardIngestInput(
             connectors: value.connectors, projects: value.projects, sessions: sessions))
 
@@ -83,7 +98,7 @@ import Testing
     @Test func snapshotWithoutARemoteSessionDeletesIt() throws {
         let database = try database()
         let value = try input()
-        guard value.sessions.count >= 2 else { return }
+        #expect(value.sessions.count >= 2)
         let removed = value.sessions[0]
         let kept = Array(value.sessions.dropFirst())
         _ = try database.ingestDashboard(value)
@@ -99,7 +114,7 @@ import Testing
     @Test func localPendingSessionSurvivesASnapshot() throws {
         let database = try database()
         let value = try input()
-        guard let connector = value.connectors.first else { return }
+        let connector = try #require(value.connectors.first)
         let local = try localSession(connectorId: connector.id)
 
         _ = try database.ingestDashboard(DashboardIngestInput(
@@ -140,5 +155,33 @@ import Testing
         #expect(rows.connectors.isEmpty)
         #expect(rows.projects.isEmpty)
         #expect(rows.revision == 0)
+    }
+
+    /// The transcript-cache switch turns the row store off; the library must
+    /// report "no store" so the app falls back instead of showing empty lists.
+    @Test func storeWithoutADatabaseHasNoLibrary() async throws {
+        let store = V2LocalStore(
+            directory: temporaryPath().deletingLastPathComponent(),
+            timelineDatabaseEnabled: false)
+        #expect(await store.ingestDashboard(try input()) == nil)
+        #expect(await store.observeDashboard() == nil)
+        #expect(await store.dashboardRows() == nil)
+    }
+
+    /// A local mutation must survive an identical snapshot (the signature
+    /// skip path), not be overwritten or deleted by it.
+    @Test func identicalSnapshotKeepsMirroredMutations() async throws {
+        let database = try database()
+        let value = try input()
+        _ = try database.ingestDashboard(value)
+        let target = try #require(value.sessions.first)
+        let renamed = try mutated(target, updatedSeq: target.updatedSeq,
+                                  title: "local rename")
+        _ = try database.upsertDashboardSessions([renamed])
+
+        let outcome = try database.ingestDashboard(value)
+        #expect(!outcome.wrote)
+        let rows = try database.dashboardRows()
+        #expect(rows.sessions.first { $0.id == target.id }?.title == "local rename")
     }
 }

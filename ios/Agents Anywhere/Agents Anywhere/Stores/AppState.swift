@@ -59,6 +59,16 @@ final class AppState {
     @ObservationIgnored private(set) var dashboardLibrary: DashboardLibrary?
     @ObservationIgnored private var dashboardIngestTask: Task<Void, Never>?
     @ObservationIgnored private var pendingDashboardInput: DashboardIngestInput?
+
+    /// The library only while it is live (store opened, observation running).
+    /// Views and the snapshot path fall back to the legacy repository when the
+    /// local database is unavailable (e.g. the transcript-cache switch is off
+    /// or the database failed to open).
+    var activeDashboardLibrary: DashboardLibrary? {
+        guard DashboardLibraryPreferences.isEnabled,
+              let library = dashboardLibrary, library.isLive else { return nil }
+        return library
+    }
     /// Ownership token for `dashboardUpdatesTask`. A task may only clear its
     /// own registration: an offline→online flip can cancel a task while its
     /// bounded wait is still finishing, and a new task can be registered
@@ -442,7 +452,7 @@ final class AppState {
         guard cachedServices === services else { return }
         // With the local library on, list data belongs to it: the in-memory
         // repository keeps only the scalar flags this path publishes.
-        let libraryMode = DashboardLibraryPreferences.isEnabled && dashboardLibrary != nil
+        let libraryMode = activeDashboardLibrary != nil
 #if AA_TIMELINE_PROBE
         let probeStart = CFAbsoluteTimeGetCurrent()
 #endif
@@ -861,6 +871,10 @@ final class AppState {
         authenticationEpoch = UUID(); accountSyncID = UUID()
         accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
         restoration.clear(scope: cachedServices?.scope)
+        dashboardLibrary?.stop()
+        dashboardLibrary = nil
+        dashboardIngestTask?.cancel(); dashboardIngestTask = nil
+        pendingDashboardInput = nil
         cachedServices?.shutdown(removingCache: true)
         cachedServices = nil
         cachedServicesTokenProvider?.update(nil)
@@ -959,12 +973,17 @@ final class AppState {
 #if AA_TIMELINE_PROBE
         let probeStart = CFAbsoluteTimeGetCurrent()
 #endif
-        if DashboardLibraryPreferences.isEnabled, let library = dashboardLibrary {
+        if let library = activeDashboardLibrary {
             cachedServices?.dashboardRepository.noteLibrarySnapshot()
+            // The read coordinator only accepts authoritative metadata: update
+            // its watermarks here, on the main actor, before the rows go to
+            // the store. Publish-time reconcile is read-only (`project`).
+            let services = cachedServices
+            let sessions = snapshot.sessions.map { services?.sessionReads.ingest($0) ?? $0 }
             enqueueDashboardIngest(
                 DashboardIngestInput(connectors: snapshot.connectors,
                                      projects: snapshot.projects,
-                                     sessions: snapshot.sessions),
+                                     sessions: sessions),
                 library: library)
         } else {
             cachedServices?.dashboardRepository.apply(snapshot)
@@ -998,11 +1017,13 @@ final class AppState {
         guard dashboardIngestTask == nil else { return }
         dashboardIngestTask = Task { [weak self, weak library] in
             guard let self, let library else { return }
-            while let next = self.pendingDashboardInput {
+            while !Task.isCancelled, let next = self.pendingDashboardInput {
                 self.pendingDashboardInput = nil
                 _ = await library.ingest(next)
             }
-            self.dashboardIngestTask = nil
+            // A cancelled (superseded) task must not clear the new task's
+            // handle: only the current owner clears it.
+            if !Task.isCancelled { self.dashboardIngestTask = nil }
         }
     }
 
@@ -1013,6 +1034,11 @@ final class AppState {
         if connectors != rows.connectors { connectors = rows.connectors }
         if projects != rows.projects { projects = rows.projects }
         if sessions != rows.sessions { sessions = rows.sessions }
+        // Views that still read the in-memory repository (project sidebar,
+        // project editor, agent online state) must not go stale.
+        services.dashboardRepository.noteLibraryRows(
+            connectors: rows.connectors, projects: rows.projects,
+            sessions: rows.sessions)
         services.sessionRepository.applyMetadata(sessions)
         services.updateAgentConnections()
         if services.dashboardRepository.hasLoaded {
@@ -1199,9 +1225,12 @@ final class AppState {
         dashboardIngestTask?.cancel(); dashboardIngestTask = nil
         pendingDashboardInput = nil
         services.dashboardRepository.onMutation = nil
+        services.dashboardRepository.onSnapshot = nil
         if DashboardLibraryPreferences.isEnabled {
             let library = DashboardLibrary(store: services.localStore)
-            library.reconcile = { [weak services] in services?.sessionReads.ingest($0) ?? $0 }
+            // Publish-time projection only: the read coordinator's watermarks
+            // are updated from the authoritative snapshot on the main actor.
+            library.reconcile = { [weak services] in services?.sessionReads.project($0) ?? $0 }
             library.onPublish = { [weak self, weak services] rows in
                 guard let self, let services, self.cachedServices === services else { return }
                 self.applyLibraryRows(rows, services: services)
@@ -1211,11 +1240,23 @@ final class AppState {
                 guard let library else { return }
                 Task { await library.apply(mutation) }
             }
-            library.start()
+            services.dashboardRepository.onSnapshot = { [weak self, weak library] connectors, projects, sessions in
+                guard let self, let library else { return }
+                self.enqueueDashboardIngest(
+                    DashboardIngestInput(connectors: connectors,
+                                         projects: projects,
+                                         sessions: sessions),
+                    library: library)
+            }
+            // Import the legacy JSON archive before observing, so the first
+            // read already contains it (the import is an upsert, so a WS frame
+            // landing first cannot erase those rows).
             Task { [weak library, weak services] in
-                guard let library, let services,
-                      let archive = await services.localStore.dashboard() else { return }
-                _ = await library.seedFromArchive(archive)
+                if let library, let services,
+                   let archive = await services.localStore.dashboard() {
+                    _ = await library.seedFromArchive(archive)
+                }
+                library?.start()
             }
         } else {
             dashboardLibrary = nil

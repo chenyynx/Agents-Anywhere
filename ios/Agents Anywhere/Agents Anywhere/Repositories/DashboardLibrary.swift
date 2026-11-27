@@ -44,10 +44,13 @@ final class DashboardLibrary {
 
     func start() {
         guard observeTask == nil else { return }
-        isLive = true
         observeTask = Task { [weak self] in
             guard let self else { return }
+            // Not live until the store actually handed us a stream: the
+            // transcript-cache switch or a failed database open must fall
+            // back to the legacy projection, not silently show empty lists.
             guard let stream = await self.store.observeDashboard() else { return }
+            self.isLive = true
             for await rows in stream {
                 guard !Task.isCancelled else { return }
                 self.receive(rows)

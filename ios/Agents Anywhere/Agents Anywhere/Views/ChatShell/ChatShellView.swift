@@ -191,7 +191,7 @@ struct ChatShellView: View {
             appState: appState,
             agentSetup: services?.agentSetup,
             safeAreaInsets: safeAreaInsets,
-            library: appState.dashboardLibrary,
+            library: appState.activeDashboardLibrary,
             // The phone tab shell owns devices; the drawer keeps them only
             // for iPad/the legacy shell, which has no Devices tab.
             showsDevicesSection: !tabShellActive,
@@ -226,14 +226,14 @@ struct ChatShellView: View {
             if let id = chatRootSessionID {
                 SessionPageHost(
                     appState: appState, services: services, chatPane: chatPane,
-                    library: appState.dashboardLibrary, sessionID: id,
+                    library: appState.activeDashboardLibrary, sessionID: id,
                     paneRole: .chat, showsMenuButton: true,
                     onMenu: toggleSidebar,
                     onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             } else {
                 NewSessionPageHost(
                     appState: appState, services: services,
-                    library: appState.dashboardLibrary,
+                    library: appState.activeDashboardLibrary,
                     onMenu: toggleSidebar, onOpenDevice: openDevice,
                     onCreated: { session in
                         appState.updateSession(session)
@@ -263,7 +263,7 @@ struct ChatShellView: View {
             Group {
                 if let services = appState.nativeChatServices {
                     DevicePageHost(
-                        appState: appState, library: appState.dashboardLibrary,
+                        appState: appState, library: appState.activeDashboardLibrary,
                         connectorId: panes.devicesDevice, showsMenuButton: true,
                         onMenu: toggleSidebar,
                         onOpenDevice: openDeviceFromDeviceTab,
@@ -295,7 +295,7 @@ struct ChatShellView: View {
                     switch route {
                     case let .device(id):
                         DevicePageHost(
-                            appState: appState, library: appState.dashboardLibrary,
+                            appState: appState, library: appState.activeDashboardLibrary,
                             connectorId: id, showsMenuButton: false,
                             onMenu: toggleSidebar,
                             onOpenDevice: openDeviceFromDeviceTab,
@@ -316,7 +316,7 @@ struct ChatShellView: View {
                     case let .session(id):
                         SessionPageHost(
                             appState: appState, services: services, chatPane: chatPane,
-                            library: appState.dashboardLibrary, sessionID: id,
+                            library: appState.activeDashboardLibrary, sessionID: id,
                             paneRole: .devices, showsMenuButton: false,
                             onMenu: toggleSidebar,
                             onTogglePinned: { pinned in
@@ -325,7 +325,7 @@ struct ChatShellView: View {
                     case .newSession:
                         NewSessionPageHost(
                             appState: appState, services: services,
-                            library: appState.dashboardLibrary,
+                            library: appState.activeDashboardLibrary,
                             onMenu: toggleSidebar,
                             onOpenDevice: openDeviceFromDeviceTab,
                             onCreated: { session in
@@ -394,7 +394,7 @@ struct ChatShellView: View {
     @ViewBuilder private var mainContent: some View {
         if case let .device(connectorId) = selection {
             DevicePageHost(
-                appState: appState, library: appState.dashboardLibrary,
+                appState: appState, library: appState.activeDashboardLibrary,
                 connectorId: connectorId, showsMenuButton: true,
                 onMenu: toggleSidebar, onOpenDevice: openDevice,
                 onCopyDeviceId: copyDeviceId, onOpenSession: openSession,
@@ -414,14 +414,14 @@ struct ChatShellView: View {
             if case let .session(id) = selection {
                 SessionPageHost(
                     appState: appState, services: services, chatPane: chatPane,
-                    library: appState.dashboardLibrary, sessionID: id,
+                    library: appState.activeDashboardLibrary, sessionID: id,
                     paneRole: .chat, showsMenuButton: true,
                     onMenu: toggleSidebar,
                     onTogglePinned: { pinned in setSessionPinned(id, pinned: pinned) })
             } else {
                 NewSessionPageHost(
                     appState: appState, services: services,
-                    library: appState.dashboardLibrary,
+                    library: appState.activeDashboardLibrary,
                     onMenu: toggleSidebar, onOpenDevice: openDevice,
                     onCreated: { session in
                         appState.updateSession(session)

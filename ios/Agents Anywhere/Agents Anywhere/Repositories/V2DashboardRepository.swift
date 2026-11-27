@@ -29,6 +29,9 @@ final class V2DashboardRepository {
     private(set) var network = V2NetworkStatus()
     @ObservationIgnored var onChange: (() -> Void)?
     @ObservationIgnored var onMutation: ((V2DashboardMutation) -> Void)?
+    /// HTTP refreshes go through `apply` too; the library path mirrors them
+    /// into the local store so pull-to-refresh / retry are not dead ends.
+    @ObservationIgnored var onSnapshot: (([V2Connector], [V2Project], [V2SessionMeta]) -> Void)?
     @ObservationIgnored var reconcile: (V2SessionMeta) -> V2SessionMeta = { $0 }
     @ObservationIgnored private let localStore: V2LocalStore?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
@@ -91,6 +94,20 @@ final class V2DashboardRepository {
         apply(connectors: snapshot.connectors, projects: snapshot.projects, sessions: snapshot.sessions)
     }
 
+    /// Library path: keep the in-memory projection current for the views and
+    /// services that still read it (project sidebar, project editor, agent
+    /// online state). The local library remains the source of truth.
+    func noteLibraryRows(connectors: [V2Connector], projects: [V2Project],
+                         sessions: [V2SessionMeta]) {
+        guard isValid else { return }
+        if self.connectors != connectors { self.connectors = connectors }
+        if self.projects != projects { self.projects = projects }
+        if self.sessions != sessions { self.sessions = sessions }
+        if !hasLoaded { hasLoaded = true }
+        if !isFresh { isFresh = true }
+        if error != nil { error = nil }
+    }
+
     /// Library path: the snapshot went to the local database, not the
     /// in-memory lists. Only the scalar state the rest of the app reads is
     /// updated here; list data comes back through `DashboardLibrary`.
@@ -125,6 +142,7 @@ final class V2DashboardRepository {
         if !isFresh { isFresh = true }
         if error != nil { error = nil }
         changed(persist: mutated); refreshMissingProjects()
+        onSnapshot?(self.connectors, self.projects, sessions)
 #if AA_TIMELINE_PROBE
         // One dashboard snapshot lands about once a second; the Devices scroll
         // hitches (b1717/b1718) sat exactly on those landings. Break the cost
@@ -256,9 +274,14 @@ final class V2DashboardRepository {
         try await service.projectAPI.delete(id)
         try requireValid()
         generation += 1; projectGeneration += 1; projects.removeAll { $0.id == id }
-        for index in sessions.indices where sessions[index].projectId == id { sessions[index].projectId = nil }
+        var detached: [V2SessionMeta] = []
+        for index in sessions.indices where sessions[index].projectId == id {
+            sessions[index].projectId = nil
+            detached.append(sessions[index])
+        }
         changed(); await refreshProjects()
         onMutation?(.deleteProject(id))
+        if !detached.isEmpty { onMutation?(.upsertSessions(detached)) }
     }
     func archiveProject(_ id: String, archived: Bool) async throws {
         try requireWritable()

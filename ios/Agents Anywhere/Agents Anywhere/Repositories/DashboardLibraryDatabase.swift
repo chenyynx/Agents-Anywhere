@@ -51,7 +51,13 @@ extension TimelineDatabase {
                 in: pool,
                 scheduling: .async(onQueue: DispatchQueue(
                     label: "aa.dashboard.library", qos: .utility)),
-                onError: { _ in continuation.finish() },
+                onError: { error in
+                    ClientDiagnosticsLog.shared.record(
+                        kind: "dashboard.observe.failed",
+                        detail: ["error": String(describing: error)],
+                        dedupe: true)
+                    continuation.finish()
+                },
                 onChange: { rows in continuation.yield(rows) })
             continuation.onTermination = { _ in cancellable.cancel() }
         }
@@ -99,6 +105,7 @@ extension TimelineDatabase {
                         archived = excluded.archived,
                         updated_seq = excluded.updated_seq,
                         payload = excluded.payload
+                    WHERE excluded.updated_seq >= dashboard_sessions.updated_seq
                     """, arguments: [session.id, session.connectorId,
                                      session.archived, session.updatedSeq, payload])
             }
@@ -220,15 +227,17 @@ extension TimelineDatabase {
             let imported = try String.fetchOne(
                 db, sql: "SELECT value FROM dashboard_meta WHERE key = 'imported'")
             guard imported != "1" else { return false }
-            let count = try Int.fetchOne(
-                db, sql: "SELECT COUNT(*) FROM dashboard_sessions") ?? 0
-            if count == 0 {
-                for session in archive.sessions { try Self.insertSession(db, session) }
-                _ = try Self.replaceConnectors(db, archive.connectors)
-                _ = try Self.replaceProjects(db, archive.projects)
+            // Upsert, never delete: a WS first frame may land before this
+            // import and write newer rows; the old archive only fills gaps.
+            var rows = 0
+            for session in archive.sessions {
+                try Self.insertSession(db, session)
+                rows += 1
             }
+            try Self.upsertConnectors(db, archive.connectors)
+            try Self.upsertProjects(db, archive.projects)
             try Self.setMeta(db, key: "imported", value: "1")
-            return count == 0
+            return rows > 0
         }
     }
 
@@ -249,13 +258,34 @@ extension TimelineDatabase {
 
     private static func rows<Value: Decodable>(_ db: Database, _ table: String,
                                                as type: Value.Type) throws -> [Value] {
-        try Row.fetchAll(db, sql: "SELECT payload FROM \(table) ORDER BY rowid")
-            .compactMap { try? JSONDecoder().decode(Value.self, from: $0["payload"]) }
+        var result: [Value] = []
+        for row in try Row.fetchAll(db, sql: "SELECT payload FROM \(table) ORDER BY rowid") {
+            let payload: Data = row["payload"]
+            do {
+                result.append(try JSONDecoder().decode(Value.self, from: payload))
+            } catch {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "dashboard.row.dropped",
+                    detail: ["table": table], dedupe: true)
+            }
+        }
+        return result
     }
 
     private static func fetchHeldSessions(_ db: Database) throws -> [V2SessionMeta] {
-        try Row.fetchAll(db, sql: "SELECT payload FROM dashboard_sessions ORDER BY session_id")
-            .compactMap { try? JSONDecoder().decode(V2SessionMeta.self, from: $0["payload"]) }
+        var result: [V2SessionMeta] = []
+        for row in try Row.fetchAll(
+            db, sql: "SELECT payload FROM dashboard_sessions ORDER BY session_id") {
+            let payload: Data = row["payload"]
+            do {
+                result.append(try JSONDecoder().decode(V2SessionMeta.self, from: payload))
+            } catch {
+                ClientDiagnosticsLog.shared.record(
+                    kind: "dashboard.row.dropped",
+                    detail: ["table": "held"], dedupe: true)
+            }
+        }
+        return result
     }
 
     private static func insertSession(_ db: Database, _ session: V2SessionMeta) throws {
@@ -267,13 +297,38 @@ extension TimelineDatabase {
             ON CONFLICT(session_id) DO UPDATE SET
                 connector_id = excluded.connector_id, archived = excluded.archived,
                 updated_seq = excluded.updated_seq, payload = excluded.payload
+            WHERE excluded.updated_seq >= dashboard_sessions.updated_seq
             """, arguments: [session.id, session.connectorId, session.archived,
                              session.updatedSeq, payload])
     }
 
+    private static func upsertConnectors(_ db: Database, _ values: [V2Connector]) throws {
+        for value in values {
+            let payload = try encode(value)
+            try db.execute(sql: """
+                INSERT INTO dashboard_connectors (id, payload) VALUES (?, ?)
+                ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+                """, arguments: [value.id, payload])
+        }
+    }
+
+    private static func upsertProjects(_ db: Database, _ values: [V2Project]) throws {
+        for value in values {
+            let payload = try encode(value)
+            try db.execute(sql: """
+                INSERT INTO dashboard_projects (id, connector_id, payload)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    connector_id = excluded.connector_id, payload = excluded.payload
+                """, arguments: [value.id, value.connectorId, payload])
+        }
+    }
+
     private static func replaceConnectors(_ db: Database,
                                           _ values: [V2Connector]) throws -> Bool {
-        let incoming = Dictionary(uniqueKeysWithValues: values.map { ($0.id, $0) })
+        // Duplicate ids in a server payload must not trap the app.
+        var incoming: [String: V2Connector] = [:]
+        for value in values { incoming[value.id] = value }
         var changed = false
         var existing: [String: Data] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT id, payload FROM dashboard_connectors") {
@@ -297,7 +352,9 @@ extension TimelineDatabase {
 
     private static func replaceProjects(_ db: Database,
                                         _ values: [V2Project]) throws -> Bool {
-        let incoming = Dictionary(uniqueKeysWithValues: values.map { ($0.id, $0) })
+        // Duplicate ids in a server payload must not trap the app.
+        var incoming: [String: V2Project] = [:]
+        for value in values { incoming[value.id] = value }
         var changed = false
         var existing: [String: Data] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT id, payload FROM dashboard_projects") {

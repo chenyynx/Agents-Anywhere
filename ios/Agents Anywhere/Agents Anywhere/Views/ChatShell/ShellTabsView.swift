@@ -1,5 +1,6 @@
 import QuartzCore
 import SwiftUI
+import UIKit
 
 /// The four-tab shell.
 ///
@@ -38,6 +39,16 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
         AppTheme.primaryControlBackground(colorScheme)
     }
 
+    /// The window's home-indicator inset. The shell sits inside the drawer,
+    /// whose `.ignoresSafeArea()` hides this from SwiftUI's environment.
+    private var homeIndicatorInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow })?
+            .safeAreaInsets.bottom ?? 0
+    }
+
     private var chatSession: V2SessionID? {
         if case let .session(id) = panes.chatRoot { return id }
         return nil
@@ -61,10 +72,23 @@ struct ShellTabsView<ChatRoot: View, DevicesRoot: View>: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ShellTabBar(selection: panes.selectedTab, onSelect: select)
-                // The system tab bar stays put when the keyboard rises; the
-                // pages own their keyboard insets.
-                .ignoresSafeArea(.keyboard)
+            // The drawer this shell lives in ignores the system safe area, so
+            // the home-indicator inset no longer reaches the pages by itself
+            // (the old system tab bar delivered it through its controller).
+            // Rebuild it explicitly: bar items on top, a transparent
+            // home-indicator strip below — the pages then see
+            // 49 + home-indicator, exactly what the system bar provided, and
+            // the composer sits above the bar instead of underneath it
+            // (b1696 device report: the composer was hidden behind the bar).
+            VStack(spacing: 0) {
+                ShellTabBar(selection: panes.selectedTab, onSelect: select)
+                    .frame(height: ShellTabBarMetrics.contentHeight)
+                Color.clear
+                    .frame(height: homeIndicatorInset)
+            }
+            // The bar stays put when the keyboard rises; the pages own their
+            // keyboard insets.
+            .ignoresSafeArea(.keyboard)
         }
         .environment(\.shellTabBarActive, true)
         .environment(\.shellTabTransitioning, tabTransitioning)

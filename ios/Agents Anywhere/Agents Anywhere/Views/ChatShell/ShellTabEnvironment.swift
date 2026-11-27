@@ -5,6 +5,11 @@ nonisolated enum ShellTabBarMetrics {
     /// The official app leaves 8.3 pt between a page's composer capsule and
     /// the Liquid Glass tab bar (109 build, 1179×2556 @3x screenshot).
     static let composerGap: CGFloat = 8
+    /// The item row of the system tab bar. The bar is laid out explicitly now
+    /// (the drawer the shell lives in ignores the system safe area, so the
+    /// safe-area inset no longer arrives by itself); 49 pt is the bar's
+    /// standard content height on iPhone.
+    static let contentHeight: CGFloat = 49
 }
 
 private struct ShellTabTransitioningKey: EnvironmentKey {

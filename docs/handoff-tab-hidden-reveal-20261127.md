@@ -1,6 +1,6 @@
 # 交接：切 tab 回来"重播流式动画"——对齐官方（2026-11-27）
 
-> 状态：**未开工**。已完成的是逆向取证与方案设计；下个会话按本文实现。
+> 状态：**已实现，待真机验收**（2026-11-27 晚，分支 `feat/tab-hidden-reveal`）。实现记录与和 §3 的偏差见文末 §8。
 > 关联红线：`AGENTS.md`「iOS tab 切换性能红线」——**切 tab 已不卡，任何改动不得回退**（b1699 基线：`shell.tabs.frame` worstMs 中位 ≈89ms、p90 ≈108ms、常态无 >200ms）。
 
 ## 0. 一句话
@@ -71,3 +71,38 @@
 
 按交接第 4 节实施：①揭示 progress 化（可见时才推进，隐藏冻结、回来续播）；②隐藏页停 apply（仅已呈现过快照的页面，flush 带预算与超时兜底）；③各独立 commit + 开关。每包真机验 shell.tabs.frame 不破红线（中位 ≤120ms、无 >200ms 常态）。当前 next head 以 git log -1 为准；切 tab 卡顿已收口（b1699），不得回退。
 ```
+
+---
+
+## 8. 实现记录（2026-11-27）
+
+### 8.1 和 §3 的关键偏差（事实修正）
+
+§3 把 `ChatMarkdownView.revealDeadlines` 当成生产揭示时钟，**这是过时的**：W7 之后 Chat/Code 两页的正文都由 `CodeMessageRowView` → `CodeMarkdownTextLeaf`（TextKit）渲染，`ChatMarkdownView` 只用于公告/子代理摘要/自动门；`assistantMarkdown(for:)` 与 `assistantStreamingDocument(for:)` 在生产路径返回 nil。**生产可见的流式文本来自 `CodeStreamingPublisher` 的整段快照（0.1s 前缘节流）**，在 `TimelineChatContentAdapter.codeStreamingTexts(for:)` 汇聚。因此同一机制落在 **adapter 的文本投影层**，而不是 SwiftUI 字形层：
+
+- `StreamingRevealCursor`（`Models/Chat/StreamingRevealTimeline.swift`）= 官方 `Progress.released` 的 AA 对应物：字符计数、持久、只增；时钟 `StreamingRevealClock` 在隐藏期间冻结，`now(at:)` 把隐藏时长扣掉，回到页面从冻结计数续放。
+- 官方常量沿用 `StreamingRevealTimeline` 已有的 320 cps / 640 cps catch-up / 2 s drain；新增 `longestLagSeconds`（默认 3 s = 960 字符）在锚定时跳过更老的积压。
+- 采样发生在每次 adapter refresh（Code 文本本来就只在 apply 时重绘），不用 CADisplayLink：per-frame 光标没有 per-frame 渲染器可画，只会空转；节奏由 `codeStreamingTexts` 的前缀 + `codeRevealRevisions` 进 content signature 保证。
+- 首次见到一段文本时**全显**（官方驱动挂载时也不回放已有内容）；只有光标已经存在、文本在隐藏期间增长的部分才重播。
+- 已知边界：**隐藏期间才开始并结束的回合**没有 publisher/光标，回来仍是一次全出；验收场景（离开时正在流式）不受影响。
+
+### 8.2 两步实现（各一个 commit）
+
+1. `e6d6c1b82` **揭示 progress 化**：`StreamingRevealClock/Cursor` + adapter 投影 + 续播泵（refresh 发现落后 → 10 Hz 泵到追平，wire 静默也能放完）+ 单测（时钟冻结/续放、首帧全显、cps 节奏、longestLag、缩短修正）。
+2. `f06c554f2` **隐藏页停 apply**：`TimelineCollectionController.pageHidden` 闸（`apply`/`reloadFromContent`/`applyPendingIfNeeded` 停靠）；硬前提 `hasAppliedSnapshot`（首个快照照常落地，防 `f5da4f032` 白屏）；返回后 0.5 s watchdog flush（shell 转场先由 `navigationSuspended` 的 settle 边 flush）；开关 `ShellTabPreferences.hiddenPauseKey = "aa.native.tabs.hidden-pause"`（默认开，设置→诊断日志可关）。
+
+### 8.3 诊断（真机对照）
+
+- `shell.tabs.reveal`：`visible` / `rows` / `backlog`（页面可见性边沿，冻结时记下欠的字符数）。
+- `shell.tabs.reveal.pump`：续播泵启动时的 `backlog`。
+- `timeline.page.hidden`：`hidden` / `parked` / `pending` / `deferredReload`。
+- `timeline.page.flush`：`waitedMs` / `flushMs` / `parked` / `items`（watchdog 兜底 flush 的耗时，用于看切回落地帧成本）。
+- `shell.tabs.frame`：每包必看——worstMs 中位 ≤120ms、无 >200ms 常态窗口。
+
+### 8.4 真机验收清单（待 pp）
+
+1. 对流式中的会话：切到别的 tab 停 2–3 s 再切回 → 积压文本按节奏续播再追平（不是一次全出）。
+2. 可见页流式手感不变（正常速度下光标始终追平，文本仍按 0.1 s 快照节奏出现）。
+3. `shell.tabs.frame`：中位 ≤120ms、无 >200ms 常态（b1699 基线 89/108）。
+4. 切回时列表不跳、键盘/滚动/锚点无回归。
+5. 设置里关掉「隐藏标签页暂停时间线刷新」后：隐藏页恢复原来的实时 apply（用于回退定位）。

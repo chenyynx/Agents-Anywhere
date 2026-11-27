@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+/// Preferences shared by the model (ClientCore) and the app target. The key
+/// lives here so the hidden-presentation gate and the Settings toggle cannot
+/// drift apart.
+nonisolated enum SessionTimelinePreferences {
+    static let hiddenPauseKey = "aa.native.tabs.hidden-pause"
+}
+
 @MainActor @Observable
 final class ChatTimelineRowModel: Identifiable {
     let id: V2TimelineItemID
@@ -181,7 +188,7 @@ final class SessionTimelinePresentation {
     /// The user's "Pause timeline updates on hidden tabs" switch keeps the old
     /// 1 Hz cadence when it is off, so the behavior can be compared on device.
     private var pausesHiddenPresentation: Bool {
-        UserDefaults.standard.object(forKey: ShellTabPreferences.hiddenPauseKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: SessionTimelinePreferences.hiddenPauseKey) as? Bool ?? true
     }
 
     func setHiddenCadence(_ hidden: Bool) {

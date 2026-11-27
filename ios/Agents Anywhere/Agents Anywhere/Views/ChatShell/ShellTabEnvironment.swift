@@ -5,7 +5,7 @@ nonisolated enum ShellTabPreferences {
     /// UserDefaults key (Bool, default true): a hidden tab page parks its
     /// timeline's snapshot applies. The backlog lands in one apply after the
     /// switch settles; turning this off restores live background updates.
-    static let hiddenPauseKey = "aa.native.tabs.hidden-pause"
+    static let hiddenPauseKey = SessionTimelinePreferences.hiddenPauseKey
 }
 
 /// Metrics the tab shell imposes on the pages it hosts.

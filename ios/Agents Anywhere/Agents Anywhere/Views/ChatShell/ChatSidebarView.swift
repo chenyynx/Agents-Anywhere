@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 struct ChatSidebarView: View {
@@ -52,6 +53,12 @@ struct ChatSidebarView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var visibleSessions: [ChatSidebarSession] {
+        #if AA_TIMELINE_PROBE
+        let started = CACurrentMediaTime()
+        defer {
+            TimelineProbeStore.shared.noteShellSessions(seconds: CACurrentMediaTime() - started)
+        }
+        #endif
         let sessions = library?.sessions ?? appState.sessions
         return sessions.filter { !$0.archived }
             .map { ChatSidebarSession(session: $0) }
@@ -66,10 +73,12 @@ struct ChatSidebarView: View {
             ?? devicesList.first { $0.presence == .online }?.id
             ?? devicesList.first?.id
     }
-    private var pinnedSessions: [ChatSidebarSession] { visibleSessions.filter(\.pinned) }
-    private var recentSessions: [ChatSidebarSession] { visibleSessions.filter { !$0.pinned } }
-
     var body: some View {
+        // One filter+sort pass per body: reading `visibleSessions` twice would
+        // sort the whole list twice on every snapshot.
+        let sessions = visibleSessions
+        let pinned = sessions.filter(\.pinned)
+        let recent = sessions.filter { !$0.pinned }
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 6) {
                 if showsDevicesSection {
@@ -103,10 +112,10 @@ struct ChatSidebarView: View {
                     }
                 }
 
-                if !pinnedSessions.isEmpty {
+                if !pinned.isEmpty {
                     ChatSidebarSessionSection(
                         title: "Pinned",
-                        sessions: pinnedSessions,
+                        sessions: pinned,
                         selectedSessionId: selectedSessionId,
                         emptyMessage: "No pinned sessions",
                         context: showsSessionList && !compactSessionList ? { sessionContext($0, after: $1) } : nil,
@@ -135,7 +144,7 @@ struct ChatSidebarView: View {
                         .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, -5)
                         ChatSidebarSessionSection(
                             title: nil,
-                            sessions: Array(recentSessions.prefix(Self.recentPreviewLimit)),
+                            sessions: Array(recent.prefix(Self.recentPreviewLimit)),
                             selectedSessionId: selectedSessionId,
                             isLoading: isLoadingSessions,
                             emptyMessage: "No sessions yet",
@@ -198,7 +207,7 @@ struct ChatSidebarView: View {
         let project = repository?.projects.first { $0.id == session.projectId }?.name
             ?? session.cwd?.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
         let device = previous?.connectorId == session.connectorId ? "^"
-            : devices.first { $0.id == session.connectorId }?.name ?? session.connectorId
+            : devicesList.first { $0.id == session.connectorId }?.name ?? session.connectorId
         let parts = [project, device].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

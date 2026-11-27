@@ -1198,25 +1198,27 @@ final class AppState {
         dashboardLibrary?.stop()
         dashboardIngestTask?.cancel(); dashboardIngestTask = nil
         pendingDashboardInput = nil
-        let library = DashboardLibrary(store: services.localStore)
-        library.reconcile = { [weak services] in services?.sessionReads.ingest($0) ?? $0 }
-        library.onPublish = { [weak self, weak services] rows in
-            guard let self, let services, self.cachedServices === services,
-                  DashboardLibraryPreferences.isEnabled else { return }
-            self.applyLibraryRows(rows, services: services)
-        }
-        dashboardLibrary = library
-        services.dashboardRepository.onMutation = { [weak library] mutation in
-            guard DashboardLibraryPreferences.isEnabled, let library else { return }
-            Task { await library.apply(mutation) }
-        }
+        services.dashboardRepository.onMutation = nil
         if DashboardLibraryPreferences.isEnabled {
+            let library = DashboardLibrary(store: services.localStore)
+            library.reconcile = { [weak services] in services?.sessionReads.ingest($0) ?? $0 }
+            library.onPublish = { [weak self, weak services] rows in
+                guard let self, let services, self.cachedServices === services else { return }
+                self.applyLibraryRows(rows, services: services)
+            }
+            dashboardLibrary = library
+            services.dashboardRepository.onMutation = { [weak library] mutation in
+                guard let library else { return }
+                Task { await library.apply(mutation) }
+            }
             library.start()
             Task { [weak library, weak services] in
                 guard let library, let services,
                       let archive = await services.localStore.dashboard() else { return }
                 _ = await library.seedFromArchive(archive)
             }
+        } else {
+            dashboardLibrary = nil
         }
         services.onSelectPage = { [weak self] selection in self?.chatSelection = selection }
         services.onCreationBound = { [weak self] localID, serverID in

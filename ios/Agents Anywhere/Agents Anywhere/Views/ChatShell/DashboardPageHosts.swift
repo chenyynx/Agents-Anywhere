@@ -122,7 +122,12 @@ struct DevicePageHost: View {
                 onSessionsUpdated: onSessionsUpdated,
                 onSetSessionsArchived: onSetSessionsArchived)
                 .id(id)
-        } else if appState.isDashboardLoading && !appState.hasLoadedConnectors {
+        } else if targetConnectorID != nil
+                    || !appState.hasLoadedConnectors
+                    || appState.isDashboardLoading {
+            // The connector list has not been published yet (library first
+            // read, services still being built, or cold-start cache restore):
+            // this is a loading state, not "you have no devices".
             ChatShellPlaceholderPage(
                 isConnecting: appState.isRetryingServerConnection,
                 title: "",

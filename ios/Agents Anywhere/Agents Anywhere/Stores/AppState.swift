@@ -53,6 +53,12 @@ final class AppState {
     @ObservationIgnored private let dashboardClientId = "ios-dashboard-\(UUID().uuidString)"
     @ObservationIgnored private var lastDashboardRefreshAt: Date?
     @ObservationIgnored private var dashboardUpdatesTask: Task<Void, Never>?
+    /// Local-database dashboard source: snapshots are merged on the store's
+    /// actor and list data arrives through this object. Falls back to the
+    /// in-memory repository when disabled.
+    @ObservationIgnored private(set) var dashboardLibrary: DashboardLibrary?
+    @ObservationIgnored private var dashboardIngestTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingDashboardInput: DashboardIngestInput?
     /// Ownership token for `dashboardUpdatesTask`. A task may only clear its
     /// own registration: an offline→online flip can cancel a task while its
     /// bounded wait is still finishing, and a new task can be registered
@@ -434,18 +440,26 @@ final class AppState {
 
     private func syncDashboard(_ services: V2ClientServices) {
         guard cachedServices === services else { return }
+        // With the local library on, list data belongs to it: the in-memory
+        // repository keeps only the scalar flags this path publishes.
+        let libraryMode = DashboardLibraryPreferences.isEnabled && dashboardLibrary != nil
 #if AA_TIMELINE_PROBE
         let probeStart = CFAbsoluteTimeGetCurrent()
 #endif
         let repository = services.dashboardRepository
         // Each tracked write invalidates every view reading that property; only publish real changes.
-        if connectors != repository.connectors { connectors = repository.connectors }
-        if projects != repository.projects { projects = repository.projects }
+        if !libraryMode {
+            if connectors != repository.connectors { connectors = repository.connectors }
+            if projects != repository.projects { projects = repository.projects }
+        }
 #if AA_TIMELINE_PROBE
         let probeFromSessions = CFAbsoluteTimeGetCurrent()
 #endif
-        let sessionsChanged = sessions != repository.sessions
-        if sessionsChanged { sessions = repository.sessions }
+        var sessionsChanged = false
+        if !libraryMode {
+            sessionsChanged = sessions != repository.sessions
+            if sessionsChanged { sessions = repository.sessions }
+        }
 #if AA_TIMELINE_PROBE
         let probeCompared = CFAbsoluteTimeGetCurrent()
 #endif
@@ -457,11 +471,13 @@ final class AppState {
         if sessionsError != repository.error { sessionsError = repository.error }
         services.sessionReads.setActive(!isInBackground)
         services.sessionReads.updateConnectivity(repository.isFresh ? services.connectivity.status : .init(availability: .offline))
-        services.sessionRepository.applyMetadata(sessions)
-        services.updateAgentConnections()
-        if repository.hasLoaded {
-            services.newSession.updateProjects(projects)
-            services.newSession.updateConnectors(connectors)
+        if !libraryMode {
+            services.sessionRepository.applyMetadata(sessions)
+            services.updateAgentConnections()
+            if repository.hasLoaded {
+                services.newSession.updateProjects(projects)
+                services.newSession.updateConnectors(connectors)
+            }
         }
 #if AA_TIMELINE_PROBE
         // The same landing that produces the Devices scroll hitch (b1718:
@@ -943,7 +959,16 @@ final class AppState {
 #if AA_TIMELINE_PROBE
         let probeStart = CFAbsoluteTimeGetCurrent()
 #endif
-        cachedServices?.dashboardRepository.apply(snapshot)
+        if DashboardLibraryPreferences.isEnabled, let library = dashboardLibrary {
+            cachedServices?.dashboardRepository.noteLibrarySnapshot()
+            enqueueDashboardIngest(
+                DashboardIngestInput(connectors: snapshot.connectors,
+                                     projects: snapshot.projects,
+                                     sessions: snapshot.sessions),
+                library: library)
+        } else {
+            cachedServices?.dashboardRepository.apply(snapshot)
+        }
 #if AA_TIMELINE_PROBE
         let probeApply = CFAbsoluteTimeGetCurrent()
 #endif
@@ -958,10 +983,42 @@ final class AppState {
                     "apply": String(format: "%.1f", (probeApply - probeStart) * 1000),
                     "notify": String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - probeApply) * 1000),
                     "sessions": String(snapshot.sessions.count),
+                    "library": DashboardLibraryPreferences.isEnabled ? "1" : "0",
                 ],
                 dedupe: false)
         }
 #endif
+    }
+
+    /// Single-flight dashboard ingest: one store transaction at a time; only
+    /// the newest pending snapshot is kept.
+    private func enqueueDashboardIngest(_ input: DashboardIngestInput,
+                                        library: DashboardLibrary) {
+        pendingDashboardInput = input
+        guard dashboardIngestTask == nil else { return }
+        dashboardIngestTask = Task { [weak self, weak library] in
+            guard let self, let library else { return }
+            while let next = self.pendingDashboardInput {
+                self.pendingDashboardInput = nil
+                _ = await library.ingest(next)
+            }
+            self.dashboardIngestTask = nil
+        }
+    }
+
+    /// Library publish → the properties the rest of the app still reads.
+    /// The element views move to the library itself in P3; until then this is
+    /// the single bridge.
+    private func applyLibraryRows(_ rows: DashboardRows, services: V2ClientServices) {
+        if connectors != rows.connectors { connectors = rows.connectors }
+        if projects != rows.projects { projects = rows.projects }
+        if sessions != rows.sessions { sessions = rows.sessions }
+        services.sessionRepository.applyMetadata(sessions)
+        services.updateAgentConnections()
+        if services.dashboardRepository.hasLoaded {
+            services.newSession.updateProjects(projects)
+            services.newSession.updateConnectors(connectors)
+        }
     }
 
     private func startNotificationLongPolling(services: V2ClientServices) {
@@ -1137,6 +1194,25 @@ final class AppState {
         services.dashboardRepository.onChange = { [weak self, weak services] in
             guard let services else { return }
             self?.syncDashboard(services)
+        }
+        dashboardLibrary?.stop()
+        dashboardIngestTask?.cancel(); dashboardIngestTask = nil
+        pendingDashboardInput = nil
+        let library = DashboardLibrary(store: services.localStore)
+        library.reconcile = { [weak services] in services?.sessionReads.ingest($0) ?? $0 }
+        library.onPublish = { [weak self, weak services] rows in
+            guard let self, let services, self.cachedServices === services,
+                  DashboardLibraryPreferences.isEnabled else { return }
+            self.applyLibraryRows(rows, services: services)
+        }
+        dashboardLibrary = library
+        if DashboardLibraryPreferences.isEnabled {
+            library.start()
+            Task { [weak library, weak services] in
+                guard let library, let services,
+                      let archive = await services.localStore.dashboard() else { return }
+                _ = await library.seedFromArchive(archive)
+            }
         }
         services.onSelectPage = { [weak self] selection in self?.chatSelection = selection }
         services.onCreationBound = { [weak self] localID, serverID in

@@ -77,6 +77,16 @@ final class V2DashboardRepository {
         apply(connectors: snapshot.connectors, projects: snapshot.projects, sessions: snapshot.sessions)
     }
 
+    /// Library path: the snapshot went to the local database, not the
+    /// in-memory lists. Only the scalar state the rest of the app reads is
+    /// updated here; list data comes back through `DashboardLibrary`.
+    func noteLibrarySnapshot() {
+        guard isValid else { return }
+        if !hasLoaded { hasLoaded = true }
+        if !isFresh { isFresh = true }
+        if error != nil { error = nil }
+    }
+
     private func apply(connectors: [V2Connector], projects: [V2Project], sessions incoming: [V2SessionMeta]) {
 #if AA_TIMELINE_PROBE
         let probeStart = CFAbsoluteTimeGetCurrent()

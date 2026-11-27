@@ -211,6 +211,22 @@ nonisolated struct StreamingRevealCursor: Equatable {
         clock.setVisible(visible, at: wall)
     }
 
+    /// Begin with only the last `maxBacklogCharacters` owed.
+    ///
+    /// Used when a text first appears while its page is off screen: the whole
+    /// answer arrived behind the reader's back, so the return replays its tail
+    /// at the usual pace (official `longestLagSeconds`) instead of either
+    /// flashing everything or replaying a very long answer from its first
+    /// character.
+    mutating func startFromTail(total: Int, at wall: TimeInterval) {
+        let now = clock.now(at: wall)
+        let clamped = max(total, 0)
+        hasAnchored = true
+        timeline = StreamingRevealTimeline(config: config)
+        timeline.anchor(total: clamped, at: now,
+                        head: max(0, clamped - maxBacklogCharacters))
+    }
+
     /// Characters of `total` that may be drawn now.
     mutating func revealedCount(total: Int, at wall: TimeInterval) -> Int {
         let now = clock.now(at: wall)

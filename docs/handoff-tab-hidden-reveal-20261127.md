@@ -84,8 +84,9 @@
 - 官方常量沿用 `StreamingRevealTimeline` 已有的 320 cps / 640 cps catch-up / 2 s drain；新增 `longestLagSeconds`（默认 3 s = 960 字符）在锚定时跳过更老的积压。
 - 采样发生在每次 adapter refresh（Code 文本本来就只在 apply 时重绘），不用 CADisplayLink：per-frame 光标没有 per-frame 渲染器可画，只会空转；节奏由 `codeStreamingTexts` 的前缀 + `codeRevealRevisions` 进 content signature 保证。
 - 首次见到一段文本时**全显**（官方驱动挂载时也不回放已有内容）；只有光标已经存在、文本在隐藏期间增长的部分才重播。
+- **隐藏期间才第一次出现**的助手消息（包括在隐藏期间就结束、回来时已 settled 的）走 `startFromTail`：从最近 `longestLagSeconds` 的尾巴开始按节奏补播，不会整段直出；这类 settled 消息没有 publisher，由 `codePendingReplays` 提供临时揭示源，追平后交回持久文本。
 - VoiceOver / Reduce Motion 下不建光标（官方同样不建 reveal driver），直接画完整快照。
-- 已知边界：**隐藏期间才开始并结束的回合**没有 publisher/光标，回来仍是一次全出；验收场景（离开时正在流式）不受影响。
+- 隐藏页的回合阶段/完成**震动**也必须过 `shellTabVisible` 门（`TimelineChatTimelineView` 两条 phase haptic + send-confirmed；`CompletionFeedback` 两段 pulse），否则隐藏页会在别的 tab 响。
 
 ### 8.2 两步实现（各自 commit）
 

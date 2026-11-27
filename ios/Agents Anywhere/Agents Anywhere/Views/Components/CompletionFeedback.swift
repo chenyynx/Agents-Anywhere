@@ -18,6 +18,11 @@ private struct CompletionFeedback<Value: Equatable>: ViewModifier {
     let condition: (Value, Value) -> Bool
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.sidebarDrawerIsTransitioning) private var drawerTransitioning
+    /// A completion belongs to the page the reader is looking at. A hidden
+    /// tab page keeps its view mounted and still sees the turn end; without
+    /// this gate it would buzz from off screen (pp 2026-11-27).
+    @Environment(\.shellTabVisible) private var shellTabVisible
+    @Environment(\.shellTabTransitioning) private var shellTabTransitioning
     @State private var pulse = 0
     @State private var playback: Task<Void, Never>?
 
@@ -30,6 +35,7 @@ private struct CompletionFeedback<Value: Equatable>: ViewModifier {
                 // moved the drawer, its own haptic owns the engine and this
                 // one stays silent instead of colliding with it.
                 guard scenePhase == .active, !drawerTransitioning,
+                      shellTabVisible, !shellTabTransitioning,
                       HapticGate.statusAllowed(),
                       condition(previous, current) else { return }
                 playback = Task { @MainActor in
@@ -38,6 +44,7 @@ private struct CompletionFeedback<Value: Equatable>: ViewModifier {
                     do { try await Task.sleep(for: .milliseconds(120)) }
                     catch { return }
                     guard !Task.isCancelled, scenePhase == .active,
+                          shellTabVisible, !shellTabTransitioning,
                           HapticGate.statusAllowed() else { return }
                     note(2)
                     pulse += 1

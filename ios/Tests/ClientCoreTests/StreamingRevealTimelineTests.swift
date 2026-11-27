@@ -167,4 +167,24 @@ import Testing
         #expect(cursor.revealedCount(total: 80, at: 1) == 50)
         #expect(cursor.revealedCount(total: 80, at: 1.1) == 80)
     }
+
+    @Test func tailStartShowsOnlyTheLongestLagWindowThenDrains() {
+        var cursor = StreamingRevealCursor(longestLagSeconds: 1) // 320 chars
+        cursor.setVisible(false, at: 0)
+        // The message first appeared while the page was hidden: skip all but
+        // the last 320 characters, then reveal those at the usual pace.
+        cursor.startFromTail(total: 1000, at: 1)
+        #expect(cursor.revealedCount(total: 1000, at: 1) == 680)
+        cursor.setVisible(true, at: 1)
+        #expect(cursor.revealedCount(total: 1000, at: 1.5) == 840)
+        #expect(cursor.revealedCount(total: 1000, at: 2) == 1000)
+    }
+
+    @Test func shortMessageThatArrivedWhileHiddenStartsEmpty() {
+        var cursor = StreamingRevealCursor(longestLagSeconds: 1)
+        cursor.startFromTail(total: 100, at: 0)
+        #expect(cursor.revealedCount(total: 100, at: 0) == 0)
+        #expect(cursor.revealedCount(total: 100, at: 0.1) == 32)
+        #expect(cursor.revealedCount(total: 100, at: 1) == 100)
+    }
 }

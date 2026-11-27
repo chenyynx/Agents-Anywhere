@@ -394,6 +394,7 @@ struct TimelineChatTimelineView: View {
             .sensoryFeedback(.selection, trigger: settledPhase) { old, new in
                 phaseHapticsArmed
                     && TurnPhaseHaptics.feedback(from: old, to: new) == .selection
+                    && shellTabVisible && !shellTabTransitioning
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
@@ -402,6 +403,7 @@ struct TimelineChatTimelineView: View {
                              trigger: settledPhase) { old, new in
                 phaseHapticsArmed
                     && TurnPhaseHaptics.feedback(from: old, to: new) == .impactLight
+                    && shellTabVisible && !shellTabTransitioning
                     && !sidebarIsTransitioning && HapticGate.statusAllowed()
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
@@ -425,7 +427,8 @@ struct TimelineChatTimelineView: View {
                         "from": String(old.rawValue),
                         "to": String(new.rawValue),
                         "feedback": feedback == .impactLight ? "impactLight" : "selection",
-                        "allowed": (!sidebarIsTransitioning && HapticGate.statusAllowed()
+                        "allowed": (shellTabVisible && !shellTabTransitioning
+                            && !sidebarIsTransitioning && HapticGate.statusAllowed()
                             && !model.session.runtime.stopRequested
                             && !model.session.runtime.predictedIdle) ? "1" : "0",
                         "stopRequested": model.session.runtime.stopRequested ? "1" : "0",
@@ -437,7 +440,8 @@ struct TimelineChatTimelineView: View {
             // signal; its first appearance plays one selection cue. The send
             // itself and the bubble stay silent (pp 2026-11-16).
             .sensoryFeedback(.selection, trigger: bridge.sendConfirmedTick) { _, _ in
-                !sidebarIsTransitioning && HapticGate.statusAllowed()
+                shellTabVisible && !shellTabTransitioning
+                    && !sidebarIsTransitioning && HapticGate.statusAllowed()
                     && !model.session.runtime.stopRequested
                     && !model.session.runtime.predictedIdle
             }
@@ -447,7 +451,8 @@ struct TimelineChatTimelineView: View {
                     sessionID: model.session.id,
                     detail: [
                         "source": "send-confirmed",
-                        "allowed": (!sidebarIsTransitioning && HapticGate.statusAllowed()
+                        "allowed": (shellTabVisible && !shellTabTransitioning
+                            && !sidebarIsTransitioning && HapticGate.statusAllowed()
                             && !model.session.runtime.stopRequested
                             && !model.session.runtime.predictedIdle) ? "1" : "0",
                         "stopRequested": model.session.runtime.stopRequested ? "1" : "0",

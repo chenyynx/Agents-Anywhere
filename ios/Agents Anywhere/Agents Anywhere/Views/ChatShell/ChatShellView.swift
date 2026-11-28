@@ -241,9 +241,8 @@ struct ChatShellView: View {
                         onOpenSession: openSession,
                         onPair: startPairing,
                         onNewSession: { path in
-                            if let id = panes.chatDevice ?? defaultDeviceID,
-                               let model = services.newSession {
-                                model.focusDevice(id, workspace: path)
+                            if let id = panes.chatDevice ?? defaultDeviceID {
+                                services.newSession.focusDevice(id, workspace: path)
                             }
                             panes.startNewChat(workspace: path)
                         },
@@ -271,9 +270,7 @@ struct ChatShellView: View {
                             onOpenSession: openSession,
                             onPair: startPairing,
                             onNewSession: { path in
-                                if let model = services.newSession {
-                                    model.focusDevice(id, workspace: path)
-                                }
+                                services.newSession.focusDevice(id, workspace: path)
                                 panes.startNewChat(workspace: path)
                             },
                             onNewProjectSession: startProjectSession,

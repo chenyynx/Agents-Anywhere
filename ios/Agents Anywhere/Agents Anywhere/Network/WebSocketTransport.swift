@@ -1,7 +1,8 @@
 import Foundation
 
-nonisolated protocol WebSocketConnection: AnyObject {
+nonisolated protocol WebSocketConnection: AnyObject, Sendable {
     func messages() -> AsyncThrowingStream<Data, Error>
+    nonisolated func send(_ data: Data) async throws
     nonisolated func close()
 }
 
@@ -57,6 +58,15 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
                 task.cancel(with: .goingAway, reason: nil)
             }
         }
+    }
+
+    /// The bridge protocols are JSON text frames; sending `.data` would make
+    /// Starlette's `receive_json` reject the frame before handlers see it.
+    nonisolated func send(_ data: Data) async throws {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotParseResponse)
+        }
+        try await task.send(.string(text))
     }
 
     nonisolated func close() {

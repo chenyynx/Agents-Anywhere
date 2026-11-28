@@ -1,0 +1,12 @@
+{
+  "devices": [
+    {
+      "deviceId": "iphone-pp",
+      "name": "pp 的 iPhone",
+      "appVersion": "1.98.16",
+      "bridgeVersion": "1",
+      "online": true,
+      "lastSeen": "2026-11-28T11:59:30Z"
+    }
+  ]
+}

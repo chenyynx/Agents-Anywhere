@@ -220,6 +220,13 @@ class RuntimeInstanceHost(RuntimeHostClient):
         return self.base.connector_id
 
     @property
+    def phone_bridge(self) -> Any | None:
+        # The Claude runtime reads this through the prepared host; the
+        # supervisor wraps the ConnectorRuntimeHost, so a bare attribute set on
+        # the base would otherwise be invisible inside a turn.
+        return getattr(self.base, "phone_bridge", None)
+
+    @property
     def session_namespace(self) -> str:
         if self.instance.runtime_id == self.instance.runtime_type:
             return self.connector_id

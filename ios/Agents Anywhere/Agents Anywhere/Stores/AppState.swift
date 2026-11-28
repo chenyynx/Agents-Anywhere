@@ -158,6 +158,7 @@ final class AppState {
     }
 
     var isServerConnected: Bool { cachedServices?.dashboardRepository.canWrite == true }
+    var phoneBridge: PhoneBridgeClient? { cachedServices?.phoneBridge }
 
     func accessToken() -> String? {
         if let cachedToken { return cachedToken }
@@ -1150,13 +1151,19 @@ final class AppState {
             // starts after the user leaves (scheduled task, another device)
             // still notifies. The dashboard websocket stays foreground-only;
             // the long-poll response carries what the reader needs.
-            let keepAlive = NotificationSettings.isEnabled
+            let notificationsKeepAlive = NotificationSettings.isEnabled
                 && NotificationService.shared.authorizationGranted
+            // Phone control must survive the app leaving the foreground even
+            // when notifications are off: the user expects the Mac to drive a
+            // phone that is in their pocket. KeepAlive is the same ladder.
+            let phoneBridgeKeepAlive = cachedServices?.phoneBridge.isEnabled == true
+                && (cachedServices?.phoneBridge.isFatalError ?? false) == false
+            let keepAlive = notificationsKeepAlive || phoneBridgeKeepAlive
             cancelDashboardUpdates()
             if keepAlive {
                 KeepAliveCoordinator.shared.start()
                 autoKeepAlive = true
-                if let services = cachedServices {
+                if notificationsKeepAlive, let services = cachedServices {
                     startNotificationLongPolling(services: services)
                 }
             }
@@ -1167,7 +1174,9 @@ final class AppState {
                 return nil
             }()
             let keptSession: Set<V2SessionID>
-            if keepAlive, NotificationSettings.sessionSocketEnabled, let watchedSession {
+            if notificationsKeepAlive,
+               NotificationSettings.sessionSocketEnabled,
+               let watchedSession {
                 keptSession = [watchedSession]
             } else {
                 keptSession = []

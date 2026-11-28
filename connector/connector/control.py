@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from connector.core.config import ConnectorConfig
+from connector.core.config import ConnectorConfig, apply_phone_bridge_env
 from connector.core.control_config import (
     config_from_params,
     config_to_payload,
@@ -89,7 +89,14 @@ class ConnectorController:
 
     async def save_config(self, params: Any) -> dict[str, Any]:
         self.lease.claim()
-        config = config_from_params(params)
+        existing = (
+            ConnectorConfig.load(self.config_path)
+            if self.config_path.exists()
+            else None
+        )
+        config = apply_phone_bridge_env(
+            config_from_params(params, existing=existing)
+        )
         saved_path = config.save(self.config_path)
         self._auth_failed = False
         self._last_error = None
@@ -101,11 +108,19 @@ class ConnectorController:
         if self._runtime_task is not None and not self._runtime_task.done():
             return self.get_state()
 
-        config = (
-            config_from_params(params)
-            if isinstance(params, dict) and params
-            else ConnectorConfig.load(self.config_path)
+        existing = (
+            ConnectorConfig.load(self.config_path)
+            if self.config_path.exists()
+            else None
         )
+        config = (
+            config_from_params(params, existing=existing)
+            if isinstance(params, dict) and params
+            else existing
+        )
+        if config is None:
+            raise ValueError("connector config is required")
+        config = apply_phone_bridge_env(config)
         self._last_error = None
         self._auth_failed = False
         try:

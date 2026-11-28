@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents-anywhere.dev/contracts/phone-bridge/1.0/http.schema.json",
+  "title": "Phone Bridge HTTP payloads",
+  "$defs": {
+    "BridgeRequest": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8200,
+          "enum": [
+            8200
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "BridgeResponse": {
+      "type": "object",
+      "properties": {
+        "bridgeId": {
+          "type": "string",
+          "pattern": "^pb_[A-Za-z0-9_-]{8,64}$"
+        },
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "connectorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "relayToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "bridgeId",
+        "deviceId",
+        "connectorId",
+        "port",
+        "relayToken",
+        "expiresAt"
+      ],
+      "additionalProperties": true
+    },
+    "Device": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "appVersion": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "bridgeVersion": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 16
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "lastSeen": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "deviceId",
+        "name",
+        "online"
+      ],
+      "additionalProperties": true
+    },
+    "DeviceList": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Device"
+          },
+          "maxItems": 128
+        }
+      },
+      "required": [
+        "devices"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

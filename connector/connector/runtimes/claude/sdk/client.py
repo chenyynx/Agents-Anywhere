@@ -46,6 +46,7 @@ def new_sdk_client(
     on_tool_result: Any | None = None,
     before_tool: Any | None = None,
     title_control: Any | None = None,
+    phone_control: Any | None = None,
 ) -> Any:
     # Every connection this process opens declares AA's per-task stop control,
     # so a CLI interrupt spares running background work (kill-switch:
@@ -68,6 +69,7 @@ def new_sdk_client(
         on_tool_result=on_tool_result,
         before_tool=before_tool,
         title_control=title_control,
+        phone_control=phone_control,
     )
     if client_factory is not None:
         client = client_factory(sdk, options)
@@ -94,6 +96,7 @@ def build_sdk_options(
     on_tool_result: Any | None = None,
     before_tool: Any | None = None,
     title_control: Any | None = None,
+    phone_control: Any | None = None,
 ) -> Any:
     values = dict(config_values)
     extra_args: dict[str, str | None] = {"replay-user-messages": None}
@@ -142,17 +145,25 @@ def build_sdk_options(
     hooks = _permission_hooks(sdk, on_tool_result, before_tool)
     if hooks is not None:
         kwargs["hooks"] = hooks
+    # In-process MCP servers: titles (see sdk/title_tool.py) and phone control
+    # (see sdk/phone_tool.py). The preset system prompt is the SDK's supported
+    # way to extend Claude Code's own prompt; callers passing no control keep
+    # options exactly as they were (the model-discovery path).
+    mcp_servers: dict[str, Any] = {}
+    prompt_appends: list[str] = []
     if title_control is not None:
-        # Agent-set session titles (see sdk/title_tool.py): inject the
-        # in-process change_title MCP server and extend Claude Code's own
-        # system prompt. The preset form is the SDK's supported way to extend
-        # the default prompt; callers passing no control keep options exactly
-        # as they were (the model-discovery path in catalogs/discovery.py).
-        kwargs["mcp_servers"] = {title_control.server_name: title_control.server}
+        mcp_servers[title_control.server_name] = title_control.server
+        prompt_appends.append(title_control.system_prompt)
+    if phone_control is not None:
+        mcp_servers[phone_control.server_name] = phone_control.server
+        prompt_appends.append(phone_control.system_prompt)
+    if mcp_servers:
+        kwargs["mcp_servers"] = mcp_servers
+    if prompt_appends:
         kwargs["system_prompt"] = {
             "type": "preset",
             "preset": "claude_code",
-            "append": title_control.system_prompt,
+            "append": "\n\n".join(prompt_appends),
         }
     options_cls = getattr(sdk, "ClaudeAgentOptions", None) or getattr(
         sdk,

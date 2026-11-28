@@ -65,6 +65,14 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
         try decodedMessages(path: "/api/v2/dashboard/ws", ticket: ticket, as: V2DashboardSnapshot.self)
     }
 
+    /// Raw phone-bridge socket. Frames are JSON text; the caller owns the
+    /// heartbeat and the reconnect loop because it also owns the TCP tunnels.
+    func phoneBridgeConnection(ticket: String) throws -> any WebSocketConnection {
+        webSocketTransport.connect(
+            url: try webSocketURL(path: "/api/v2/phone/ws", ticket: ticket)
+        )
+    }
+
     private func decodedMessages<Value: Decodable>(
         path: String,
         ticket: String,

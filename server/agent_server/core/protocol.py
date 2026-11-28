@@ -305,11 +305,13 @@ class ProtocolSessionSnapshotResponse(ProtocolWireModel):
 class ProtocolWsTicketScope(ProtocolWireModel):
     sessionId: str | None = None
     dashboard: bool = False
+    # Phone Bridge: the phone's bridge socket is app-wide, not session-scoped.
+    phone: bool = False
 
     @model_validator(mode="after")
     def validate_single_scope(self) -> ProtocolWsTicketScope:
-        has_session = self.sessionId is not None
-        if has_session == self.dashboard:
+        scopes = [self.sessionId is not None, self.dashboard, self.phone]
+        if sum(scopes) != 1:
             raise ValueError("exactly one WebSocket ticket scope is required")
         return self
 
@@ -323,6 +325,34 @@ class ProtocolWsTicketResponse(ProtocolWireModel):
     ticket: str
     expiresAt: str
     serverTime: str
+
+
+class ProtocolPhoneDevice(ProtocolWireModel):
+    deviceId: str = Field(min_length=1, max_length=128)
+    name: str = Field(max_length=128)
+    appVersion: str | None = Field(default=None, max_length=64)
+    bridgeVersion: str | None = Field(default=None, max_length=16)
+    online: bool = True
+    lastSeen: str | None = None
+
+
+class ProtocolPhoneDeviceList(ProtocolWireModel):
+    devices: list[ProtocolPhoneDevice] = Field(default_factory=list, max_length=128)
+
+
+class ProtocolPhoneBridgeRequest(ProtocolWireModel):
+    deviceId: str | None = Field(default=None, min_length=1, max_length=128)
+    port: int = Field(default=8200, ge=1, le=65535)
+    purpose: str | None = Field(default=None, max_length=64)
+
+
+class ProtocolPhoneBridgeResponse(ProtocolWireModel):
+    bridgeId: str
+    deviceId: str
+    connectorId: str
+    port: int
+    relayToken: str
+    expiresAt: str
 
 
 class ProtocolEventEnvelope(ProtocolWireModel):

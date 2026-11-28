@@ -25,7 +25,9 @@ async def create_ws_ticket(
     db: Annotated[Store, Depends(get_store)],
     tickets: Annotated[ClientWsTicketManager, Depends(get_ws_tickets)],
 ) -> ProtocolWsTicketResponse:
-    if payload.scope.dashboard:
+    if payload.scope.phone:
+        scope = "phone"
+    elif payload.scope.dashboard:
         scope = "dashboard"
     else:
         if payload.scope.sessionId is None:

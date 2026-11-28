@@ -37,10 +37,16 @@ final class V2ClientServices {
     let deviceManagement: V2DeviceManagementService
     let workspaceFiles: V2WorkspaceFilesService
     let newSession: NewSessionModel
+    let phoneBridge: PhoneBridgeClient
 
     init(api: V2APIClient, accountID: String) {
         self.api = api
-        scope = V2ClientScope(serverURL: api.serverURL, accountID: accountID)
+        let clientScope = V2ClientScope(serverURL: api.serverURL, accountID: accountID)
+        scope = clientScope
+        phoneBridge = PhoneBridgeClient(
+            realtime: api.realtime,
+            storageScope: V2RestorationStore.scopeKey(clientScope)
+        )
         // One policy instance feeds both the in-memory LRU and the disk
         // archive, so the two windows cannot drift apart (D5).
         let policy = V2SessionCachePolicy()
@@ -171,6 +177,7 @@ final class V2ClientServices {
         newSession.invalidate()
         connectivity.stop()
         onConnectivityChange = nil
+        phoneBridge.stop()
         sessionRepository.reset()
         api.cancelOutstandingRequests()
     }

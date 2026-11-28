@@ -637,6 +637,7 @@
       "clientId": "client",
       "scope": {
         "dashboard": false,
+        "phone": false,
         "sessionId": "session"
       }
     }

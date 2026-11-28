@@ -118,18 +118,6 @@ final class TimelineHostingCell: UICollectionViewCell {
         configurationToken &+= 1
         let token = configurationToken
         self.seededHeight = seededHeight.map { ceil($0) }
-        // Local: the hosting closure must not capture `self` (the cell retains
-        // its content configuration).
-        //
-        // Every cell-reported row is top-anchored, measured or not. A fresh
-        // streaming row is never measured when it is first configured, and
-        // the centered hosting layout then clips its content's TOP — the
-        // message's first line disappeared against the tool group above
-        // (pp 2026-11-28, b1747 log: a just-inserted row drew 75 pt of
-        // content in a 29 pt frame). Hugging stays only for rows measured
-        // through the legacy preferred-fit path, whose first fit must see
-        // the real content height.
-        let topAligned = reportsContentHeight || isMeasured
         contentConfiguration = UIHostingConfiguration {
             // The cell may still carry the estimate when the async content
             // first parses. Without a vertical fixed size SwiftUI compresses
@@ -139,51 +127,48 @@ final class TimelineHostingCell: UICollectionViewCell {
             let content = view
                 .environment(\.collectionTimelineHeightAnimation, true)
                 .fixedSize(horizontal: false, vertical: true)
-            Group {
-                if reportsContentHeight {
-                    // Measure the content, never the cell bounds: feeding the
-                    // cell's own frame back would make every application of a
-                    // height produce another report for the same value. The
-                    // hosting window's safe area is not part of a row's height
-                    // (the M1 parity spike saw a 64 pt status-bar inset).
-                    //
-                    // Official semantics (`CANONICAL/05-layout-scroll.md` §2.2):
-                    // `GeometryProxy.size.height` + `rowMargins.top + bottom`,
-                    // rounded up. This configuration uses `.margins(.all, 0)`
-                    // and the Code row draws its official 5 pt top/bottom row
-                    // margins inside its own SwiftUI body, so the proxy height is
-                    // already the whole row height and the margin term is zero.
-                    content.onGeometryChange(for: CGFloat.self, of: { proxy in
-                        proxy.size.height - proxy.safeAreaInsets.top
-                            - proxy.safeAreaInsets.bottom
-                    }) { [weak self] height in
-                        guard let self, self.configurationToken == token else { return }
-                        // Official `ceil` before the value reaches the surface.
-                        let measured = ceil(height)
-                        guard measured.isFinite, measured > 0 else { return }
-                        self.noteContentOverflow(contentHeight: measured)
-                        self.onContentHeightReport?(measured)
-                    }
-                } else {
-                    // The Chat rows keep the controller's visible-cell polling;
-                    // installing a geometry observer on every scroll cell would
-                    // only add layout work.
-                    content
+            if reportsContentHeight {
+                let measured = content.onGeometryChange(for: CGFloat.self, of: { proxy in
+                    proxy.size.height - proxy.safeAreaInsets.top
+                        - proxy.safeAreaInsets.bottom
+                }) { [weak self] height in
+                    guard let self, self.configurationToken == token else { return }
+                    // Official `ceil` before the value reaches the surface.
+                    let measured = ceil(height)
+                    guard measured.isFinite, measured > 0 else { return }
+                    self.noteContentOverflow(contentHeight: measured)
+                    self.onContentHeightReport?(measured)
                 }
+                // Pin the row's content to the top of its cell with an
+                // explicit frame, then clip there. A streaming row's height
+                // momentarily trails its content (the log's `timeline.row.
+                // overflow`: frame 29 pt while the row already draws 44–109),
+                // and `UIHostingConfiguration`'s own placement centres the
+                // taller content — the row's first line rides up and its top
+                // is cut until the next height apply (pp 2026-11-28
+                // 「刚回复时第一行被往上挤一下、裁掉一半、1–2 秒正常」).
+                // A `GeometryReader` takes the cell's proposed size, so the
+                // root is never taller than the cell and no placement can
+                // shift it; the content inside is fixed at the top and the
+                // overflow leaves through the clipped bottom edge only.
+                //
+                // The geometry probe stays on the inner content: it must keep
+                // measuring the content's ideal height, never the cell frame
+                // (feeding the cell's own frame back would make every height
+                // application produce another report for the same value).
+                GeometryReader { proxy in
+                    measured
+                        .frame(width: proxy.size.width, height: proxy.size.height,
+                               alignment: .top)
+                        .clipped()
+                }
+            } else {
+                // The Chat rows keep the controller's visible-cell polling;
+                // installing a geometry observer on every scroll cell would
+                // only add layout work. They keep the hugging layout the
+                // legacy preferred-fit path expects.
+                content
             }
-            // Top-align a measured row's content inside its cell. A row whose
-            // height momentarily trails its content (estimate → measurement,
-            // the height cache plateauing under a streaming row) would
-            // otherwise be centered by the hosting layout and clipped at the
-            // TOP — losing the row's first lines under the row above (pp
-            // 2026-11-28: the streaming text's first line sat on the tool
-            // row). Anchored at the top, the overflow only ever leaves
-            // through the bottom edge, where the next measurement follows.
-            // Unmeasured rows keep the hugging layout: their first fit must
-            // still measure the real content, not the proposed cell size.
-            .frame(maxWidth: .infinity,
-                   maxHeight: topAligned ? CGFloat.infinity : nil,
-                   alignment: .top)
         }
         .margins(.all, 0)
         .minSize(width: 0, height: 0)

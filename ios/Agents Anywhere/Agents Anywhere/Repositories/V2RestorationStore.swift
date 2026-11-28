@@ -27,9 +27,17 @@ final class V2RestorationStore {
         var selectedTab: String = "chat"
         var chatRoot: LegacyChatRoot = .newSession
         var devicesDevice: V2ConnectorID?
-        var devicesPath: [ChatTabRoute] = []
+        var devicesPath: [LegacyRoute] = []
     }
-    /// `ShellChatRoot` before the merge. `ChatTabRoute` cannot decode it
+    /// `ShellDevicesRoute` before the merge. `ChatTabMode` cannot decode it:
+    /// `.device` no longer exists as a mode and `.newSession` lives in the
+    /// same enum as the two visible modes now.
+    private enum LegacyRoute: Codable {
+        case device(V2ConnectorID)
+        case session(V2SessionID)
+        case newSession(workspace: String?)
+    }
+    /// `ShellChatRoot` before the merge. `ChatTabMode` cannot decode it
     /// because `.newSession` gained an associated workspace in the merge.
     private enum LegacyChatRoot: Codable {
         case newSession
@@ -134,7 +142,7 @@ final class V2RestorationStore {
         } else if let composeWorkspace {
             panes.startNewChat(workspace: composeWorkspace)
         } else {
-            panes.chatPath = []
+            panes.chatTab = .list
         }
         if case let .device(id)? = legacy.devicesPath.first {
             panes.chatDevice = legacy.devicesDevice ?? id

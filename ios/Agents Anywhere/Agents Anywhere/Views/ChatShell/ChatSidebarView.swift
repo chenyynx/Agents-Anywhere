@@ -151,6 +151,7 @@ struct ChatSidebarView: View {
                                     .contentShape(.rect)
                                 }
                                 .buttonStyle(.plain)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .accessibilityLabel(String(localized: "查看全部"))
                             }
                         }

@@ -15,13 +15,12 @@ nonisolated enum ShellTab: String, Codable, Equatable, CaseIterable, Sendable {
     case artifacts
 }
 
-/// One entry above the Chat tab's list root.
-///
-/// The interaction is the old Devices tab's: the device page is the root,
-/// a session is pushed with the system back button. `.device` is kept for
-/// snapshots written before the device page became the root.
-nonisolated enum ChatTabRoute: Codable, Equatable, Hashable, Sendable {
-    case device(V2ConnectorID)
+/// What the merged Chat tab shows. The two modes are peers: opening a
+/// session replaces the list on screen instead of pushing above it, so there
+/// is no back button between them. The only entry from a conversation to the
+/// list is the sidebar's "查看全部".
+nonisolated enum ChatTabMode: Codable, Equatable, Sendable {
+    case list
     case session(V2SessionID)
     case newSession(workspace: String?)
 }
@@ -48,23 +47,22 @@ nonisolated enum ShellStartPage: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Pure navigation state for the tab shell: which tab is selected and where
-/// the Chat tab currently stands.
+/// Pure navigation state for the tab shell: which tab is selected and which
+/// of the Chat tab's two modes is visible.
 ///
 /// Lives in the model layer (Foundation only) so the rules the shell UI has
-/// to honour — one visible session at a time, a device list under a session
-/// stack — are unit-testable without SwiftUI. Persistence is handled by
-/// `V2RestorationStore.panes(in:)` / `save(panes:in:)`.
+/// to honour — one visible session at a time, a list mode that is not a
+/// navigation parent — are unit-testable without SwiftUI. Persistence is
+/// handled by `V2RestorationStore.panes(in:)` / `save(panes:in:)`.
 nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     var selectedTab: ShellTab = .chat
-    /// Empty means the device page (list mode) is the visible page.
-    var chatPath: [ChatTabRoute] = []
-    /// The device whose page is the list root. Nil means "pick the first
+    var chatTab: ChatTabMode = .list
+    /// The device whose page the list mode shows. Nil means "pick the first
     /// online connector" (a restored account may not have loaded any
     /// connectors yet).
     var chatDevice: V2ConnectorID?
     /// The last conversation opened. The `chat` start page reopens it; it is
-    /// separate from `chatPath` because the reader may be on the list now.
+    /// separate from `chatTab` because the reader may be on the list now.
     var lastSessionID: V2SessionID?
 
     /// The session whose timeline is actually on screen.
@@ -74,52 +72,40 @@ nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     /// notifications and reconnect handling key off this answer).
     func visibleSessionId(obscured: Bool) -> V2SessionID? {
         guard !obscured, selectedTab == .chat,
-              case let .session(id)? = chatPath.last else { return nil }
+              case let .session(id) = chatTab else { return nil }
         return id
     }
 
-    var isListMode: Bool { chatPath.isEmpty }
+    var isListMode: Bool {
+        if case .list = chatTab { return true }
+        return false
+    }
 
-    /// Opens an existing session: the list stays the stack root and the
-    /// session is pushed above it, so the system back button returns to the
-    /// list (the old Devices-tab interaction).
+    /// Switches to the conversation mode. The list page is replaced, not
+    /// left underneath: there is no back button between the two modes.
     mutating func openChatSession(_ id: V2SessionID) {
         selectedTab = .chat
-        chatPath = [.session(id)]
+        chatTab = .session(id)
         lastSessionID = id
     }
 
-    /// Opens the compose page above the list root.
     mutating func startNewChat(workspace: String? = nil) {
         selectedTab = .chat
-        chatPath = [.newSession(workspace: workspace)]
+        chatTab = .newSession(workspace: workspace)
     }
 
-    /// Pops everything back to the list root.
+    /// Switches to the list mode. Reached from the sidebar's "查看全部" or a
+    /// device row, never from a navigation back button.
     mutating func showList(device: V2ConnectorID? = nil) {
         selectedTab = .chat
         if let device { chatDevice = device }
-        chatPath = []
+        chatTab = .list
     }
 
-    /// Roots the list on a connector. A different device gets a fresh stack
-    /// rather than reusing the previous device's drill-down.
     mutating func openDevice(_ id: V2ConnectorID) {
         selectedTab = .chat
         chatDevice = id
-        chatPath = []
-    }
-
-    mutating func pushChatRoute(_ route: ChatTabRoute) {
-        selectedTab = .chat
-        if case let .session(id) = route { lastSessionID = id }
-        guard chatPath.last != route else { return }
-        chatPath.append(route)
-    }
-
-    mutating func popChat() {
-        guard !chatPath.isEmpty else { return }
-        chatPath.removeLast()
+        chatTab = .list
     }
 
     /// Applies the user's launch preference. `auto` keeps whatever the
@@ -131,13 +117,13 @@ nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
             return
         case .list:
             selectedTab = .chat
-            chatPath = []
+            chatTab = .list
         case .chat:
             selectedTab = .chat
             if let id = lastSessionID {
-                chatPath = [.session(id)]
+                chatTab = .session(id)
             } else {
-                chatPath = []
+                chatTab = .list
             }
         }
     }

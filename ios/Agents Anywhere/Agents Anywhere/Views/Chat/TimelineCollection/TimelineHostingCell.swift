@@ -120,7 +120,16 @@ final class TimelineHostingCell: UICollectionViewCell {
         self.seededHeight = seededHeight.map { ceil($0) }
         // Local: the hosting closure must not capture `self` (the cell retains
         // its content configuration).
-        let topAligned = isMeasured
+        //
+        // Every cell-reported row is top-anchored, measured or not. A fresh
+        // streaming row is never measured when it is first configured, and
+        // the centered hosting layout then clips its content's TOP — the
+        // message's first line disappeared against the tool group above
+        // (pp 2026-11-28, b1747 log: a just-inserted row drew 75 pt of
+        // content in a 29 pt frame). Hugging stays only for rows measured
+        // through the legacy preferred-fit path, whose first fit must see
+        // the real content height.
+        let topAligned = reportsContentHeight || isMeasured
         contentConfiguration = UIHostingConfiguration {
             // The cell may still carry the estimate when the async content
             // first parses. Without a vertical fixed size SwiftUI compresses

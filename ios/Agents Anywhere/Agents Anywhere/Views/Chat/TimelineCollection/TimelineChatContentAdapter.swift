@@ -827,6 +827,21 @@ final class TimelineChatContentAdapter: TimelineCollectionContentProviding {
             // A Code message group has no folds: its estimate is the message's
             // body text plus one line per collapsed tool row (W7 §3.6 / §6).
             if group.explicitID != nil {
+                // A live row draws the revealed prefix of the streaming
+                // snapshot, not the persisted text. Sizing it from the settled
+                // rows started a brand-new streaming row at the empty-body
+                // estimate — 29 pt of frame while the row already drew 75
+                // (pp 2026-11-28). Answer with the drawn-text seed while the
+                // group streams; only a never-displayed row resolves through
+                // this fallback, so the displayed height stays untouched.
+                let isLiveGroup = group.rows.contains { $0.value.isStreamingText }
+                    || group.rows.contains { codeCompletedStreamingTexts[$0.id] != nil }
+                    || group.rows.contains { codePendingReplays[$0.id] != nil }
+                if isLiveGroup,
+                   let drawn = streamingSeedHeight(for: item, groupID: id,
+                                                   width: lastWidth > 0 ? lastWidth : 361) {
+                    return .fixed(drawn)
+                }
                 return codeEstimateKind(for: item, groupID: id)
             }
             // No row expands in place on this page: every group draws its own

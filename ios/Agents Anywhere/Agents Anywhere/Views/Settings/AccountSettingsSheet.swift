@@ -142,7 +142,6 @@ struct AccountSettingsSheet: View {
             SettingsMenuRow(
                 icon: "anthropicon.sidebar",
                 title: String(localized: "起始页面"),
-                subtitle: String(localized: "启动时打开列表还是上一次的会话"),
                 value: (ShellStartPage(rawValue: startPageRaw) ?? .auto).title,
                 options: ShellStartPage.allCases.map { page in
                     SettingsMenuOption(id: page.rawValue, title: page.title,

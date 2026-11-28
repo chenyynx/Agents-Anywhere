@@ -15,11 +15,16 @@ nonisolated enum ShellTab: String, Codable, Equatable, CaseIterable, Sendable {
     case artifacts
 }
 
-/// What the merged Chat tab shows. The two modes are peers: opening a
-/// session replaces the list on screen instead of pushing above it, so there
-/// is no back button between them. The only entry from a conversation to the
-/// list is the sidebar's "查看全部".
-nonisolated enum ChatTabMode: Codable, Equatable, Sendable {
+/// The conversation at the bottom of the Chat tab's stack.
+nonisolated enum ChatTabRoot: Codable, Equatable, Sendable {
+    case session(V2SessionID)
+    case newSession(workspace: String?)
+}
+
+/// One page pushed above the root conversation. Everything opened from the
+/// list is a push; the system back button walks back to the list and then to
+/// the conversation.
+nonisolated enum ChatTabRoute: Codable, Equatable, Hashable, Sendable {
     case list
     case session(V2SessionID)
     case newSession(workspace: String?)
@@ -47,83 +52,119 @@ nonisolated enum ShellStartPage: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Pure navigation state for the tab shell: which tab is selected and which
-/// of the Chat tab's two modes is visible.
+/// Pure navigation state for the tab shell: which tab is selected, the
+/// conversation at the Chat tab's root, and the pages pushed above it.
 ///
-/// Lives in the model layer (Foundation only) so the rules the shell UI has
-/// to honour — one visible session at a time, a list mode that is not a
-/// navigation parent — are unit-testable without SwiftUI. Persistence is
-/// handled by `V2RestorationStore.panes(in:)` / `save(panes:in:)`.
+/// The root is always a conversation (a session or the compose page). The
+/// list is pushed by the sidebar's "查看全部"; a list row pushes the session
+/// or compose page above the list. The sidebar's session rows replace the
+/// root instead of pushing.
 nonisolated struct ShellPanesModel: Codable, Equatable, Sendable {
     var selectedTab: ShellTab = .chat
-    var chatTab: ChatTabMode = .list
-    /// The device whose page the list mode shows. Nil means "pick the first
-    /// online connector" (a restored account may not have loaded any
-    /// connectors yet).
+    var chatRoot: ChatTabRoot = .newSession(workspace: nil)
+    var chatPath: [ChatTabRoute] = []
+    /// The device whose page the pushed list shows. Nil means "pick the
+    /// first online connector".
     var chatDevice: V2ConnectorID?
-    /// The last conversation opened. The `chat` start page reopens it; it is
-    /// separate from `chatTab` because the reader may be on the list now.
+    /// The last conversation opened. The `chat` start page reopens it.
     var lastSessionID: V2SessionID?
 
     /// The session whose timeline is actually on screen.
     ///
-    /// `obscured` covers the shell being covered by a modal/backgrounding:
-    /// a hidden pane must never claim a live-session identity (background
-    /// notifications and reconnect handling key off this answer).
+    /// With the list or a compose page on top, the root conversation is
+    /// covered and names no visible session.
     func visibleSessionId(obscured: Bool) -> V2SessionID? {
-        guard !obscured, selectedTab == .chat,
-              case let .session(id) = chatTab else { return nil }
+        guard !obscured, selectedTab == .chat else { return nil }
+        if let last = chatPath.last {
+            guard case let .session(id) = last else { return nil }
+            return id
+        }
+        guard case let .session(id) = chatRoot else { return nil }
         return id
     }
 
-    var isListMode: Bool {
-        if case .list = chatTab { return true }
-        return false
+    var isListOnTop: Bool {
+        guard case .list? = chatPath.last else { return false }
+        return true
     }
 
-    /// Switches to the conversation mode. The list page is replaced, not
-    /// left underneath: there is no back button between the two modes.
+    /// Sidebar session rows replace the root conversation and clear the
+    /// pushed stack, so the reader lands on the conversation (no push).
     mutating func openChatSession(_ id: V2SessionID) {
         selectedTab = .chat
-        chatTab = .session(id)
+        chatRoot = .session(id)
+        chatPath = []
         lastSessionID = id
     }
 
+    /// Sidebar/global compose replaces the root conversation.
     mutating func startNewChat(workspace: String? = nil) {
         selectedTab = .chat
-        chatTab = .newSession(workspace: workspace)
+        chatRoot = .newSession(workspace: workspace)
+        chatPath = []
     }
 
-    /// Switches to the list mode. Reached from the sidebar's "查看全部" or a
-    /// device row, never from a navigation back button.
+    /// "查看全部": push the list above the root. A list already in the stack
+    /// is reused (a pushed session above it is popped back to the list).
     mutating func showList(device: V2ConnectorID? = nil) {
         selectedTab = .chat
         if let device { chatDevice = device }
-        chatTab = .list
+        chatPath = [.list]
     }
 
     mutating func openDevice(_ id: V2ConnectorID) {
         selectedTab = .chat
         chatDevice = id
-        chatTab = .list
+        chatPath = [.list]
     }
 
-    /// Applies the user's launch preference. `auto` keeps whatever the
-    /// restoration store produced; the other two override the mode once, at
-    /// launch, and never on an in-session tab switch.
+    /// A list row's session: always a push above the list.
+    mutating func pushChatSession(_ id: V2SessionID) {
+        selectedTab = .chat
+        lastSessionID = id
+        if case .list? = chatPath.last {
+            chatPath.append(.session(id))
+        } else {
+            chatRoot = .session(id)
+            chatPath = [.list]
+        }
+    }
+
+    /// A list row's compose page: always a push above the list.
+    mutating func pushNewChat(workspace: String? = nil) {
+        selectedTab = .chat
+        if case .list? = chatPath.last {
+            chatPath.append(.newSession(workspace: workspace))
+        } else {
+            chatRoot = .newSession(workspace: workspace)
+            chatPath = [.list]
+        }
+    }
+
+    /// The created session replaces the compose page it was pushed from;
+    /// the back button then returns to the list.
+    mutating func finishNewChat(_ id: V2SessionID) {
+        lastSessionID = id
+        if case .newSession? = chatPath.last {
+            chatPath.removeLast()
+            chatPath.append(.session(id))
+        } else {
+            openChatSession(id)
+        }
+    }
+
+    /// Applies the user's launch preference. `auto` keeps the restored stack.
     mutating func applyStartPage(_ page: ShellStartPage) {
+        selectedTab = .chat
         switch page {
         case .auto:
             return
         case .list:
-            selectedTab = .chat
-            chatTab = .list
+            chatPath = [.list]
         case .chat:
-            selectedTab = .chat
+            chatPath = []
             if let id = lastSessionID {
-                chatTab = .session(id)
-            } else {
-                chatTab = .list
+                chatRoot = .session(id)
             }
         }
     }

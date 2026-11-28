@@ -45,6 +45,9 @@ struct NewSessionPageHost: View {
     let services: V2ClientServices
     let library: DashboardLibrary?
     let onMenu: () -> Void
+    /// A pushed compose page shows the system back button instead of the
+    /// drawer; the root compose page shows the drawer.
+    var showsMenuButton = true
     let onOpenDevice: (V2ConnectorID) -> Void
     let onCreated: (V2SessionMeta) -> Void
     let onRefresh: () async -> [V2Connector]
@@ -58,6 +61,7 @@ struct NewSessionPageHost: View {
             dashboardLoading: appState.isDashboardLoading,
             dashboardError: appState.connectorsError,
             onMenu: onMenu,
+            showsMenuButton: showsMenuButton,
             onOpenDevice: onOpenDevice,
             onCreated: onCreated,
             onRefresh: onRefresh)

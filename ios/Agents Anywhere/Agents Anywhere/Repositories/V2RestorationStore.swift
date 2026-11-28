@@ -29,7 +29,7 @@ final class V2RestorationStore {
         var devicesDevice: V2ConnectorID?
         var devicesPath: [LegacyRoute] = []
     }
-    /// `ShellDevicesRoute` before the merge. `ChatTabMode` cannot decode it:
+    /// `ShellDevicesRoute` before the merge. `ChatTabRoute` cannot decode it:
     /// `.device` no longer exists as a mode and `.newSession` lives in the
     /// same enum as the two visible modes now.
     private enum LegacyRoute: Codable {
@@ -37,7 +37,7 @@ final class V2RestorationStore {
         case session(V2SessionID)
         case newSession(workspace: String?)
     }
-    /// `ShellChatRoot` before the merge. `ChatTabMode` cannot decode it
+    /// `ShellChatRoot` before the merge. `ChatTabRoot` cannot decode it
     /// because `.newSession` gained an associated workspace in the merge.
     private enum LegacyChatRoot: Codable {
         case newSession
@@ -98,7 +98,7 @@ final class V2RestorationStore {
     private static func panes(migratedFrom selection: ChatShellSelection) -> ShellPanesModel {
         switch selection {
         case .newSession:
-            // The merged tab's empty state is the list, not a compose page.
+            // The root conversation is the compose page until a session opens.
             return ShellPanesModel()
         case .session(let id):
             var panes = ShellPanesModel()
@@ -106,15 +106,16 @@ final class V2RestorationStore {
             return panes
         case .device(let id):
             var panes = ShellPanesModel()
-            panes.openDevice(id)
+            panes.chatDevice = id
+            panes.chatPath = [.list]
             return panes
         }
     }
 
-    /// Old snapshots had two independent surfaces: the Chat root and the
-    /// Devices stack. The merged tab keeps the surface the user was actually
-    /// looking at, then lifts the device out of the path and records the
-    /// last session for the `chat` start page.
+    /// Old snapshots had the Chat root beside a Devices stack. The merged
+    /// tab keeps the Chat root as the bottom conversation and turns the old
+    /// Devices stack into `[.list] + pushed routes` (the `.device` route is
+    /// lifted into `chatDevice`).
     private static func migrate(_ legacy: LegacyPanes) -> ShellPanesModel? {
         // An unknown tab used to fail the whole decode (the store then started
         // clean); keep that contract instead of silently landing on Chat.
@@ -122,37 +123,35 @@ final class V2RestorationStore {
             return nil
         }
         var panes = ShellPanesModel()
-        let wasDevices = legacy.selectedTab == "devices"
-        var session: V2SessionID?
-        var composeWorkspace: String?
-        if wasDevices {
-            switch legacy.devicesPath.last {
-            case let .session(id)?:
-                session = id
-            case let .newSession(workspace)?:
-                composeWorkspace = workspace
-            default:
-                break
+        var rootSession: V2SessionID?
+        if case let .session(id) = legacy.chatRoot { rootSession = id }
+        panes.chatRoot = rootSession.map(ChatTabRoot.session) ?? .newSession(workspace: nil)
+        panes.lastSessionID = rootSession
+        if legacy.selectedTab == "devices" {
+            var path: [ChatTabRoute] = [.list]
+            var visibleSession: V2SessionID?
+            for route in legacy.devicesPath {
+                switch route {
+                case .device:
+                    continue
+                case let .session(id):
+                    path.append(.session(id))
+                    visibleSession = id
+                case let .newSession(workspace):
+                    path.append(.newSession(workspace: workspace))
+                    visibleSession = nil
+                }
             }
-        } else if case let .session(id) = legacy.chatRoot {
-            session = id
-        }
-        if let session {
-            panes.openChatSession(session)
-        } else if let composeWorkspace {
-            panes.startNewChat(workspace: composeWorkspace)
-        } else {
-            panes.chatTab = .list
-        }
-        if case let .device(id)? = legacy.devicesPath.first {
-            panes.chatDevice = legacy.devicesDevice ?? id
-        } else {
-            panes.chatDevice = legacy.devicesDevice
-        }
-        panes.lastSessionID = session
-        if wasDevices {
+            panes.chatPath = path
+            panes.chatDevice = legacy.devicesDevice ?? legacy.devicesPath.compactMap { route -> V2ConnectorID? in
+                if case let .device(id) = route { return id }
+                return nil
+            }.first
+            if let visibleSession { panes.lastSessionID = visibleSession }
             panes.selectedTab = .chat
         } else {
+            panes.chatPath = []
+            panes.chatDevice = legacy.devicesDevice
             panes.selectedTab = ShellTab(rawValue: legacy.selectedTab) ?? .chat
         }
         return panes

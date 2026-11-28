@@ -11,6 +11,8 @@ struct NewSessionView: View, Equatable {
     var dashboardLoading = false
     var dashboardError: String?
     let onMenu: () -> Void
+    /// Pushed compose pages leave the leading slot to the system back button.
+    var showsMenuButton = true
     let onOpenDevice: (V2ConnectorID) -> Void
     let onCreated: (V2SessionMeta) -> Void
     let onRefresh: () async -> [V2Connector]
@@ -116,7 +118,7 @@ struct NewSessionView: View, Equatable {
         // chat it opens do not flash between white and #F9F9F7.
         .background(Color(uiColor: CodePageTheme.pageBackgroundUIColor)
             .ignoresSafeArea())
-        .modifier(ChatPageToolbar(title: "", onMenu: onMenu))
+        .modifier(ChatPageToolbar(title: "", onMenu: onMenu, showsMenuButton: showsMenuButton))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showsFiles = true } label: { AppSymbol("folder") }

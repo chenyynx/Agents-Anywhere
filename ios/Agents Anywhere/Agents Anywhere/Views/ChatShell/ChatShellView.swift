@@ -277,7 +277,10 @@ struct ChatShellView: View {
                         DevicePageHost(
                             appState: appState, library: appState.activeDashboardLibrary,
                             connectorId: panes.chatDevice ?? defaultDeviceID,
-                            showsMenuButton: false,
+                            // The list is a mode of the Chat tab: its leading
+                            // slot is the drawer, not a back button. Sessions
+                            // pushed above it keep the system back.
+                            showsMenuButton: true,
                             onMenu: toggleSidebar,
                             onOpenDevice: openDevice,
                             onCopyDeviceId: copyDeviceId,
@@ -294,6 +297,7 @@ struct ChatShellView: View {
                             onConnectorDeleted: removeConnector,
                             onSessionsUpdated: appState.updateSessions,
                             onSetSessionsArchived: appState.setSessionsArchived)
+                            .navigationBarBackButtonHidden(true)
                     case let .session(id):
                         SessionPageHost(
                             appState: appState, services: services, chatPane: chatPane,

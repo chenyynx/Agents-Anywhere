@@ -55,7 +55,7 @@ import Testing
         #expect(panes.lastSessionID == nil)
         #expect(panes.visibleSessionId(obscured: false) == nil)
         #expect(panes.visibleSessionId(obscured: true) == nil)
-        #expect(ShellTab.allCases == [.chat, .wiki, .artifacts])
+        #expect(ShellTab.allCases == [.chat, .wiki, .files, .artifacts])
     }
 
     @Test func sidebarSessionReplacesTheRootAndClearsTheStack() {

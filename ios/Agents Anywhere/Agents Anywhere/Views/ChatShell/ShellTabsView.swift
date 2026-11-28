@@ -136,6 +136,14 @@ struct ShellTabsView<ChatRoot: View>: View {
                     onMenu: onMenu
                 )
             }
+        case .files:
+            NavigationStack {
+                PlaceholderTabPage(
+                    title: String(localized: "Files"),
+                    icon: "anthropicon.files",
+                    onMenu: onMenu
+                )
+            }
         case .artifacts:
             NavigationStack {
                 PlaceholderTabPage(

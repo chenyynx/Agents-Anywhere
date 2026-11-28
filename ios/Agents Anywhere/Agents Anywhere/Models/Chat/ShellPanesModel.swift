@@ -12,6 +12,7 @@ import Foundation
 nonisolated enum ShellTab: String, Codable, Equatable, CaseIterable, Sendable {
     case chat
     case wiki
+    case files
     case artifacts
 }
 

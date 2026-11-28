@@ -127,6 +127,7 @@ extension ShellTab {
         switch self {
         case .chat: return "anthropicon.chat"
         case .wiki: return "anthropicon.library"
+        case .files: return "anthropicon.files"
         case .artifacts: return "anthropicon.artifacts"
         }
     }
@@ -135,6 +136,7 @@ extension ShellTab {
         switch self {
         case .chat: return String(localized: "Chats")
         case .wiki: return String(localized: "Wiki")
+        case .files: return String(localized: "Files")
         case .artifacts: return String(localized: "Artifacts")
         }
     }

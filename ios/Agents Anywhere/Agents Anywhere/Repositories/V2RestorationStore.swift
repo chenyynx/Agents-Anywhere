@@ -107,15 +107,15 @@ final class V2RestorationStore {
         case .device(let id):
             var panes = ShellPanesModel()
             panes.chatDevice = id
-            panes.chatPath = [.list]
+            panes.chatMode = .list
             return panes
         }
     }
 
     /// Old snapshots had the Chat root beside a Devices stack. The merged
-    /// tab keeps the Chat root as the bottom conversation and turns the old
-    /// Devices stack into `[.list] + pushed routes` (the `.device` route is
-    /// lifted into `chatDevice`).
+    /// tab keeps the Chat root as the conversation; a Devices snapshot turns
+    /// into list mode with its sessions as pushes above the list (the
+    /// `.device` route is lifted into `chatDevice`).
     private static func migrate(_ legacy: LegacyPanes) -> ShellPanesModel? {
         // An unknown tab used to fail the whole decode (the store then started
         // clean); keep that contract instead of silently landing on Chat.
@@ -123,12 +123,12 @@ final class V2RestorationStore {
             return nil
         }
         var panes = ShellPanesModel()
-        var rootSession: V2SessionID?
-        if case let .session(id) = legacy.chatRoot { rootSession = id }
-        panes.chatRoot = rootSession.map(ChatTabRoot.session) ?? .newSession(workspace: nil)
-        panes.lastSessionID = rootSession
+        var root: ChatTabRoot = .newSession(workspace: nil)
+        if case let .session(id) = legacy.chatRoot { root = .session(id) }
+        panes.chatMode = .conversation(root)
+        if case let .session(id) = root { panes.lastSessionID = id }
         if legacy.selectedTab == "devices" {
-            var path: [ChatTabRoute] = [.list]
+            var path: [ChatTabRoute] = []
             var visibleSession: V2SessionID?
             for route in legacy.devicesPath {
                 switch route {
@@ -142,7 +142,8 @@ final class V2RestorationStore {
                     visibleSession = nil
                 }
             }
-            panes.chatPath = path
+            panes.chatMode = .list
+            panes.listPath = path
             panes.chatDevice = legacy.devicesDevice ?? legacy.devicesPath.compactMap { route -> V2ConnectorID? in
                 if case let .device(id) = route { return id }
                 return nil
@@ -150,7 +151,7 @@ final class V2RestorationStore {
             if let visibleSession { panes.lastSessionID = visibleSession }
             panes.selectedTab = .chat
         } else {
-            panes.chatPath = []
+            panes.listPath = []
             panes.chatDevice = legacy.devicesDevice
             panes.selectedTab = ShellTab(rawValue: legacy.selectedTab) ?? .chat
         }

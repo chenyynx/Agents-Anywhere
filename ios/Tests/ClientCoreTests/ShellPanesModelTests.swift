@@ -3,9 +3,9 @@ import Testing
 @testable import ClientCore
 
 /// The tab shell is a pure value: these tests pin its defaults, the
-/// conversation-root/list-push stack, the one-visible-session rule, the
-/// versioned per-scope persistence, the v1 migration from the old Chat/Devices
-/// shape, and the launch-page preference.
+/// conversation/list modes, the list's own push stack, the one-visible-session
+/// rule, the versioned per-scope persistence, the v1 migration from the old
+/// Chat/Devices shape, and the launch-page preference.
 @Suite @MainActor struct ShellPanesModelTests {
     private func sandbox() -> (defaults: UserDefaults, name: String) {
         let name = "aa-shell-panes-tests-" + UUID().uuidString
@@ -46,11 +46,11 @@ import Testing
         defaults.set(data, forKey: panesKey(scope))
     }
 
-    @Test func aFreshShellStartsOnTheComposeRoot() {
+    @Test func aFreshShellStartsOnTheComposeConversation() {
         let panes = ShellPanesModel()
         #expect(panes.selectedTab == .chat)
-        #expect(panes.chatRoot == .newSession(workspace: nil))
-        #expect(panes.chatPath.isEmpty)
+        #expect(panes.chatMode == .conversation(.newSession(workspace: nil)))
+        #expect(panes.listPath.isEmpty)
         #expect(panes.chatDevice == nil)
         #expect(panes.lastSessionID == nil)
         #expect(panes.visibleSessionId(obscured: false) == nil)
@@ -58,59 +58,60 @@ import Testing
         #expect(ShellTab.allCases == [.chat, .wiki, .files, .artifacts])
     }
 
-    @Test func sidebarSessionReplacesTheRootAndClearsTheStack() {
+    @Test func sidebarSessionSwitchesToTheConversationMode() {
         var panes = ShellPanesModel()
         panes.showList()
         panes.pushChatSession("old")
         panes.openChatSession("session-a")
         #expect(panes.selectedTab == .chat)
-        #expect(panes.chatRoot == .session("session-a"))
-        #expect(panes.chatPath.isEmpty)
+        #expect(panes.chatMode == .conversation(.session("session-a")))
+        #expect(panes.listPath.isEmpty)
         #expect(panes.lastSessionID == "session-a")
         #expect(panes.visibleSessionId(obscured: false) == "session-a")
-        // A sidebar compose also replaces the root.
+        // A sidebar compose also replaces the conversation.
         panes.startNewChat(workspace: "/tmp/work")
-        #expect(panes.chatRoot == .newSession(workspace: "/tmp/work"))
-        #expect(panes.chatPath.isEmpty)
+        #expect(panes.chatMode == .conversation(.newSession(workspace: "/tmp/work")))
+        #expect(panes.listPath.isEmpty)
         #expect(panes.visibleSessionId(obscured: false) == nil)
     }
 
-    @Test func viewAllPushesTheListAndListRowsPushAboveIt() {
+    @Test func viewAllSwitchesToTheListAndRowsPushAboveIt() {
         var panes = ShellPanesModel()
         panes.openChatSession("root-session")
         panes.showList(device: "connector-a")
-        #expect(panes.chatRoot == .session("root-session"))
-        #expect(panes.chatPath == [.list])
+        #expect(panes.chatMode == .list)
+        #expect(panes.listPath.isEmpty)
         #expect(panes.chatDevice == "connector-a")
         #expect(panes.visibleSessionId(obscured: false) == nil)
         // A list row pushes a session above the list.
         panes.pushChatSession("list-session")
-        #expect(panes.chatPath == [.list, .session("list-session")])
+        #expect(panes.listPath == [.session("list-session")])
         #expect(panes.visibleSessionId(obscured: false) == "list-session")
         #expect(panes.lastSessionID == "list-session")
-        // "查看全部" reuses the list and drops the pushed session.
+        // "查看全部" reuses the list root and drops the pushed session.
         panes.showList()
-        #expect(panes.chatPath == [.list])
+        #expect(panes.chatMode == .list)
+        #expect(panes.listPath.isEmpty)
         #expect(panes.visibleSessionId(obscured: false) == nil)
         // A compose row pushes and becomes a session page on creation.
         panes.pushNewChat(workspace: "/tmp/work")
-        #expect(panes.chatPath == [.list, .newSession(workspace: "/tmp/work")])
+        #expect(panes.listPath == [.newSession(workspace: "/tmp/work")])
         panes.finishNewChat("new-session")
-        #expect(panes.chatPath == [.list, .session("new-session")])
+        #expect(panes.listPath == [.session("new-session")])
         #expect(panes.visibleSessionId(obscured: false) == "new-session")
     }
 
-    @Test func choosingADeviceRebuildsTheListWithThatDevice() {
+    @Test func choosingADeviceRebuildsTheListRoot() {
         var panes = ShellPanesModel()
         panes.openChatSession("root-session")
         panes.openDevice("connector-a")
+        #expect(panes.chatMode == .list)
         #expect(panes.chatDevice == "connector-a")
-        #expect(panes.chatPath == [.list])
+        #expect(panes.listPath.isEmpty)
         panes.pushChatSession("pushed")
         panes.openDevice("connector-b")
         #expect(panes.chatDevice == "connector-b")
-        #expect(panes.chatPath == [.list])
-        #expect(panes.chatRoot == .session("root-session"))
+        #expect(panes.listPath.isEmpty)
     }
 
     @Test func onlyTheVisiblePageNamesASession() {
@@ -145,7 +146,7 @@ import Testing
         #expect(relaunched.panes(in: scope).visibleSessionId(obscured: false) == "pushed-session")
     }
 
-    @Test func legacyChatSessionBecomesTheRootConversation() throws {
+    @Test func legacyChatSessionBecomesTheConversation() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
@@ -153,12 +154,12 @@ import Testing
                        defaults: defaults, scope: scope)
         let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
         #expect(restored.selectedTab == .chat)
-        #expect(restored.chatRoot == .session("old-session"))
-        #expect(restored.chatPath.isEmpty)
+        #expect(restored.chatMode == .conversation(.session("old-session")))
+        #expect(restored.listPath.isEmpty)
         #expect(restored.lastSessionID == "old-session")
     }
 
-    @Test func legacyDevicesStackBecomesListPlusPushedRoutes() throws {
+    @Test func legacyDevicesStackBecomesListModePlusPushes() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
@@ -170,12 +171,12 @@ import Testing
         let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
         #expect(restored.selectedTab == .chat)
         #expect(restored.chatDevice == "connector")
-        #expect(restored.chatRoot == .newSession(workspace: nil))
-        #expect(restored.chatPath == [.list, .session("session")])
+        #expect(restored.chatMode == .list)
+        #expect(restored.listPath == [.session("session")])
         #expect(restored.lastSessionID == "session")
     }
 
-    @Test func legacyDevicesComposeBecomesAListPlusComposeRoute() throws {
+    @Test func legacyDevicesComposeBecomesAListPush() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
@@ -185,19 +186,20 @@ import Testing
                        defaults: defaults, scope: scope)
         let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
         #expect(restored.chatDevice == "connector")
-        #expect(restored.chatPath == [.list, .newSession(workspace: "/tmp/work")])
+        #expect(restored.chatMode == .list)
+        #expect(restored.listPath == [.newSession(workspace: "/tmp/work")])
         #expect(restored.lastSessionID == nil)
     }
 
-    @Test func legacyChatComposeStaysTheComposeRoot() throws {
+    @Test func legacyChatComposeStaysTheComposeConversation() throws {
         let (defaults, name) = sandbox()
         defer { defaults.removePersistentDomain(forName: name) }
         let scope = serverScope()
         try saveLegacy(OldPanes(selectedTab: "chat", chatRoot: .newSession),
                        defaults: defaults, scope: scope)
         let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
-        #expect(restored.chatRoot == .newSession(workspace: nil))
-        #expect(restored.chatPath.isEmpty)
+        #expect(restored.chatMode == .conversation(.newSession(workspace: nil)))
+        #expect(restored.listPath.isEmpty)
     }
 
     @Test func legacyWikiTabSurvivesTheMerge() throws {
@@ -208,8 +210,8 @@ import Testing
                        defaults: defaults, scope: scope)
         let restored = V2RestorationStore(defaults: defaults).panes(in: scope)
         #expect(restored.selectedTab == .wiki)
-        #expect(restored.chatRoot == .session("s"))
-        #expect(restored.chatPath.isEmpty)
+        #expect(restored.chatMode == .conversation(.session("s")))
+        #expect(restored.listPath.isEmpty)
     }
 
     @Test func brokenOrUnknownPanesFallBackToTheDefaultWithoutTrapping() throws {
@@ -249,16 +251,16 @@ import Testing
         store.save(selection: .session("legacy-session"), in: scope)
         let chat = store.panes(in: scope)
         #expect(chat.selectedTab == .chat)
-        #expect(chat.chatRoot == .session("legacy-session"))
-        #expect(chat.chatPath.isEmpty)
+        #expect(chat.chatMode == .conversation(.session("legacy-session")))
+        #expect(chat.listPath.isEmpty)
         #expect(chat.lastSessionID == "legacy-session")
 
         store.save(selection: .device("legacy-connector"), in: scope)
         let devices = store.panes(in: scope)
         #expect(devices.selectedTab == .chat)
         #expect(devices.chatDevice == "legacy-connector")
-        #expect(devices.chatPath == [.list])
-        #expect(devices.chatRoot == .newSession(workspace: nil))
+        #expect(devices.chatMode == .list)
+        #expect(devices.listPath.isEmpty)
 
         store.save(selection: .newSession, in: scope)
         #expect(store.panes(in: scope) == ShellPanesModel())
@@ -305,24 +307,25 @@ import Testing
         panes.showList()
 
         panes.applyStartPage(.auto)
-        #expect(panes.chatPath == [.list])
+        #expect(panes.chatMode == .list)
 
         panes.applyStartPage(.chat)
-        #expect(panes.chatPath.isEmpty)
-        #expect(panes.chatRoot == .session("last-session"))
+        #expect(panes.chatMode == .conversation(.session("last-session")))
+        #expect(panes.listPath.isEmpty)
         #expect(panes.visibleSessionId(obscured: false) == "last-session")
 
         panes.applyStartPage(.list)
-        #expect(panes.chatPath == [.list])
+        #expect(panes.chatMode == .list)
+        #expect(panes.listPath.isEmpty)
         #expect(panes.selectedTab == .chat)
 
-        // No remembered session: `chat` keeps the compose root.
+        // No remembered session: `chat` keeps the compose conversation.
         var empty = ShellPanesModel()
         empty.selectedTab = .wiki
         empty.applyStartPage(.chat)
         #expect(empty.selectedTab == .chat)
-        #expect(empty.chatPath.isEmpty)
-        #expect(empty.chatRoot == .newSession(workspace: nil))
+        #expect(empty.chatMode == .conversation(.newSession(workspace: nil)))
+        #expect(empty.listPath.isEmpty)
     }
 
     @Test func savedEnvelopeUsesVersionTwo() throws {

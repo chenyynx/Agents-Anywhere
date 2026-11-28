@@ -29,6 +29,7 @@ from connector.runtimes.claude.sdk.tasks import (
     ClaudeTaskEvent,
     task_event_from_message,
 )
+from connector.runtimes.claude.sdk.phone_tool import is_phone_tool_name
 from connector.runtimes.claude.sdk.title_tool import is_title_tool_name
 from connector.runtimes.claude.timeline.messages import (
     is_synthetic_control_message,
@@ -1051,6 +1052,17 @@ class ClaudeConnection:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow",
                     "permissionDecisionReason": "Session titles are set by the connector.",
+                }
+            }
+        if is_phone_tool_name(data.get("tool_name")):
+            # The phone-side "Allow AA to control this phone" switch is the
+            # consent gate. Per-tap approvals would make the bridge unusable;
+            # the phone can revoke access at any time by turning it off.
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Phone control is enabled on the phone.",
                 }
             }
         return {}

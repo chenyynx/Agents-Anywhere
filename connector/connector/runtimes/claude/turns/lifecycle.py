@@ -84,6 +84,7 @@ from connector.runtimes.claude.sdk.stop_affordance import (
     sdk_supports_stop_task,
 )
 from connector.runtimes.claude.sdk.tasks import ClaudeTaskEvent
+from connector.runtimes.claude.sdk.phone_tool import build_phone_tool
 from connector.runtimes.claude.sdk.title_tool import build_change_title_tool
 from connector.runtimes.claude.sessions.cache import ClaudeSessionStore
 from connector.runtimes.claude.sessions.open_cards import ClaudeOpenAgentCards
@@ -2764,6 +2765,10 @@ class ClaudeTurnRunner:
             cwd=lambda: session.cwd,
             on_applied=apply_agent_title,
         )
+        phone_control = build_phone_tool(
+            sdk,
+            getattr(self.host, "phone_bridge", None),
+        )
         try:
             client = new_sdk_client(
                 sdk=sdk,
@@ -2777,6 +2782,7 @@ class ClaudeTurnRunner:
                 on_tool_result=tool_result,
                 before_tool=lambda data: connection.before_tool(data),
                 title_control=title_control,
+                phone_control=phone_control,
             )
         except BaseException:
             remove_gateway_settings_file(settings_path)

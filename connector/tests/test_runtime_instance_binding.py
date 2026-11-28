@@ -305,6 +305,17 @@ def test_runtime_instance_preserves_type_and_adds_instance_scope() -> None:
     asyncio.run(run())
 
 
+def test_runtime_instance_host_forwards_phone_bridge() -> None:
+    base = RecordingHost()
+    marker = object()
+    base.phone_bridge = marker
+    host = RuntimeInstanceHost(
+        base=base,
+        instance=RuntimeInstanceSpec("rti_codex_one", "codex", "Codex One"),
+    )
+    assert host.phone_bridge is marker
+
+
 def test_runtime_instance_host_scopes_side_effects_and_storage() -> None:
     async def run() -> None:
         base = RecordingHost()

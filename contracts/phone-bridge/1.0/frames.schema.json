@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents-anywhere.dev/contracts/phone-bridge/1.0/frames.schema.json",
+  "title": "Phone Bridge frames",
+  "description": "Direction-specific JSON text frames. The relay moves opaque bytes; bridgeId is present in every phone-side frame and in server-to-phone frames, but not in the per-bridge connector relay frames.",
+  "$defs": {
+    "FrameBase": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "bridgeId": {
+          "type": "string",
+          "pattern": "^pb_[A-Za-z0-9_-]{8,64}$"
+        },
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "connectorName": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "appVersion": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "bridgeVersion": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "maxLength": 1398104
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "eof",
+            "timeout",
+            "error",
+            "revoked"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 512
+        }
+      },
+      "additionalProperties": true
+    },
+    "PhoneHello": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "hello"
+            }
+          },
+          "required": [
+            "type",
+            "deviceId",
+            "name",
+            "appVersion",
+            "bridgeVersion"
+          ]
+        }
+      ]
+    },
+    "PhoneReady": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ready"
+            },
+            "port": {
+              "const": 8200
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "port"
+          ]
+        }
+      ]
+    },
+    "PhoneData": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "data"
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "seq",
+            "data"
+          ]
+        }
+      ]
+    },
+    "PhoneError": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message"
+          ]
+        }
+      ]
+    },
+    "PhoneClose": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "close"
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "PhonePing": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ping"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "PhonePong": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "pong"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "ServerToPhoneOpen": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "open"
+            },
+            "port": {
+              "const": 8200
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "port"
+          ]
+        }
+      ]
+    },
+    "ServerToPhoneData": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "data"
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "seq",
+            "data"
+          ]
+        }
+      ]
+    },
+    "ServerToPhoneClose": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "close"
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ServerToPhoneError": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message"
+          ]
+        }
+      ]
+    },
+    "ServerToPhoneRegistered": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "registered"
+            }
+          },
+          "required": [
+            "type",
+            "deviceId"
+          ]
+        }
+      ]
+    },
+    "ConnectorToServerData": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "data"
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "data"
+          ]
+        }
+      ]
+    },
+    "ConnectorToServerClose": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "close"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ConnectorToServerPing": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ping"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "ServerToConnectorReady": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "ready"
+            }
+          },
+          "required": [
+            "type",
+            "bridgeId",
+            "port"
+          ]
+        }
+      ]
+    },
+    "ServerToConnectorData": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "data"
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "data"
+          ]
+        }
+      ]
+    },
+    "ServerToConnectorClose": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "close"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ServerToConnectorError": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message"
+          ]
+        }
+      ]
+    },
+    "ServerToConnectorPong": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/FrameBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "pong"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from connector.control import ConnectorController
-from connector.core.config import ConnectorConfig
+from connector.core.config import ConnectorConfig, apply_phone_bridge_env
 from connector.core.json_rpc import JsonRpcStdioServer, open_stdio_server
 from connector.core.runtime_owner import (
     RuntimeLease,
@@ -261,10 +261,12 @@ async def _resolve_server_url_for_pair(
 
 
 def _configure(args: argparse.Namespace) -> None:
-    config = ConnectorConfig(
-        server_url=args.server_url.rstrip("/"),
-        connector_id=args.connector_id,
-        connector_token=args.connector_token,
+    config = apply_phone_bridge_env(
+        ConnectorConfig(
+            server_url=args.server_url.rstrip("/"),
+            connector_id=args.connector_id,
+            connector_token=args.connector_token,
+        )
     )
     path = config.save(args.config)
     print(f"Saved connector config: {path}")
@@ -275,15 +277,17 @@ def _resolve_config(args: argparse.Namespace) -> ConnectorConfig:
     connector_id = args.connector_id or os.environ.get("AGENT_CONNECTOR_ID")
     connector_token = args.connector_token or os.environ.get("AGENT_CONNECTOR_TOKEN")
     if server_url and connector_id and connector_token:
-        return ConnectorConfig(
-            server_url=server_url.rstrip("/"),
-            connector_id=connector_id,
-            connector_token=connector_token,
+        return apply_phone_bridge_env(
+            ConnectorConfig(
+                server_url=server_url.rstrip("/"),
+                connector_id=connector_id,
+                connector_token=connector_token,
+            )
         )
 
     config_path = Path(args.config)
     if config_path.exists():
-        return ConnectorConfig.load(config_path)
+        return apply_phone_bridge_env(ConnectorConfig.load(config_path))
 
     missing = []
     if not server_url:

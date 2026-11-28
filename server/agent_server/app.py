@@ -33,6 +33,7 @@ from agent_server.api import (
     error_handlers,
     oauth,
     pairing,
+    phone_bridge,
     projects,
     service,
     sessions,
@@ -51,6 +52,7 @@ from agent_server.infra.db.migrations import (
     upgrade_database,
 )
 from agent_server.infra.fs_downloads import FsDownloadRelayManager
+from agent_server.infra.phone_bridge_broker import PhoneBridgeBroker
 from agent_server.infra.redis_coordinator import RedisCoordinator
 from agent_server.infra.repositories.facade import Store
 from agent_server.infra.terminal_broker import TerminalBroker
@@ -182,6 +184,11 @@ def create_app(
                 "server concurrency pid={} workers={} event_workers={}",
                 os.getpid(), process_settings.workers, process_settings.event_workers,
             )
+            if process_settings.workers > 1:
+                logger.warning(
+                    "phone bridge v1 requires a single server worker; "
+                    "multi-worker phone routing is not implemented"
+                )
             await require_current_database(app.state.store.engine)
             app.state.database_schema_version = await database_schema_version(
                 app.state.store.engine
@@ -191,6 +198,7 @@ def create_app(
             await app.state.timeline_write_buffer.start()
             await app.state.terminal_stream_hub.start()
             await app.state.terminal_broker.start()
+            await app.state.phone_bridge_broker.start()
             await app.state.rpc.start()
             await app.state.usage_recorder.start()
             presence_task = asyncio.create_task(_connector_presence_watchdog(app))
@@ -249,17 +257,20 @@ def create_app(
                         await app.state.terminal_broker.close()
                     finally:
                         try:
-                            await app.state.terminal_stream_hub.close()
+                            await app.state.phone_bridge_broker.close()
                         finally:
                             try:
-                                await app.state.timeline_broker.close()
+                                await app.state.terminal_stream_hub.close()
                             finally:
                                 try:
-                                    await app.state.redis.close()
+                                    await app.state.timeline_broker.close()
                                 finally:
-                                    await app.state.store.close()
+                                    try:
+                                        await app.state.redis.close()
+                                    finally:
+                                        await app.state.store.close()
 
-    app = FastAPI(title="Agent Server", version="2.3.0", lifespan=lifespan)
+    app = FastAPI(title="Agent Server", version="2.4.0", lifespan=lifespan)
     app.add_exception_handler(
         ConnectorServiceError,
         error_handlers.connector_service_error_handler,
@@ -305,6 +316,8 @@ def create_app(
         app.state.redis,
         instance_id=app.state.rpc.instance_id,
     )
+    app.state.phone_bridge_broker = PhoneBridgeBroker()
+    app.state.phone_bridge_broker.multi_worker = process_settings.workers > 1
     app.state.terminal_stream_hub = TerminalStreamHub(app.state.redis)
     app.state.timeline_broker = TimelineBroker(
         app.state.redis,
@@ -451,6 +464,7 @@ def create_app(
     app.include_router(connector_shell.router, prefix=API_V2_PREFIX)
     app.include_router(connector_terminal.router, prefix=API_V2_PREFIX)
     app.include_router(client_ws.router, prefix=API_V2_PREFIX)
+    app.include_router(phone_bridge.router, prefix=API_V2_PREFIX)
     app.include_router(connector_ingress.router, prefix=API_V2_PREFIX)
     app.include_router(agents.router, prefix=API_V2_PREFIX)
     app.include_router(pairing.router, prefix=API_V2_PREFIX)

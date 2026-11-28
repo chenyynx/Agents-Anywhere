@@ -61,7 +61,7 @@ Agents Anywhere 是一个跨设备的 Agent 工作台。工作设备上的 **Con
 
 ## 提交与 PR
 
-- **从最新的 `feat/code-profile-beta` 创建分支**。本仓库是上游 `anywhere-labs/Agents-Anywhere` 的下游镜像；当前集成与发布线是 `feat/code-profile-beta`（部署从 beta 同步），`dev` 已冻结、不再合入；`main` 只用来同步上游，不要从它建分支。
+- **从最新的 `core` 创建分支**。本仓库是上游 `anywhere-labs/Agents-Anywhere` 的下游镜像；当前默认开发线是 `core`（2026-11-28 pp 定），`beta` / `next` 仍在但只有明确要求才动；`dev` 已冻结、不再合入；`main` 只用来同步上游，不要从它建分支。部署以部署工作副本为准。
 - 分支名用朴素名（`fix/<topic>`、`feat/<topic>`、`docs/<topic>`），**不带工具或署名前缀**（`codex/`、`cc/` 都不用）。
 - 提交信息使用 Conventional Commits，并带上作用域，例如 `fix(dsh): ...`、`feat(android): ...`、`docs(ios): ...`。正文可以用中文或英文。
 - 一个 PR 只做一件事。不要顺手提交与任务无关的本地改动、部署检查点或调试产物（`.local-dev/`、截图、日志）。

@@ -3,6 +3,7 @@ import Foundation
 nonisolated enum V2RealtimeScope: Hashable {
     case dashboard
     case session(V2SessionID)
+    case phone
 }
 
 nonisolated struct V2WebSocketTicketRequest: Encodable, Hashable {
@@ -13,15 +14,22 @@ nonisolated struct V2WebSocketTicketRequest: Encodable, Hashable {
 nonisolated struct V2WebSocketTicketScope: Encodable, Hashable {
     let sessionId: V2SessionID?
     let dashboard: Bool
+    let phone: Bool
 
     init(scope: V2RealtimeScope) {
         switch scope {
         case .dashboard:
             sessionId = nil
             dashboard = true
+            phone = false
         case let .session(sessionId):
             self.sessionId = sessionId
             dashboard = false
+            phone = false
+        case .phone:
+            sessionId = nil
+            dashboard = false
+            phone = true
         }
     }
 }

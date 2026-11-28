@@ -264,6 +264,26 @@ struct AccountSettingsSheet: View {
                                   title: String(localized: "Server"),
                                   value: appState.serverURL?.host,
                                   destination: SettingsServerView())
+            SettingsRowDivider()
+            SettingsNavigationRow(icon: "anthropicon.mobilePhone",
+                                  title: String(localized: "手机控制"),
+                                  value: phoneStatusText,
+                                  destination: PhoneControlSettingsView())
+        }
+    }
+
+    private var phoneStatusText: String {
+        guard let bridge = appState.phoneBridge else { return "" }
+        guard bridge.isEnabled else { return String(localized: "未连接") }
+        switch bridge.status {
+        case .connected:
+            return bridge.currentComputerName == nil
+                ? String(localized: "等待电脑")
+                : String(localized: "已连接")
+        case .connecting:
+            return String(localized: "连接中")
+        case .off, .error(_):
+            return String(localized: "未连接")
         }
     }
 

@@ -19,7 +19,7 @@ let package = Package(
                 "App", "Assets.xcassets", "Resources", "Services", "Stores", "Views",
                 "ios-dark.icon", "Business/AccountAvatarProcessor.swift",
             ],
-            sources: ["API", "Network", "Models", "Domain", "Business", "Repositories", "Diagnostics"],
+            sources: ["API", "Network", "Models", "Domain", "Business", "Repositories", "Diagnostics", "PhoneBridge"],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         ),
         .testTarget(

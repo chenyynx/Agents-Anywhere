@@ -36,6 +36,7 @@ from connector.server.ingest import ConnectorIngestClient
 from connector.server.notification_coalescer import (
     TimelineItemNotificationCoalescer,
 )
+from connector.server.phone_bridge import PhoneBridgeRunner
 from connector.server.protocol_revision import ProtocolRevisionClock
 from connector.server.rpc import ConnectorRpcChannel, ConnectorWebSocketFrameTooLarge
 from connector.server.runtime_host import ConnectorRuntimeHost
@@ -110,6 +111,14 @@ class BackendRpcClient:
             http_client_getter=self._get_http_client,
             http_client_factory=lambda timeout: self._new_http_client(timeout=timeout),
         )
+        self._phone_bridge = PhoneBridgeRunner(
+            config=config,
+            access_token_provider=self._auth.ensure_access_token,
+        )
+        # The Claude runtime reads this through its prepared host copy; the
+        # in-process phone MCP tool uses the same runner as the local listener.
+        if isinstance(self.agent_runtime_host, ConnectorRuntimeHost):
+            self.agent_runtime_host.phone_bridge = self._phone_bridge
         self._ingest = ConnectorIngestClient(
             server_url=config.server_url,
             access_token_provider=self._auth.ensure_access_token,
@@ -145,6 +154,7 @@ class BackendRpcClient:
 
     async def run_forever(self) -> None:
         self._http_client = self._new_http_client(timeout=60)
+        await self._phone_bridge.start()
         ingest_flush_task = asyncio.create_task(self._ingest.flush_loop())
         sync_state_flush_task = asyncio.create_task(self._sync_state_flush_loop())
         try:
@@ -210,6 +220,7 @@ class BackendRpcClient:
                     )
                     await asyncio.sleep(self.config.reconnect_seconds)
         finally:
+            await self._phone_bridge.stop()
             relay_tasks = [task for _, task in self._terminal_relay_tasks.values()]
             for task in relay_tasks:
                 task.cancel()

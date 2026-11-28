@@ -139,7 +139,7 @@ struct ShellTabsView<ChatRoot: View>: View {
         case .files:
             NavigationStack {
                 PlaceholderTabPage(
-                    title: String(localized: "Files"),
+                    title: "Files",
                     icon: "anthropicon.files",
                     onMenu: onMenu
                 )

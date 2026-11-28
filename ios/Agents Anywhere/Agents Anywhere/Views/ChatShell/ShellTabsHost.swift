@@ -136,7 +136,9 @@ extension ShellTab {
         switch self {
         case .chat: return String(localized: "Chats")
         case .wiki: return String(localized: "Wiki")
-        case .files: return String(localized: "Files")
+        // The tab is named "Files" verbatim; the shared "Files" key is
+        // localized to 文件 elsewhere in the app.
+        case .files: return "Files"
         case .artifacts: return String(localized: "Artifacts")
         }
     }

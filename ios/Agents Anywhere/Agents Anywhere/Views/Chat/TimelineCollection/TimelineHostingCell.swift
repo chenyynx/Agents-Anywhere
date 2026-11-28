@@ -54,6 +54,16 @@ final class TimelineHostingCell: UICollectionViewCell {
     /// one measurement per content change instead of a repeated fit.
     var onContentHeightReport: ((CGFloat) -> Void)?
 
+    /// The hosted content laid out taller than the cell's own frame — the row
+    /// is drawing inside a height that no longer fits it. Called at most once
+    /// a second per cell with (content height, frame height); the controller
+    /// turns it into a `timeline.row.overflow` line so a stuck-estimate row
+    /// can be named from an exported log (pp 2026-11-28: streaming text's
+    /// first line sat on the tool row; the height cache plateaus while the
+    /// content keeps growing).
+    var onContentOverflowReport: ((CGFloat, CGFloat) -> Void)?
+    private var lastOverflowReportAt: CFTimeInterval = 0
+
     private var policy: TimelineRowHeightPolicy = .measured
     /// Whether the height cache holds a measured/precalc height for the row's
     /// current key. Read from the layout attributes at configuration time.
@@ -108,6 +118,9 @@ final class TimelineHostingCell: UICollectionViewCell {
         configurationToken &+= 1
         let token = configurationToken
         self.seededHeight = seededHeight.map { ceil($0) }
+        // Local: the hosting closure must not capture `self` (the cell retains
+        // its content configuration).
+        let topAligned = isMeasured
         contentConfiguration = UIHostingConfiguration {
             // The cell may still carry the estimate when the async content
             // first parses. Without a vertical fixed size SwiftUI compresses
@@ -117,35 +130,51 @@ final class TimelineHostingCell: UICollectionViewCell {
             let content = view
                 .environment(\.collectionTimelineHeightAnimation, true)
                 .fixedSize(horizontal: false, vertical: true)
-            if reportsContentHeight {
-                // Measure the content, never the cell bounds: feeding the
-                // cell's own frame back would make every application of a
-                // height produce another report for the same value. The
-                // hosting window's safe area is not part of a row's height
-                // (the M1 parity spike saw a 64 pt status-bar inset).
-                //
-                // Official semantics (`CANONICAL/05-layout-scroll.md` §2.2):
-                // `GeometryProxy.size.height` + `rowMargins.top + bottom`,
-                // rounded up. This configuration uses `.margins(.all, 0)`
-                // and the Code row draws its official 5 pt top/bottom row
-                // margins inside its own SwiftUI body, so the proxy height is
-                // already the whole row height and the margin term is zero.
-                content.onGeometryChange(for: CGFloat.self, of: { proxy in
-                    proxy.size.height - proxy.safeAreaInsets.top
-                        - proxy.safeAreaInsets.bottom
-                }) { [weak self] height in
-                    guard let self, self.configurationToken == token else { return }
-                    // Official `ceil` before the value reaches the surface.
-                    let measured = ceil(height)
-                    guard measured.isFinite, measured > 0 else { return }
-                    self.onContentHeightReport?(measured)
+            Group {
+                if reportsContentHeight {
+                    // Measure the content, never the cell bounds: feeding the
+                    // cell's own frame back would make every application of a
+                    // height produce another report for the same value. The
+                    // hosting window's safe area is not part of a row's height
+                    // (the M1 parity spike saw a 64 pt status-bar inset).
+                    //
+                    // Official semantics (`CANONICAL/05-layout-scroll.md` §2.2):
+                    // `GeometryProxy.size.height` + `rowMargins.top + bottom`,
+                    // rounded up. This configuration uses `.margins(.all, 0)`
+                    // and the Code row draws its official 5 pt top/bottom row
+                    // margins inside its own SwiftUI body, so the proxy height is
+                    // already the whole row height and the margin term is zero.
+                    content.onGeometryChange(for: CGFloat.self, of: { proxy in
+                        proxy.size.height - proxy.safeAreaInsets.top
+                            - proxy.safeAreaInsets.bottom
+                    }) { [weak self] height in
+                        guard let self, self.configurationToken == token else { return }
+                        // Official `ceil` before the value reaches the surface.
+                        let measured = ceil(height)
+                        guard measured.isFinite, measured > 0 else { return }
+                        self.noteContentOverflow(contentHeight: measured)
+                        self.onContentHeightReport?(measured)
+                    }
+                } else {
+                    // The Chat rows keep the controller's visible-cell polling;
+                    // installing a geometry observer on every scroll cell would
+                    // only add layout work.
+                    content
                 }
-            } else {
-                // The Chat rows keep the controller's visible-cell polling;
-                // installing a geometry observer on every scroll cell would
-                // only add layout work.
-                content
             }
+            // Top-align a measured row's content inside its cell. A row whose
+            // height momentarily trails its content (estimate → measurement,
+            // the height cache plateauing under a streaming row) would
+            // otherwise be centered by the hosting layout and clipped at the
+            // TOP — losing the row's first lines under the row above (pp
+            // 2026-11-28: the streaming text's first line sat on the tool
+            // row). Anchored at the top, the overflow only ever leaves
+            // through the bottom edge, where the next measurement follows.
+            // Unmeasured rows keep the hugging layout: their first fit must
+            // still measure the real content, not the proposed cell size.
+            .frame(maxWidth: .infinity,
+                   maxHeight: topAligned ? CGFloat.infinity : nil,
+                   alignment: .top)
         }
         .margins(.all, 0)
         .minSize(width: 0, height: 0)
@@ -160,6 +189,22 @@ final class TimelineHostingCell: UICollectionViewCell {
         isMeasured = false
         seededHeight = nil
         onContentHeightReport = nil
+        onContentOverflowReport = nil
+        lastOverflowReportAt = 0
+    }
+
+    /// A geometry report taller than the cell's current frame means the row is
+    /// drawing into a height that no longer fits it (the layout has not taken
+    /// the new content height yet, or its cache plateaued). Throttled to one
+    /// line a second: the point is to name the stuck row in an exported log,
+    /// not to trace every frame.
+    private func noteContentOverflow(contentHeight: CGFloat) {
+        let frameHeight = bounds.height
+        guard frameHeight > 1, contentHeight > frameHeight + 2 else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastOverflowReportAt >= 1.0 else { return }
+        lastOverflowReportAt = now
+        onContentOverflowReport?(contentHeight, frameHeight)
     }
 
     override func preferredLayoutAttributesFitting(

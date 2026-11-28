@@ -622,8 +622,25 @@ final class TimelineCollectionController: UIViewController {
                     height, for: item,
                     reportedKey: reportKey, reportedSignature: reportSignature)
             }
+            // The content outgrew the cell's frame (the row is drawing into a
+            // height the layout has not taken yet). One line a second from the
+            // cell; answers "is the text actually taller than its row" from an
+            // exported log (pp 2026-11-28).
+            cell.onContentOverflowReport = { [weak self] contentHeight, frameHeight in
+                guard let self else { return }
+                ClientDiagnosticsLog.shared.record(
+                    kind: "timeline.row.overflow",
+                    sessionID: self.diagnosticSessionID,
+                    detail: ["item": item.itemID,
+                             "contentH": String(format: "%.1f", contentHeight),
+                             "frameH": String(format: "%.1f", frameHeight),
+                             "delta": String(format: "%.1f", contentHeight - frameHeight),
+                             "isMeasured": isMeasured ? "1" : "0"],
+                    dedupe: false)
+            }
         } else {
             cell.onContentHeightReport = nil
+            cell.onContentOverflowReport = nil
         }
         cell.configure(content.rowView(for: item, width: columnWidth),
                        itemID: item.itemID,

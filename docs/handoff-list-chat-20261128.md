@@ -1,6 +1,6 @@
 # 对话 tab 合并：会话根 + 列表 push（2026-11-28）
 
-> 分支：`feat/list-chat`（从 `next` 拉出，next 已合入 `feat/dashboard-library` @ `97749e69a`）
+> 分支：`feat/list-chat` = **list 线**（2026-11-28 pp 定，与 beta/next 平级、永不自动互合）；从 `next` 拉出，next 已合入 `feat/dashboard-library` @ `97749e69a`
 > 范围：iOS only；不动 server / connector / web。
 
 ## 1. 目标 / 不做什么
